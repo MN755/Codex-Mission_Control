@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Codex Mission Control
+Comment=Standalone local orchestration dashboard for Codex workers
+Exec=CodexMissionControl
+Icon=codex-mission-control
+Categories=Development;
+Terminal=false

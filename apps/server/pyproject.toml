@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "codex-mission-control-server"
+version = "0.1.0"
+description = "Local orchestration backend for Codex Mission Control"
+requires-python = ">=3.10"
+dependencies = [
+  "fastapi>=0.116,<1.0",
+  "uvicorn[standard]>=0.35,<1.0",
+  "sqlalchemy>=2.0,<3.0",
+  "pydantic>=2.11,<3.0",
+  "httpx>=0.28,<1.0",
+  "platformdirs>=4.3,<5.0",
+  "pywebview>=5.0,<6.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.4,<9.0",
+]
+
+[tool.setuptools]
+py-modules = []
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]

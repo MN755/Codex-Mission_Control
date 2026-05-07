@@ -1,0 +1,67 @@
+name: package-desktop
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - windows-latest
+          - macos-latest
+          - ubuntu-22.04
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: apps/dashboard/package-lock.json
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ./apps/server -e ./apps/desktop[dev]
+
+      - name: Install frontend dependencies
+        working-directory: apps/dashboard
+        run: npm ci
+
+      - name: Build frontend
+        working-directory: apps/dashboard
+        run: npm run build
+
+      - name: Run backend tests
+        working-directory: apps/server
+        run: python -m pytest
+
+      - name: Install Linux AppImage tooling
+        if: runner.os == 'Linux'
+        run: |
+          curl -L https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage -o appimagetool
+          chmod +x appimagetool
+          echo "APPIMAGETOOL=${GITHUB_WORKSPACE}/appimagetool" >> "$GITHUB_ENV"
+
+      - name: Package desktop app
+        run: python scripts/package-desktop.py
+
+      - name: Upload packaged artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: codex-mission-control-${{ runner.os }}
+          path: .runtime/packages/**

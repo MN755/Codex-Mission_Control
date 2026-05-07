@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "codex-mission-control-desktop"
+version = "0.1.0"
+description = "Desktop shell for Codex Mission Control"
+requires-python = ">=3.10"
+dependencies = [
+  "platformdirs>=4.3,<5.0",
+  "pywebview>=5.0,<6.0",
+  "uvicorn[standard]>=0.35,<1.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pyinstaller>=6.0,<7.0",
+]
+
+[project.scripts]
+mission-control-desktop = "mission_control_desktop.app:main"
+
+[tool.setuptools]
+py-modules = []

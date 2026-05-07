@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-label="Codex Mission Control">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#081826"/>
+      <stop offset="100%" stop-color="#163651"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#5ed3ff"/>
+      <stop offset="100%" stop-color="#8ef0c5"/>
+    </linearGradient>
+  </defs>
+  <rect width="256" height="256" rx="44" fill="url(#bg)"/>
+  <circle cx="128" cy="128" r="82" fill="none" stroke="#244e71" stroke-width="10"/>
+  <circle cx="128" cy="128" r="54" fill="none" stroke="url(#accent)" stroke-width="14"/>
+  <path d="M74 170 112 92l30 52 18-28 22 54" fill="none" stroke="#edf7ff" stroke-linecap="round" stroke-linejoin="round" stroke-width="12"/>
+  <circle cx="112" cy="92" r="8" fill="#8ef0c5"/>
+  <circle cx="160" cy="116" r="8" fill="#5ed3ff"/>
+</svg>
