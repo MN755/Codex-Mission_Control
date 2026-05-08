@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -27,4 +28,8 @@ def wait_for(condition, timeout: float = 6.0) -> None:
             return
         time.sleep(0.2)
     raise AssertionError("Condition was not satisfied before timeout.")
+
+
+def sample_workspace(name: str) -> str:
+    return (Path(__file__).resolve().parents[1] / ".runtime" / name).as_posix()
 

@@ -1,68 +1,129 @@
 # Workflow
 
-## 0. Launch
+This document describes the intended operator flow for Mission Control from launch to handoff.
 
-- Start everything with `.\scripts\start-mission-control.ps1` from the repo root.
-- Or double-click `scripts/start-mission-control.bat` on Windows.
-- On macOS and Linux, use `./scripts/start-mission-control.sh`.
-- The packaged desktop app opens to a launchpad first, not directly to project intake.
-- The launchpad lets the user sign in to Codex with ChatGPT, use device-code auth, or optionally provide an API key.
-- Claude Code and external adapters are configured per project instead of through the launchpad auth flow.
-- Use `.\scripts\create-desktop-shortcut.ps1` once if you want a desktop shortcut.
-- The launcher now prefers the standalone desktop shell first.
-- A browser-backed web mode still exists as an explicit fallback.
-- For redistributable desktop artifacts, build with `.\scripts\package-desktop.ps1` on Windows or `./scripts/package-desktop.sh` on macOS/Linux.
-- The GitHub Actions workflow can build all three OS targets after the repo is published.
+## 1. Launch
 
-## 1. Intake
+The app can be started in three common ways:
 
-- After launch, the user continues into Mission Control proper.
-- User enters a project name, idea, workspace path, provider, runner mode, and manager mode.
-- Backend creates the project and reserved manager agent.
-- Backend writes local docs to `<workspace>/mission-control/`.
-- Each project gets its own settings row for provider selection, model selection, reasoning effort, adapter command settings, runner mode, sandbox mode, approval policy, and role-based worker overrides.
+- `scripts/start-mission-control.ps1` on Windows
+- `scripts/start-mission-control.bat` for double-click Windows launch
+- `scripts/start-mission-control.sh` on macOS or Linux
 
-## 2. Interview
+The desktop shell is the default experience. Browser mode remains available as an explicit fallback for development or recovery.
 
-- User picks 6, 20, or 50 questions.
-- The UI presents one question at a time.
-- Answers are persisted and shown in history.
+## 2. Choose auth and provider
 
-## 3. Plan Review
+On startup, Mission Control presents an auth and launch surface.
 
-- Backend generates a versioned plan.
-- User can approve or ask for a directional revision.
-- Revision actions create a new plan version.
+For Codex projects, the user can:
 
-## 4. Build Monitor
+- sign in with ChatGPT
+- use a device-code flow
+- optionally use an API key
 
-- Approval creates worker agents and an initial milestone-based task set.
-- Managed worker sandboxes are created under `apps/server/.runtime/worktrees/` when isolation is needed.
-- The backend starts compatible idle agents.
-- Each manager or worker run resolves its effective model and reasoning from project settings:
-  - manager uses manager model first
-  - workers use role override first, then default worker model
-  - empty values mean `use provider default`
-- Provider routing rules:
-  - `Codex` can use CLI or experimental app-server
-  - `Claude Code` uses the CLI runner
-  - `external_adapter` uses the configured command wrapper
-- When a task starts, its allowed paths are reserved.
-- If another queued task overlaps those paths, it moves to `waiting_on_paths`.
-- When a worker finishes, the backend stores the completion report, asks the manager for the next action, and routes follow-up work automatically.
-- Events stream into the frontend over SSE.
-- User can start, pause, stop, or inspect logs without talking to workers directly.
+For Claude Code and external adapters:
 
-## 5. Handoff
+- Mission Control assumes the local provider auth flow is handled outside the app
 
-- When all tracked tasks reach a done state, the manager generates a structured handoff and the project moves to `handoff_ready`.
-- The Handoff screen summarizes run instructions, recorded tests, limitations, next improvements, and the manager or worker model settings used during the build.
-- User follow-up changes go back through the manager message path.
+## 3. Create a project
 
-## Packaging Workflow
+Project intake collects:
 
-1. Build the frontend bundle.
-2. Freeze the desktop shell with PyInstaller.
-3. Bundle the backend modules and frontend assets into the desktop artifact.
-4. On Linux, assemble an AppDir and build an AppImage when tooling is available.
-5. Publish the generated artifacts from `.runtime/packages/<platform>/release/`.
+- project name
+- project idea
+- workspace path
+- provider
+- runner mode
+- manager mode
+
+At this point Mission Control creates:
+
+- the project record
+- a reserved manager agent
+- initial planning docs in `<workspace>/mission-control/`
+
+No coding should start during intake.
+
+## 4. Run the interview
+
+The interview step narrows scope before work begins.
+
+- The user selects 6, 20, or 50 questions
+- Questions are presented one at a time
+- Answers are stored and shown in the UI
+- The manager uses those answers to shape the plan
+
+## 5. Review the plan
+
+Mission Control generates a versioned plan that includes:
+
+- summary
+- scope
+- milestones
+- agent roster
+- task structure
+- risks
+- definition of done
+
+The user can approve the plan or request directional changes.
+
+## 6. Generate tasks
+
+After approval, the manager decomposes the plan into milestone-based tasks.
+
+Rules:
+
+- Milestone 1 should produce a runnable vertical slice
+- Later milestones can deepen quality, polish, integrations, or testing
+- Each task includes scope, validation, success criteria, and path hints
+
+## 7. Start workers
+
+The build monitor is where orchestration becomes active.
+
+- Workers start through the selected runner
+- Effective models are resolved from project settings
+- Writable paths are reserved before a task begins
+- Conflicting work is moved to `waiting_on_paths`
+- Events stream into the live monitor over SSE
+
+The user does not talk directly to worker agents.
+
+## 8. Route work automatically
+
+When a worker finishes:
+
+- its report is parsed and stored
+- task state is updated
+- the manager decides what happens next
+
+Possible next actions include:
+
+- assign next task
+- request fix
+- wait
+- mark blocked
+- escalate to user
+
+## 9. Validate and hand off
+
+Before handoff, Mission Control should confirm that:
+
+- required tasks are complete or explicitly deferred
+- recorded validation steps are complete or marked as not run
+- handoff content has been generated
+
+The final handoff includes:
+
+- what was built
+- how to run it
+- how to use it
+- tests and builds recorded
+- limitations
+- risks
+- suggested next improvements
+
+## 10. Continue iterating
+
+Change requests return to the manager path rather than bypassing orchestration. The same project can continue through multiple plan, build, and handoff cycles.

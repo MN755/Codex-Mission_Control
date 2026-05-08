@@ -1,43 +1,94 @@
 # Security
 
-Codex Mission Control is local-only by default.
+Mission Control is intended to be local-first and least-surprising by default. This document covers the main trust boundaries and operating assumptions for the MVP.
 
-## Default Safety Model
+## Default posture
 
-- Backend is intended to run on localhost.
-- Frontend talks only to the local backend.
-- The desktop shell embeds that same local surface instead of exposing it publicly.
-- Packaged desktop builds keep the same localhost-only backend behavior inside the native shell.
-- ChatGPT sign-in is the recommended default path.
-- API-key login is optional. Mission Control does not store the raw key in its own database or settings.
-- Claude Code and external adapters keep their own local auth flows; Mission Control does not try to proxy or persist their credentials.
-- The launcher defaults to `127.0.0.1:8000` for the backend and `127.0.0.1:5173` for the frontend.
-- Runner defaults avoid dangerous sandbox bypass flags.
-- CLI tasks default to `workspace-write` sandboxing and `on-request` approvals.
-- Empty manager or worker model values mean `use provider default`; Mission Control does not write those choices back into global Codex config.
+- Runs locally by default
+- Binds the backend to loopback addresses
+- Uses local provider CLIs instead of a separate hosted auth layer
+- Avoids dangerous bypass flags by default
+- Stores orchestration state locally
 
-## Workspace Safety
+## Authentication
 
-- The system prefers isolated worktrees for git-backed workspaces.
-- Non-git workspaces use explicit path reservations to reduce concurrent write collisions.
-- Generated planning docs are kept inside `<workspace>/mission-control/`.
-- Worker tasks stay in `workspace-write` sandbox mode by default and do not use dangerous bypass flags.
-- Role-based model overrides affect only Mission Control runs for that project. They are not global machine settings.
-- External adapter commands receive Mission Control context over stdin and environment variables, so review any adapter wrapper before using it on sensitive code.
+### Codex
 
-## Network Exposure
+- Preferred path: ChatGPT-backed local sign-in
+- Device-code sign-in is available as a fallback
+- API-key login is optional
 
-- Do not expose the backend publicly for normal use.
-- Do not bind the Codex app-server to non-loopback addresses unless you understand the security implications.
-- If the app-server is bound beyond localhost, add real transport authentication and treat the surface as sensitive.
+Mission Control does not store raw API keys in its own database. If an API-key login path is used, it is passed to the local Codex login flow rather than retained as an application secret.
 
-## Operational Limits
+### Other providers
 
-- The MVP surfaces environment-dependent risks instead of pretending they are solved.
-- If a runner needs additional access or approvals, the intended behavior is to stop and report it.
-- Validation results should only reflect commands that actually ran.
-- App-server integration should still be treated as experimental even when the handshake succeeds.
-- Model availability still depends on the selected local provider session and plan; a configured override may fail if the local account cannot use that model.
-- API-key login can shift usage onto API-billed credentials. Use ChatGPT sign-in if you want to stay on the local Codex or ChatGPT session path instead.
-- Packaged artifacts are unsigned unless you add platform-specific signing and notarization later.
-- Linux AppImage generation depends on `appimagetool`; otherwise the build falls back to a portable bundle archive.
+- Claude Code auth is managed by the local Claude environment
+- External adapter auth is managed by the adapter or wrapper command
+
+## Network exposure
+
+Mission Control is not designed to be exposed publicly.
+
+- Keep the backend on localhost
+- Treat any non-loopback binding as a deliberate, higher-risk configuration
+- Do not expose experimental provider surfaces without additional controls
+
+## Workspace safety
+
+Mission Control tries to reduce agent collisions rather than pretending they do not happen.
+
+- Git-backed work can be isolated through worktree-oriented flows
+- Non-git workspaces use path reservations
+- Conflicting tasks are held in `waiting_on_paths`
+- Generated docs stay inside the selected workspace
+
+## Runner safety defaults
+
+The intended defaults are:
+
+- sandbox: `workspace-write`
+- approval: `on-request`
+
+Mission Control does not silently escalate around those defaults. If a task needs more access, the intended behavior is to surface that need instead of bypassing guardrails behind the user’s back.
+
+## Provider configuration
+
+Mission Control prefers per-run overrides to global mutation.
+
+- Empty model fields mean `use provider default`
+- Empty reasoning fields mean `use provider default`
+- Project settings are scoped to Mission Control
+- The app does not rewrite global Codex config by default
+
+## Logging and local data
+
+Mission Control stores local runtime data such as:
+
+- SQLite state
+- launcher metadata
+- run logs
+- stdout and stderr captures
+- event logs
+
+Source runs use `apps/server/.runtime`. Packaged builds use a writable local app-data directory.
+
+## Desktop packaging considerations
+
+- Packaged builds are unsigned unless platform signing is added separately
+- Unsigned binaries may trigger operating-system trust warnings
+- Linux AppImage generation depends on system-compatible tooling
+
+## Known security limits
+
+- Codex app-server support is experimental
+- External adapters can widen the trust boundary depending on how they are implemented
+- Provider model availability and behavior depend on the current local account and session
+- The MVP does not attempt enterprise policy enforcement or centralized secrets management
+
+## Recommended operating practice
+
+- Use ChatGPT-backed Codex sign-in when you want to stay off API billing
+- Use dry-run mode for UI demos and workflow validation
+- Review any external adapter wrapper before trusting it on sensitive code
+- Keep the selected workspace narrow and intentional
+- Treat packaged binaries as local-distribution artifacts unless you add signing and notarization

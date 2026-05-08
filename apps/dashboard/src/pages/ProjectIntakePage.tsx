@@ -7,7 +7,16 @@ import { LoadingBlock } from "../components/LoadingBlock";
 import { SectionCard } from "../components/SectionCard";
 import type { CodexStatus, ManagerMode, Project, ProviderId, RunnerMode } from "../types";
 
-const DEMO_WORKSPACE = "C:\\Users\\mike\\OneDrive\\Desktop\\Codex Mission Control\\apps\\server\\.runtime\\demo-project";
+function normalizePath(value: string): string {
+  return value.replace(/\\/g, "/").replace(/\/+$/, "");
+}
+
+function deriveDemoWorkspace(runtimeDirectory?: string | null): string {
+  if (!runtimeDirectory) {
+    return "workspace/demo-project";
+  }
+  return `${normalizePath(runtimeDirectory)}/demo-project`;
+}
 
 export function ProjectIntakePage() {
   const navigate = useNavigate();
@@ -21,7 +30,7 @@ export function ProjectIntakePage() {
   const [form, setForm] = useState({
     name: "",
     idea: "",
-    workspace_path: DEMO_WORKSPACE,
+    workspace_path: "workspace/demo-project",
     provider: "codex" as ProviderId,
     runner_mode: (demoMode ? "dry_run" : "auto") as RunnerMode,
     manager_mode: (demoMode ? "deterministic" : "auto") as ManagerMode,
@@ -35,17 +44,22 @@ export function ProjectIntakePage() {
       ...current,
       runner_mode: "dry_run",
       manager_mode: "deterministic",
-      workspace_path: current.workspace_path || DEMO_WORKSPACE,
+      workspace_path: current.workspace_path || deriveDemoWorkspace(codexStatus?.runtime_directory),
     }));
-  }, [demoMode]);
+  }, [codexStatus?.runtime_directory, demoMode]);
 
   useEffect(() => {
     async function load() {
       try {
         const [status, projectList] = await Promise.all([api.getSystemStatus(), api.listProjects()]);
+        const demoWorkspace = deriveDemoWorkspace(status.runtime_directory);
         startTransition(() => {
           setCodexStatus(status);
           setProjects(projectList);
+          setForm((current) => ({
+            ...current,
+            workspace_path: demoMode || current.workspace_path === "workspace/demo-project" ? demoWorkspace : current.workspace_path,
+          }));
           setLoading(false);
         });
       } catch (loadError) {
@@ -144,7 +158,16 @@ export function ProjectIntakePage() {
               </label>
             </div>
             <div className="button-row">
-              <button type="button" className="button-ghost" onClick={() => setForm((current) => ({ ...current, workspace_path: DEMO_WORKSPACE }))}>
+              <button
+                type="button"
+                className="button-ghost"
+                onClick={() =>
+                  setForm((current) => ({
+                    ...current,
+                    workspace_path: deriveDemoWorkspace(codexStatus?.runtime_directory),
+                  }))
+                }
+              >
                 Use demo path
               </button>
               <button type="submit" disabled={submitting}>

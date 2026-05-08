@@ -1,103 +1,133 @@
 # Provider Integration
 
-This MVP is designed to preserve the user's local provider environment instead of rebuilding authentication, tools, or plugin access from scratch.
+Mission Control is designed to sit on top of local agent tooling rather than replace it. It reuses provider CLIs, local sessions, and per-run overrides wherever possible.
 
-## Desktop Shell
+## Supported providers
 
-- The primary user-facing surface is now a local desktop shell.
-- The desktop app starts the same FastAPI backend in-process and serves the built React UI locally.
-- The desktop shell does not switch authentication models. Manager and worker runs still rely on the selected local provider CLI.
-- Frozen desktop builds keep the same local-provider integration model. Packaging changes the shell, not the authentication path.
+## Codex
 
-## Authentication
+- Best supported live provider path
+- Works with local Codex CLI authentication
+- Supports ChatGPT sign-in, device-code sign-in, and optional API-key login
+- Supports per-run model overrides
+- Supports per-run reasoning-effort overrides
+- Supports CLI execution and experimental app-server execution
 
-- The desktop app launches into a local authentication choice screen for `Codex`.
-- The recommended Codex path is `Sign in with ChatGPT`, which runs the local `codex login` flow.
-- A `Use device code` fallback is available when browser-based login is inconvenient.
-- An optional API-key path runs `codex login --with-api-key`.
-- Mission Control does not persist the raw API key in its own database or settings.
-- The backend checks `codex login status`.
-- `Claude Code` keeps its own login flow outside Mission Control.
-- `external_adapter` uses whatever authentication the user-supplied adapter command already implements.
-- The app does not edit `~/.codex/config.toml` unless you do that separately outside Mission Control.
+## Claude Code
 
-## Runner Modes
+- Supported through a CLI runner
+- Authentication is managed by the local Claude Code environment
+- Supports model overrides where the CLI supports them
+- Mission Control does not assume reasoning-effort controls are available
 
-### `dry_run`
+## External adapter
 
-- Simulates manager and worker behavior for the full UI flow.
-- No live provider login required.
+- Generic local command runner for other LLMs
+- Receives prompts through stdin
+- Receives run settings through environment variables
+- Capability depth depends on the adapter wrapper the user provides
 
-### `cli`
+## Authentication model
 
-- `Codex` uses `codex exec --json` for first turns and `codex exec resume` for follow-up turns when a session reference exists.
-- `Claude Code` uses non-interactive CLI runs and per-run `--model` overrides when configured.
-- `external_adapter` runs a user-supplied local command and passes Mission Control context over stdin plus environment variables.
-- Model overrides are passed only when configured.
-- Reasoning effort is passed directly to Codex, forwarded to external adapters, and currently ignored for Claude Code.
-- Sandbox and approval policy stay per-run rather than relying on global config edits.
-- Stdout, stderr, parsed event logs, and exit codes are captured locally.
+Mission Control prefers account/session reuse over custom credential handling.
 
-### `app_server`
+### Codex
 
-- Uses `codex app-server` over stdio JSON-RPC.
-- Performs `initialize` / `initialized`.
-- Starts or resumes a thread, then starts a turn.
-- Carries requested model and reasoning metadata where the protocol allows it.
-- This path is `Codex`-only, experimental, and intentionally narrow in the MVP.
-- If a requested model or reasoning override cannot be honored safely in `auto`, the app prefers the Codex CLI fallback path.
+- Recommended: ChatGPT-backed local Codex sign-in
+- Fallback: device-code flow
+- Optional: API-key login
 
-### `auto`
+Mission Control does not:
 
-- `Codex`: runs a handshake against `codex app-server`, prefers app-server when it succeeds, and falls back to the CLI runner automatically.
-- `Claude Code`: resolves to the CLI runner.
-- `external_adapter`: resolves to the adapter runner.
+- require API keys for the default Codex path
+- store raw API keys in its own database
+- rewrite `~/.codex/config.toml` by default
 
-## Manager Modes
+### Other providers
 
-### `auto`
+- Claude Code manages auth outside Mission Control
+- External adapters manage auth outside Mission Control
 
-- Uses the same local runner stack as workers when possible.
-- Falls back to deterministic orchestration when the runner is unavailable or the returned JSON is malformed.
+## Runner modes
 
-### `provider`
+## `dry_run`
 
-- Prefers live provider-backed structured manager actions.
-- Still falls back deterministically instead of failing the whole workflow.
+- No live provider required
+- Simulates manager and worker behavior
+- Useful for demos, UI work, and local testing
 
-### `deterministic`
+## `cli`
 
-- Uses template-driven docs, planning, task decomposition, and routing.
-- This is the default fallback path for `dry_run`.
+- Main production path today
+- Uses provider-specific CLI invocation
+- Captures stdout, stderr, exit codes, and event-like output
+- Passes model, sandbox, and approval settings per run when supported
 
-## Local Detection
+## `app_server`
 
-The system status endpoint reports:
+- Codex-only
+- Experimental
+- Uses `codex app-server` over stdio JSON-RPC
+- Narrowly scoped to the current MVP
 
-- Provider selection and provider capability matrix
-- Codex CLI version
-- Codex login status and auth mode when detectable
-- The latest local auth job state from the desktop launchpad
-- App-server support for Codex
-- Launcher-aware backend and frontend ports
-- Current per-project settings summary when a project id is provided
-- Configured MCP servers
-- Configured plugins discovered in `~/.codex/config.toml`
-- Installed local skills discovered in `~/.codex/skills`
+## `auto`
 
-## Connectors, Plugins, Skills, and MCP
+- Selects the best supported live path for the chosen provider
+- Falls back safely when a capability is unavailable
 
-- The app does not implement fake connectors.
-- Codex projects depend on whatever the local Codex environment already exposes.
-- Claude Code and external-adapter projects inherit only what those local CLIs or wrappers expose.
+## Model and reasoning settings
 
-## Practical Limits
+Settings are stored per project.
 
-- The MVP does not guarantee full parity between providers.
-- The app-server protocol may change over time.
-- Some local provider features can be detected and documented but not deeply orchestrated in v1.
-- The manager only trusts structured JSON responses after a direct parse or one repair pass, otherwise it falls back to deterministic behavior.
-- Model availability depends on the current provider, plan, and local session.
-- Native desktop behavior still depends on a working local embedded webview backend on the host OS.
-- Packaged builds do not modify `~/.codex/config.toml`; per-run flags remain the preferred override path.
-- Codex app-server model-selection behavior in packaged builds is still experimental for the same reasons it is experimental in source mode.
+- `manager_model`
+- `default_worker_model`
+- `manager_reasoning_effort`
+- `default_worker_reasoning_effort`
+- role-based worker overrides
+
+Resolution order:
+
+1. Role-specific override
+2. Project default
+3. Provider default
+
+Empty values mean:
+
+- do not force an override
+- let the provider use its normal default behavior
+
+## Manager integration
+
+Mission Control supports two broad manager paths:
+
+- provider-backed manager turns
+- deterministic fallback
+
+Provider-backed manager actions can be used for:
+
+- docs generation
+- interview generation
+- plan synthesis
+- task decomposition
+- worker decisioning
+- handoff generation
+
+If a structured manager response cannot be parsed:
+
+1. Mission Control attempts one repair pass
+2. If parsing still fails, it logs the failure
+3. The system falls back to deterministic behavior for that action
+
+## Codex-specific notes
+
+- Codex CLI is the most complete and tested live path
+- ChatGPT sign-in is the recommended non-API-key experience
+- API-key login is optional and may move usage onto API-billed credentials
+- Codex app-server remains experimental and should not be treated as the only supported path
+
+## Operational limits
+
+- Provider capability parity is not guaranteed
+- Available models depend on the user’s provider account and session
+- Some CLIs expose richer non-interactive features than others
+- External adapters are only as reliable as the wrapper command behind them

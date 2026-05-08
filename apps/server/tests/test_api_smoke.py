@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from conftest import wait_for
+from conftest import sample_workspace, wait_for
 
 
 def test_dry_run_project_flow(client) -> None:
@@ -9,7 +9,7 @@ def test_dry_run_project_flow(client) -> None:
         json={
             "name": "Mission Control Demo",
             "idea": "Build a local orchestration dashboard",
-            "workspace_path": "C:/Users/mike/OneDrive/Desktop/Codex Mission Control/apps/server/.runtime/demo-project",
+            "workspace_path": sample_workspace("demo-project"),
             "runner_mode": "dry_run",
             "manager_mode": "auto",
         },

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 
+from conftest import sample_workspace
 from manager import MissionControlService
 from models import Agent, AgentRun, Project, Task
 from project_settings import get_or_create_project_settings, resolve_manager_settings, resolve_worker_settings
@@ -14,7 +15,7 @@ def test_manager_doc_generation_uses_deterministic_for_dry_run(client) -> None:
         json={
             "name": "Docs Demo",
             "idea": "Build a local project manager",
-            "workspace_path": "C:/Users/mike/OneDrive/Desktop/Codex Mission Control/apps/server/.runtime/docs-demo",
+            "workspace_path": sample_workspace("docs-demo"),
             "runner_mode": "dry_run",
             "manager_mode": "auto",
         },
@@ -75,7 +76,7 @@ def test_worker_report_ingestion_routes_next_task() -> None:
         project = Project(
             name="Demo",
             idea="Idea",
-            workspace_path="C:/Users/mike/OneDrive/Desktop/Codex Mission Control/apps/server/.runtime/unit-demo",
+            workspace_path=sample_workspace("unit-demo"),
             status="building",
             runner_mode="dry_run",
             manager_mode="deterministic",

@@ -1,71 +1,119 @@
 # Architecture
 
-Codex Mission Control is a local-only orchestration app with a desktop-first shell on top of the existing React + FastAPI stack.
+Codex Mission Control is a local-first orchestration system built as a desktop shell over a React frontend and a FastAPI backend. The desktop shell is the primary product surface; the browser mode exists as a fallback for development and recovery.
 
-## Main Pieces
+## Design goals
 
-- `apps/dashboard`
-  - React + TypeScript + Vite
-  - Six core screens: Launchpad, Intake, Interview, Plan Review, Build Monitor, Handoff
-  - Uses REST for commands and SSE for live updates
-- `apps/desktop`
-  - Cross-platform Python desktop shell
-  - Starts the FastAPI app locally and opens the built dashboard inside a native webview
-  - Is packaging-aware for frozen Windows, macOS, and Linux builds
-  - Owns the shared thought-cloud `>_` app icon assets used by the desktop shell and repo branding
-- `apps/server`
-  - FastAPI app
-  - SQLite persistence via SQLAlchemy
-  - Mission-control services for docs, interview, planning, task routing, provider selection, and runners
-- `workspace`
-  - Local runtime data
-  - Demo workspace placeholder and user-selected workspace targets
-- Runtime storage
-  - Source checkout mode uses `apps/server/.runtime`
-  - Packaged mode uses the user's local app-data directory
-  - Stores SQLite, logs, launcher metadata, and managed worktree directories
-- `.codex/skills/mission-control-manager`
-  - Local manager skill prompt for Codex-driven manager behavior
-- `.github/workflows/package-desktop.yml`
-  - Cross-platform build pipeline for Windows `.exe`, macOS `.app`, and Linux packaged artifacts
+- Keep all orchestration local by default
+- Reuse existing provider CLI sessions instead of rebuilding auth
+- Give the user one manager interface instead of many worker conversations
+- Coordinate worker tasks without overlapping writes
+- Stay small enough to run on a normal workstation
 
-## Data Model
+## Top-level components
 
-- `Project`: one orchestration target
+## Desktop shell
+
+- Lives in `apps/desktop`
+- Starts the backend locally and opens the UI in a native webview
+- Provides the app icon, packaged entrypoints, and frozen-runtime behavior
+- Keeps the product usable as a standalone desktop app rather than a hosted web service
+
+## Frontend
+
+- Lives in `apps/dashboard`
+- React + TypeScript + Vite
+- Main product surfaces:
+  - startup and auth
+  - project intake
+  - interview
+  - plan review
+  - build monitor
+  - handoff
+- Uses REST for commands and SSE for live updates
+
+## Backend
+
+- Lives in `apps/server`
+- FastAPI + SQLAlchemy + SQLite
+- Owns orchestration state, provider resolution, manager logic, task routing, and event streaming
+
+## Runtime and workspaces
+
+- Source runs store app state under `apps/server/.runtime`
+- Packaged builds store writable runtime state under the user’s local app-data directory
+- User project docs are written into `<workspace>/mission-control/`
+
+## Data model
+
+- `Project`: the top-level orchestration record
+- `ProjectSettings`: provider, runner, model, reasoning, and approval settings per project
 - `InterviewSession` and `InterviewQuestion`: planning interview state
-- `Plan`: versioned plan artifact
-- `Agent`: manager or worker
-- `Task`: scoped work unit with milestone, role, dependencies, success criteria, and path hints
-- `AgentRun`: individual runner invocation with stdout/stderr/event logs plus parsed worker report
-- `PathReservation`: explicit path ownership records for conflict prevention
-- `ProjectEvent`: persistent event timeline for the live monitor
+- `Plan`: versioned plan output
+- `Agent`: manager or worker identity plus current activity
+- `Task`: milestone-based work unit with scope, validation, dependencies, and path hints
+- `AgentRun`: a concrete provider invocation and its logs
+- `PathReservation`: path ownership records used to prevent overlapping edits
+- `ProjectEvent`: durable event stream for the build monitor
 
-## Execution Model
+## Execution flow
 
-1. User creates a project and picks a workspace path.
-2. If the project uses Codex, the user can authenticate via ChatGPT sign-in, device-code flow, or an optional API-key login.
-3. If the project uses Claude Code or an external adapter, Mission Control reuses that provider's existing local auth flow instead of proxying credentials.
-4. Backend writes local project docs to `<workspace>/mission-control/`.
-5. Interview answers refine the plan.
-6. Plan approval creates worker agents and milestone-based tasks.
-7. A provider-aware runner starts worker turns, reservations are acquired, and the backend persists events and completion reports.
-8. The manager ingests worker reports, decides the next action, and either assigns follow-up work, requests a fix, waits, or escalates.
-9. The frontend listens on SSE and refreshes project state as events arrive.
+1. The user creates a project.
+2. Mission Control creates initial docs and a reserved manager agent.
+3. The interview refines requirements.
+4. The manager produces a versioned plan.
+5. Approved plans are decomposed into milestone-based tasks.
+6. Eligible tasks are assigned to workers through the selected runner.
+7. Path reservations are acquired before write-capable work starts.
+8. Worker reports are parsed and fed back into the manager.
+9. The manager assigns follow-up work, requests fixes, waits, or escalates.
+10. When required work is complete, the manager generates a handoff.
 
-## Isolation
+## Provider model
 
-- Git workspaces are prepared for per-agent worktree use under `apps/server/.runtime/worktrees/`.
-- Non-git workspaces use explicit `PathReservation` records and cached agent lock state to allow only non-overlapping writers at the same time.
-- The manager writes project docs to a visible `mission-control/` folder inside the selected workspace.
+Mission Control separates orchestration from provider execution.
 
-## Packaging Model
+- The backend decides what should happen next.
+- The runner layer decides how that action is executed against a local provider.
+- The manager can run deterministically or through a provider-backed path.
 
-- The packaged desktop app bundles:
-  - the Python desktop shell
-  - the FastAPI backend modules
-  - the built React frontend assets
-  - launcher config defaults
-- Windows packaging targets a standalone `.exe`.
-- macOS packaging targets a `.app` bundle.
-- Linux packaging targets a portable bundle and can emit an AppImage when `appimagetool` is available.
-- Packaged builds do not depend on a source checkout layout at runtime.
+This allows the same workflow to operate across:
+
+- Codex CLI
+- Codex app-server (experimental)
+- Claude Code CLI
+- External local adapters
+
+## Concurrency and file safety
+
+Mission Control does not assume workers can safely edit the same files.
+
+- Git-backed workspaces are prepared for isolated worktree-style execution
+- Non-git workspaces use `PathReservation` records
+- Tasks that conflict with active reservations move to `waiting_on_paths`
+- Reservation state is visible in the build monitor
+
+## Packaging model
+
+The packaging pipeline freezes the desktop shell and bundles:
+
+- desktop Python entrypoint
+- backend modules
+- built frontend assets
+- launcher defaults
+- generated icon assets
+
+Targets:
+
+- Windows `.exe`
+- macOS `.app`
+- Linux portable bundle and optional AppImage
+
+## Why the architecture is split this way
+
+The project intentionally keeps orchestration logic in the backend and presentation logic in the frontend so the system can:
+
+- stay testable without the GUI
+- preserve desktop packaging flexibility
+- support multiple providers behind one task model
+- fall back gracefully when live manager execution is unavailable
