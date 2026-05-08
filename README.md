@@ -1,6 +1,6 @@
 # Codex Mission Control
 
-![Codex Mission Control icon](apps/desktop/assets/mission-control.svg)
+![Codex Mission Control icon](apps/desktop/assets/mission-control-logo.png)
 
 Codex Mission Control is now a desktop-first local orchestration app for running multiple local AI workers through one manager interface. The user only talks to the Manager AI. The app creates local project docs, runs a structured interview, drafts a plan, starts or pauses workers, tracks progress, and prepares final handoff notes.
 

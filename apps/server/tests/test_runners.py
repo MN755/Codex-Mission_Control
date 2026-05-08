@@ -199,7 +199,8 @@ def test_launcher_scripts_exist() -> None:
     assert (scripts / "package-desktop.py").exists()
     assert (root / "apps" / "desktop" / "src" / "mission_control_desktop" / "app.py").exists()
     assert (root / ".github" / "workflows" / "package-desktop.yml").exists()
-    assert (root / "apps" / "desktop" / "assets" / "mission-control.svg").exists()
+    assert (root / "apps" / "desktop" / "assets" / "mission-control-logo.png").exists()
+    assert (root / "apps" / "dashboard" / "public" / "mission-control-mark.png").exists()
     config_text = (scripts / "mission-control.config.json").read_text(encoding="utf-8")
     assert '"backendPort": 8000' in config_text
     assert '"frontendPort": 5173' in config_text

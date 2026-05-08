@@ -20,7 +20,7 @@ FRONTEND_DIST = FRONTEND_DIR / "dist"
 DESKTOP_SRC = REPO_ROOT / "apps" / "desktop" / "src"
 SERVER_SRC = REPO_ROOT / "apps" / "server" / "src"
 ICON_ROOT = REPO_ROOT / "apps" / "desktop" / "assets"
-ICON_PATH = ICON_ROOT / "mission-control.svg"
+SOURCE_LOGO_PATH = ICON_ROOT / "mission-control-logo.png"
 ICON_GENERATOR = ICON_ROOT / "generate_icon_assets.py"
 WINDOWS_ICON_PATH = ICON_ROOT / "mission-control.ico"
 MACOS_ICON_PATH = ICON_ROOT / "mission-control.icns"
@@ -202,8 +202,6 @@ def _create_linux_appdir(pyinstaller_bundle: Path, release_root: Path) -> Path:
     payload_root = appdir / "usr" / "lib" / APP_SLUG
     _copy_tree(pyinstaller_bundle, payload_root)
 
-    icon_root = appdir / "codex-mission-control.svg"
-    shutil.copy2(ICON_PATH, icon_root)
     shutil.copy2(LINUX_ICON_PNG, appdir / ".DirIcon")
     shutil.copy2(LINUX_ICON_PNG, appdir / "codex-mission-control.png")
     shutil.copy2(DESKTOP_ENTRY_PATH, appdir / "codex-mission-control.desktop")

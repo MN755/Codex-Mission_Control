@@ -70,7 +70,9 @@ def test_linux_pyinstaller_command_uses_posix_data_separator(monkeypatch) -> Non
 def test_icon_asset_paths_exist() -> None:
     module = _load_packaging_module()
     assert module.ICON_GENERATOR.exists()
-    assert module.ICON_PATH.exists()
+    assert module.SOURCE_LOGO_PATH.exists()
+    assert module.WINDOWS_ICON_PATH.exists()
+    assert module.LINUX_ICON_PNG.exists()
 
 
 def test_macos_iconset_root_uses_required_extension() -> None:
