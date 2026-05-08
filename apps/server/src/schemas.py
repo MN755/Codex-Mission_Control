@@ -17,6 +17,8 @@ WorkerDecisionType = Literal["assign_next_task", "request_fix", "mark_done", "ma
 ReasoningEffort = Literal["minimal", "low", "medium", "high"]
 SandboxMode = Literal["workspace-write", "read-only"]
 ApprovalPolicy = Literal["on-request", "untrusted", "never"]
+AuthJobMethod = Literal["chatgpt", "device_auth", "api_key", "logout"]
+AuthJobStatus = Literal["queued", "running", "succeeded", "failed"]
 
 
 class ProjectCreate(BaseModel):
@@ -316,11 +318,45 @@ class ProjectSettingsUpdate(BaseModel):
     approval_policy: ApprovalPolicy = "on-request"
 
 
+class AuthJobRead(BaseModel):
+    id: str
+    method: AuthJobMethod
+    status: AuthJobStatus
+    started_at: datetime
+    finished_at: datetime | None
+    exit_code: int | None
+    message: str
+    auth_mode_after: str | None = None
+    log_path: str | None = None
+    output_lines: list[str] = Field(default_factory=list)
+
+
+class ChatGptLoginRequest(BaseModel):
+    device_auth: bool = False
+
+
+class ApiKeyLoginRequest(BaseModel):
+    api_key: str = Field(min_length=1)
+
+
+class AuthStateRead(BaseModel):
+    authenticated: bool
+    auth_mode: str | None
+    login_status: str
+    cli_detected: bool
+    current_job: AuthJobRead | None = None
+    chatgpt_supported: bool = True
+    device_auth_supported: bool = True
+    api_key_supported: bool = True
+    notes: list[str] = Field(default_factory=list)
+
+
 class SystemStatusRead(BaseModel):
     cli_detected: bool
     cli_version: str | None
     login_status: str
     auth_mode: str | None
+    authenticated: bool = False
     app_server_supported: bool
     app_server_handshake_status: str
     app_server_transport: str
@@ -337,6 +373,7 @@ class SystemStatusRead(BaseModel):
     mcp_servers: list[dict[str, Any]]
     configured_plugins: list[str]
     local_skills: list[str]
+    current_auth_job: AuthJobRead | None = None
     notes: list[str]
 
 
@@ -345,6 +382,7 @@ class CodexStatusRead(BaseModel):
     cli_version: str | None
     login_status: str
     auth_mode: str | None
+    authenticated: bool = False
     app_server_supported: bool
     app_server_handshake_status: str
     app_server_transport: str
@@ -361,4 +399,5 @@ class CodexStatusRead(BaseModel):
     mcp_servers: list[dict[str, Any]]
     configured_plugins: list[str]
     local_skills: list[str]
+    current_auth_job: AuthJobRead | None = None
     notes: list[str]

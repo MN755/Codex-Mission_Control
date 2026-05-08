@@ -144,6 +144,12 @@ pre {
   color: var(--accent);
 }
 
+.brand__mark {
+  width: 1.7rem;
+  height: 1.7rem;
+  flex: 0 0 auto;
+}
+
 .app-shell__title h1 {
   margin: 0.45rem 0 0.15rem;
   font-size: clamp(1.9rem, 3vw, 2.8rem);
@@ -224,6 +230,7 @@ pre {
   text-transform: uppercase;
 }
 
+.startup-grid,
 .intake-grid,
 .plan-grid,
 .interview-grid,
@@ -231,6 +238,18 @@ pre {
   display: grid;
   gap: 1.4rem;
   grid-template-columns: repeat(12, minmax(0, 1fr));
+}
+
+.startup-grid > :nth-child(1) {
+  grid-column: span 8;
+}
+
+.startup-grid > :nth-child(2) {
+  grid-column: span 4;
+}
+
+.startup-grid > :nth-child(3) {
+  grid-column: span 12;
 }
 
 .intake-grid > :nth-child(1),
@@ -361,6 +380,58 @@ pre {
   background: var(--accent);
   box-shadow: 0 0 0 0 rgba(79, 215, 227, 0.5);
   animation: pulse 1.5s infinite;
+}
+
+.launchpad-hero {
+  display: grid;
+  gap: 1.25rem;
+  grid-template-columns: 180px minmax(0, 1fr);
+  align-items: center;
+  padding: 1.2rem;
+  border-radius: 24px;
+  background: linear-gradient(135deg, rgba(18, 37, 58, 0.96) 0%, rgba(11, 21, 33, 0.92) 100%);
+  border: 1px solid rgba(79, 215, 227, 0.18);
+}
+
+.launchpad-hero__mark {
+  width: 100%;
+  max-width: 160px;
+  justify-self: center;
+}
+
+.launchpad-hero__copy {
+  display: grid;
+  gap: 0.8rem;
+}
+
+.launchpad-hero__copy h2,
+.launchpad-auth-card h3,
+.status-list h3,
+.auth-job-panel strong {
+  margin: 0;
+}
+
+.launchpad-hero__copy p,
+.launchpad-auth-card p,
+.auth-job-panel p {
+  margin: 0;
+  color: var(--text-muted);
+}
+
+.launchpad-auth-grid {
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.launchpad-auth-card,
+.auth-job-panel {
+  display: grid;
+  gap: 0.85rem;
+  padding: 1rem;
+  border-radius: 22px;
+  border: 1px solid var(--border);
+  background: rgba(13, 22, 35, 0.92);
 }
 
 .monitor-grid {
@@ -641,6 +712,7 @@ pre {
 }
 
 @media (max-width: 980px) {
+  .startup-grid,
   .intake-grid,
   .interview-grid,
   .plan-grid,
@@ -648,6 +720,7 @@ pre {
     grid-template-columns: 1fr;
   }
 
+  .startup-grid > *,
   .intake-grid > *,
   .interview-grid > *,
   .plan-grid > *,
@@ -676,5 +749,10 @@ pre {
 
   .task-board {
     grid-template-columns: repeat(6, minmax(240px, 1fr));
+  }
+
+  .launchpad-hero,
+  .launchpad-auth-grid {
+    grid-template-columns: 1fr;
   }
 }

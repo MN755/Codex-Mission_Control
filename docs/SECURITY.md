@@ -8,7 +8,8 @@ Codex Mission Control is local-only by default.
 - Frontend talks only to the local backend.
 - The desktop shell embeds that same local surface instead of exposing it publicly.
 - Packaged desktop builds keep the same localhost-only backend behavior inside the native shell.
-- No OpenAI API keys are requested or stored.
+- ChatGPT sign-in is the recommended default path.
+- API-key login is optional. Mission Control does not store the raw key in its own database or settings.
 - The launcher defaults to `127.0.0.1:8000` for the backend and `127.0.0.1:5173` for the frontend.
 - Runner defaults avoid dangerous sandbox bypass flags.
 - CLI tasks default to `workspace-write` sandboxing and `on-request` approvals.
@@ -35,5 +36,6 @@ Codex Mission Control is local-only by default.
 - Validation results should only reflect commands that actually ran.
 - App-server integration should still be treated as experimental even when the handshake succeeds.
 - Model availability still depends on the local Codex session and plan; a configured override may fail if the local account cannot use that model.
+- API-key login can shift usage onto API-billed credentials. Use ChatGPT sign-in if you want to stay on the local Codex or ChatGPT session path instead.
 - Packaged artifacts are unsigned unless you add platform-specific signing and notarization later.
 - Linux AppImage generation depends on `appimagetool`; otherwise the build falls back to a portable bundle archive.

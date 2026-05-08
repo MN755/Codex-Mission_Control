@@ -19,7 +19,12 @@ FRONTEND_DIR = REPO_ROOT / "apps" / "dashboard"
 FRONTEND_DIST = FRONTEND_DIR / "dist"
 DESKTOP_SRC = REPO_ROOT / "apps" / "desktop" / "src"
 SERVER_SRC = REPO_ROOT / "apps" / "server" / "src"
-ICON_PATH = REPO_ROOT / "apps" / "desktop" / "assets" / "mission-control.svg"
+ICON_ROOT = REPO_ROOT / "apps" / "desktop" / "assets"
+ICON_PATH = ICON_ROOT / "mission-control.svg"
+ICON_GENERATOR = ICON_ROOT / "generate_icon_assets.py"
+WINDOWS_ICON_PATH = ICON_ROOT / "mission-control.ico"
+MACOS_ICON_PATH = ICON_ROOT / "mission-control.icns"
+LINUX_ICON_PNG = ICON_ROOT / "mission-control-icon-512.png"
 DESKTOP_ENTRY_PATH = REPO_ROOT / "apps" / "desktop" / "packaging" / "linux" / "codex-mission-control.desktop"
 OUTPUT_ROOT = REPO_ROOT / ".runtime" / "packages"
 
@@ -47,6 +52,35 @@ def ensure_frontend_bundle(force: bool) -> None:
     if npm is None:
         raise RuntimeError("npm was not found on PATH. Install Node.js and npm before packaging.")
     subprocess.run([npm, "run", "build"], cwd=FRONTEND_DIR, check=True)
+
+
+def ensure_icon_assets(platform_name: str) -> None:
+    subprocess.run([sys.executable, str(ICON_GENERATOR)], cwd=REPO_ROOT, check=True)
+    if platform_name != "macos":
+        return
+    iconutil = shutil.which("iconutil")
+    if iconutil is None:
+        return
+    iconset_root = OUTPUT_ROOT / "macos" / "iconset"
+    if iconset_root.exists():
+        shutil.rmtree(iconset_root)
+    iconset_root.mkdir(parents=True, exist_ok=True)
+
+    iconset_map = {
+        "icon_16x16.png": ICON_ROOT / "mission-control-icon-16.png",
+        "icon_16x16@2x.png": ICON_ROOT / "mission-control-icon-32.png",
+        "icon_32x32.png": ICON_ROOT / "mission-control-icon-32.png",
+        "icon_32x32@2x.png": ICON_ROOT / "mission-control-icon-64.png",
+        "icon_128x128.png": ICON_ROOT / "mission-control-icon-128.png",
+        "icon_128x128@2x.png": ICON_ROOT / "mission-control-icon-256.png",
+        "icon_256x256.png": ICON_ROOT / "mission-control-icon-256.png",
+        "icon_256x256@2x.png": ICON_ROOT / "mission-control-icon-512.png",
+        "icon_512x512.png": ICON_ROOT / "mission-control-icon-512.png",
+        "icon_512x512@2x.png": ICON_ROOT / "mission-control-icon-1024.png",
+    }
+    for target_name, source_path in iconset_map.items():
+        shutil.copy2(source_path, iconset_root / target_name)
+    subprocess.run([iconutil, "-c", "icns", str(iconset_root), "-o", str(MACOS_ICON_PATH)], check=True)
 
 
 def _package_is_importable(name: str) -> bool:
@@ -90,9 +124,11 @@ def build_pyinstaller_command(platform_name: str, dist_root: Path, work_root: Pa
             command.extend(["--collect-submodules", optional_package])
 
     if platform_name == "windows":
-        command.extend(["--onefile", "--noconsole"])
+        command.extend(["--onefile", "--noconsole", "--icon", str(WINDOWS_ICON_PATH)])
     elif platform_name == "macos":
         command.extend(["--windowed", "--onedir", "--osx-bundle-identifier", MACOS_BUNDLE_ID])
+        if MACOS_ICON_PATH.exists():
+            command.extend(["--icon", str(MACOS_ICON_PATH)])
     else:
         command.extend(["--windowed", "--onedir"])
     return command
@@ -158,7 +194,8 @@ def _create_linux_appdir(pyinstaller_bundle: Path, release_root: Path) -> Path:
 
     icon_root = appdir / "codex-mission-control.svg"
     shutil.copy2(ICON_PATH, icon_root)
-    shutil.copy2(ICON_PATH, appdir / ".DirIcon")
+    shutil.copy2(LINUX_ICON_PNG, appdir / ".DirIcon")
+    shutil.copy2(LINUX_ICON_PNG, appdir / "codex-mission-control.png")
     shutil.copy2(DESKTOP_ENTRY_PATH, appdir / "codex-mission-control.desktop")
 
     apprun = appdir / "AppRun"
@@ -197,6 +234,7 @@ def package_linux(pyinstaller_bundle: Path, release_root: Path) -> list[Path]:
 def build_release(force_frontend: bool = False) -> list[Path]:
     platform_name = current_platform()
     ensure_frontend_bundle(force_frontend)
+    ensure_icon_assets(platform_name)
     output_root = OUTPUT_ROOT / platform_name
     release_root = output_root / "release"
     built_target = build_with_pyinstaller(platform_name, output_root)

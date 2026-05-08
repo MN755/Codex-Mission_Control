@@ -17,6 +17,26 @@ def _run_command(args: list[str]) -> tuple[bool, str]:
     return completed.returncode == 0, output
 
 
+def auth_mode_from_login_output(login_output: str) -> str | None:
+    lowered = login_output.lower()
+    if "chatgpt" in lowered:
+        return "chatgpt"
+    if "api key" in lowered or "api-key" in lowered:
+        return "api_key"
+    if "logged in" in lowered:
+        return "other"
+    return None
+
+
+def is_authenticated(login_ok: bool, login_output: str) -> bool:
+    lowered = login_output.lower()
+    if "not logged in" in lowered or "log in to codex" in lowered:
+        return False
+    if auth_mode_from_login_output(login_output):
+        return True
+    return login_ok and "logged in" in lowered
+
+
 def detect_codex_status() -> dict:
     codex_home = get_codex_home()
     config_path = codex_home / "config.toml"
@@ -51,19 +71,18 @@ def detect_codex_status() -> dict:
         except json.JSONDecodeError:
             notes.append("Could not parse MCP server list as JSON.")
 
-    auth_mode = None
-    if "Logged in using ChatGPT" in login_output:
-        auth_mode = "chatgpt"
-    elif "Logged in" in login_output:
-        auth_mode = "other"
+    auth_mode = auth_mode_from_login_output(login_output)
+    authenticated = is_authenticated(login_ok, login_output)
 
     notes.append("Model availability depends on the local Codex plan and current sign-in session.")
+    notes.append("ChatGPT sign-in is recommended. API keys are optional and can use API billing.")
 
     return {
         "cli_detected": cli_ok,
         "cli_version": cli_output if cli_ok else None,
         "login_status": login_output or "Unavailable",
         "auth_mode": auth_mode,
+        "authenticated": authenticated,
         "app_server_supported": "Run the app server" in app_help or "[experimental]" in app_help,
         "app_server_handshake_status": "not_checked",
         "app_server_transport": "stdio_jsonrpc",
@@ -80,5 +99,6 @@ def detect_codex_status() -> dict:
         "mcp_servers": mcp_servers,
         "configured_plugins": configured_plugins,
         "local_skills": sorted(local_skills),
+        "current_auth_job": None,
         "notes": notes,
     }

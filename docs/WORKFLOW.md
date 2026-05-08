@@ -5,6 +5,8 @@
 - Start everything with `.\scripts\start-mission-control.ps1` from the repo root.
 - Or double-click `scripts/start-mission-control.bat` on Windows.
 - On macOS and Linux, use `./scripts/start-mission-control.sh`.
+- The packaged desktop app opens to a launchpad first, not directly to project intake.
+- The launchpad lets the user sign in with ChatGPT, use device-code auth, or optionally provide an API key.
 - Use `.\scripts\create-desktop-shortcut.ps1` once if you want a desktop shortcut.
 - The launcher now prefers the standalone desktop shell first.
 - A browser-backed web mode still exists as an explicit fallback.
@@ -13,6 +15,7 @@
 
 ## 1. Intake
 
+- After authentication, the user continues into Mission Control proper.
 - User enters a project name, idea, workspace path, runner mode, and manager mode.
 - Backend creates the project and reserved manager agent.
 - Backend writes local docs to `<workspace>/mission-control/`.

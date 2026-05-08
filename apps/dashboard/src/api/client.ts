@@ -2,6 +2,8 @@ import type {
   Agent,
   AgentActionResponse,
   ApprovalPolicy,
+  AuthJob,
+  AuthState,
   CodexStatus,
   InterviewSession,
   LogRead,
@@ -42,6 +44,14 @@ export const api = {
   apiBaseUrl: API_BASE_URL,
   getSystemStatus: (projectId?: number) =>
     request<CodexStatus>(`/api/system/status${projectId ? `?project_id=${projectId}` : ""}`),
+  getAuthState: () => request<AuthState>("/api/system/auth-state"),
+  loginWithChatGpt: (deviceAuth = false) =>
+    request<AuthJob>("/api/system/auth/login/chatgpt", { method: "POST", body: JSON.stringify({ device_auth: deviceAuth }) }),
+  loginWithDeviceCode: () => request<AuthJob>("/api/system/auth/login/device", { method: "POST" }),
+  loginWithApiKey: (apiKey: string) =>
+    request<AuthJob>("/api/system/auth/login/api-key", { method: "POST", body: JSON.stringify({ api_key: apiKey }) }),
+  logoutCodex: () => request<AuthJob>("/api/system/auth/logout", { method: "POST" }),
+  getAuthJob: (jobId: string) => request<AuthJob>(`/api/system/auth-jobs/${jobId}`),
   getCodexStatus: (projectId?: number) =>
     request<CodexStatus>(`/api/system/codex-status${projectId ? `?project_id=${projectId}` : ""}`),
   getSettings: (projectId: number) => request<ProjectSettings>(`/api/settings?project_id=${projectId}`),

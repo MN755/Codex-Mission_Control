@@ -6,12 +6,13 @@ Codex Mission Control is a local-only orchestration app with a desktop-first she
 
 - `apps/dashboard`
   - React + TypeScript + Vite
-  - Five core screens: Intake, Interview, Plan Review, Build Monitor, Handoff
+  - Six core screens: Launchpad, Intake, Interview, Plan Review, Build Monitor, Handoff
   - Uses REST for commands and SSE for live updates
 - `apps/desktop`
   - Cross-platform Python desktop shell
   - Starts the FastAPI app locally and opens the built dashboard inside a native webview
   - Is packaging-aware for frozen Windows, macOS, and Linux builds
+  - Owns the shared thought-cloud `>_` app icon assets used by the desktop shell and repo branding
 - `apps/server`
   - FastAPI app
   - SQLite persistence via SQLAlchemy
@@ -42,12 +43,13 @@ Codex Mission Control is a local-only orchestration app with a desktop-first she
 ## Execution Model
 
 1. User creates a project and picks a workspace path.
-2. Backend writes local project docs to `<workspace>/mission-control/`.
-3. Interview answers refine the plan.
-4. Plan approval creates worker agents and milestone-based tasks.
-5. A runner starts worker turns, reservations are acquired, and the backend persists events and completion reports.
-6. The manager ingests worker reports, decides the next action, and either assigns follow-up work, requests a fix, waits, or escalates.
-7. The frontend listens on SSE and refreshes project state as events arrive.
+2. User authenticates with local Codex via ChatGPT sign-in, device-code flow, or an optional API-key login.
+3. Backend writes local project docs to `<workspace>/mission-control/`.
+4. Interview answers refine the plan.
+5. Plan approval creates worker agents and milestone-based tasks.
+6. A runner starts worker turns, reservations are acquired, and the backend persists events and completion reports.
+7. The manager ingests worker reports, decides the next action, and either assigns follow-up work, requests a fix, waits, or escalates.
+8. The frontend listens on SSE and refreshes project state as events arrive.
 
 ## Isolation
 

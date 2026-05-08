@@ -1,5 +1,5 @@
 import { startTransition, useEffect, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 
 import { api } from "../api/client";
 import { AppShell } from "../components/AppShell";
@@ -11,6 +11,8 @@ const DEMO_WORKSPACE = "C:\\Users\\mike\\OneDrive\\Desktop\\Codex Mission Contro
 
 export function ProjectIntakePage() {
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+  const demoMode = searchParams.get("mode") === "demo";
   const [projects, setProjects] = useState<Project[]>([]);
   const [codexStatus, setCodexStatus] = useState<CodexStatus | null>(null);
   const [loading, setLoading] = useState(true);
@@ -20,9 +22,21 @@ export function ProjectIntakePage() {
     name: "",
     idea: "",
     workspace_path: DEMO_WORKSPACE,
-    runner_mode: "auto" as RunnerMode,
-    manager_mode: "auto" as ManagerMode,
+    runner_mode: (demoMode ? "dry_run" : "auto") as RunnerMode,
+    manager_mode: (demoMode ? "deterministic" : "auto") as ManagerMode,
   });
+
+  useEffect(() => {
+    if (!demoMode) {
+      return;
+    }
+    setForm((current) => ({
+      ...current,
+      runner_mode: "dry_run",
+      manager_mode: "deterministic",
+      workspace_path: current.workspace_path || DEMO_WORKSPACE,
+    }));
+  }, [demoMode]);
 
   useEffect(() => {
     async function load() {
@@ -59,7 +73,7 @@ export function ProjectIntakePage() {
   return (
     <AppShell
       title="Project Intake"
-      subtitle="Turn a raw idea into local project docs, an interview flow, and a buildable plan."
+      subtitle={demoMode ? "Dry-run demo mode is active. The form defaults to a safe local simulation flow." : "Turn a raw idea into local project docs, an interview flow, and a buildable plan."}
     >
       <div className="intake-grid">
         <SectionCard title="Create project docs" subtitle="The manager will create local planning docs before any coding starts.">
@@ -127,7 +141,7 @@ export function ProjectIntakePage() {
           </form>
         </SectionCard>
 
-        <SectionCard title="Local Codex status" subtitle="The app uses your existing local Codex/ChatGPT setup whenever possible.">
+        <SectionCard title="Local Codex status" subtitle="Mission Control prefers your existing local Codex or ChatGPT sign-in and only uses API-key auth if you explicitly chose it on the launchpad.">
           {loading ? (
             <LoadingBlock label="Checking local Codex environment..." />
           ) : codexStatus ? (
@@ -138,7 +152,7 @@ export function ProjectIntakePage() {
               </div>
               <div className="metric-card">
                 <span>Auth</span>
-                <strong>{codexStatus.auth_mode ?? "Unknown"}</strong>
+                <strong>{codexStatus.authenticated ? codexStatus.auth_mode ?? "Connected" : "Not signed in"}</strong>
               </div>
               <div className="metric-card">
                 <span>App server handshake</span>
@@ -164,6 +178,7 @@ export function ProjectIntakePage() {
                   <li>Frontend port: {codexStatus.frontend_port ?? "Unknown"}</li>
                   <li>Dry-run available: {codexStatus.dry_run_available ? "yes" : "no"}</li>
                   <li>Active runs: {codexStatus.active_runs.length}</li>
+                  <li>{codexStatus.authenticated ? "Launchpad auth is ready." : "Go back to the launchpad if you want to connect live Codex workers first."}</li>
                 </ul>
               </div>
             </div>

@@ -33,6 +33,8 @@ def test_windows_pyinstaller_command_includes_onefile_and_model_assets(monkeypat
     )
     assert "--onefile" in command
     assert "--noconsole" in command
+    assert "--icon" in command
+    assert any(str(module.WINDOWS_ICON_PATH) == part for part in command)
     assert any("frontend_dist" in part and ";" in part for part in command)
     assert any("mission-control.config.json" in part and ";" in part for part in command)
 
@@ -63,3 +65,9 @@ def test_linux_pyinstaller_command_uses_posix_data_separator(monkeypatch) -> Non
     assert "--windowed" in command
     assert "--onedir" in command
     assert any("frontend_dist" in part and ":" in part for part in command)
+
+
+def test_icon_asset_paths_exist() -> None:
+    module = _load_packaging_module()
+    assert module.ICON_GENERATOR.exists()
+    assert module.ICON_PATH.exists()

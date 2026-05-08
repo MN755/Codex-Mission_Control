@@ -10,6 +10,7 @@ from pydantic import BaseModel, ValidationError
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from codex_auth import auth_service
 from codex_runner.app_server_runner import AppServerCodexRunner
 from codex_runner.base import BaseCodexRunner, RunnerContext, RunnerSettings
 from codex_runner.cli_runner import CliCodexRunner
@@ -474,6 +475,7 @@ class MissionControlService:
         from system_status import detect_codex_status
 
         status = detect_codex_status()
+        status["current_auth_job"] = auth_service.job_payload(auth_service.current_job())
         status["app_server_handshake_status"] = "available" if await self.runners.app_server_available() else "unavailable"
         active_runs = list(
             db.scalars(
@@ -506,6 +508,25 @@ class MissionControlService:
         else:
             status["effective_runner_mode"] = await self.runners.effective_auto_mode()
         return status
+
+    def auth_state(self) -> dict[str, Any]:
+        from system_status import detect_codex_status
+
+        status = detect_codex_status()
+        return {
+            "authenticated": status["authenticated"],
+            "auth_mode": status["auth_mode"],
+            "login_status": status["login_status"],
+            "cli_detected": status["cli_detected"],
+            "current_job": auth_service.job_payload(auth_service.current_job()),
+            "chatgpt_supported": status["cli_detected"],
+            "device_auth_supported": status["cli_detected"],
+            "api_key_supported": status["cli_detected"],
+            "notes": [
+                "ChatGPT sign-in is the recommended path and keeps usage tied to your local Codex session.",
+                "API key login is optional and can use API billing depending on your account.",
+            ],
+        }
 
     def create_project(self, db: Session, *, name: str, idea: str, workspace_path: str, runner_mode: str, manager_mode: str) -> Project:
         project = Project(

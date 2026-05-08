@@ -10,6 +10,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from codex_auth import auth_service
 from config import frontend_dist_root
 from db import get_db, init_db
 from manager import service
@@ -17,6 +18,10 @@ from models import Agent, AgentRun, InterviewSession, PathReservation, Plan, Pro
 from schemas import (
     AgentActionResponse,
     AgentRead,
+    ApiKeyLoginRequest,
+    AuthJobRead,
+    AuthStateRead,
+    ChatGptLoginRequest,
     CodexStatusRead,
     DocGenerationResponse,
     EventRead,
@@ -141,10 +146,48 @@ async def system_status(project_id: int | None = Query(default=None), db: Sessio
     return SystemStatusRead(**(await service.get_system_status(db, project)))
 
 
+@app.get("/api/system/auth-state", response_model=AuthStateRead)
+async def auth_state() -> AuthStateRead:
+    status = service.auth_state()
+    return AuthStateRead(**status)
+
+
 @app.get("/api/system/codex-status", response_model=CodexStatusRead)
 async def codex_status(project_id: int | None = Query(default=None), db: Session = Depends(get_db)) -> CodexStatusRead:
     project = _get_project_or_404(db, project_id) if project_id is not None else None
     return CodexStatusRead(**(await service.get_system_status(db, project)))
+
+
+@app.post("/api/system/auth/login/chatgpt", response_model=AuthJobRead)
+async def login_with_chatgpt(payload: ChatGptLoginRequest) -> AuthJobRead:
+    job = await auth_service.start_chatgpt_login(device_auth=payload.device_auth)
+    return AuthJobRead(**auth_service.job_payload(job))
+
+
+@app.post("/api/system/auth/login/device", response_model=AuthJobRead)
+async def login_with_device_code() -> AuthJobRead:
+    job = await auth_service.start_chatgpt_login(device_auth=True)
+    return AuthJobRead(**auth_service.job_payload(job))
+
+
+@app.post("/api/system/auth/login/api-key", response_model=AuthJobRead)
+async def login_with_api_key(payload: ApiKeyLoginRequest) -> AuthJobRead:
+    job = await auth_service.start_api_key_login(payload.api_key)
+    return AuthJobRead(**auth_service.job_payload(job))
+
+
+@app.post("/api/system/auth/logout", response_model=AuthJobRead)
+async def logout_codex() -> AuthJobRead:
+    job = await auth_service.start_logout()
+    return AuthJobRead(**auth_service.job_payload(job))
+
+
+@app.get("/api/system/auth-jobs/{job_id}", response_model=AuthJobRead)
+async def get_auth_job(job_id: str) -> AuthJobRead:
+    job = auth_service.get_job(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Auth job not found")
+    return AuthJobRead(**auth_service.job_payload(job))
 
 
 @app.get("/api/settings", response_model=ProjectSettingsRead)

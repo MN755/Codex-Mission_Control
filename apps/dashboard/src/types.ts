@@ -3,6 +3,8 @@ export type ManagerMode = "auto" | "codex" | "deterministic";
 export type ReasoningEffort = "minimal" | "low" | "medium" | "high";
 export type SandboxMode = "workspace-write" | "read-only";
 export type ApprovalPolicy = "on-request" | "untrusted" | "never";
+export type AuthJobMethod = "chatgpt" | "device_auth" | "api_key" | "logout";
+export type AuthJobStatus = "queued" | "running" | "succeeded" | "failed";
 export type AgentStatus =
   | "idle"
   | "starting"
@@ -131,6 +133,7 @@ export interface CodexStatus {
   cli_version: string | null;
   login_status: string;
   auth_mode: string | null;
+  authenticated: boolean;
   app_server_supported: boolean;
   app_server_handshake_status: string;
   app_server_transport: string;
@@ -147,6 +150,32 @@ export interface CodexStatus {
   mcp_servers: Array<Record<string, unknown>>;
   configured_plugins: string[];
   local_skills: string[];
+  current_auth_job: AuthJob | null;
+  notes: string[];
+}
+
+export interface AuthJob {
+  id: string;
+  method: AuthJobMethod;
+  status: AuthJobStatus;
+  started_at: string;
+  finished_at: string | null;
+  exit_code: number | null;
+  message: string;
+  auth_mode_after: string | null;
+  log_path: string | null;
+  output_lines: string[];
+}
+
+export interface AuthState {
+  authenticated: boolean;
+  auth_mode: string | null;
+  login_status: string;
+  cli_detected: boolean;
+  current_job: AuthJob | null;
+  chatgpt_supported: boolean;
+  device_auth_supported: boolean;
+  api_key_supported: boolean;
   notes: string[];
 }
 

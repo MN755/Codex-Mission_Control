@@ -119,6 +119,7 @@ def main() -> None:
         width=1480,
         height=940,
         min_size=(1080, 720),
+        background_color="#08111d",
     )
     window.events.closed += _shutdown
 

@@ -271,7 +271,7 @@ export function SettingsPage() {
             </div>
           </SectionCard>
 
-          <SectionCard title="Local Codex status" subtitle="These controls use your existing Codex or ChatGPT sign-in session, not API keys.">
+          <SectionCard title="Local Codex status" subtitle="These controls prefer your existing Codex or ChatGPT sign-in. API-key auth is optional and only used if you chose it from the desktop launchpad.">
             {status ? (
               <div className="status-grid">
                 <div className="metric-card">
@@ -280,7 +280,7 @@ export function SettingsPage() {
                 </div>
                 <div className="metric-card">
                   <span>Auth</span>
-                  <strong>{status.auth_mode ?? "Unknown"}</strong>
+                  <strong>{status.authenticated ? status.auth_mode ?? "Connected" : "Not signed in"}</strong>
                 </div>
                 <div className="metric-card">
                   <span>Backend port</span>

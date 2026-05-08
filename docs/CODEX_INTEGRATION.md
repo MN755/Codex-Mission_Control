@@ -11,9 +11,14 @@ This MVP is designed to preserve the user's local Codex environment instead of r
 
 ## Authentication
 
+- The desktop app launches into a local authentication choice screen.
+- The recommended path is `Sign in with ChatGPT`, which runs the local `codex login` flow.
+- A `Use device code` fallback is available when browser-based login is inconvenient.
+- An optional API-key path runs `codex login --with-api-key`.
+- Mission Control does not persist the raw API key in its own database or settings.
 - The backend checks `codex login status`.
-- The intended path is `Logged in using ChatGPT`.
-- The app never asks for OpenAI API keys and does not store them.
+- The intended path is still `Logged in using ChatGPT`.
+- API-key login is supported now, but it is explicitly optional.
 - The app does not edit `~/.codex/config.toml` unless you do that separately outside Mission Control.
 
 ## Runner Modes
@@ -72,6 +77,8 @@ The system status endpoint reports:
 
 - Codex CLI version
 - Login status and auth mode
+- Whether the current local Codex session is authenticated
+- The latest local auth job state from the desktop launchpad
 - App-server support
 - Launcher-aware backend and frontend ports
 - Current per-project settings summary when a project id is provided

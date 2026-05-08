@@ -1,5 +1,7 @@
 # Codex Mission Control
 
+![Codex Mission Control icon](apps/desktop/assets/mission-control.svg)
+
 Codex Mission Control is now a desktop-first local orchestration app for running multiple Codex-style workers through one manager interface. The user only talks to the Manager AI. The app creates local project docs, runs a structured interview, drafts a plan, starts or pauses workers, tracks progress, and prepares final handoff notes.
 
 ## What It Does
@@ -12,6 +14,7 @@ Codex Mission Control is now a desktop-first local orchestration app for running
 - Streams project events into a live build monitor
 - Stores orchestration state locally in SQLite
 - Uses the user's existing Codex/ChatGPT sign-in session when the local Codex CLI is available
+- Starts with a desktop launchpad that offers ChatGPT sign-in, device-code sign-in, or an optional API-key login
 
 ## Stack
 
@@ -54,6 +57,15 @@ cd "C:\Users\mike\OneDrive\Desktop\Codex Mission Control"
 - Reuses the existing built frontend bundle when present
 - Writes launcher metadata under `.runtime/launcher/`
 - Uses a local embedded webview when available and keeps all app traffic local
+
+### Launch the packaged desktop app on Windows
+
+- Double-click `.runtime/packages/windows/dist/windows/CodexMissionControl.exe`
+- Or run:
+
+```powershell
+& "C:\Users\mike\OneDrive\Desktop\Codex Mission Control\.runtime\packages\windows\dist\windows\CodexMissionControl.exe"
+```
 
 ### Double-click on Windows
 
@@ -151,13 +163,19 @@ Open [http://127.0.0.1:5173](http://127.0.0.1:5173).
 
 ## ChatGPT / Codex Sign-In
 
+- The desktop app now opens on a launchpad that lets you choose:
+  - `Sign in with ChatGPT`
+  - `Use device code`
+  - `Use API key`
+- ChatGPT sign-in is the recommended path.
+- API-key login is optional and can use API billing depending on your account.
+- Mission Control does not store the raw API key; it passes it once to the local `codex login --with-api-key` flow.
 - This app is designed to reuse your existing local Codex login.
 - Run `codex login status` to confirm you are signed in.
-- The MVP does not request or store OpenAI API keys.
 - To keep usage tied to ChatGPT/Codex sign-in rather than API credits, use `cli` or `auto` runner modes and stay signed into the local Codex CLI.
 - The app does not modify `~/.codex/config.toml` by default.
 - Manager `auto` mode tries the local Codex runner path first and falls back to deterministic orchestration if structured output is unavailable.
-- The desktop shell still uses the same local Codex CLI or app-server authentication model as the web version. It does not switch to API keys.
+- The desktop shell still uses the same local Codex CLI or app-server authentication model as the web version.
 
 ## Model Settings
 
@@ -222,6 +240,7 @@ Open [http://127.0.0.1:5173](http://127.0.0.1:5173).
 
 - The desktop shell is implemented as a local native window over the same FastAPI + React stack, so the UI is no longer browser-dependent in normal use, but it still relies on a working local webview backend.
 - Packaged Windows `.exe`, macOS `.app`, and Linux AppImage-style artifacts are unsigned by default. They are suitable for local distribution and testing, not notarized storefront delivery.
+- Browser-based ChatGPT sign-in behavior still depends on the local Codex CLI and host browser integration. Device-code sign-in is included as a fallback.
 - The app-server integration is intentionally narrow and environment-dependent.
 - Manager task generation is milestone-based, but still intentionally lightweight rather than deeply project-specific.
 - Source checkout runs store runtime state under `apps/server/.runtime/`. Packaged runs use the user's app-data directory.

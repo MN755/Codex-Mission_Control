@@ -1,6 +1,8 @@
 import type { ReactNode } from "react";
 import { Link, NavLink } from "react-router-dom";
 
+import { MissionControlMark } from "./MissionControlMark";
+
 export function AppShell({
   projectId,
   title,
@@ -19,6 +21,7 @@ export function AppShell({
       <header className="app-shell__header">
         <div>
           <Link className="brand" to="/">
+            <MissionControlMark className="brand__mark" />
             Codex Mission Control
           </Link>
           <div className="app-shell__title">

@@ -42,6 +42,13 @@ def test_dry_run_project_flow(client) -> None:
     assert "active_runs" in status
     assert status["selected_manager_model"] == "gpt-5.5"
     assert status["selected_default_worker_model"] == "gpt-5.4-mini"
+    assert "authenticated" in status
+    assert "current_auth_job" in status
+
+    auth_state = client.get("/api/system/auth-state").json()
+    assert "authenticated" in auth_state
+    assert "cli_detected" in auth_state
+    assert "notes" in auth_state
 
     docs_response = client.post(f"/api/projects/{project_id}/docs/generate")
     assert docs_response.status_code == 200
