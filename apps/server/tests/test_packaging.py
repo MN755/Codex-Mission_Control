@@ -71,3 +71,15 @@ def test_icon_asset_paths_exist() -> None:
     module = _load_packaging_module()
     assert module.ICON_GENERATOR.exists()
     assert module.ICON_PATH.exists()
+
+
+def test_macos_iconset_root_uses_required_extension() -> None:
+    module = _load_packaging_module()
+    assert module.macos_iconset_root().name.endswith(".iconset")
+
+
+def test_appimagetool_env_enables_extract_and_run(monkeypatch) -> None:
+    module = _load_packaging_module()
+    monkeypatch.delenv("APPIMAGE_EXTRACT_AND_RUN", raising=False)
+    env = module.appimagetool_env()
+    assert env["APPIMAGE_EXTRACT_AND_RUN"] == "1"

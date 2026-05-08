@@ -45,6 +45,16 @@ def add_data_arg(source: Path, destination: str, platform_name: str) -> str:
     return f"{source}{data_separator(platform_name)}{destination}"
 
 
+def macos_iconset_root() -> Path:
+    return OUTPUT_ROOT / "macos" / "mission-control.iconset"
+
+
+def appimagetool_env() -> dict[str, str]:
+    env = os.environ.copy()
+    env.setdefault("APPIMAGE_EXTRACT_AND_RUN", "1")
+    return env
+
+
 def ensure_frontend_bundle(force: bool) -> None:
     if FRONTEND_DIST.exists() and not force:
         return
@@ -61,7 +71,7 @@ def ensure_icon_assets(platform_name: str) -> None:
     iconutil = shutil.which("iconutil")
     if iconutil is None:
         return
-    iconset_root = OUTPUT_ROOT / "macos" / "iconset"
+    iconset_root = macos_iconset_root()
     if iconset_root.exists():
         shutil.rmtree(iconset_root)
     iconset_root.mkdir(parents=True, exist_ok=True)
@@ -226,7 +236,11 @@ def package_linux(pyinstaller_bundle: Path, release_root: Path) -> list[Path]:
     appimagetool = os.environ.get("APPIMAGETOOL") or shutil.which("appimagetool")
     if appimagetool:
         appimage_path = release_root / f"{APP_SLUG}.AppImage"
-        subprocess.run([appimagetool, str(appdir), str(appimage_path)], check=True)
+        subprocess.run(
+            [appimagetool, str(appdir), str(appimage_path)],
+            check=True,
+            env=appimagetool_env(),
+        )
         artifacts.append(appimage_path)
     return artifacts
 
