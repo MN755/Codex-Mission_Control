@@ -13,8 +13,10 @@ from sqlalchemy.orm import Session
 from codex_auth import auth_service
 from codex_runner.app_server_runner import AppServerCodexRunner
 from codex_runner.base import BaseCodexRunner, RunnerContext, RunnerSettings
+from codex_runner.claude_code_runner import ClaudeCodeRunner
 from codex_runner.cli_runner import CliCodexRunner
 from codex_runner.dry_run_runner import DryRunRunner
+from codex_runner.external_adapter_runner import ExternalAdapterRunner
 from config import (
     DEFAULT_MANAGER_MODE,
     DEFAULT_RUNNER_MODE,
@@ -42,6 +44,7 @@ from prompts import (
     manager_action_prompt,
     manager_message_prompt,
 )
+from provider_support import default_label, normalize_provider, provider_label
 from schemas import ManagerDocFile, ManagerDocUpdate, ManagerHandoff, ManagerPlan, ManagerTaskDecomposition, ManagerTaskItem, ManagerWorkerDecision, ProjectSettingsUpdate, WorkerReport
 from task_board import build_initial_tasks, can_assign_task, conflicting_agents
 
@@ -81,35 +84,92 @@ class RunnerRegistry:
     def __init__(self) -> None:
         self.runners: dict[str, BaseCodexRunner] = {
             "dry_run": DryRunRunner(),
-            "cli": CliCodexRunner(),
-            "app_server": AppServerCodexRunner(),
+            "codex_cli": CliCodexRunner(),
+            "codex_app_server": AppServerCodexRunner(),
+            "claude_code_cli": ClaudeCodeRunner(),
+            "external_adapter": ExternalAdapterRunner(),
         }
         self._auto_app_server_enabled: bool | None = None
-        self._cli_enabled: bool | None = None
+        self._codex_cli_enabled: bool | None = None
+        self._claude_cli_enabled: bool | None = None
 
-    async def cli_available(self) -> bool:
-        if self._cli_enabled is None:
-            self._cli_enabled = await self.runners["cli"].handshake()
-        return self._cli_enabled
+    async def codex_cli_available(self) -> bool:
+        if self._codex_cli_enabled is None:
+            self._codex_cli_enabled = await self.runners["codex_cli"].handshake()
+        return self._codex_cli_enabled
 
     async def app_server_available(self) -> bool:
         if self._auto_app_server_enabled is None:
-            self._auto_app_server_enabled = await self.runners["app_server"].handshake()
+            self._auto_app_server_enabled = await self.runners["codex_app_server"].handshake()
         return self._auto_app_server_enabled
 
-    async def effective_auto_mode(self) -> str:
-        if await self.app_server_available():
-            return "app_server"
-        if await self.cli_available():
-            return "cli"
+    async def claude_cli_available(self) -> bool:
+        if self._claude_cli_enabled is None:
+            self._claude_cli_enabled = await self.runners["claude_code_cli"].handshake()
+        return self._claude_cli_enabled
+
+    async def effective_runner_type(self, resolved: ResolvedRunSettings) -> str:
+        provider = normalize_provider(resolved.provider)
+        requested_mode = resolved.runner_mode or DEFAULT_RUNNER_MODE
+        if requested_mode == "dry_run":
+            return "dry_run"
+        if provider == "codex":
+            if requested_mode == "app_server":
+                return "codex_app_server" if await self.app_server_available() else "unavailable"
+            if requested_mode == "cli":
+                return "codex_cli" if await self.codex_cli_available() else "unavailable"
+            if requested_mode == "auto":
+                if await self.app_server_available():
+                    return "codex_app_server"
+                if await self.codex_cli_available():
+                    return "codex_cli"
+                return "unavailable"
+        if provider == "claude_code":
+            if requested_mode == "app_server":
+                return "unavailable"
+            if requested_mode in {"auto", "cli"}:
+                return "claude_code_cli" if await self.claude_cli_available() else "unavailable"
+        if provider == "external_adapter":
+            if requested_mode == "app_server":
+                return "unavailable"
+            if requested_mode in {"auto", "cli"}:
+                return "external_adapter" if await self.runners["external_adapter"].handshake(
+                    RunnerSettings(
+                        provider=resolved.provider,
+                        sandbox_mode=resolved.sandbox_mode,
+                        approval_policy=resolved.approval_policy,
+                        model=resolved.model,
+                        reasoning_effort=resolved.reasoning_effort,
+                        adapter_command=resolved.adapter_command,
+                        adapter_args=list(resolved.adapter_args),
+                    )
+                ) else "unavailable"
         return "unavailable"
 
-    async def get_runner(self, runner_mode: str) -> BaseCodexRunner:
-        if runner_mode == "auto":
-            if await self.app_server_available():
-                return self.runners["app_server"]
-            return self.runners["cli"]
-        return self.runners[runner_mode]
+    async def effective_mode(self, resolved: ResolvedRunSettings) -> str:
+        runner_type = await self.effective_runner_type(resolved)
+        if runner_type == "codex_app_server":
+            return "app_server"
+        if runner_type in {"codex_cli", "claude_code_cli", "external_adapter"}:
+            return "cli"
+        if runner_type == "dry_run":
+            return "dry_run"
+        return "unavailable"
+
+    async def get_runner_for_settings(self, resolved: ResolvedRunSettings) -> BaseCodexRunner:
+        runner_type = await self.effective_runner_type(resolved)
+        if runner_type == "unavailable":
+            raise RuntimeError(f"No available runner for provider {resolved.provider} in mode {resolved.runner_mode}.")
+        return self.runners[runner_type]
+
+    async def get_runner(self, runner_type: str) -> BaseCodexRunner:
+        if runner_type in self.runners:
+            return self.runners[runner_type]
+        if runner_type == "cli":
+            return self.runners["codex_cli"]
+        if runner_type == "app_server":
+            return self.runners["codex_app_server"]
+        raise KeyError(f"Unknown runner type: {runner_type}")
 
 
 class MissionControlService:
@@ -145,10 +205,13 @@ class MissionControlService:
     @staticmethod
     def _runner_settings_payload(resolved: ResolvedRunSettings) -> RunnerSettings:
         return RunnerSettings(
+            provider=resolved.provider,
             sandbox_mode=resolved.sandbox_mode,
             approval_policy=resolved.approval_policy,
             model=resolved.model,
             reasoning_effort=resolved.reasoning_effort,
+            adapter_command=resolved.adapter_command,
+            adapter_args=list(resolved.adapter_args),
         )
 
     @staticmethod
@@ -370,7 +433,7 @@ class MissionControlService:
             tests_builds_run=tests_run or ["No automated tests were recorded by the backend."],
             known_limitations=[
                 "App-server integration remains experimental.",
-                "Manager Codex turns depend on the local Codex environment and may fall back deterministically.",
+                "Live manager turns depend on the selected local provider environment and may fall back deterministically.",
             ],
             remaining_risks=risks or ["Validation depth depends on the selected workspace tooling."],
             suggested_next_improvements=[
@@ -407,10 +470,10 @@ class MissionControlService:
             self.events.publish(db, project.id, "manager.mode.deterministic", {"action": action_name})
             return fallback_factory(), "deterministic"
 
-        try_codex = requested_mode in {"codex", "auto"}
-        if try_codex:
+        try_live_provider = requested_mode in {"provider", "codex", "auto"}
+        if try_live_provider:
             try:
-                runner = await self.runners.get_runner(resolved_settings.runner_mode)
+                runner = await self.runners.get_runner_for_settings(resolved_settings)
                 prompt = manager_action_prompt(
                     project,
                     docs_path,
@@ -439,14 +502,27 @@ class MissionControlService:
                 self.events.publish(
                     db,
                     project.id,
-                    "manager.mode.codex",
+                    "manager.mode.provider",
                     {
                         "action": action_name,
+                        "provider": resolved_settings.provider,
                         "runner": handle.runner_type,
                         "logs_path": handle.logs_path,
                         "effective_settings": resolved_run_settings_payload(resolved_settings),
                     },
                 )
+                if resolved_settings.provider == "codex":
+                    self.events.publish(
+                        db,
+                        project.id,
+                        "manager.mode.codex",
+                        {
+                            "action": action_name,
+                            "runner": handle.runner_type,
+                            "logs_path": handle.logs_path,
+                            "effective_settings": resolved_run_settings_payload(resolved_settings),
+                        },
+                    )
                 text = ""
                 if last_payload and isinstance(last_payload.get("item"), dict):
                     text = last_payload["item"].get("text", "")
@@ -456,7 +532,7 @@ class MissionControlService:
                 if repaired:
                     self.events.publish(db, project.id, "manager.parse_repair_attempted", {"action": action_name})
                 if parsed is not None:
-                    return _validate_model(model_schema, parsed), "codex"
+                    return _validate_model(model_schema, parsed), resolved_settings.provider
                 self.events.publish(db, project.id, "manager.parse_failed", {"action": action_name})
             except (ValidationError, ValueError, RuntimeError) as exc:
                 self.events.publish(db, project.id, "manager.parse_failed", {"action": action_name, "error": str(exc)})
@@ -472,11 +548,17 @@ class MissionControlService:
         return fallback_factory(), "deterministic"
 
     async def get_system_status(self, db: Session, project: Project | None = None) -> dict[str, Any]:
-        from system_status import detect_codex_status
+        from system_status import detect_system_status
 
-        status = detect_codex_status()
+        project_settings = self._project_settings(db, project) if project else None
+        selected_provider = project_settings.provider if project_settings else "codex"
+        adapter_command = project_settings.adapter_command if project_settings else None
+        status = detect_system_status(selected_provider=selected_provider, adapter_command=adapter_command)
         status["current_auth_job"] = auth_service.job_payload(auth_service.current_job())
-        status["app_server_handshake_status"] = "available" if await self.runners.app_server_available() else "unavailable"
+        if normalize_provider(selected_provider) == "codex":
+            status["app_server_handshake_status"] = "available" if await self.runners.app_server_available() else "unavailable"
+        else:
+            status["app_server_handshake_status"] = "unsupported"
         active_runs = list(
             db.scalars(
                 select(AgentRun)
@@ -496,21 +578,22 @@ class MissionControlService:
             for run in active_runs
         ]
         if project:
-            settings = self._project_settings(db, project)
+            settings = project_settings or self._project_settings(db, project)
             status["current_settings_summary"] = settings_summary(settings)
+            status["selected_provider"] = normalize_provider(settings.provider)
+            status["selected_provider_label"] = provider_label(settings.provider)
             status["selected_manager_model"] = settings.manager_model
             status["selected_default_worker_model"] = settings.default_worker_model
-            status["effective_runner_mode"] = (
-                await self.runners.effective_auto_mode()
-                if settings.runner_mode == "auto"
-                else settings.runner_mode
-            )
+            resolved = resolve_manager_settings(project, settings)
+            status["effective_runner_mode"] = await self.runners.effective_mode(resolved)
         else:
-            status["effective_runner_mode"] = await self.runners.effective_auto_mode()
+            status["effective_runner_mode"] = "app_server" if await self.runners.app_server_available() else (
+                "cli" if await self.runners.codex_cli_available() else "unavailable"
+            )
         return status
 
     def auth_state(self) -> dict[str, Any]:
-        from system_status import detect_codex_status
+        from system_status import detect_codex_status, detect_provider_statuses
 
         status = detect_codex_status()
         return {
@@ -518,17 +601,20 @@ class MissionControlService:
             "auth_mode": status["auth_mode"],
             "login_status": status["login_status"],
             "cli_detected": status["cli_detected"],
+            "provider": "codex",
             "current_job": auth_service.job_payload(auth_service.current_job()),
             "chatgpt_supported": status["cli_detected"],
             "device_auth_supported": status["cli_detected"],
             "api_key_supported": status["cli_detected"],
+            "provider_statuses": detect_provider_statuses(),
             "notes": [
                 "ChatGPT sign-in is the recommended path and keeps usage tied to your local Codex session.",
                 "API key login is optional and can use API billing depending on your account.",
+                "Claude Code and external adapters are configured per project and keep their own local auth flows.",
             ],
         }
 
-    def create_project(self, db: Session, *, name: str, idea: str, workspace_path: str, runner_mode: str, manager_mode: str) -> Project:
+    def create_project(self, db: Session, *, name: str, idea: str, workspace_path: str, provider: str, runner_mode: str, manager_mode: str) -> Project:
         project = Project(
             name=name,
             idea=idea,
@@ -539,7 +625,8 @@ class MissionControlService:
         )
         db.add(project)
         db.flush()
-        self._project_settings(db, project)
+        settings = self._project_settings(db, project)
+        settings.provider = normalize_provider(provider)
         manager_agent = Agent(
             project_id=project.id,
             name="Manager AI",
@@ -557,6 +644,7 @@ class MissionControlService:
 
     def update_settings(self, db: Session, project: Project, payload: ProjectSettingsUpdate) -> ProjectSettings:
         settings = get_or_create_project_settings(db, project)
+        settings.provider = normalize_provider(payload.provider)
         settings.manager_model = payload.manager_model.strip() if payload.manager_model and payload.manager_model.strip() else None
         settings.default_worker_model = payload.default_worker_model.strip() if payload.default_worker_model and payload.default_worker_model.strip() else None
         settings.manager_reasoning_effort = payload.manager_reasoning_effort
@@ -571,6 +659,8 @@ class MissionControlService:
             for key, value in payload.per_role_reasoning_overrides_json.items()
             if key.strip() and value
         }
+        settings.adapter_command = payload.adapter_command.strip() if payload.adapter_command and payload.adapter_command.strip() else None
+        settings.adapter_args_json = [item.strip() for item in payload.adapter_args_json if item and item.strip()]
         settings.runner_mode = payload.runner_mode
         settings.sandbox_mode = payload.sandbox_mode
         settings.approval_policy = payload.approval_policy
@@ -581,9 +671,10 @@ class MissionControlService:
             "settings.updated",
             {
                 "project_id": project.id,
+                "provider": settings.provider,
                 "runner_mode": settings.runner_mode,
-                "manager_model": settings.manager_model or "Codex default",
-                "default_worker_model": settings.default_worker_model or "Codex default",
+                "manager_model": settings.manager_model or resolve_manager_settings(project, settings).effective_model_label,
+                "default_worker_model": settings.default_worker_model or default_label(settings.provider),
             },
         )
         db.flush()
@@ -649,7 +740,7 @@ class MissionControlService:
         return {
             "docs_path": str(docs_dir),
             "files": sorted(files_written),
-            "used_live_manager": manager_mode_used == "codex",
+            "used_live_manager": manager_mode_used != "deterministic",
             "manager_mode_used": manager_mode_used,
         }
 
@@ -977,7 +1068,7 @@ class MissionControlService:
         settings_record = self._project_settings(db, project)
         resolved_settings = resolve_worker_settings(project, settings_record, agent)
         latest_plan = self._latest_plan(db, project.id)
-        runner = await self.runners.get_runner(resolved_settings.runner_mode)
+        runner = await self.runners.get_runner_for_settings(resolved_settings)
         context = RunnerContext(
             project=project,
             agent=agent,
@@ -1053,8 +1144,9 @@ class MissionControlService:
                     effective_settings = event.get("effective_settings")
                     if isinstance(effective_settings, dict):
                         run.effective_settings_json = effective_settings
-                        agent.active_model = str(effective_settings.get("model") or agent.active_model or "Codex default")
-                        agent.active_reasoning_effort = str(effective_settings.get("reasoning_effort") or agent.active_reasoning_effort or "Codex default")
+                        provider_name = str(effective_settings.get("provider") or settings_summary(self._project_settings(db, project)).get("provider") or "codex")
+                        agent.active_model = str(effective_settings.get("model") or agent.active_model or default_label(provider_name))
+                        agent.active_reasoning_effort = str(effective_settings.get("reasoning_effort") or agent.active_reasoning_effort or default_label(provider_name))
                         agent.active_runner_type = run.runner_type
                     item = event.get("item")
                     if isinstance(item, dict) and item.get("type") == "agent_message":
@@ -1223,10 +1315,11 @@ class MissionControlService:
         project.final_report_json = _dump_model(handoff) | {
             "manager_mode_used": manager_mode_used,
             "models_used": {
-                "manager_model": settings_record.manager_model or "Codex default",
-                "default_worker_model": settings_record.default_worker_model or "Codex default",
-                "manager_reasoning_effort": settings_record.manager_reasoning_effort or "Codex default",
-                "default_worker_reasoning_effort": settings_record.default_worker_reasoning_effort or "Codex default",
+                "provider": settings_record.provider,
+                "manager_model": settings_record.manager_model or default_label(settings_record.provider),
+                "default_worker_model": settings_record.default_worker_model or default_label(settings_record.provider),
+                "manager_reasoning_effort": settings_record.manager_reasoning_effort or default_label(settings_record.provider),
+                "default_worker_reasoning_effort": settings_record.default_worker_reasoning_effort or default_label(settings_record.provider),
                 "role_model_overrides": settings_record.per_role_model_overrides_json or {},
                 "role_reasoning_overrides": settings_record.per_role_reasoning_overrides_json or {},
                 "effective_runs": [run.effective_settings_json or {} for run in completed_runs if run.effective_settings_json],
@@ -1284,7 +1377,7 @@ class MissionControlService:
             self.events.publish(db, project.id, "manager.message", {"message": message, "reply": reply})
             return reply
         try:
-            runner = await self.runners.get_runner(resolved_settings.runner_mode)
+            runner = await self.runners.get_runner_for_settings(resolved_settings)
             manager_agent.status = "working"
             self._cache_agent_run_profile(manager_agent, resolved_settings, runner_type=runner.runner_type, action="message")
             handle, last_payload = await runner.run_manager_turn(
@@ -1311,13 +1404,25 @@ class MissionControlService:
                 self.events.publish(
                     db,
                     project.id,
-                    "manager.mode.codex",
+                    "manager.mode.provider",
                     {
                         "action": "message",
+                        "provider": resolved_settings.provider,
                         "runner": handle.runner_type,
                         "effective_settings": resolved_run_settings_payload(resolved_settings),
                     },
                 )
+                if resolved_settings.provider == "codex":
+                    self.events.publish(
+                        db,
+                        project.id,
+                        "manager.mode.codex",
+                        {
+                            "action": "message",
+                            "runner": handle.runner_type,
+                            "effective_settings": resolved_run_settings_payload(resolved_settings),
+                        },
+                    )
                 self.events.publish(db, project.id, "manager.message", {"message": message, "reply": reply, "logs_path": handle.logs_path})
                 return reply
         except Exception as exc:  # noqa: BLE001

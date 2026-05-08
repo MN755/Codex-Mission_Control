@@ -30,10 +30,12 @@ def test_auth_state_endpoint_uses_service_payload(monkeypatch, client) -> None:
             "auth_mode": None,
             "login_status": "Not logged in",
             "cli_detected": True,
+            "provider": "codex",
             "current_job": None,
             "chatgpt_supported": True,
             "device_auth_supported": True,
             "api_key_supported": True,
+            "provider_statuses": [],
             "notes": ["Test note"],
         },
     )

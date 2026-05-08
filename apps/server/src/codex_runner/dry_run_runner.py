@@ -10,6 +10,7 @@ from typing import Any
 from codex_runner.base import BaseCodexRunner, RunnerContext, RunnerHandle
 from config import RUNTIME_LOGS_ROOT
 from prompts import worker_task_prompt
+from provider_support import default_label
 
 
 @dataclass
@@ -32,7 +33,7 @@ class DryRunRunner(BaseCodexRunner):
     def __init__(self) -> None:
         self.runs: dict[str, DryRunState] = {}
 
-    async def handshake(self) -> bool:
+    async def handshake(self, settings=None) -> bool:
         return True
 
     async def start_task(self, context: RunnerContext) -> RunnerHandle:
@@ -106,8 +107,9 @@ class DryRunRunner(BaseCodexRunner):
                 "type": "turn.started",
                 "message": "Dry-run worker started.",
                 "effective_settings": {
-                    "model": context.settings.model or "Codex default",
-                    "reasoning_effort": context.settings.reasoning_effort or "Codex default",
+                    "provider": context.settings.provider,
+                    "model": context.settings.model or default_label(context.settings.provider),
+                    "reasoning_effort": context.settings.reasoning_effort or default_label(context.settings.provider),
                     "sandbox_mode": context.settings.sandbox_mode,
                     "approval_policy": context.settings.approval_policy,
                 },
@@ -150,8 +152,9 @@ class DryRunRunner(BaseCodexRunner):
             {
                 "type": "turn.started",
                 "effective_settings": {
-                    "model": context.settings.model or "Codex default",
-                    "reasoning_effort": context.settings.reasoning_effort or "Codex default",
+                    "provider": context.settings.provider,
+                    "model": context.settings.model or default_label(context.settings.provider),
+                    "reasoning_effort": context.settings.reasoning_effort or default_label(context.settings.provider),
                     "sandbox_mode": context.settings.sandbox_mode,
                     "approval_policy": context.settings.approval_policy,
                 },

@@ -13,10 +13,13 @@ from models import Agent, Project, Task
 
 @dataclass
 class RunnerSettings:
+    provider: str = "codex"
     sandbox_mode: str = "workspace-write"
     approval_policy: str = "on-request"
     model: str | None = None
     reasoning_effort: str | None = None
+    adapter_command: str | None = None
+    adapter_args: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -44,7 +47,7 @@ class BaseCodexRunner(ABC):
     runner_type = "base"
 
     @abstractmethod
-    async def handshake(self) -> bool:
+    async def handshake(self, settings: RunnerSettings | None = None) -> bool:
         raise NotImplementedError
 
     @abstractmethod

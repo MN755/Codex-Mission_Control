@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import json
 import re
+import shutil
 import subprocess
 from pathlib import Path
+from typing import Any
 
-from config import DEFAULT_BACKEND_PORT, RUNTIME_ROOT, load_launcher_config, get_codex_home
+from config import DEFAULT_BACKEND_PORT, RUNTIME_ROOT, get_codex_home, load_launcher_config
+from provider_support import normalize_provider, provider_label
 
 
 def _run_command(args: list[str]) -> tuple[bool, str]:
@@ -37,12 +40,10 @@ def is_authenticated(login_ok: bool, login_output: str) -> bool:
     return login_ok and "logged in" in lowered
 
 
-def detect_codex_status() -> dict:
+def _detect_codex_environment() -> dict[str, Any]:
     codex_home = get_codex_home()
     config_path = codex_home / "config.toml"
     skills_root = codex_home / "skills"
-    launcher_config = load_launcher_config()
-
     cli_ok, cli_output = _run_command(["codex", "--version"])
     login_ok, login_output = _run_command(["codex", "login", "status"])
     _, mcp_output = _run_command(["codex", "mcp", "list", "--json"])
@@ -53,7 +54,7 @@ def detect_codex_status() -> dict:
     if config_path.exists():
         config_text = config_path.read_text(encoding="utf-8", errors="ignore")
         configured_plugins = re.findall(r'\[plugins\."([^"]+)"\]', config_text)
-        if "sandbox_mode = \"workspace-write\"" in config_text:
+        if 'sandbox_mode = "workspace-write"' in config_text:
             notes.append("User config defaults to workspace-write sandboxing.")
     else:
         notes.append("No user config.toml found.")
@@ -64,28 +65,127 @@ def detect_codex_status() -> dict:
             if child.is_dir():
                 local_skills.append(child.name)
 
-    mcp_servers = []
+    mcp_servers: list[dict[str, Any]] = []
     if mcp_output:
         try:
-            mcp_servers = json.loads(mcp_output)
+            loaded = json.loads(mcp_output)
+            if isinstance(loaded, list):
+                mcp_servers = loaded
         except json.JSONDecodeError:
             notes.append("Could not parse MCP server list as JSON.")
-
-    auth_mode = auth_mode_from_login_output(login_output)
-    authenticated = is_authenticated(login_ok, login_output)
-
-    notes.append("Model availability depends on the local Codex plan and current sign-in session.")
-    notes.append("ChatGPT sign-in is recommended. API keys are optional and can use API billing.")
 
     return {
         "cli_detected": cli_ok,
         "cli_version": cli_output if cli_ok else None,
         "login_status": login_output or "Unavailable",
-        "auth_mode": auth_mode,
-        "authenticated": authenticated,
+        "auth_mode": auth_mode_from_login_output(login_output),
+        "authenticated": is_authenticated(login_ok, login_output),
         "app_server_supported": "Run the app server" in app_help or "[experimental]" in app_help,
-        "app_server_handshake_status": "not_checked",
-        "app_server_transport": "stdio_jsonrpc",
+        "configured_plugins": configured_plugins,
+        "local_skills": sorted(local_skills),
+        "mcp_servers": mcp_servers,
+        "notes": notes,
+    }
+
+
+def detect_codex_status() -> dict[str, Any]:
+    payload = _detect_codex_environment()
+    payload.update(
+        {
+            "provider": "codex",
+            "label": "Codex",
+            "auth_status_detectable": True,
+            "supports_model_override": True,
+            "supports_reasoning_effort": True,
+            "supports_app_server": payload["app_server_supported"],
+            "supports_builtin_auth": True,
+            "available_models": [],
+            "notes": payload["notes"]
+            + [
+                "Model availability depends on the local Codex plan and current sign-in session.",
+                "ChatGPT sign-in is recommended. API keys are optional and can use API billing.",
+            ],
+        }
+    )
+    return payload
+
+
+def detect_claude_code_status() -> dict[str, Any]:
+    cli_ok, cli_output = _run_command(["claude", "--version"])
+    notes = [
+        "Claude Code login is managed by the local Claude Code CLI, not by Mission Control.",
+        "Mission Control can pass --model per run, but reasoning effort and app-server features are not assumed.",
+    ]
+    return {
+        "provider": "claude_code",
+        "label": "Claude Code",
+        "cli_detected": cli_ok,
+        "cli_version": cli_output if cli_ok else None,
+        "login_status": "Interactive Claude Code login is managed outside Mission Control.",
+        "auth_mode": None,
+        "authenticated": False,
+        "auth_status_detectable": False,
+        "supports_model_override": True,
+        "supports_reasoning_effort": False,
+        "supports_app_server": False,
+        "supports_builtin_auth": False,
+        "available_models": ["sonnet", "opus"] if cli_ok else [],
+        "notes": notes,
+    }
+
+
+def detect_external_adapter_status(adapter_command: str | None = None) -> dict[str, Any]:
+    command = (adapter_command or "").strip()
+    detected = bool(command and shutil.which(command))
+    notes = [
+        "Mission Control does not manage authentication for external adapters.",
+        "External adapters receive model, reasoning, sandbox, and approval values through environment variables and stdin.",
+    ]
+    return {
+        "provider": "external_adapter",
+        "label": "External adapter",
+        "cli_detected": detected,
+        "cli_version": command if detected else None,
+        "login_status": "Adapter-defined authentication",
+        "auth_mode": None,
+        "authenticated": False,
+        "auth_status_detectable": False,
+        "supports_model_override": True,
+        "supports_reasoning_effort": True,
+        "supports_app_server": False,
+        "supports_builtin_auth": False,
+        "available_models": [],
+        "notes": notes,
+    }
+
+
+def detect_provider_statuses(adapter_command: str | None = None) -> list[dict[str, Any]]:
+    return [
+        detect_codex_status(),
+        detect_claude_code_status(),
+        detect_external_adapter_status(adapter_command),
+    ]
+
+
+def detect_system_status(*, selected_provider: str = "codex", adapter_command: str | None = None) -> dict[str, Any]:
+    normalized_provider = normalize_provider(selected_provider)
+    launcher_config = load_launcher_config()
+    provider_statuses = detect_provider_statuses(adapter_command)
+    provider_lookup = {entry["provider"]: entry for entry in provider_statuses}
+    selected = provider_lookup.get(normalized_provider, provider_lookup["codex"])
+    codex = provider_lookup["codex"]
+    notes = list(dict.fromkeys([*selected.get("notes", []), *codex.get("notes", [])]))
+    return {
+        "selected_provider": normalized_provider,
+        "selected_provider_label": provider_label(normalized_provider),
+        "cli_detected": selected["cli_detected"],
+        "cli_version": selected["cli_version"],
+        "login_status": selected["login_status"],
+        "auth_mode": selected["auth_mode"],
+        "authenticated": selected["authenticated"],
+        "app_server_supported": bool(selected.get("supports_app_server")),
+        "app_server_handshake_status": "unsupported" if normalized_provider != "codex" else "not_checked",
+        "app_server_transport": "stdio_jsonrpc" if normalized_provider == "codex" else "unsupported",
         "effective_runner_mode": "auto",
         "dry_run_available": True,
         "runtime_directory": str(RUNTIME_ROOT),
@@ -95,10 +195,11 @@ def detect_codex_status() -> dict:
         "current_settings_summary": None,
         "selected_manager_model": None,
         "selected_default_worker_model": None,
-        "available_models": [],
-        "mcp_servers": mcp_servers,
-        "configured_plugins": configured_plugins,
-        "local_skills": sorted(local_skills),
+        "available_models": list(selected.get("available_models", [])),
+        "provider_statuses": provider_statuses,
+        "mcp_servers": list(codex.get("mcp_servers", [])),
+        "configured_plugins": list(codex.get("configured_plugins", [])),
+        "local_skills": list(codex.get("local_skills", [])),
         "current_auth_job": None,
         "notes": notes,
     }

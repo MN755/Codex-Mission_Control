@@ -6,7 +6,8 @@
 - Or double-click `scripts/start-mission-control.bat` on Windows.
 - On macOS and Linux, use `./scripts/start-mission-control.sh`.
 - The packaged desktop app opens to a launchpad first, not directly to project intake.
-- The launchpad lets the user sign in with ChatGPT, use device-code auth, or optionally provide an API key.
+- The launchpad lets the user sign in to Codex with ChatGPT, use device-code auth, or optionally provide an API key.
+- Claude Code and external adapters are configured per project instead of through the launchpad auth flow.
 - Use `.\scripts\create-desktop-shortcut.ps1` once if you want a desktop shortcut.
 - The launcher now prefers the standalone desktop shell first.
 - A browser-backed web mode still exists as an explicit fallback.
@@ -15,11 +16,11 @@
 
 ## 1. Intake
 
-- After authentication, the user continues into Mission Control proper.
-- User enters a project name, idea, workspace path, runner mode, and manager mode.
+- After launch, the user continues into Mission Control proper.
+- User enters a project name, idea, workspace path, provider, runner mode, and manager mode.
 - Backend creates the project and reserved manager agent.
 - Backend writes local docs to `<workspace>/mission-control/`.
-- Each project gets its own settings row for model selection, reasoning effort, runner mode, sandbox mode, approval policy, and role-based worker overrides.
+- Each project gets its own settings row for provider selection, model selection, reasoning effort, adapter command settings, runner mode, sandbox mode, approval policy, and role-based worker overrides.
 
 ## 2. Interview
 
@@ -41,7 +42,11 @@
 - Each manager or worker run resolves its effective model and reasoning from project settings:
   - manager uses manager model first
   - workers use role override first, then default worker model
-  - empty values mean `use Codex default`
+  - empty values mean `use provider default`
+- Provider routing rules:
+  - `Codex` can use CLI or experimental app-server
+  - `Claude Code` uses the CLI runner
+  - `external_adapter` uses the configured command wrapper
 - When a task starts, its allowed paths are reserved.
 - If another queued task overlaps those paths, it moves to `waiting_on_paths`.
 - When a worker finishes, the backend stores the completion report, asks the manager for the next action, and routes follow-up work automatically.

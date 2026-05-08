@@ -151,6 +151,7 @@ def test_project_settings_resolution_prefers_role_overrides() -> None:
         db.add(project)
         db.flush()
         settings = get_or_create_project_settings(db, project)
+        settings.provider = "claude_code"
         settings.manager_model = "gpt-5.5"
         settings.manager_reasoning_effort = "high"
         settings.default_worker_model = "gpt-5.4"
@@ -164,7 +165,32 @@ def test_project_settings_resolution_prefers_role_overrides() -> None:
 
         assert manager_settings.model == "gpt-5.5"
         assert manager_settings.reasoning_effort == "high"
+        assert manager_settings.provider == "claude_code"
         assert worker_settings.model == "gpt-5.5-mini"
         assert worker_settings.reasoning_effort == "minimal"
+    finally:
+        db.close()
+
+
+def test_worker_settings_can_use_external_adapter() -> None:
+    from db import SessionLocal, init_db
+
+    init_db()
+    db = SessionLocal()
+    try:
+        project = Project(name="Adapter Demo", idea="Idea", workspace_path="C:/demo", status="draft", runner_mode="cli", manager_mode="auto")
+        db.add(project)
+        db.flush()
+        settings = get_or_create_project_settings(db, project)
+        settings.provider = "external_adapter"
+        settings.adapter_command = "python"
+        settings.adapter_args_json = ["adapter.py", "--json"]
+        worker = Agent(project_id=project.id, name="Adapter Worker", role="Primary implementation", kind="worker", status="idle", workspace_path="C:/demo")
+
+        worker_settings = resolve_worker_settings(project, settings, worker)
+
+        assert worker_settings.provider == "external_adapter"
+        assert worker_settings.adapter_command == "python"
+        assert worker_settings.adapter_args == ["adapter.py", "--json"]
     finally:
         db.close()

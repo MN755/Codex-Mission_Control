@@ -209,6 +209,7 @@ def create_project(payload: ProjectCreate, db: Session = Depends(get_db)) -> Pro
         name=payload.name,
         idea=payload.idea,
         workspace_path=payload.workspace_path,
+        provider=payload.provider,
         runner_mode=payload.runner_mode,
         manager_mode=payload.manager_mode,
     )

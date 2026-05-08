@@ -16,7 +16,7 @@ Codex Mission Control is a local-only orchestration app with a desktop-first she
 - `apps/server`
   - FastAPI app
   - SQLite persistence via SQLAlchemy
-  - Mission-control services for docs, interview, planning, task routing, and runners
+  - Mission-control services for docs, interview, planning, task routing, provider selection, and runners
 - `workspace`
   - Local runtime data
   - Demo workspace placeholder and user-selected workspace targets
@@ -43,13 +43,14 @@ Codex Mission Control is a local-only orchestration app with a desktop-first she
 ## Execution Model
 
 1. User creates a project and picks a workspace path.
-2. User authenticates with local Codex via ChatGPT sign-in, device-code flow, or an optional API-key login.
-3. Backend writes local project docs to `<workspace>/mission-control/`.
-4. Interview answers refine the plan.
-5. Plan approval creates worker agents and milestone-based tasks.
-6. A runner starts worker turns, reservations are acquired, and the backend persists events and completion reports.
-7. The manager ingests worker reports, decides the next action, and either assigns follow-up work, requests a fix, waits, or escalates.
-8. The frontend listens on SSE and refreshes project state as events arrive.
+2. If the project uses Codex, the user can authenticate via ChatGPT sign-in, device-code flow, or an optional API-key login.
+3. If the project uses Claude Code or an external adapter, Mission Control reuses that provider's existing local auth flow instead of proxying credentials.
+4. Backend writes local project docs to `<workspace>/mission-control/`.
+5. Interview answers refine the plan.
+6. Plan approval creates worker agents and milestone-based tasks.
+7. A provider-aware runner starts worker turns, reservations are acquired, and the backend persists events and completion reports.
+8. The manager ingests worker reports, decides the next action, and either assigns follow-up work, requests a fix, waits, or escalates.
+9. The frontend listens on SSE and refreshes project state as events arrive.
 
 ## Isolation
 

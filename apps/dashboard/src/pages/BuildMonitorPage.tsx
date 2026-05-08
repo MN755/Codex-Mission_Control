@@ -12,6 +12,16 @@ import { TaskBoard } from "../components/TaskBoard";
 import { useProjectStream } from "../state/useProjectStream";
 import type { Agent, CodexStatus, LogRead, Plan, Project, ProjectEvent, ProjectSettings, Reservation, Task } from "../types";
 
+function providerDefaultLabel(provider: string | null | undefined) {
+  if (provider === "claude_code") {
+    return "Claude Code default";
+  }
+  if (provider === "external_adapter") {
+    return "Adapter default";
+  }
+  return "Codex default";
+}
+
 export function BuildMonitorPage() {
   const { projectId } = useParams();
   const navigate = useNavigate();
@@ -102,6 +112,7 @@ export function BuildMonitorPage() {
       rightRail={
         project ? (
           <div className="header-stack">
+            <span className="header-chip">Provider: {settings?.provider ?? status?.selected_provider ?? "codex"}</span>
             <span className="header-chip">Runner: {settings?.runner_mode ?? project.runner_mode}</span>
             <span className="header-chip">Status: {project.status}</span>
           </div>
@@ -167,8 +178,8 @@ export function BuildMonitorPage() {
             >
               <ManagerPanel
                 managerMode={project?.manager_mode ?? "auto"}
-                managerModel={managerAgent?.active_model ?? settings?.manager_model ?? "Codex default"}
-                managerReasoning={managerAgent?.active_reasoning_effort ?? settings?.manager_reasoning_effort ?? "Codex default"}
+                managerModel={managerAgent?.active_model ?? settings?.manager_model ?? providerDefaultLabel(settings?.provider)}
+                managerReasoning={managerAgent?.active_reasoning_effort ?? settings?.manager_reasoning_effort ?? providerDefaultLabel(settings?.provider)}
                 currentAction={managerAgent?.current_action ?? "Standing by"}
                 reply={managerReply}
                 onSend={async (message) => {
@@ -201,16 +212,20 @@ export function BuildMonitorPage() {
               <SectionCard title="Effective defaults" subtitle="These are the current per-project runner and model settings that new turns inherit.">
                 <div className="status-grid">
                   <div className="metric-card">
+                    <span>Provider</span>
+                    <strong>{settings?.provider ?? status.selected_provider}</strong>
+                  </div>
+                  <div className="metric-card">
                     <span>Manager model</span>
-                    <strong>{settings?.manager_model ?? "Codex default"}</strong>
+                    <strong>{settings?.manager_model ?? providerDefaultLabel(settings?.provider)}</strong>
                   </div>
                   <div className="metric-card">
                     <span>Worker model</span>
-                    <strong>{settings?.default_worker_model ?? "Codex default"}</strong>
+                    <strong>{settings?.default_worker_model ?? providerDefaultLabel(settings?.provider)}</strong>
                   </div>
                   <div className="metric-card">
                     <span>Reasoning</span>
-                    <strong>{settings?.default_worker_reasoning_effort ?? "Codex default"}</strong>
+                    <strong>{settings?.default_worker_reasoning_effort ?? providerDefaultLabel(settings?.provider)}</strong>
                   </div>
                   <div className="metric-card">
                     <span>Runner status</span>

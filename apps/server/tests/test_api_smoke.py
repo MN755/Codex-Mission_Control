@@ -24,12 +24,15 @@ def test_dry_run_project_flow(client) -> None:
     updated_settings = client.put(
         f"/api/settings?project_id={project_id}",
         json={
+            "provider": "claude_code",
             "manager_model": "gpt-5.5",
             "default_worker_model": "gpt-5.4-mini",
             "manager_reasoning_effort": "high",
             "default_worker_reasoning_effort": "low",
             "per_role_model_overrides_json": {"Primary implementation": "gpt-5.5-mini"},
             "per_role_reasoning_overrides_json": {"Primary implementation": "minimal"},
+            "adapter_command": None,
+            "adapter_args_json": [],
             "runner_mode": "dry_run",
             "sandbox_mode": "workspace-write",
             "approval_policy": "on-request",
@@ -37,9 +40,11 @@ def test_dry_run_project_flow(client) -> None:
     )
     assert updated_settings.status_code == 200
     assert updated_settings.json()["manager_model"] == "gpt-5.5"
+    assert updated_settings.json()["provider"] == "claude_code"
 
     status = client.get(f"/api/system/status?project_id={project_id}").json()
     assert "active_runs" in status
+    assert status["selected_provider"] == "claude_code"
     assert status["selected_manager_model"] == "gpt-5.5"
     assert status["selected_default_worker_model"] == "gpt-5.4-mini"
     assert "authenticated" in status

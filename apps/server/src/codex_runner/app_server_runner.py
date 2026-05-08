@@ -11,6 +11,7 @@ from codex_runner.base import BaseCodexRunner, RunnerContext, RunnerHandle
 from codex_runner.events import parse_json_line
 from config import RUNTIME_LOGS_ROOT
 from prompts import app_server_input_items, worker_task_prompt
+from provider_support import default_label
 
 
 @dataclass
@@ -35,7 +36,7 @@ class AppServerCodexRunner(BaseCodexRunner):
     def __init__(self) -> None:
         self.runs: dict[str, AppServerRunState] = {}
 
-    async def handshake(self) -> bool:
+    async def handshake(self, settings=None) -> bool:
         run_id = f"appsvr-handshake-{uuid.uuid4().hex}"
         try:
             process = await asyncio.create_subprocess_exec(
@@ -198,8 +199,9 @@ class AppServerCodexRunner(BaseCodexRunner):
                             "input": app_server_input_items(prompt),
                             "cwd": workdir,
                             "metadata": {
-                                "model": context.settings.model or "Codex default",
-                                "reasoning_effort": context.settings.reasoning_effort or "Codex default",
+                                "provider": context.settings.provider,
+                                "model": context.settings.model or default_label(context.settings.provider),
+                                "reasoning_effort": context.settings.reasoning_effort or default_label(context.settings.provider),
                             },
                         },
                     }

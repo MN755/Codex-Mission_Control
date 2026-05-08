@@ -2,7 +2,7 @@
 
 ![Codex Mission Control icon](apps/desktop/assets/mission-control.svg)
 
-Codex Mission Control is now a desktop-first local orchestration app for running multiple Codex-style workers through one manager interface. The user only talks to the Manager AI. The app creates local project docs, runs a structured interview, drafts a plan, starts or pauses workers, tracks progress, and prepares final handoff notes.
+Codex Mission Control is now a desktop-first local orchestration app for running multiple local AI workers through one manager interface. The user only talks to the Manager AI. The app creates local project docs, runs a structured interview, drafts a plan, starts or pauses workers, tracks progress, and prepares final handoff notes.
 
 ## What It Does
 
@@ -10,11 +10,12 @@ Codex Mission Control is now a desktop-first local orchestration app for running
 - Runs a multiple-choice project interview with 6, 20, or 50 questions
 - Generates a reviewable MVP plan
 - Starts worker agents through a runner layer with `auto`, `cli`, `app_server`, or `dry_run` modes
-- Runs the Manager in `auto`, `codex`, or `deterministic` mode with structured fallback
+- Runs the Manager in `auto`, `provider`, or `deterministic` mode with structured fallback
 - Streams project events into a live build monitor
 - Stores orchestration state locally in SQLite
-- Uses the user's existing Codex/ChatGPT sign-in session when the local Codex CLI is available
-- Starts with a desktop launchpad that offers ChatGPT sign-in, device-code sign-in, or an optional API-key login
+- Supports `Codex`, `Claude Code`, or a generic `external_adapter` per project
+- Uses the user's existing local CLI sign-in session whenever the selected provider supports it
+- Starts with a desktop launchpad that offers built-in Codex ChatGPT sign-in, device-code sign-in, or an optional API-key login
 
 ## Stack
 
@@ -24,9 +25,9 @@ Codex Mission Control is now a desktop-first local orchestration app for running
 - Realtime: Server-Sent Events
 - Runners:
   - `dry_run`: local simulation for UI and workflow testing
-  - `cli`: shells out to `codex exec` using local auth
-  - `app_server`: best-effort experimental app-server path
-  - `auto`: prefers app-server only if a local handshake succeeds, otherwise falls back to CLI
+  - `cli`: shells out to the selected provider CLI
+  - `app_server`: best-effort experimental Codex-only app-server path
+  - `auto`: prefers the best available local runner for the selected provider
 
 ## Install
 
@@ -161,42 +162,48 @@ Open [http://127.0.0.1:5173](http://127.0.0.1:5173).
 - macOS: the desktop shell uses the native Cocoa webview path through `pywebview`
 - Packaged builds store writable runtime state under the user's local app-data directory instead of writing into the installed app bundle
 
-## ChatGPT / Codex Sign-In
+## Local Provider Sign-In
 
 - The desktop app now opens on a launchpad that lets you choose:
   - `Sign in with ChatGPT`
   - `Use device code`
   - `Use API key`
-- ChatGPT sign-in is the recommended path.
+- Those built-in login flows are for the `Codex` provider only.
+- ChatGPT sign-in is the recommended Codex path.
 - API-key login is optional and can use API billing depending on your account.
 - Mission Control does not store the raw API key; it passes it once to the local `codex login --with-api-key` flow.
-- This app is designed to reuse your existing local Codex login.
-- Run `codex login status` to confirm you are signed in.
-- To keep usage tied to ChatGPT/Codex sign-in rather than API credits, use `cli` or `auto` runner modes and stay signed into the local Codex CLI.
+- This app is designed to reuse your existing local Codex login instead of editing global config.
+- Run `codex login status` to confirm your Codex session is ready.
+- `Claude Code` keeps its own local login flow outside Mission Control.
+- `external_adapter` keeps whatever auth flow the adapter itself implements.
+- To keep usage tied to ChatGPT/Codex sign-in rather than API credits, use the `Codex` provider with `cli` or `auto` runner modes and stay signed into the local Codex CLI.
 - The app does not modify `~/.codex/config.toml` by default.
-- Manager `auto` mode tries the local Codex runner path first and falls back to deterministic orchestration if structured output is unavailable.
-- The desktop shell still uses the same local Codex CLI or app-server authentication model as the web version.
+- Manager `auto` mode tries the selected provider's live runner path first and falls back to deterministic orchestration if structured output is unavailable.
+- The desktop shell preserves local CLI auth instead of introducing a separate cloud auth layer.
 
 ## Model Settings
 
 - Settings are per-project, not global.
 - Open `Settings` from the project nav to configure:
+  - provider
   - manager model
   - default worker model
   - manager reasoning effort
   - default worker reasoning effort
+  - external adapter command and args
   - runner mode
   - sandbox mode
   - approval policy
   - role-based worker overrides
-- Empty model or reasoning values mean `use Codex default`.
-- The CLI runner passes per-run overrides directly to Codex instead of editing your global config.
-- Availability of any specific model depends on your current Codex or ChatGPT plan and local sign-in session.
+- Empty model or reasoning values mean `use provider default`.
+- The CLI runner passes per-run overrides directly to the selected provider instead of editing your global config.
+- Availability of any specific model depends on the current provider, plan, and local sign-in session.
 
 ## Manager Modes
 
 - `auto`: tries Codex-backed manager turns for docs, planning, task generation, worker decisions, and handoff, then falls back to deterministic behavior.
-- `codex`: prefers Codex-backed manager turns, but still falls back deterministically on parse or runner failure.
+- `provider`: prefers live provider-backed manager turns, but still falls back deterministically on parse or runner failure.
+- `codex`: preserved as a legacy value for older projects and behaves like `provider`.
 - `deterministic`: keeps the full workflow local and rule-based for dry-run demos and resilient fallback behavior.
 
 ## First Project Flow
@@ -220,27 +227,31 @@ Open [http://127.0.0.1:5173](http://127.0.0.1:5173).
 
 ## CLI Runner Configuration
 
-- `codex` must be on `PATH`.
-- The CLI runner uses `codex exec --json` and `codex exec resume`.
-- If a manager or worker model is set, the runner passes `--model`.
-- If a reasoning effort is set, the runner passes `-c model_reasoning_effort="..."`.
-- It does not use `--dangerously-bypass-approvals-and-sandbox`.
+- `Codex` uses `codex exec --json` and `codex exec resume`.
+- `Claude Code` uses non-interactive CLI runs with per-run `--model` overrides when configured.
+- `external_adapter` runs the user-supplied command, sends the full prompt over stdin, and passes provider settings through environment variables.
+- If a manager or worker model is set, the runner passes the provider-specific model override when supported.
+- Reasoning effort is passed to Codex directly and forwarded to external adapters; Claude Code currently ignores Mission Control reasoning controls.
+- It does not use dangerous bypass flags by default.
 - Default sandbox mode is `workspace-write`.
 - Default approval mode is `on-request`.
-- The CLI runner records stdout, stderr, event logs, exit codes, and session references under `apps/server/.runtime/logs/`.
+- Runner logs, stdout, stderr, exit codes, and event files are recorded under `apps/server/.runtime/logs/`.
 
 ## App-Server Status
 
-- The backend includes a real experimental `app_server` runner path.
+- The backend includes a real experimental `app_server` runner path for `Codex`.
 - It performs a local handshake against `codex app-server` over stdio JSON-RPC.
-- The MVP treats this path as best-effort and falls back to the CLI runner in `auto` mode if the handshake fails.
-- See `docs/CODEX_INTEGRATION.md` for the exact behavior and limitations.
+- `Claude Code` and `external_adapter` currently use CLI-style runners only.
+- The MVP treats Codex app-server as best-effort and falls back to CLI in `auto` mode if the handshake fails.
+- See `docs/CODEX_INTEGRATION.md` for the exact provider behavior and limitations.
 
 ## Limitations
 
 - The desktop shell is implemented as a local native window over the same FastAPI + React stack, so the UI is no longer browser-dependent in normal use, but it still relies on a working local webview backend.
 - Packaged Windows `.exe`, macOS `.app`, and Linux AppImage-style artifacts are unsigned by default. They are suitable for local distribution and testing, not notarized storefront delivery.
 - Browser-based ChatGPT sign-in behavior still depends on the local Codex CLI and host browser integration. Device-code sign-in is included as a fallback.
+- Claude Code auth status is not queried non-interactively by Mission Control; it is detected as a local CLI and assumed to be managed outside the app.
+- External adapters depend on a user-supplied command wrapper, so capability depth varies by adapter implementation.
 - The app-server integration is intentionally narrow and environment-dependent.
 - Manager task generation is milestone-based, but still intentionally lightweight rather than deeply project-specific.
 - Source checkout runs store runtime state under `apps/server/.runtime/`. Packaged runs use the user's app-data directory.

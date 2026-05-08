@@ -11,6 +11,7 @@ import type {
   Plan,
   Project,
   ProjectEvent,
+  ProviderId,
   Reservation,
   SandboxMode,
   RunnerMode,
@@ -58,12 +59,15 @@ export const api = {
   updateSettings: (
     projectId: number,
     payload: {
+      provider: ProviderId;
       manager_model: string | null;
       default_worker_model: string | null;
       manager_reasoning_effort: ReasoningEffort | null;
       default_worker_reasoning_effort: ReasoningEffort | null;
       per_role_model_overrides_json: Record<string, string>;
       per_role_reasoning_overrides_json: Record<string, string>;
+      adapter_command: string | null;
+      adapter_args_json: string[];
       runner_mode: RunnerMode;
       sandbox_mode: SandboxMode;
       approval_policy: ApprovalPolicy;
@@ -75,8 +79,9 @@ export const api = {
     name: string;
     idea: string;
     workspace_path: string;
+    provider: ProviderId;
     runner_mode: RunnerMode;
-    manager_mode: "auto" | "codex" | "deterministic";
+    manager_mode: "auto" | "provider" | "codex" | "deterministic";
   }) => request<Project>("/api/projects", { method: "POST", body: JSON.stringify(payload) }),
   generateDocs: (projectId: number) => request<{ docs_path: string; files: string[]; used_live_manager: boolean }>(`/api/projects/${projectId}/docs/generate`, { method: "POST" }),
   startInterview: (projectId: number, questionCount: 6 | 20 | 50) =>

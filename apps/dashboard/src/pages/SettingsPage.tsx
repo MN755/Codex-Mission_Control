@@ -5,7 +5,7 @@ import { api } from "../api/client";
 import { AppShell } from "../components/AppShell";
 import { LoadingBlock } from "../components/LoadingBlock";
 import { SectionCard } from "../components/SectionCard";
-import type { Agent, ApprovalPolicy, CodexStatus, Project, ProjectSettings, ReasoningEffort, RunnerMode, SandboxMode } from "../types";
+import type { Agent, ApprovalPolicy, CodexStatus, Project, ProjectSettings, ProviderId, ReasoningEffort, RunnerMode, SandboxMode } from "../types";
 
 const FALLBACK_WORKER_ROLES = [
   "Primary implementation",
@@ -14,11 +14,17 @@ const FALLBACK_WORKER_ROLES = [
 ];
 
 const REASONING_OPTIONS: Array<{ value: ReasoningEffort | ""; label: string }> = [
-  { value: "", label: "Use Codex default" },
+  { value: "", label: "Use provider default" },
   { value: "minimal", label: "minimal" },
   { value: "low", label: "low" },
   { value: "medium", label: "medium" },
   { value: "high", label: "high" },
+];
+
+const PROVIDER_OPTIONS: Array<{ value: ProviderId; label: string }> = [
+  { value: "codex", label: "Codex" },
+  { value: "claude_code", label: "Claude Code" },
+  { value: "external_adapter", label: "External adapter" },
 ];
 
 export function SettingsPage() {
@@ -63,6 +69,13 @@ export function SettingsPage() {
     );
     return Array.from(new Set([...FALLBACK_WORKER_ROLES, ...activeWorkerRoles, ...savedRoles]));
   }, [agents, settings]);
+
+  const selectedProviderStatus = useMemo(
+    () => status?.provider_statuses.find((entry) => entry.provider === settings?.provider) ?? null,
+    [settings?.provider, status?.provider_statuses],
+  );
+
+  const modelSuggestions = selectedProviderStatus?.available_models ?? status?.available_models ?? [];
 
   async function saveSettings() {
     if (!settings) {
@@ -120,7 +133,7 @@ export function SettingsPage() {
     <AppShell
       projectId={numericProjectId}
       title="Project Settings"
-      subtitle="Choose manager and worker run defaults without touching your global Codex config."
+      subtitle="Choose the live provider, model defaults, and runner behavior without rewriting your global CLI config."
       rightRail={
         project ? (
           <div className="header-stack">
@@ -134,8 +147,24 @@ export function SettingsPage() {
         <LoadingBlock label="Loading settings..." />
       ) : (
         <div className="intake-grid">
-          <SectionCard title="Model controls" subtitle="Leave model or reasoning blank to use the current Codex default from your local session.">
+          <SectionCard title="Provider and model controls" subtitle="Leave model or reasoning blank to use the current provider default from the selected local CLI session.">
             <div className="stack-form">
+              <div className="form-row">
+                <label>
+                  Live provider
+                  <select value={settings.provider} onChange={(event) => updateField("provider", event.target.value as ProviderId)}>
+                    {PROVIDER_OPTIONS.map((option) => (
+                      <option key={option.value} value={option.value}>
+                        {option.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label>
+                  Manager mode
+                  <input value={project?.manager_mode ?? "auto"} disabled />
+                </label>
+              </div>
               <div className="form-row">
                 <label>
                   Manager model
@@ -184,11 +213,44 @@ export function SettingsPage() {
                   </select>
                 </label>
               </div>
+              {settings.provider === "external_adapter" ? (
+                <div className="form-row">
+                  <label>
+                    Adapter command
+                    <input
+                      value={settings.adapter_command ?? ""}
+                      onChange={(event) => updateField("adapter_command", event.target.value || null)}
+                      placeholder="python, node, llm-runner, etc."
+                    />
+                  </label>
+                  <label>
+                    Adapter args
+                    <input
+                      value={settings.adapter_args_json.join(" ")}
+                      onChange={(event) =>
+                        updateField(
+                          "adapter_args_json",
+                          event.target.value
+                            .split(" ")
+                            .map((item) => item.trim())
+                            .filter(Boolean),
+                        )
+                      }
+                      placeholder="--json --project mission-control"
+                    />
+                  </label>
+                </div>
+              ) : null}
               <datalist id="model-suggestions">
-                {(status?.available_models ?? []).map((model) => (
+                {modelSuggestions.map((model) => (
                   <option key={model} value={model} />
                 ))}
               </datalist>
+              {selectedProviderStatus ? (
+                <p className="section-footnote">
+                  {selectedProviderStatus.label}: {selectedProviderStatus.login_status}
+                </p>
+              ) : null}
             </div>
           </SectionCard>
 
@@ -200,7 +262,9 @@ export function SettingsPage() {
                   <select value={settings.runner_mode} onChange={(event) => updateField("runner_mode", event.target.value as RunnerMode)}>
                     <option value="auto">auto</option>
                     <option value="cli">cli</option>
-                    <option value="app_server">app_server</option>
+                    <option value="app_server" disabled={settings.provider !== "codex"}>
+                      app_server {settings.provider !== "codex" ? "(Codex only)" : ""}
+                    </option>
                     <option value="dry_run">dry_run</option>
                   </select>
                 </label>
@@ -230,7 +294,7 @@ export function SettingsPage() {
             </div>
           </SectionCard>
 
-          <SectionCard title="Role overrides" subtitle="Overrides are keyed by worker role. Blank values fall back to the default worker settings.">
+          <SectionCard title="Role overrides" subtitle="Overrides are keyed by worker role. Blank values fall back to the default worker settings for the selected provider.">
             <div className="settings-table">
               <div className="settings-table__header">
                 <span>Role</span>
@@ -271,24 +335,34 @@ export function SettingsPage() {
             </div>
           </SectionCard>
 
-          <SectionCard title="Local Codex status" subtitle="These controls prefer your existing Codex or ChatGPT sign-in. API-key auth is optional and only used if you chose it from the desktop launchpad.">
+          <SectionCard title="Local provider status" subtitle="Mission Control manages built-in login for Codex. Claude Code and external adapters keep their own local auth flows.">
             {status ? (
               <div className="status-grid">
+                <div className="metric-card">
+                  <span>Selected provider</span>
+                  <strong>{status.selected_provider_label}</strong>
+                </div>
                 <div className="metric-card">
                   <span>CLI</span>
                   <strong>{status.cli_detected ? status.cli_version ?? "Detected" : "Unavailable"}</strong>
                 </div>
                 <div className="metric-card">
                   <span>Auth</span>
-                  <strong>{status.authenticated ? status.auth_mode ?? "Connected" : "Not signed in"}</strong>
+                  <strong>{selectedProviderStatus?.auth_status_detectable ? (status.authenticated ? status.auth_mode ?? "Connected" : "Not signed in") : "Managed outside Mission Control"}</strong>
                 </div>
                 <div className="metric-card">
                   <span>Backend port</span>
                   <strong>{status.backend_port}</strong>
                 </div>
-                <div className="metric-card">
-                  <span>Frontend port</span>
-                  <strong>{status.frontend_port ?? "Unknown"}</strong>
+                <div className="status-list">
+                  <h3>Provider capabilities</h3>
+                  <ul>
+                    {status.provider_statuses.map((provider) => (
+                      <li key={provider.provider}>
+                        {provider.label}: {provider.cli_detected ? "CLI detected" : "CLI missing"}; model override {provider.supports_model_override ? "yes" : "no"}; app-server {provider.supports_app_server ? "yes" : "no"}
+                      </li>
+                    ))}
+                  </ul>
                 </div>
               </div>
             ) : (

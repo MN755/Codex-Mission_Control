@@ -5,7 +5,7 @@ import { api } from "../api/client";
 import { AppShell } from "../components/AppShell";
 import { LoadingBlock } from "../components/LoadingBlock";
 import { SectionCard } from "../components/SectionCard";
-import type { CodexStatus, ManagerMode, Project, RunnerMode } from "../types";
+import type { CodexStatus, ManagerMode, Project, ProviderId, RunnerMode } from "../types";
 
 const DEMO_WORKSPACE = "C:\\Users\\mike\\OneDrive\\Desktop\\Codex Mission Control\\apps\\server\\.runtime\\demo-project";
 
@@ -22,6 +22,7 @@ export function ProjectIntakePage() {
     name: "",
     idea: "",
     workspace_path: DEMO_WORKSPACE,
+    provider: "codex" as ProviderId,
     runner_mode: (demoMode ? "dry_run" : "auto") as RunnerMode,
     manager_mode: (demoMode ? "deterministic" : "auto") as ManagerMode,
   });
@@ -106,6 +107,17 @@ export function ProjectIntakePage() {
             </label>
             <div className="form-row">
               <label>
+                Live provider
+                <select
+                  value={form.provider}
+                  onChange={(event) => setForm((current) => ({ ...current, provider: event.target.value as ProviderId }))}
+                >
+                  <option value="codex">Codex</option>
+                  <option value="claude_code">Claude Code</option>
+                  <option value="external_adapter">External adapter</option>
+                </select>
+              </label>
+              <label>
                 Runner mode
                 <select
                   value={form.runner_mode}
@@ -113,7 +125,9 @@ export function ProjectIntakePage() {
                 >
                   <option value="auto">auto</option>
                   <option value="cli">cli</option>
-                  <option value="app_server">app_server</option>
+                  <option value="app_server" disabled={form.provider !== "codex"}>
+                    app_server {form.provider !== "codex" ? "(Codex only)" : ""}
+                  </option>
                   <option value="dry_run">dry_run</option>
                 </select>
               </label>
@@ -124,7 +138,7 @@ export function ProjectIntakePage() {
                   onChange={(event) => setForm((current) => ({ ...current, manager_mode: event.target.value as ManagerMode }))}
                 >
                   <option value="auto">auto</option>
-                  <option value="codex">codex</option>
+                  <option value="provider">provider</option>
                   <option value="deterministic">deterministic</option>
                 </select>
               </label>
@@ -141,18 +155,18 @@ export function ProjectIntakePage() {
           </form>
         </SectionCard>
 
-        <SectionCard title="Local Codex status" subtitle="Mission Control prefers your existing local Codex or ChatGPT sign-in and only uses API-key auth if you explicitly chose it on the launchpad.">
+        <SectionCard title="Local provider status" subtitle="Mission Control has built-in auth for Codex. Claude Code and external adapters use their own local login or credential flow.">
           {loading ? (
-            <LoadingBlock label="Checking local Codex environment..." />
+            <LoadingBlock label="Checking local provider environment..." />
           ) : codexStatus ? (
             <div className="status-grid">
               <div className="metric-card">
-                <span>CLI</span>
-                <strong>{codexStatus.cli_detected ? codexStatus.cli_version ?? "Detected" : "Unavailable"}</strong>
+                <span>Selected provider</span>
+                <strong>{codexStatus.selected_provider_label}</strong>
               </div>
               <div className="metric-card">
-                <span>Auth</span>
-                <strong>{codexStatus.authenticated ? codexStatus.auth_mode ?? "Connected" : "Not signed in"}</strong>
+                <span>CLI</span>
+                <strong>{codexStatus.cli_detected ? codexStatus.cli_version ?? "Detected" : "Unavailable"}</strong>
               </div>
               <div className="metric-card">
                 <span>App server handshake</span>
@@ -163,14 +177,6 @@ export function ProjectIntakePage() {
                 <strong>{codexStatus.effective_runner_mode}</strong>
               </div>
               <div className="status-list">
-                <h3>Plugins</h3>
-                <ul>
-                  {codexStatus.configured_plugins.slice(0, 8).map((plugin) => (
-                    <li key={plugin}>{plugin}</li>
-                  ))}
-                </ul>
-              </div>
-              <div className="status-list">
                 <h3>Runtime</h3>
                 <ul>
                   <li>{codexStatus.runtime_directory}</li>
@@ -178,7 +184,17 @@ export function ProjectIntakePage() {
                   <li>Frontend port: {codexStatus.frontend_port ?? "Unknown"}</li>
                   <li>Dry-run available: {codexStatus.dry_run_available ? "yes" : "no"}</li>
                   <li>Active runs: {codexStatus.active_runs.length}</li>
-                  <li>{codexStatus.authenticated ? "Launchpad auth is ready." : "Go back to the launchpad if you want to connect live Codex workers first."}</li>
+                  <li>{codexStatus.authenticated ? "Codex launchpad auth is ready." : "Codex sign-in is optional unless you choose the Codex provider."}</li>
+                </ul>
+              </div>
+              <div className="status-list">
+                <h3>Providers</h3>
+                <ul>
+                  {codexStatus.provider_statuses.map((provider) => (
+                    <li key={provider.provider}>
+                      {provider.label}: {provider.cli_detected ? "CLI detected" : "CLI missing"}; {provider.auth_status_detectable ? provider.login_status : "auth managed externally"}
+                    </li>
+                  ))}
                 </ul>
               </div>
             </div>

@@ -7,6 +7,16 @@ import { LoadingBlock } from "../components/LoadingBlock";
 import { SectionCard } from "../components/SectionCard";
 import type { Plan, Project, ProjectSettings, Task } from "../types";
 
+function providerDefaultLabel(provider: unknown) {
+  if (provider === "claude_code") {
+    return "Claude Code default";
+  }
+  if (provider === "external_adapter") {
+    return "Adapter default";
+  }
+  return "Codex default";
+}
+
 export function HandoffPage() {
   const { projectId } = useParams();
   const numericProjectId = Number(projectId);
@@ -46,11 +56,12 @@ export function HandoffPage() {
   const whatWasBuilt = (handoff.what_was_built as string[] | undefined) ?? [];
   const howToRun = (handoff.how_to_run as string[] | undefined) ?? [];
   const howToUse = (handoff.how_to_use as string[] | undefined) ?? [];
-  const knownLimitations = (handoff.known_limitations as string[] | undefined) ?? ["Runner depth depends on the local Codex environment."];
+  const knownLimitations = (handoff.known_limitations as string[] | undefined) ?? ["Runner depth depends on the selected local provider environment."];
   const remainingRisks = (handoff.remaining_risks as string[] | undefined) ?? [];
   const nextImprovements = (handoff.suggested_next_improvements as string[] | undefined) ?? [];
   const executedChecks = (handoff.tests_builds_run as string[] | undefined) ?? testsRun;
   const modelsUsed = (handoff.models_used as Record<string, unknown> | undefined) ?? {};
+  const providerUsed = String(modelsUsed.provider ?? settings?.provider ?? "codex");
   const roleModelOverrides = (modelsUsed.role_model_overrides as Record<string, string> | undefined) ?? settings?.per_role_model_overrides_json ?? {};
 
   return (
@@ -70,9 +81,10 @@ export function HandoffPage() {
                 <li key={item}>{item}</li>
               ))}
               <li>Project docs path: {project?.docs_path ?? "Not generated"}</li>
+              <li>Provider used: {providerUsed}</li>
               <li>Runner mode used: {project?.runner_mode}</li>
-              <li>Manager model: {String(modelsUsed.manager_model ?? settings?.manager_model ?? "Codex default")}</li>
-              <li>Default worker model: {String(modelsUsed.default_worker_model ?? settings?.default_worker_model ?? "Codex default")}</li>
+              <li>Manager model: {String(modelsUsed.manager_model ?? settings?.manager_model ?? providerDefaultLabel(providerUsed))}</li>
+              <li>Default worker model: {String(modelsUsed.default_worker_model ?? settings?.default_worker_model ?? providerDefaultLabel(providerUsed))}</li>
               <li>Latest plan version: {plan?.version ?? "None"}</li>
               <li>Completed tasks: {tasks.filter((task) => task.status === "done").length}</li>
             </ul>
@@ -124,10 +136,11 @@ export function HandoffPage() {
 
           <SectionCard title="Models used" subtitle="These are the project-scoped model settings that were active for the build.">
             <ul className="flat-list">
-              <li>Manager model: {String(modelsUsed.manager_model ?? settings?.manager_model ?? "Codex default")}</li>
-              <li>Manager reasoning: {String(modelsUsed.manager_reasoning_effort ?? settings?.manager_reasoning_effort ?? "Codex default")}</li>
-              <li>Default worker model: {String(modelsUsed.default_worker_model ?? settings?.default_worker_model ?? "Codex default")}</li>
-              <li>Default worker reasoning: {String(modelsUsed.default_worker_reasoning_effort ?? settings?.default_worker_reasoning_effort ?? "Codex default")}</li>
+              <li>Provider: {providerUsed}</li>
+              <li>Manager model: {String(modelsUsed.manager_model ?? settings?.manager_model ?? providerDefaultLabel(providerUsed))}</li>
+              <li>Manager reasoning: {String(modelsUsed.manager_reasoning_effort ?? settings?.manager_reasoning_effort ?? providerDefaultLabel(providerUsed))}</li>
+              <li>Default worker model: {String(modelsUsed.default_worker_model ?? settings?.default_worker_model ?? providerDefaultLabel(providerUsed))}</li>
+              <li>Default worker reasoning: {String(modelsUsed.default_worker_reasoning_effort ?? settings?.default_worker_reasoning_effort ?? providerDefaultLabel(providerUsed))}</li>
               <li>Role overrides: {Object.keys(roleModelOverrides).length ? Object.entries(roleModelOverrides).map(([role, model]) => `${role}: ${model}`).join(", ") : "None"}</li>
             </ul>
           </SectionCard>

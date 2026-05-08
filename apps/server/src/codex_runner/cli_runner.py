@@ -12,6 +12,7 @@ from codex_runner.base import BaseCodexRunner, RunnerContext, RunnerHandle
 from codex_runner.events import parse_json_line
 from config import RUNTIME_LOGS_ROOT
 from prompts import worker_task_prompt
+from provider_support import default_label
 
 
 @dataclass
@@ -34,14 +35,14 @@ class CliRunState:
 
 
 class CliCodexRunner(BaseCodexRunner):
-    runner_type = "cli"
+    runner_type = "codex_cli"
 
     def __init__(self) -> None:
         self.runs: dict[str, CliRunState] = {}
         self.last_cli_version: str | None = None
         self.last_login_status: str | None = None
 
-    async def handshake(self) -> bool:
+    async def handshake(self, settings=None) -> bool:
         if shutil.which("codex") is None:
             self.last_cli_version = None
             return False
@@ -135,8 +136,9 @@ class CliCodexRunner(BaseCodexRunner):
             cli_version=self.last_cli_version,
             login_status=self.last_login_status,
             effective_settings={
-                "model": context.settings.model or "Codex default",
-                "reasoning_effort": context.settings.reasoning_effort or "Codex default",
+                "provider": context.settings.provider,
+                "model": context.settings.model or default_label(context.settings.provider),
+                "reasoning_effort": context.settings.reasoning_effort or default_label(context.settings.provider),
                 "sandbox_mode": context.settings.sandbox_mode,
                 "approval_policy": context.settings.approval_policy,
             },

@@ -46,7 +46,6 @@ export function StartupPage() {
   }, [authState?.current_job?.id, authState?.current_job?.status]);
 
   const currentJob: AuthJob | null = authState?.current_job ?? systemStatus?.current_auth_job ?? null;
-  const canContinue = Boolean(authState?.authenticated);
   const latestProject = useMemo(() => projects[0] ?? null, [projects]);
 
   async function runAuthAction(action: Promise<AuthJob>, nextWorking: string) {
@@ -73,7 +72,7 @@ export function StartupPage() {
   return (
     <AppShell
       title="Desktop Launchpad"
-      subtitle="Authenticate once, then orchestrate local Codex workers from a polished desktop shell."
+      subtitle="Connect a local provider, then orchestrate manager and worker agents from a polished desktop shell."
     >
       <div className="startup-grid">
         <SectionCard
@@ -84,10 +83,10 @@ export function StartupPage() {
             <MissionControlMark className="launchpad-hero__mark" />
             <div className="launchpad-hero__copy">
               <span className="eyebrow">Desktop-first</span>
-              <h2>Sign in before you build.</h2>
+              <h2>Choose a local provider before you build.</h2>
               <p>
-                The recommended path is <strong>ChatGPT sign-in</strong>, which keeps Codex usage tied to your local Codex or ChatGPT
-                session. API-key login is optional, and it can use API billing depending on your account.
+                Mission Control now works with <strong>Codex</strong>, <strong>Claude Code</strong>, or a generic local adapter. Codex has
+                built-in ChatGPT and API-key login here. Claude Code and external adapters keep their own local auth flows.
               </p>
               <div className="button-row">
                 <button type="button" onClick={() => void runAuthAction(api.loginWithChatGpt(false), "chatgpt")} disabled={working !== null || !authState?.chatgpt_supported}>
@@ -103,14 +102,14 @@ export function StartupPage() {
           <div className="startup-banner">
             <div className="startup-indicator" />
             <div>
-              <strong>{authState?.authenticated ? `Connected via ${authState.auth_mode ?? "local Codex auth"}` : "No Codex login detected yet"}</strong>
-              <p>{authState?.authenticated ? "You can continue into the full manager workflow now." : "Complete one of the sign-in options below to unlock live manager and worker runs."}</p>
+              <strong>{authState?.authenticated ? `Codex connected via ${authState.auth_mode ?? "local auth"}` : "Codex login is optional unless you choose Codex as the live provider"}</strong>
+              <p>{authState?.authenticated ? "You can launch Codex-backed manager and worker runs immediately." : "You can still continue into Mission Control for Claude Code, an external adapter, or dry-run mode."}</p>
             </div>
           </div>
 
           <div className="launchpad-auth-grid">
             <div className="launchpad-auth-card">
-              <h3>Optional API key login</h3>
+              <h3>Optional Codex API key login</h3>
               <p>Mission Control does not store the raw key. It passes the key once to the local Codex CLI login flow over localhost.</p>
               <label>
                 OpenAI API key
@@ -142,12 +141,12 @@ export function StartupPage() {
             <div className="launchpad-auth-card">
               <h3>What happens next</h3>
               <ul className="flat-list">
-                <li>Manager mode can immediately use your local Codex session for docs, planning, routing, and handoff work.</li>
-                <li>Worker agents inherit the same local session and respect per-project model settings instead of changing your global Codex config.</li>
-                <li>Dry-run mode still works offline if you want to preview the full workflow before connecting live Codex workers.</li>
+                <li>Each project chooses a live provider: Codex, Claude Code, or an external local adapter.</li>
+                <li>Worker agents inherit per-project provider and model settings instead of rewriting your global CLI config.</li>
+                <li>Dry-run mode still works offline if you want to preview the full workflow before connecting live providers.</li>
               </ul>
               <div className="button-row">
-                <button type="button" onClick={() => navigate("/projects/new")} disabled={!canContinue}>
+                <button type="button" onClick={() => navigate("/projects/new")}>
                   Continue to Mission Control
                 </button>
                 <button type="button" className="button-ghost" onClick={() => navigate("/projects/new?mode=demo")}>
@@ -171,18 +170,18 @@ export function StartupPage() {
           {error ? <p className="error-text">{error}</p> : null}
         </SectionCard>
 
-        <SectionCard title="Local environment" subtitle="Mission Control still prefers your existing local Codex session over API keys whenever possible.">
+        <SectionCard title="Local environment" subtitle="Provider detection is local-first. Codex has built-in auth here; Claude Code and adapters are detected and configured without API keys.">
           {loading ? (
-            <LoadingBlock label="Inspecting the local Codex install..." />
+            <LoadingBlock label="Inspecting local provider CLIs..." />
           ) : systemStatus ? (
             <div className="status-grid">
               <div className="metric-card">
-                <span>CLI</span>
-                <strong>{systemStatus.cli_detected ? systemStatus.cli_version ?? "Detected" : "Unavailable"}</strong>
+                <span>Selected provider</span>
+                <strong>{systemStatus.selected_provider_label}</strong>
               </div>
               <div className="metric-card">
-                <span>Auth mode</span>
-                <strong>{systemStatus.auth_mode ?? "Not signed in"}</strong>
+                <span>CLI</span>
+                <strong>{systemStatus.cli_detected ? systemStatus.cli_version ?? "Detected" : "Unavailable"}</strong>
               </div>
               <div className="metric-card">
                 <span>Desktop runtime</span>
@@ -197,6 +196,16 @@ export function StartupPage() {
                 <ul>
                   {systemStatus.notes.map((note) => (
                     <li key={note}>{note}</li>
+                  ))}
+                </ul>
+              </div>
+              <div className="status-list">
+                <h3>Providers</h3>
+                <ul>
+                  {systemStatus.provider_statuses.map((provider) => (
+                    <li key={provider.provider}>
+                      {provider.label}: {provider.cli_detected ? provider.cli_version ?? "Detected" : "CLI missing"}; {provider.auth_status_detectable ? provider.login_status : "auth handled outside Mission Control"}
+                    </li>
                   ))}
                 </ul>
               </div>

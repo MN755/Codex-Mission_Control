@@ -1,5 +1,6 @@
+export type ProviderId = "codex" | "claude_code" | "external_adapter";
 export type RunnerMode = "auto" | "cli" | "app_server" | "dry_run";
-export type ManagerMode = "auto" | "codex" | "deterministic";
+export type ManagerMode = "auto" | "provider" | "codex" | "deterministic";
 export type ReasoningEffort = "minimal" | "low" | "medium" | "high";
 export type SandboxMode = "workspace-write" | "read-only";
 export type ApprovalPolicy = "on-request" | "untrusted" | "never";
@@ -129,6 +130,8 @@ export interface ProjectEvent {
 }
 
 export interface CodexStatus {
+  selected_provider: ProviderId;
+  selected_provider_label: string;
   cli_detected: boolean;
   cli_version: string | null;
   login_status: string;
@@ -147,6 +150,7 @@ export interface CodexStatus {
   selected_manager_model: string | null;
   selected_default_worker_model: string | null;
   available_models: string[];
+  provider_statuses: ProviderStatus[];
   mcp_servers: Array<Record<string, unknown>>;
   configured_plugins: string[];
   local_skills: string[];
@@ -172,21 +176,43 @@ export interface AuthState {
   auth_mode: string | null;
   login_status: string;
   cli_detected: boolean;
+  provider: ProviderId;
   current_job: AuthJob | null;
   chatgpt_supported: boolean;
   device_auth_supported: boolean;
   api_key_supported: boolean;
+  provider_statuses: ProviderStatus[];
+  notes: string[];
+}
+
+export interface ProviderStatus {
+  provider: ProviderId;
+  label: string;
+  cli_detected: boolean;
+  cli_version: string | null;
+  authenticated: boolean;
+  auth_mode: string | null;
+  auth_status_detectable: boolean;
+  login_status: string;
+  supports_model_override: boolean;
+  supports_reasoning_effort: boolean;
+  supports_app_server: boolean;
+  supports_builtin_auth: boolean;
+  available_models: string[];
   notes: string[];
 }
 
 export interface ProjectSettings {
   project_id: number;
+  provider: ProviderId;
   manager_model: string | null;
   default_worker_model: string | null;
   manager_reasoning_effort: ReasoningEffort | null;
   default_worker_reasoning_effort: ReasoningEffort | null;
   per_role_model_overrides_json: Record<string, string>;
   per_role_reasoning_overrides_json: Record<string, string>;
+  adapter_command: string | null;
+  adapter_args_json: string[];
   runner_mode: RunnerMode;
   sandbox_mode: SandboxMode;
   approval_policy: ApprovalPolicy;

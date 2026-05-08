@@ -6,8 +6,9 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field
 
 
+ProviderId = Literal["codex", "claude_code", "external_adapter"]
 RunnerMode = Literal["auto", "cli", "app_server", "dry_run"]
-ManagerMode = Literal["auto", "codex", "deterministic"]
+ManagerMode = Literal["auto", "provider", "codex", "deterministic"]
 AgentStatus = Literal["idle", "starting", "working", "waiting", "needs_review", "blocked", "done", "stopped", "error"]
 TaskStatus = Literal["backlog", "assigned", "working", "waiting_on_paths", "needs_review", "done", "blocked"]
 PlanAction = Literal["approve_build", "simplify", "ambitious", "usability", "quality", "rewrite", "feature_delta"]
@@ -25,6 +26,7 @@ class ProjectCreate(BaseModel):
     name: str
     idea: str
     workspace_path: str
+    provider: ProviderId = "codex"
     runner_mode: RunnerMode = "auto"
     manager_mode: ManagerMode = "auto"
 
@@ -290,12 +292,15 @@ class LogRead(BaseModel):
 
 class ProjectSettingsRead(BaseModel):
     project_id: int
+    provider: ProviderId = "codex"
     manager_model: str | None
     default_worker_model: str | None
     manager_reasoning_effort: ReasoningEffort | None
     default_worker_reasoning_effort: ReasoningEffort | None
     per_role_model_overrides_json: dict[str, str]
     per_role_reasoning_overrides_json: dict[str, str]
+    adapter_command: str | None = None
+    adapter_args_json: list[str] = Field(default_factory=list)
     runner_mode: RunnerMode
     sandbox_mode: SandboxMode
     approval_policy: ApprovalPolicy
@@ -307,12 +312,15 @@ class ProjectSettingsRead(BaseModel):
 
 
 class ProjectSettingsUpdate(BaseModel):
+    provider: ProviderId = "codex"
     manager_model: str | None = None
     default_worker_model: str | None = None
     manager_reasoning_effort: ReasoningEffort | None = None
     default_worker_reasoning_effort: ReasoningEffort | None = None
     per_role_model_overrides_json: dict[str, str] = Field(default_factory=dict)
     per_role_reasoning_overrides_json: dict[str, str] = Field(default_factory=dict)
+    adapter_command: str | None = None
+    adapter_args_json: list[str] = Field(default_factory=list)
     runner_mode: RunnerMode = "auto"
     sandbox_mode: SandboxMode = "workspace-write"
     approval_policy: ApprovalPolicy = "on-request"
@@ -339,19 +347,40 @@ class ApiKeyLoginRequest(BaseModel):
     api_key: str = Field(min_length=1)
 
 
+class ProviderStatusRead(BaseModel):
+    provider: ProviderId
+    label: str
+    cli_detected: bool
+    cli_version: str | None
+    authenticated: bool
+    auth_mode: str | None
+    auth_status_detectable: bool = True
+    login_status: str
+    supports_model_override: bool
+    supports_reasoning_effort: bool
+    supports_app_server: bool
+    supports_builtin_auth: bool
+    available_models: list[str] = Field(default_factory=list)
+    notes: list[str] = Field(default_factory=list)
+
+
 class AuthStateRead(BaseModel):
     authenticated: bool
     auth_mode: str | None
     login_status: str
     cli_detected: bool
+    provider: ProviderId = "codex"
     current_job: AuthJobRead | None = None
     chatgpt_supported: bool = True
     device_auth_supported: bool = True
     api_key_supported: bool = True
+    provider_statuses: list[ProviderStatusRead] = Field(default_factory=list)
     notes: list[str] = Field(default_factory=list)
 
 
 class SystemStatusRead(BaseModel):
+    selected_provider: ProviderId = "codex"
+    selected_provider_label: str
     cli_detected: bool
     cli_version: str | None
     login_status: str
@@ -370,6 +399,7 @@ class SystemStatusRead(BaseModel):
     selected_manager_model: str | None = None
     selected_default_worker_model: str | None = None
     available_models: list[str] = Field(default_factory=list)
+    provider_statuses: list[ProviderStatusRead] = Field(default_factory=list)
     mcp_servers: list[dict[str, Any]]
     configured_plugins: list[str]
     local_skills: list[str]
@@ -377,27 +407,5 @@ class SystemStatusRead(BaseModel):
     notes: list[str]
 
 
-class CodexStatusRead(BaseModel):
-    cli_detected: bool
-    cli_version: str | None
-    login_status: str
-    auth_mode: str | None
-    authenticated: bool = False
-    app_server_supported: bool
-    app_server_handshake_status: str
-    app_server_transport: str
-    effective_runner_mode: str
-    dry_run_available: bool
-    runtime_directory: str
-    backend_port: int
-    frontend_port: int | None
-    active_runs: list[dict[str, Any]]
-    current_settings_summary: ProjectSettingsRead | None = None
-    selected_manager_model: str | None = None
-    selected_default_worker_model: str | None = None
-    available_models: list[str] = Field(default_factory=list)
-    mcp_servers: list[dict[str, Any]]
-    configured_plugins: list[str]
-    local_skills: list[str]
-    current_auth_job: AuthJobRead | None = None
-    notes: list[str]
+class CodexStatusRead(SystemStatusRead):
+    pass
