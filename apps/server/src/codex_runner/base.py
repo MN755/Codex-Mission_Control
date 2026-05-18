@@ -29,6 +29,7 @@ class RunnerContext:
     task: Task | None
     docs_path: str
     plan_markdown: str | None = None
+    context_pack_markdown: str | None = None
     settings: RunnerSettings = field(default_factory=RunnerSettings)
 
 

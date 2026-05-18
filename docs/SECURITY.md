@@ -2,6 +2,11 @@
 
 Mission Control is designed to be local-first, explicit about trust boundaries, and conservative by default.
 
+See also:
+
+- [Security Model](./SECURITY_MODEL.md)
+- [Approval Policy](./APPROVAL_POLICY.md)
+
 ## Default posture
 
 - backend bound to loopback by default
@@ -79,6 +84,13 @@ That means:
 
 Mission Control does not auto-approve high-risk actions and does not auto-decide high-impact manager questions.
 
+Security policy is now explicit and persisted:
+
+- global and project-scoped approval defaults are stored as `SecurityPolicy`
+- requested actions are normalized into deterministic `RiskAssessment` records
+- approval outcomes are persisted in `ApprovalAuditLog`
+- secrets are redacted before those records are shown or stored
+
 ## Tool permissions
 
 The `Skills & Tools` page exposes a local catalog with explicit permission policy.
@@ -98,6 +110,14 @@ Intended defaults:
 - approval: `on-request`
 
 Mission Control should surface when a task needs broader access instead of bypassing those defaults behind the user's back.
+
+What it will not auto-approve:
+
+- destructive deletes
+- writes outside the workspace
+- direct credential access
+- deployment actions denied by policy
+- high-risk actions requiring explicit user approval
 
 ## Widget boundary security
 

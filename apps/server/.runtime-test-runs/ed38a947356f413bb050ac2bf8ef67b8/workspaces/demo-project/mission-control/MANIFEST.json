@@ -1,0 +1,14 @@
+{
+  "generated_at": "2026-05-18T23:31:08.933069+00:00",
+  "files": [
+    "AGENT_PLAN.md",
+    "ARCHITECTURE_NOTES.md",
+    "MVP_SCOPE.md",
+    "PRODUCT_VISION.md",
+    "PROJECT_BRIEF.md",
+    "RISKS_AND_UNKNOWNS.md",
+    "TASK_BOARD.md",
+    "USER_GOALS.md"
+  ],
+  "manager_mode_used": "deterministic"
+}

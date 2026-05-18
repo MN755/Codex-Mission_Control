@@ -1,0 +1,3 @@
+interface:
+  display_name: "Pause"
+  short_description: "Pause Mission Control work without losing the current state summary."

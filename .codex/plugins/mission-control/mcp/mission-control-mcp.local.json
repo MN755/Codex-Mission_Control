@@ -1,0 +1,20 @@
+{
+  "mission-control": {
+    "command": "python",
+    "args": [
+      "-m",
+      "mission_control_mcp_server"
+    ],
+    "cwd": "apps/mcp-server",
+    "env": {
+      "PYTHONPATH": "src",
+      "MISSION_CONTROL_BACKEND_HOST": "127.0.0.1",
+      "MISSION_CONTROL_BACKEND_PORT": "8000"
+    },
+    "notes": [
+      "Runs the repo-local MCP bridge directly from source.",
+      "The bridge probes localhost health and can auto-start the Mission Control daemon when safe.",
+      "Mission Control Manager remains the orchestrator; Codex chat remains the bridge."
+    ]
+  }
+}

@@ -1,17 +1,29 @@
 import type {
   Agent,
   AgentActionResponse,
+  AgentPerformanceRecord,
+  AgentReputationSummary,
   AppState,
   ApprovalPolicy,
   AppProfile,
   AuthJob,
   AuthState,
+  CapabilityBenchmark,
+  CapabilityMatrixEntry,
   ChangeRequest,
+  CodebaseMap,
+  CodebaseUnderstanding,
   CodexStatus,
+  ContextPack,
   DashboardSummary,
   DiagnosticReport,
   DiagnosticReportListItem,
   HandoffListItem,
+  ImportFolderResponse,
+  ImportInterviewChoice,
+  ImportInterviewChoiceResponse,
+  ImportedCodebaseRequestResult,
+  ImportedCodebaseSafety,
   InterviewSession,
   LogRead,
   ManagerMessage,
@@ -20,6 +32,8 @@ import type {
   OpenPathResult,
   ApprovalRequest,
   ProjectSettings,
+  ProjectPlaybook,
+  ProjectPlaybookSuggestion,
   Plan,
   ProjectAction,
   Project,
@@ -29,11 +43,14 @@ import type {
   ProjectWorkspace,
   ProviderId,
   Reservation,
+  RiskRecord,
   SandboxMode,
   SkillEntry,
   RunnerMode,
+  ScopeChangeSignal,
   SwarmAggressiveness,
   SwarmEvent,
+  SwarmLaunchSimulation,
   SwarmOptimizationMode,
   SwarmPlan,
   SwarmPreferences,
@@ -45,9 +62,13 @@ import type {
   ToolCatalogItem,
   ToolPermission,
   ToolPermissionPolicy,
+  UserPreference,
+  ValidationCoverageArea,
   ReasoningEffort,
   StartupBehavior,
   DocsDepth,
+  AgentInstructionsStatus,
+  AgentsMdProposal,
   AgentArchetype,
   AppEvent,
   WidgetDataResponse,
@@ -243,7 +264,88 @@ export const api = {
   scaleSwarm: (projectId: number, payload: { direction: "up" | "down"; reason?: string | null; count?: number }) =>
     request<SwarmSpawnResponse>(`/api/projects/${projectId}/swarm/scale`, { method: "POST", body: JSON.stringify(payload) }),
   getSwarmEvents: (projectId: number) => request<SwarmEvent[]>(`/api/projects/${projectId}/swarm/events`),
+  simulateSwarmLaunch: (projectId: number) => request<SwarmLaunchSimulation>(`/api/projects/${projectId}/swarm/simulate-launch`, { method: "POST" }),
+  getSwarmSimulations: (projectId: number) => request<SwarmLaunchSimulation[]>(`/api/projects/${projectId}/swarm/simulations`),
   getAgentArchetypes: () => request<AgentArchetype[]>("/api/agent-archetypes"),
+  getCapabilityBenchmarks: () => request<CapabilityBenchmark[]>("/api/capabilities/benchmarks"),
+  createCapabilityBenchmark: (payload: {
+    provider: string;
+    model: string;
+    runner_mode: RunnerMode;
+    category: string;
+    score: number;
+    sample_size?: number;
+    notes?: string | null;
+    last_run_at?: string | null;
+  }) => request<CapabilityBenchmark>("/api/capabilities/benchmarks", { method: "POST", body: JSON.stringify(payload) }),
+  getCapabilityMatrix: () => request<CapabilityMatrixEntry[]>("/api/capabilities/matrix"),
+  getAgentReputation: () => request<AgentReputationSummary[]>("/api/agents/reputation"),
+  getProjectAgentReputation: (projectId: number) => request<AgentReputationSummary[]>(`/api/projects/${projectId}/agents/reputation`),
+  createAgentPerformanceRecord: (payload: {
+    project_id?: number | null;
+    agent_archetype: string;
+    agent_name?: string | null;
+    provider?: string | null;
+    model?: string | null;
+    runner_mode: RunnerMode;
+    task_category: string;
+    task_id?: number | null;
+    outcome: string;
+    duration_seconds?: number | null;
+    review_passed?: boolean | null;
+    tests_passed?: boolean | null;
+    failure_summary?: string | null;
+  }) => request<AgentPerformanceRecord>("/api/agents/performance-record", { method: "POST", body: JSON.stringify(payload) }),
+  getPlaybooks: () => request<ProjectPlaybook[]>("/api/playbooks"),
+  getPlaybook: (playbookKey: string) => request<ProjectPlaybook>(`/api/playbooks/${playbookKey}`),
+  suggestPlaybook: (projectId: number) => request<ProjectPlaybookSuggestion>(`/api/projects/${projectId}/playbook/suggest`, { method: "POST" }),
+  applyPlaybook: (projectId: number, playbookKey: string) =>
+    request<ProjectPlaybookSuggestion>(`/api/projects/${projectId}/playbook/apply`, { method: "POST", body: JSON.stringify({ playbook_key: playbookKey }) }),
+  buildContextPack: (projectId: number, payload: { agent_id?: number | null; task_id?: number | null; title?: string | null; goal?: string | null; token_budget_hint?: number | null }) =>
+    request<ContextPack>(`/api/projects/${projectId}/context-packs/build`, { method: "POST", body: JSON.stringify(payload) }),
+  getContextPacks: (projectId: number) => request<ContextPack[]>(`/api/projects/${projectId}/context-packs`),
+  getContextPack: (contextPackId: number) => request<ContextPack>(`/api/context-packs/${contextPackId}`),
+  getProjectRisks: (projectId: number) => request<RiskRecord[]>(`/api/projects/${projectId}/risks`),
+  createProjectRisk: (projectId: number, payload: {
+    title: string;
+    description: string;
+    severity: "low" | "medium" | "high" | "critical";
+    likelihood: "low" | "medium" | "high";
+    owner_agent_id?: number | null;
+    mitigation?: string | null;
+    status?: "open" | "monitoring" | "mitigated" | "accepted" | "closed";
+    related_task_id?: number | null;
+    created_by?: "manager" | "user" | "agent" | "system";
+  }) => request<RiskRecord>(`/api/projects/${projectId}/risks`, { method: "POST", body: JSON.stringify(payload) }),
+  updateRisk: (
+    riskId: number,
+    payload: Partial<{
+      title: string;
+      description: string;
+      severity: "low" | "medium" | "high" | "critical";
+      likelihood: "low" | "medium" | "high";
+      owner_agent_id: number | null;
+      mitigation: string | null;
+      status: "open" | "monitoring" | "mitigated" | "accepted" | "closed";
+      related_task_id: number | null;
+    }>,
+  ) => request<RiskRecord>(`/api/risks/${riskId}`, { method: "PATCH", body: JSON.stringify(payload) }),
+  getScopeCreep: (projectId: number) => request<ScopeChangeSignal[]>(`/api/projects/${projectId}/scope-creep`),
+  analyzeScopeCreep: (projectId: number, payload: { source?: string; summary?: string | null; related_task_id?: number | null; related_message_id?: number | null }) =>
+    request<ScopeChangeSignal[]>(`/api/projects/${projectId}/scope-creep/analyze`, { method: "POST", body: JSON.stringify(payload) }),
+  resolveScopeCreep: (signalId: number, status: "accepted" | "deferred" | "dismissed") =>
+    request<ScopeChangeSignal>(`/api/scope-creep/${signalId}/resolve`, { method: "POST", body: JSON.stringify({ status }) }),
+  getValidationCoverage: (projectId: number) => request<ValidationCoverageArea[]>(`/api/projects/${projectId}/validation-coverage`),
+  recomputeValidationCoverage: (projectId: number) => request<ValidationCoverageArea[]>(`/api/projects/${projectId}/validation-coverage/recompute`, { method: "POST" }),
+  getPreferences: () => request<UserPreference[]>("/api/preferences"),
+  putPreference: (key: string, payload: { value_json: unknown; source?: "setup" | "user" | "manager_observed" | "imported"; editable?: boolean }) =>
+    request<UserPreference>(`/api/preferences/${key}`, { method: "PUT", body: JSON.stringify(payload) }),
+  getProjectPreferences: (projectId: number) => request<UserPreference[]>(`/api/projects/${projectId}/preferences`),
+  putProjectPreference: (
+    projectId: number,
+    key: string,
+    payload: { value_json: unknown; source?: "setup" | "user" | "manager_observed" | "imported"; editable?: boolean },
+  ) => request<UserPreference>(`/api/projects/${projectId}/preferences/${key}`, { method: "PUT", body: JSON.stringify(payload) }),
   getDashboardSummary: () => request<DashboardSummary>("/api/dashboard/summary"),
   getWidgetCatalog: (scope?: WidgetScope) => request<WidgetDefinition[]>(scope ? `/api/widgets/catalog?scope=${scope}` : "/api/widgets/catalog"),
   getDashboardWidgetInstances: () => request<WidgetInstance[]>("/api/widgets/instances?scope=dashboard"),
@@ -332,6 +434,35 @@ export const api = {
     runner_mode: RunnerMode;
     manager_mode: "auto" | "provider" | "codex" | "deterministic";
   }) => request<Project>("/api/projects", { method: "POST", body: JSON.stringify(payload) }),
+  importExistingFolder: (payload: { name?: string | null; folder_path: string; import_mode?: "linked" | "copied" | "cloned"; start_read_only_scan?: boolean }) =>
+    request<ImportFolderResponse>("/api/projects/import-folder", { method: "POST", body: JSON.stringify(payload) }),
+  scanCodebase: (projectId: number) => request<CodebaseMap>(`/api/projects/${projectId}/scan-codebase`, { method: "POST" }),
+  targetedScanCodebase: (projectId: number, payload: { target_paths?: string[]; request_text?: string | null; scan_reason?: string | null }) =>
+    request<CodebaseMap>(`/api/projects/${projectId}/scan-codebase/targeted`, { method: "POST", body: JSON.stringify(payload) }),
+  getCodebaseMap: (projectId: number) => request<CodebaseMap>(`/api/projects/${projectId}/codebase-map`),
+  getCodebaseUnderstanding: (projectId: number) => request<CodebaseUnderstanding>(`/api/projects/${projectId}/codebase-understanding`),
+  chooseImportInterview: (projectId: number, choice: ImportInterviewChoice) =>
+    request<ImportInterviewChoiceResponse>(`/api/projects/${projectId}/import/interview-choice`, { method: "POST", body: JSON.stringify({ choice }) }),
+  getImportSafety: (projectId: number) => request<ImportedCodebaseSafety>(`/api/projects/${projectId}/import-safety`),
+  updateImportSafety: (
+    projectId: number,
+    payload: Partial<{
+      write_permission_status: "read_only" | "write_allowed" | "limited_write";
+      require_snapshot_before_edits: boolean;
+      require_approval_for_dependency_changes: boolean;
+      require_approval_for_test_commands: boolean;
+      require_approval_for_build_commands: boolean;
+      require_approval_for_formatting: boolean;
+      require_approval_for_package_file_changes: boolean;
+      destructive_commands_blocked: boolean;
+    }>,
+  ) => request<ImportedCodebaseSafety>(`/api/projects/${projectId}/import-safety`, { method: "PATCH", body: JSON.stringify(payload) }),
+  updateWritePermission: (projectId: number, writePermissionStatus: "read_only" | "write_allowed" | "limited_write") =>
+    request<ImportedCodebaseSafety>(`/api/projects/${projectId}/write-permission`, { method: "POST", body: JSON.stringify({ write_permission_status: writePermissionStatus }) }),
+  getAgentsMdStatus: (projectId: number) => request<AgentInstructionsStatus>(`/api/projects/${projectId}/agents-md/status`),
+  proposeAgentsMd: (projectId: number) => request<AgentsMdProposal>(`/api/projects/${projectId}/agents-md/propose`, { method: "POST" }),
+  submitImportedCodebaseRequest: (projectId: number, message: string) =>
+    request<ImportedCodebaseRequestResult>(`/api/projects/${projectId}/manager/imported-codebase-request`, { method: "POST", body: JSON.stringify({ message }) }),
   generateDocs: (projectId: number) => request<{ docs_path: string; files: string[]; used_live_manager: boolean }>(`/api/projects/${projectId}/docs/generate`, { method: "POST" }),
   startInterview: (projectId: number, questionBudget: number) =>
     request<InterviewSession>(`/api/projects/${projectId}/interview/start`, { method: "POST", body: JSON.stringify({ question_budget: questionBudget }) }),

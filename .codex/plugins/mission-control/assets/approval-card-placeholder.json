@@ -1,0 +1,10 @@
+{
+  "card_type": "approval",
+  "preferred_style": "codex_approval_card",
+  "title": "Mission Control approval",
+  "subtitle": "Structured fallback text must still work when custom cards are unsupported.",
+  "notes": [
+    "This is a placeholder asset, not a claim that Codex plugin presentation APIs are finalized.",
+    "Mission Control always includes text-safe decision fields alongside presentation metadata."
+  ]
+}

@@ -1,0 +1,3 @@
+interface:
+  display_name: "Github Ready Docs"
+  short_description: "Prepare documentation for a public GitHub audience through Mission Control-aware review."

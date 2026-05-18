@@ -33,6 +33,57 @@ Supported behaviors:
 
 Mission Control does not require OpenAI API keys for the preferred Codex login path.
 
+## Codex plugin bridge mode
+
+Mission Control can also be exposed inside the Codex desktop app through a plugin plus MCP bridge model.
+
+In that mode:
+
+- Codex chat is the user-facing bridge
+- Mission Control Manager remains the orchestration authority
+- approvals and manager questions are relayed through Codex chat
+- the plugin package carries skills, prompts, and MCP wiring guidance rather than pretending to replace Mission Control's backend
+
+Current bridge tool set:
+
+- `mission_control_attach_workspace`
+- `mission_control_start_task`
+- `mission_control_get_status`
+- `mission_control_get_pending_decisions`
+- `mission_control_answer_decision`
+- `mission_control_pause`
+- `mission_control_resume`
+- `mission_control_get_handoff`
+- `mission_control_open_dashboard`
+
+Current safe resources:
+
+- `mission-control://projects/{project_id}/status`
+- `mission-control://projects/{project_id}/swarm-plan`
+- `mission-control://projects/{project_id}/agents`
+- `mission-control://projects/{project_id}/pending-decisions`
+- `mission-control://projects/{project_id}/handoff`
+- `mission-control://projects/{project_id}/codebase-map`
+- `mission-control://orchestrations/{orchestration_id}/status`
+
+Bridge behavior:
+
+- attach the workspace first
+- reuse the active orchestration for that workspace when one already exists
+- poll compact status instead of pretending streaming is guaranteed
+- relay every approval and manager question back to the user
+- send the user’s selected option back through `mission_control_answer_decision`
+- fetch the evidence-backed handoff only when Mission Control reports readiness
+
+Installation and packaging guidance lives in [docs/CODEX_PLUGIN_INSTALL.md](CODEX_PLUGIN_INSTALL.md). Bridge behavior and security are documented in [docs/CODEX_PLUGIN_MODE.md](CODEX_PLUGIN_MODE.md) and [docs/MCP_SECURITY.md](MCP_SECURITY.md).
+
+Headless bridge runtime docs:
+
+- [Bridge Runtime](BRIDGE_RUNTIME.md)
+- [Pending Decisions](PENDING_DECISIONS.md)
+- [Plugin Health Doctor](PLUGIN_HEALTH_DOCTOR.md)
+- [Chat-Native Handoffs](CHAT_NATIVE_HANDOFFS.md)
+
 ## Codex login vs API billing
 
 Preferred non-API-key flow:

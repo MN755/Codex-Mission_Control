@@ -25,6 +25,7 @@ export function ProjectIntakePage() {
   const demoMode = searchParams.get("mode") === "demo";
   const guidedMode = searchParams.get("guided") === "1";
   const startupProviderChoice = (searchParams.get("providerChoice") as ProviderId | null) ?? null;
+  const [intakeMode, setIntakeMode] = useState<"idea" | "import" | "docs" | "clone">("idea");
   const [projects, setProjects] = useState<Project[]>([]);
   const [codexStatus, setCodexStatus] = useState<CodexStatus | null>(null);
   const [profile, setProfile] = useState<AppProfile | null>(null);
@@ -38,6 +39,12 @@ export function ProjectIntakePage() {
     provider: (startupProviderChoice ?? "codex") as ProviderId,
     runner_mode: (demoMode ? "dry_run" : "auto") as RunnerMode,
     manager_mode: (demoMode ? "deterministic" : "auto") as ManagerMode,
+  });
+  const [importForm, setImportForm] = useState({
+    name: "",
+    folder_path: "",
+    import_mode: "linked" as const,
+    start_read_only_scan: true,
   });
 
   useEffect(() => {
@@ -78,9 +85,9 @@ export function ProjectIntakePage() {
       }
     }
     void load();
-  }, []);
+  }, [demoMode, startupProviderChoice]);
 
-  async function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
+  async function handleIdeaSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setSubmitting(true);
     setError(null);
@@ -95,6 +102,20 @@ export function ProjectIntakePage() {
     }
   }
 
+  async function handleImportSubmit(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setSubmitting(true);
+    setError(null);
+    try {
+      const response = await api.importExistingFolder(importForm);
+      navigate(response.recommended_next_route);
+    } catch (submitError) {
+      setError(submitError instanceof Error ? submitError.message : "Failed to import existing folder.");
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
   return (
     <AppShell
       title="Project Intake"
@@ -103,113 +124,189 @@ export function ProjectIntakePage() {
           ? "Guided walkthrough mode is active. Mission Control will keep the first pass safe, local, and easier to inspect."
           : demoMode
             ? "Dry-run demo mode is active. The form defaults to a safe local simulation flow."
-            : "Turn a raw idea into local project docs, an interview flow, and a buildable plan."
+            : "Start from an idea or import an existing local codebase without pretending every project begins life inside Mission Control."
       }
     >
       <div className="intake-grid">
-        <SectionCard title="Create project docs" subtitle="The manager will create local planning docs before any coding starts.">
-          <form className="stack-form" onSubmit={handleSubmit}>
-            {profile?.display_name ? (
-              <div className="startup-note-card">
-                <strong>Created by {profile.display_name}</strong>
-                <p>The manager will address you by this name. You can change it later from the project Settings page.</p>
-              </div>
-            ) : null}
-            {startupProviderChoice || profile?.selected_provider ? (
-              <div className="startup-note-card">
-                <strong>Starting tool: {providerLabel(startupProviderChoice ?? profile?.selected_provider ?? "codex")}</strong>
-                <p>
-                  {providerUsesAdapter(startupProviderChoice ?? profile?.selected_provider ?? "codex")
-                    ? "This project uses an adapter-based provider path. Configure the exact local command in Settings before you launch live agents."
-                    : "This project inherited your startup provider choice and is ready for local setup."}
-                </p>
-              </div>
-            ) : null}
-            <label>
-              Project name
-              <input
-                value={form.name}
-                onChange={(event) => setForm((current) => ({ ...current, name: event.target.value }))}
-                placeholder="Codex Mission Control"
-                required
-              />
-            </label>
-            <label>
-              Project idea
-              <textarea
-                value={form.idea}
-                onChange={(event) => setForm((current) => ({ ...current, idea: event.target.value }))}
-                placeholder="Describe the software idea, the user problem, and any constraints."
-                required
-              />
-            </label>
-            <label>
-              Workspace path
-              <input
-                value={form.workspace_path}
-                onChange={(event) => setForm((current) => ({ ...current, workspace_path: event.target.value }))}
-                required
-              />
-            </label>
-            <div className="form-row">
+        <SectionCard title="New Project" subtitle="Pick the intake path that matches reality instead of forcing every repo through the same ceremonial questionnaire.">
+          <div className="button-row">
+            <button type="button" className={intakeMode === "idea" ? "" : "button-ghost"} onClick={() => setIntakeMode("idea")}>
+              Start from idea
+            </button>
+            <button type="button" className={intakeMode === "import" ? "" : "button-ghost"} onClick={() => setIntakeMode("import")}>
+              Import existing folder/repo
+            </button>
+            <button type="button" className="button-ghost" onClick={() => setIntakeMode("docs")}>
+              Continue from docs
+            </button>
+            <button type="button" className="button-ghost" onClick={() => setIntakeMode("clone")}>
+              Clone from GitHub
+            </button>
+          </div>
+
+          {intakeMode === "idea" ? (
+            <form className="stack-form" onSubmit={handleIdeaSubmit}>
+              {profile?.display_name ? (
+                <div className="startup-note-card">
+                  <strong>Created by {profile.display_name}</strong>
+                  <p>The manager will address you by this name. You can change it later from the project Settings page.</p>
+                </div>
+              ) : null}
+              {startupProviderChoice || profile?.selected_provider ? (
+                <div className="startup-note-card">
+                  <strong>Starting tool: {providerLabel(startupProviderChoice ?? profile?.selected_provider ?? "codex")}</strong>
+                  <p>
+                    {providerUsesAdapter(startupProviderChoice ?? profile?.selected_provider ?? "codex")
+                      ? "This project uses an adapter-based provider path. Configure the exact local command in Settings before you launch live agents."
+                      : "This project inherited your startup provider choice and is ready for local setup."}
+                  </p>
+                </div>
+              ) : null}
               <label>
-                Live provider
-                <select
-                  value={form.provider}
-                  onChange={(event) => setForm((current) => ({ ...current, provider: event.target.value as ProviderId }))}
-                >
-                  {PROVIDER_OPTIONS.map((option) => (
-                    <option key={option.value} value={option.value}>
-                      {option.label}
+                Project name
+                <input
+                  value={form.name}
+                  onChange={(event) => setForm((current) => ({ ...current, name: event.target.value }))}
+                  placeholder="Codex Mission Control"
+                  required
+                />
+              </label>
+              <label>
+                Project idea
+                <textarea
+                  value={form.idea}
+                  onChange={(event) => setForm((current) => ({ ...current, idea: event.target.value }))}
+                  placeholder="Describe the software idea, the user problem, and any constraints."
+                  required
+                />
+              </label>
+              <label>
+                Workspace path
+                <input
+                  value={form.workspace_path}
+                  onChange={(event) => setForm((current) => ({ ...current, workspace_path: event.target.value }))}
+                  required
+                />
+              </label>
+              <div className="form-row">
+                <label>
+                  Live provider
+                  <select value={form.provider} onChange={(event) => setForm((current) => ({ ...current, provider: event.target.value as ProviderId }))}>
+                    {PROVIDER_OPTIONS.map((option) => (
+                      <option key={option.value} value={option.value}>
+                        {option.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label>
+                  Runner mode
+                  <select value={form.runner_mode} onChange={(event) => setForm((current) => ({ ...current, runner_mode: event.target.value as RunnerMode }))}>
+                    <option value="auto">auto</option>
+                    <option value="cli">cli</option>
+                    <option value="app_server" disabled={form.provider !== "codex"}>
+                      app_server {form.provider !== "codex" ? "(Codex only)" : ""}
                     </option>
-                  ))}
-                </select>
+                    <option value="dry_run">dry_run</option>
+                  </select>
+                </label>
+                <label>
+                  Manager mode
+                  <select value={form.manager_mode} onChange={(event) => setForm((current) => ({ ...current, manager_mode: event.target.value as ManagerMode }))}>
+                    <option value="auto">auto</option>
+                    <option value="provider">provider</option>
+                    <option value="deterministic">deterministic</option>
+                  </select>
+                </label>
+              </div>
+              <div className="button-row">
+                <button
+                  type="button"
+                  className="button-ghost"
+                  onClick={() =>
+                    setForm((current) => ({
+                      ...current,
+                      workspace_path: deriveDemoWorkspace(codexStatus?.runtime_directory),
+                    }))
+                  }
+                >
+                  Use demo path
+                </button>
+                <button type="submit" disabled={submitting}>
+                  {submitting ? "Creating..." : "Create project docs"}
+                </button>
+              </div>
+            </form>
+          ) : null}
+
+          {intakeMode === "import" ? (
+            <form className="stack-form" onSubmit={handleImportSubmit}>
+              <div className="startup-note-card">
+                <strong>Initial scan is read-only</strong>
+                <p>No commands are run, no files are edited, and the existing folder is linked in place by default.</p>
+              </div>
+              <div className="startup-note-card">
+                <strong>Desktop folder picker support can be added later.</strong>
+                <p>For now, paste the local folder path.</p>
+              </div>
+              <label>
+                Project name
+                <input
+                  value={importForm.name}
+                  onChange={(event) => setImportForm((current) => ({ ...current, name: event.target.value }))}
+                  placeholder="Optional. Defaults to the folder name."
+                />
               </label>
               <label>
-                Runner mode
-                <select
-                  value={form.runner_mode}
-                  onChange={(event) => setForm((current) => ({ ...current, runner_mode: event.target.value as RunnerMode }))}
-                >
-                  <option value="auto">auto</option>
-                  <option value="cli">cli</option>
-                  <option value="app_server" disabled={form.provider !== "codex"}>
-                    app_server {form.provider !== "codex" ? "(Codex only)" : ""}
-                  </option>
-                  <option value="dry_run">dry_run</option>
-                </select>
+                Local folder path
+                <input
+                  value={importForm.folder_path}
+                  onChange={(event) => setImportForm((current) => ({ ...current, folder_path: event.target.value }))}
+                  placeholder="C:/Users/you/projects/existing-repo"
+                  required
+                />
               </label>
-              <label>
-                Manager mode
-                <select
-                  value={form.manager_mode}
-                  onChange={(event) => setForm((current) => ({ ...current, manager_mode: event.target.value as ManagerMode }))}
-                >
-                  <option value="auto">auto</option>
-                  <option value="provider">provider</option>
-                  <option value="deterministic">deterministic</option>
-                </select>
-              </label>
+              <div className="form-row">
+                <label>
+                  Import mode
+                  <select value={importForm.import_mode} onChange={(event) => setImportForm((current) => ({ ...current, import_mode: event.target.value as "linked" }))}>
+                    <option value="linked">Use folder in place</option>
+                  </select>
+                </label>
+                <label>
+                  Scan policy
+                  <select
+                    value={importForm.start_read_only_scan ? "scan_now" : "scan_later"}
+                    onChange={(event) => setImportForm((current) => ({ ...current, start_read_only_scan: event.target.value === "scan_now" }))}
+                  >
+                    <option value="scan_now">Read-only scan now</option>
+                    <option value="scan_later">Scan later</option>
+                  </select>
+                </label>
+              </div>
+              <div className="button-row">
+                <button type="submit" disabled={submitting}>
+                  {submitting ? "Importing and scanning..." : "Import existing folder"}
+                </button>
+              </div>
+            </form>
+          ) : null}
+
+          {intakeMode === "docs" ? (
+            <div className="startup-note-card">
+              <strong>Continue from docs</strong>
+              <p>This route is intentionally not wired in this pass. Use import mode for existing repos or start from idea for a clean Mission Control project.</p>
             </div>
-            <div className="button-row">
-              <button
-                type="button"
-                className="button-ghost"
-                onClick={() =>
-                  setForm((current) => ({
-                    ...current,
-                    workspace_path: deriveDemoWorkspace(codexStatus?.runtime_directory),
-                  }))
-                }
-              >
-                Use demo path
-              </button>
-              <button type="submit" disabled={submitting}>
-                {submitting ? "Creating..." : "Create project docs"}
-              </button>
+          ) : null}
+
+          {intakeMode === "clone" ? (
+            <div className="startup-note-card">
+              <strong>Clone from GitHub</strong>
+              <p>Clone support should only appear when configured. This pass does not fake it.</p>
             </div>
-            {error ? <p className="error-text">{error}</p> : null}
-          </form>
+          ) : null}
+
+          {error ? <p className="error-text">{error}</p> : null}
         </SectionCard>
 
         <SectionCard title="Local provider status" subtitle="Mission Control has built-in auth for Codex. Claude Code and external adapters use their own local login or credential flow.">

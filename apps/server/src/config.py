@@ -58,6 +58,8 @@ LAUNCHER_CONFIG_PATH = Path(
     )
 ).resolve()
 DB_PATH = RUNTIME_ROOT / "mission_control.sqlite3"
+DAEMON_METADATA_PATH = LAUNCHER_ROOT / "daemon.json"
+DAEMON_TOKEN_PATH = RUNTIME_ROOT / "daemon.token"
 DEFAULT_DB_URL = f"sqlite:///{DB_PATH.as_posix()}"
 DEFAULT_RUNNER_MODE = "auto"
 DEFAULT_MANAGER_MODE = "auto"

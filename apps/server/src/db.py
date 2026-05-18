@@ -61,6 +61,13 @@ def _apply_sqlite_migrations() -> None:
         _ensure_column("projects", "latest_milestone", "latest_milestone VARCHAR(160)")
         _ensure_column("projects", "latest_activity", "latest_activity TEXT")
         _ensure_column("projects", "handoff_status", "handoff_status VARCHAR(60)")
+        _ensure_column("projects", "source_type", "source_type VARCHAR(40) NOT NULL DEFAULT 'idea'")
+        _ensure_column("projects", "source_path", "source_path TEXT")
+        _ensure_column("projects", "import_mode", "import_mode VARCHAR(30)")
+        _ensure_column("projects", "imported_at", "imported_at DATETIME")
+        _ensure_column("projects", "scan_status", "scan_status VARCHAR(30) NOT NULL DEFAULT 'not_started'")
+        _ensure_column("projects", "last_indexed_at", "last_indexed_at DATETIME")
+        _ensure_column("projects", "write_permission_status", "write_permission_status VARCHAR(30) NOT NULL DEFAULT 'write_allowed'")
     if "agents" in tables:
         _ensure_column("agents", "kind", "kind VARCHAR(30) NOT NULL DEFAULT 'worker'")
         _ensure_column("agents", "session_ref", "session_ref VARCHAR(120)")
@@ -225,6 +232,14 @@ def _apply_sqlite_migrations() -> None:
                     """
                 )
             )
+    if "recovery_plans" in tables:
+        _ensure_column("recovery_plans", "related_agent_id", "related_agent_id INTEGER")
+        _ensure_column("recovery_plans", "related_task_id", "related_task_id INTEGER")
+    if "review_gates" in tables:
+        _ensure_column("review_gates", "related_agent_id", "related_agent_id INTEGER")
+        _ensure_column("review_gates", "evidence_ids_json", "evidence_ids_json JSON NOT NULL DEFAULT '[]'")
+    if "change_requests" in tables:
+        _ensure_column("change_requests", "related_handoff_id", "related_handoff_id INTEGER")
     if "app_profile" in tables:
         _ensure_column("app_profile", "install_id", "install_id VARCHAR(64)")
         _ensure_column("app_profile", "display_name", "display_name VARCHAR(50)")

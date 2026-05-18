@@ -164,8 +164,16 @@ Primary goal: ship a usable MVP quickly without fake demos.
 """
 
 
-def worker_task_prompt(project: Project, agent: Agent, task: Task, docs_path: str, plan_markdown: str | None = None) -> str:
+def worker_task_prompt(
+    project: Project,
+    agent: Agent,
+    task: Task,
+    docs_path: str,
+    plan_markdown: str | None = None,
+    context_pack_markdown: str | None = None,
+) -> str:
     context = project_context_block(project, docs_path, plan_markdown)
+    context_pack_section = f"\nRelevant context pack:\n{context_pack_markdown}\n" if context_pack_markdown else ""
     return f"""You are a Codex worker agent operating under Codex Mission Control.
 
 Task ID: {task.id}
@@ -173,6 +181,7 @@ Agent name: {agent.name}
 Agent role: {agent.role}
 
 {context}
+{context_pack_section}
 
 Goal:
 {task.goal}

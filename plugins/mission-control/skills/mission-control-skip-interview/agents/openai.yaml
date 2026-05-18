@@ -1,0 +1,3 @@
+interface:
+  display_name: "Skip Interview"
+  short_description: "Skip full interview while keeping assumptions visible and correctable."

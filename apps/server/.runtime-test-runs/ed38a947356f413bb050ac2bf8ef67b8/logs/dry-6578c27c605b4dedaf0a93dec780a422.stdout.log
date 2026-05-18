@@ -1,0 +1,1 @@
+{"agent": "Worker", "task_id": "3", "status": "done", "summary": "Simulated completion for Simulated task.", "files_changed": [], "tests_run": ["dry-run simulation"], "blockers": [], "risks": ["Simulated result only"], "recommended_next_task": "Move the next backlog item into working state."}

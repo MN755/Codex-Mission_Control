@@ -32,6 +32,13 @@ class Project(Base):
     latest_milestone: Mapped[str | None] = mapped_column(String(160), nullable=True)
     latest_activity: Mapped[str | None] = mapped_column(Text, nullable=True)
     handoff_status: Mapped[str | None] = mapped_column(String(60), nullable=True)
+    source_type: Mapped[str] = mapped_column(String(40), default="idea", nullable=False)
+    source_path: Mapped[str | None] = mapped_column(Text, nullable=True)
+    import_mode: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    imported_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    scan_status: Mapped[str] = mapped_column(String(30), default="not_started", nullable=False)
+    last_indexed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    write_permission_status: Mapped[str] = mapped_column(String(30), default="write_allowed", nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
 
@@ -49,6 +56,9 @@ class Project(Base):
     manager_messages: Mapped[list["ManagerMessage"]] = relationship(back_populates="project")
     manager_questions: Mapped[list["ManagerQuestion"]] = relationship(back_populates="project")
     approval_requests: Mapped[list["ApprovalRequest"]] = relationship(back_populates="project")
+    orchestration_sessions: Mapped[list["OrchestrationSession"]] = relationship(back_populates="project")
+    orchestration_events: Mapped[list["OrchestrationEvent"]] = relationship(back_populates="project")
+    pending_decisions: Mapped[list["PendingDecision"]] = relationship(back_populates="project")
     widget_instances: Mapped[list["WidgetInstance"]] = relationship(back_populates="project")
     swarm_budget: Mapped["SwarmBudget | None"] = relationship(back_populates="project", uselist=False)
     agent_contracts: Mapped[list["AgentContract"]] = relationship(back_populates="project")
@@ -62,9 +72,24 @@ class Project(Base):
     tool_routing_policies: Mapped[list["ToolRoutingPolicy"]] = relationship(back_populates="project")
     manager_assumptions: Mapped[list["ManagerAssumption"]] = relationship(back_populates="project")
     repo_intelligence: Mapped["RepoIntelligenceSummary | None"] = relationship(back_populates="project", uselist=False)
+    codebase_map: Mapped["CodebaseMap | None"] = relationship(back_populates="project", uselist=False)
+    codebase_understanding: Mapped["CodebaseUnderstanding | None"] = relationship(back_populates="project", uselist=False)
+    agents_md_status: Mapped["AgentInstructionsStatus | None"] = relationship(back_populates="project", uselist=False)
+    imported_codebase_safety: Mapped["ImportedCodebaseSafety | None"] = relationship(back_populates="project", uselist=False)
     validation_recipes: Mapped[list["ValidationRecipe"]] = relationship(back_populates="project")
     handoff_quality_preference: Mapped["HandoffQualityPreference | None"] = relationship(back_populates="project", uselist=False)
     change_requests: Mapped[list["ChangeRequest"]] = relationship(back_populates="project")
+    conflict_records: Mapped[list["ConflictRecord"]] = relationship(back_populates="project")
+    handoff_evidence: Mapped[list["HandoffEvidence"]] = relationship(back_populates="project")
+    evidence_handoffs: Mapped[list["EvidenceBasedHandoff"]] = relationship(back_populates="project")
+    runbooks: Mapped[list["Runbook"]] = relationship(back_populates="project")
+    agent_execution_traces: Mapped[list["AgentExecutionTrace"]] = relationship(back_populates="project")
+    project_snapshots: Mapped[list["ProjectSnapshot"]] = relationship(back_populates="project")
+    agent_load_snapshots: Mapped[list["AgentLoadSnapshot"]] = relationship(back_populates="project")
+    timeline_events: Mapped[list["ProjectTimelineEvent"]] = relationship(back_populates="project")
+    security_policies: Mapped[list["SecurityPolicy"]] = relationship(back_populates="project")
+    risk_assessments: Mapped[list["RiskAssessment"]] = relationship(back_populates="project")
+    approval_audit_logs: Mapped[list["ApprovalAuditLog"]] = relationship(back_populates="project")
 
 
 class InterviewSession(Base):
@@ -502,6 +527,8 @@ class RecoveryPlan(Base):
     project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), nullable=False, index=True)
     trigger_type: Mapped[str] = mapped_column(String(60), nullable=False)
     trigger_summary: Mapped[str] = mapped_column(Text, nullable=False)
+    related_agent_id: Mapped[int | None] = mapped_column(ForeignKey("agents.id"), nullable=True, index=True)
+    related_task_id: Mapped[int | None] = mapped_column(ForeignKey("tasks.id"), nullable=True, index=True)
     suggested_actions_json: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
     selected_action: Mapped[str | None] = mapped_column(Text, nullable=True)
     status: Mapped[str] = mapped_column(String(20), default="proposed", nullable=False)
@@ -536,7 +563,9 @@ class ReviewGate(Base):
     status: Mapped[str] = mapped_column(String(20), default="pending", nullable=False)
     required: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     related_task_id: Mapped[int | None] = mapped_column(ForeignKey("tasks.id"), nullable=True)
+    related_agent_id: Mapped[int | None] = mapped_column(ForeignKey("agents.id"), nullable=True)
     required_checks_json: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    evidence_ids_json: Mapped[list[int]] = mapped_column(JSON, default=list, nullable=False)
     result_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
 
@@ -627,6 +656,91 @@ class RepoIntelligenceSummary(Base):
     project: Mapped[Project] = relationship(back_populates="repo_intelligence")
 
 
+class CodebaseMap(Base):
+    __tablename__ = "codebase_maps"
+
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), primary_key=True)
+    source_path: Mapped[str] = mapped_column(Text, nullable=False)
+    languages_json: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    frameworks_json: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    package_managers_json: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    build_tools_json: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    test_frameworks_json: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    entry_points_json: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    build_commands_json: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    test_commands_json: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    important_folders_json: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    docs_json: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    agent_instructions_json: Mapped[list[dict]] = mapped_column(JSON, default=list, nullable=False)
+    config_files_json: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    ci_config_json: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    deployment_config_json: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    git_status_json: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
+    risk_flags_json: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    scan_depth: Mapped[str] = mapped_column(String(20), default="shallow", nullable=False)
+    codebase_size: Mapped[str] = mapped_column(String(20), default="small", nullable=False)
+    recommended_scan_strategy: Mapped[str] = mapped_column(String(40), default="standard", nullable=False)
+    indexed_areas_json: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    unindexed_areas_json: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
+
+    project: Mapped[Project] = relationship(back_populates="codebase_map")
+
+
+class CodebaseUnderstanding(Base):
+    __tablename__ = "codebase_understanding_records"
+
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), primary_key=True)
+    summary: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    architecture_summary: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    detected_stack_json: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    likely_run_instructions_json: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    likely_test_instructions_json: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    risk_summary: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    missing_context_json: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    suggested_next_steps_json: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    recommended_interview_mode: Mapped[str] = mapped_column(String(30), default="quick", nullable=False)
+    confidence_by_area_json: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
+    generation_mode: Mapped[str] = mapped_column(String(30), default="deterministic_scanner", nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
+
+    project: Mapped[Project] = relationship(back_populates="codebase_understanding")
+
+
+class AgentInstructionsStatus(Base):
+    __tablename__ = "agent_instructions_status"
+
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), primary_key=True)
+    has_agents_md: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    agents_md_path: Mapped[str | None] = mapped_column(Text, nullable=True)
+    summary: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    recommended_action: Mapped[str] = mapped_column(String(20), default="none", nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
+
+    project: Mapped[Project] = relationship(back_populates="agents_md_status")
+
+
+class ImportedCodebaseSafety(Base):
+    __tablename__ = "imported_codebase_safety"
+
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), primary_key=True)
+    read_only_scan_completed: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    write_permission_status: Mapped[str] = mapped_column(String(30), default="read_only", nullable=False)
+    require_snapshot_before_edits: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    require_approval_for_dependency_changes: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    require_approval_for_test_commands: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    require_approval_for_build_commands: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    require_approval_for_formatting: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    require_approval_for_package_file_changes: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    destructive_commands_blocked: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
+
+    project: Mapped[Project] = relationship(back_populates="imported_codebase_safety")
+
+
 class ValidationRecipe(Base):
     __tablename__ = "validation_recipes"
 
@@ -667,10 +781,329 @@ class ChangeRequest(Base):
     impact_estimate: Mapped[str] = mapped_column(String(40), nullable=False)
     status: Mapped[str] = mapped_column(String(20), default="new", nullable=False)
     related_tasks_json: Mapped[list[int]] = mapped_column(JSON, default=list, nullable=False)
+    related_handoff_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
 
     project: Mapped[Project] = relationship(back_populates="change_requests")
+
+
+class ConflictRecord(Base):
+    __tablename__ = "conflict_records"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), nullable=False, index=True)
+    conflict_type: Mapped[str] = mapped_column(String(40), default="unknown", nullable=False)
+    title: Mapped[str] = mapped_column(String(220), nullable=False)
+    summary: Mapped[str] = mapped_column(Text, nullable=False)
+    involved_agent_ids_json: Mapped[list[int]] = mapped_column(JSON, default=list, nullable=False)
+    involved_task_ids_json: Mapped[list[int]] = mapped_column(JSON, default=list, nullable=False)
+    affected_paths_json: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    severity: Mapped[str] = mapped_column(String(20), default="medium", nullable=False)
+    status: Mapped[str] = mapped_column(String(20), default="detected", nullable=False)
+    suggested_resolution_json: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    selected_resolution: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    project: Mapped[Project] = relationship(back_populates="conflict_records")
+
+
+class HandoffEvidence(Base):
+    __tablename__ = "handoff_evidence"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), nullable=False, index=True)
+    handoff_id: Mapped[int | None] = mapped_column(ForeignKey("evidence_based_handoffs.id"), nullable=True, index=True)
+    evidence_type: Mapped[str] = mapped_column(String(40), nullable=False)
+    claim: Mapped[str] = mapped_column(Text, nullable=False)
+    summary: Mapped[str] = mapped_column(Text, nullable=False)
+    source_path: Mapped[str | None] = mapped_column(Text, nullable=True)
+    command: Mapped[str | None] = mapped_column(Text, nullable=True)
+    status: Mapped[str] = mapped_column(String(20), default="unknown", nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    metadata_json: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
+
+    project: Mapped[Project] = relationship(back_populates="handoff_evidence")
+
+
+class EvidenceBasedHandoff(Base):
+    __tablename__ = "evidence_based_handoffs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), nullable=False, index=True)
+    title: Mapped[str] = mapped_column(String(220), nullable=False)
+    summary: Mapped[str] = mapped_column(Text, nullable=False)
+    what_was_built: Mapped[str] = mapped_column(Text, nullable=False)
+    how_to_run: Mapped[str] = mapped_column(Text, nullable=False)
+    how_to_use: Mapped[str] = mapped_column(Text, nullable=False)
+    tests_run_json: Mapped[list[dict]] = mapped_column(JSON, default=list, nullable=False)
+    known_limitations_json: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    suggested_next_steps_json: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    evidence_ids_json: Mapped[list[int]] = mapped_column(JSON, default=list, nullable=False)
+    confidence_level: Mapped[str] = mapped_column(String(20), default="low", nullable=False)
+    dry_run: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+    project: Mapped[Project] = relationship(back_populates="evidence_handoffs")
+
+
+class Runbook(Base):
+    __tablename__ = "runbooks"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), nullable=False, index=True)
+    content_markdown: Mapped[str] = mapped_column(Text, nullable=False)
+    generated_from_handoff_id: Mapped[int | None] = mapped_column(ForeignKey("evidence_based_handoffs.id"), nullable=True)
+    generated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
+
+    project: Mapped[Project] = relationship(back_populates="runbooks")
+
+
+class AgentExecutionTrace(Base):
+    __tablename__ = "agent_execution_traces"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), nullable=False, index=True)
+    agent_id: Mapped[int | None] = mapped_column(ForeignKey("agents.id"), nullable=True, index=True)
+    task_id: Mapped[int | None] = mapped_column(ForeignKey("tasks.id"), nullable=True, index=True)
+    run_id: Mapped[int | None] = mapped_column(ForeignKey("agent_runs.id"), nullable=True, index=True)
+    prompt_summary: Mapped[str] = mapped_column(Text, nullable=False)
+    prompt_path: Mapped[str | None] = mapped_column(Text, nullable=True)
+    response_summary: Mapped[str] = mapped_column(Text, nullable=False)
+    report_json: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
+    files_changed_json: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    approvals_requested_json: Mapped[list[dict]] = mapped_column(JSON, default=list, nullable=False)
+    commands_attempted_json: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    manager_decision_after: Mapped[str | None] = mapped_column(Text, nullable=True)
+    redaction_status: Mapped[str] = mapped_column(String(40), default="summary_only", nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+    project: Mapped[Project] = relationship(back_populates="agent_execution_traces")
+
+
+class ProjectSnapshot(Base):
+    __tablename__ = "project_snapshots"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), nullable=False, index=True)
+    snapshot_type: Mapped[str] = mapped_column(String(40), nullable=False)
+    label: Mapped[str] = mapped_column(String(220), nullable=False)
+    description: Mapped[str] = mapped_column(Text, nullable=False)
+    git_ref: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    created_before_task_id: Mapped[int | None] = mapped_column(ForeignKey("tasks.id"), nullable=True)
+    created_before_agent_id: Mapped[int | None] = mapped_column(ForeignKey("agents.id"), nullable=True)
+    status: Mapped[str] = mapped_column(String(20), default="available", nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    metadata_json: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
+
+    project: Mapped[Project] = relationship(back_populates="project_snapshots")
+
+
+class AgentLoadSnapshot(Base):
+    __tablename__ = "agent_load_snapshots"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), nullable=False, index=True)
+    agent_id: Mapped[int] = mapped_column(ForeignKey("agents.id"), nullable=False, index=True)
+    active_task_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    waiting_task_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    blocked_task_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    idle_duration_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    load_level: Mapped[str] = mapped_column(String(20), default="idle", nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+    project: Mapped[Project] = relationship(back_populates="agent_load_snapshots")
+
+
+class ProjectTimelineEvent(Base):
+    __tablename__ = "project_timeline_events"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), nullable=False, index=True)
+    event_type: Mapped[str] = mapped_column(String(80), nullable=False)
+    title: Mapped[str] = mapped_column(String(220), nullable=False)
+    summary: Mapped[str] = mapped_column(Text, nullable=False)
+    related_agent_id: Mapped[int | None] = mapped_column(ForeignKey("agents.id"), nullable=True)
+    related_task_id: Mapped[int | None] = mapped_column(ForeignKey("tasks.id"), nullable=True)
+    related_handoff_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    severity: Mapped[str] = mapped_column(String(20), default="info", nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+    project: Mapped[Project] = relationship(back_populates="timeline_events")
+
+
+class CapabilityBenchmark(Base):
+    __tablename__ = "capability_benchmarks"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    provider: Mapped[str] = mapped_column(String(80), nullable=False, index=True)
+    model: Mapped[str] = mapped_column(String(160), nullable=False, index=True)
+    runner_mode: Mapped[str] = mapped_column(String(40), nullable=False, default="auto")
+    category: Mapped[str] = mapped_column(String(80), nullable=False, index=True)
+    score: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    sample_size: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    last_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
+
+
+class AgentPerformanceRecord(Base):
+    __tablename__ = "agent_performance_records"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    project_id: Mapped[int | None] = mapped_column(ForeignKey("projects.id"), nullable=True, index=True)
+    agent_archetype: Mapped[str] = mapped_column(String(80), nullable=False, index=True)
+    agent_name: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    provider: Mapped[str | None] = mapped_column(String(80), nullable=True, index=True)
+    model: Mapped[str | None] = mapped_column(String(160), nullable=True, index=True)
+    runner_mode: Mapped[str] = mapped_column(String(40), nullable=False, default="auto")
+    task_category: Mapped[str] = mapped_column(String(80), nullable=False, index=True)
+    task_id: Mapped[int | None] = mapped_column(ForeignKey("tasks.id"), nullable=True, index=True)
+    outcome: Mapped[str] = mapped_column(String(30), nullable=False, default="unknown")
+    duration_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    review_passed: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    tests_passed: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    failure_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, index=True)
+
+
+class ProjectPlaybook(Base):
+    __tablename__ = "project_playbooks"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    key: Mapped[str] = mapped_column(String(80), nullable=False, unique=True, index=True)
+    name: Mapped[str] = mapped_column(String(160), nullable=False)
+    description: Mapped[str] = mapped_column(Text, nullable=False)
+    suggested_interview_categories_json: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    suggested_swarm_mode: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    suggested_agent_archetypes_json: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    suggested_validation_recipe_json: Mapped[list[dict]] = mapped_column(JSON, default=list, nullable=False)
+    common_risks_json: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    suggested_docs_json: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    typical_structure_json: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
+
+
+class ProjectPlaybookSelection(Base):
+    __tablename__ = "project_playbook_selections"
+
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), primary_key=True)
+    playbook_key: Mapped[str | None] = mapped_column(String(80), nullable=True, index=True)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="suggested")
+    suggestion_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
+
+
+class ContextPack(Base):
+    __tablename__ = "context_packs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), nullable=False, index=True)
+    agent_id: Mapped[int | None] = mapped_column(ForeignKey("agents.id"), nullable=True, index=True)
+    task_id: Mapped[int | None] = mapped_column(ForeignKey("tasks.id"), nullable=True, index=True)
+    title: Mapped[str] = mapped_column(String(200), nullable=False)
+    goal: Mapped[str] = mapped_column(Text, nullable=False)
+    included_docs_json: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    included_files_json: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    excluded_files_json: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    known_decisions_json: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    relevant_assumptions_json: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    validation_steps_json: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    token_budget_hint: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
+
+
+class ContextPackSection(Base):
+    __tablename__ = "context_pack_sections"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    context_pack_id: Mapped[int] = mapped_column(ForeignKey("context_packs.id"), nullable=False, index=True)
+    section_type: Mapped[str] = mapped_column(String(80), nullable=False)
+    title: Mapped[str] = mapped_column(String(200), nullable=False)
+    content_markdown: Mapped[str] = mapped_column(Text, nullable=False)
+    source_refs_json: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
+class RiskRecord(Base):
+    __tablename__ = "risk_records"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), nullable=False, index=True)
+    title: Mapped[str] = mapped_column(String(220), nullable=False)
+    description: Mapped[str] = mapped_column(Text, nullable=False)
+    severity: Mapped[str] = mapped_column(String(20), nullable=False, default="medium")
+    likelihood: Mapped[str] = mapped_column(String(20), nullable=False, default="medium")
+    owner_agent_id: Mapped[int | None] = mapped_column(ForeignKey("agents.id"), nullable=True, index=True)
+    mitigation: Mapped[str | None] = mapped_column(Text, nullable=True)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="open")
+    related_task_id: Mapped[int | None] = mapped_column(ForeignKey("tasks.id"), nullable=True, index=True)
+    created_by: Mapped[str] = mapped_column(String(20), nullable=False, default="manager")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
+
+
+class ScopeChangeSignal(Base):
+    __tablename__ = "scope_change_signals"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), nullable=False, index=True)
+    source: Mapped[str] = mapped_column(String(80), nullable=False)
+    summary: Mapped[str] = mapped_column(Text, nullable=False)
+    severity: Mapped[str] = mapped_column(String(20), nullable=False, default="medium")
+    related_task_id: Mapped[int | None] = mapped_column(ForeignKey("tasks.id"), nullable=True, index=True)
+    related_message_id: Mapped[int | None] = mapped_column(ForeignKey("manager_messages.id"), nullable=True, index=True)
+    suggested_action: Mapped[str] = mapped_column(String(40), nullable=False, default="ask_user")
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="open")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class SwarmLaunchSimulation(Base):
+    __tablename__ = "swarm_launch_simulations"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), nullable=False, index=True)
+    swarm_plan_id: Mapped[int | None] = mapped_column(ForeignKey("swarm_plans.id"), nullable=True, index=True)
+    safe_to_launch_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    should_wait_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    needs_user_approval_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    conflict_warnings_json: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    bottlenecks_json: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    recommended_launch_order_json: Mapped[list[dict]] = mapped_column(JSON, default=list, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, index=True)
+
+
+class ValidationCoverageArea(Base):
+    __tablename__ = "validation_coverage_areas"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), nullable=False, index=True)
+    area: Mapped[str] = mapped_column(String(80), nullable=False, index=True)
+    coverage_status: Mapped[str] = mapped_column(String(20), nullable=False, default="none")
+    evidence_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    related_validation_step_id: Mapped[int | None] = mapped_column(ForeignKey("validation_recipes.id"), nullable=True, index=True)
+    last_updated: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
+
+
+class UserPreference(Base):
+    __tablename__ = "user_preferences"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    key: Mapped[str] = mapped_column(String(120), nullable=False, index=True)
+    value_json: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
+    source: Mapped[str] = mapped_column(String(30), nullable=False, default="user")
+    scope: Mapped[str] = mapped_column(String(20), nullable=False, default="global", index=True)
+    project_id: Mapped[int | None] = mapped_column(ForeignKey("projects.id"), nullable=True, index=True)
+    editable: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
 
 
 class ManagerMessage(Base):
@@ -733,6 +1166,125 @@ class ApprovalRequest(Base):
     resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     project: Mapped[Project] = relationship(back_populates="approval_requests")
+
+
+class SecurityPolicy(Base):
+    __tablename__ = "security_policies"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    scope: Mapped[str] = mapped_column(String(20), nullable=False, default="global", index=True)
+    project_id: Mapped[int | None] = mapped_column(ForeignKey("projects.id"), nullable=True, index=True)
+    default_command_policy: Mapped[str] = mapped_column(String(30), nullable=False, default="ask")
+    default_tool_policy: Mapped[str] = mapped_column(String(30), nullable=False, default="ask")
+    network_access_policy: Mapped[str] = mapped_column(String(20), nullable=False, default="ask")
+    write_access_policy: Mapped[str] = mapped_column(String(30), nullable=False, default="workspace_write")
+    external_account_policy: Mapped[str] = mapped_column(String(20), nullable=False, default="ask")
+    deployment_policy: Mapped[str] = mapped_column(String(20), nullable=False, default="deny")
+    destructive_action_policy: Mapped[str] = mapped_column(String(30), nullable=False, default="critical_approval")
+    auto_approve_low_risk: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    auto_approve_medium_risk: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    high_risk_requires_user: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
+
+    project: Mapped[Project | None] = relationship(back_populates="security_policies")
+
+
+class RiskAssessment(Base):
+    __tablename__ = "risk_assessments"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    project_id: Mapped[int | None] = mapped_column(ForeignKey("projects.id"), nullable=True, index=True)
+    action_type: Mapped[str] = mapped_column(String(40), nullable=False)
+    title: Mapped[str] = mapped_column(String(220), nullable=False)
+    summary: Mapped[str] = mapped_column(Text, nullable=False)
+    risk_level: Mapped[str] = mapped_column(String(20), nullable=False, default="medium")
+    reasons_json: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    affected_paths_json: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    external_access_json: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
+    recommended_policy: Mapped[str] = mapped_column(String(40), nullable=False, default="ask")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+    project: Mapped[Project | None] = relationship(back_populates="risk_assessments")
+
+
+class ApprovalAuditLog(Base):
+    __tablename__ = "approval_audit_logs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    project_id: Mapped[int | None] = mapped_column(ForeignKey("projects.id"), nullable=True, index=True)
+    orchestration_id: Mapped[int | None] = mapped_column(ForeignKey("orchestration_sessions.id"), nullable=True, index=True)
+    decision_id: Mapped[int | None] = mapped_column(ForeignKey("pending_decisions.id"), nullable=True, index=True)
+    action_type: Mapped[str] = mapped_column(String(40), nullable=False)
+    action_summary: Mapped[str] = mapped_column(Text, nullable=False)
+    risk_level: Mapped[str] = mapped_column(String(20), nullable=False, default="medium")
+    decision: Mapped[str] = mapped_column(String(30), nullable=False)
+    decided_by: Mapped[str] = mapped_column(String(20), nullable=False)
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    metadata_json: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
+
+    project: Mapped[Project | None] = relationship(back_populates="approval_audit_logs")
+
+
+class OrchestrationSession(Base):
+    __tablename__ = "orchestration_sessions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), nullable=False, index=True)
+    workspace_path: Mapped[str] = mapped_column(Text, nullable=False, index=True)
+    source: Mapped[str] = mapped_column(String(30), nullable=False, default="desktop")
+    user_request: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    status: Mapped[str] = mapped_column(String(30), nullable=False, default="initializing")
+    manager_status: Mapped[str] = mapped_column(Text, nullable=False, default="Starting orchestration.")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    metadata_json: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
+
+    project: Mapped[Project] = relationship(back_populates="orchestration_sessions")
+    events: Mapped[list["OrchestrationEvent"]] = relationship(back_populates="orchestration")
+    decisions: Mapped[list["PendingDecision"]] = relationship(back_populates="orchestration")
+
+
+class OrchestrationEvent(Base):
+    __tablename__ = "orchestration_events"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    orchestration_id: Mapped[int] = mapped_column(ForeignKey("orchestration_sessions.id"), nullable=False, index=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), nullable=False, index=True)
+    event_type: Mapped[str] = mapped_column(String(100), nullable=False)
+    payload_json: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+    orchestration: Mapped[OrchestrationSession] = relationship(back_populates="events")
+    project: Mapped[Project] = relationship(back_populates="orchestration_events")
+
+
+class PendingDecision(Base):
+    __tablename__ = "pending_decisions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), nullable=False, index=True)
+    orchestration_id: Mapped[int | None] = mapped_column(ForeignKey("orchestration_sessions.id"), nullable=True, index=True)
+    decision_type: Mapped[str] = mapped_column(String(40), nullable=False)
+    title: Mapped[str] = mapped_column(String(220), nullable=False)
+    message: Mapped[str] = mapped_column(Text, nullable=False)
+    requesting_agent_id: Mapped[int | None] = mapped_column(ForeignKey("agents.id"), nullable=True)
+    related_task_id: Mapped[int | None] = mapped_column(ForeignKey("tasks.id"), nullable=True)
+    risk_level: Mapped[str] = mapped_column(String(20), nullable=False, default="medium")
+    options_json: Mapped[list[dict]] = mapped_column(JSON, default=list, nullable=False)
+    recommended_option: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="pending")
+    source_kind: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    source_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    answered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    answer_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    presentation_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+
+    project: Mapped[Project] = relationship(back_populates="pending_decisions")
+    orchestration: Mapped[OrchestrationSession | None] = relationship(back_populates="decisions")
 
 
 class ProjectEvent(Base):

@@ -5,6 +5,7 @@ import { DashboardPage } from "./pages/DashboardPage";
 import { DiagnosticsPage } from "./pages/DiagnosticsPage";
 import { HandoffPage } from "./pages/HandoffPage";
 import { HandoffsPage } from "./pages/HandoffsPage";
+import { ImportReviewPage } from "./pages/ImportReviewPage";
 import { InterviewPage } from "./pages/InterviewPage";
 import { ModelsRunnersLandingPage } from "./pages/ModelsRunnersLandingPage";
 import { ModelsRunnersPage } from "./pages/ModelsRunnersPage";
@@ -47,6 +48,7 @@ export default function App() {
       <Route path="/projects/:projectId/models-runners" element={<ModelsRunnersPage />} />
       <Route path="/projects/:projectId/:projectSlug/models-runners" element={<ModelsRunnersPage />} />
       <Route path="/projects/:projectId/interview" element={<InterviewPage />} />
+      <Route path="/projects/:projectId/import/review" element={<ImportReviewPage />} />
       <Route path="/projects/:projectId/plan" element={<PlanReviewPage />} />
       <Route path="/projects/:projectId/settings" element={<LegacyProjectSettingsRedirect />} />
       <Route path="/projects/:projectId/build" element={<LegacyBuildRedirect />} />

@@ -1,0 +1,3 @@
+interface:
+  display_name: "Orchestrate"
+  short_description: "Use Mission Control as the orchestrator for the current workspace and keep Codex in the bridge role."

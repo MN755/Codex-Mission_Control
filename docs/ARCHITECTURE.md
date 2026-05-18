@@ -89,6 +89,35 @@ Primary responsibilities:
 - diagnostics generation
 - system-status reporting
 
+The same FastAPI app also serves daemon mode. The daemon binds to `127.0.0.1`, persists orchestration state, and exposes bridge-only endpoints for the MCP client. There is no second secret backend hiding behind the curtain because maintaining two orchestration servers would be a stupid hobby.
+
+## Background orchestration + MCP bridge
+
+Mission Control now supports a background-first orchestration topology:
+
+`Codex desktop chat -> Mission Control MCP bridge -> Mission Control daemon/backend -> Mission Control Manager -> worker runners`
+
+Important boundaries:
+
+- Codex chat is not the Manager
+- the MCP server is a thin localhost client, not a planner
+- the daemon owns orchestration state, pending decisions, and handoff state
+- worker execution still goes through Mission Control approvals and runner policy
+
+Core backend records for this flow:
+
+- `OrchestrationSession`
+- `OrchestrationEvent`
+- `PendingDecision`
+
+Core bridge surfaces:
+
+- `/api/orchestrations/*`
+- `/api/decisions/{decision_id}/answer`
+- `/api/daemon/status`
+
+Only `/api/health` remains intentionally unauthenticated for daemon probing. Bridge calls use the local shared token described in [MCP Security](MCP_SECURITY.md).
+
 ## Startup subsystem
 
 The startup subsystem is composed of modules such as:

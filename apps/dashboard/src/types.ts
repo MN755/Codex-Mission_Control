@@ -3,6 +3,13 @@ export type StartupProviderChoice = ProviderId;
 export type StartupStartMode = "new_project" | "guided_walkthrough";
 export type RunnerMode = "auto" | "cli" | "app_server" | "dry_run";
 export type ManagerMode = "auto" | "provider" | "codex" | "deterministic";
+export type ProjectSourceType = "idea" | "existing_folder" | "cloned_repo" | "docs_import";
+export type ImportMode = "linked" | "copied" | "cloned";
+export type ScanStatus = "not_started" | "in_progress" | "completed" | "failed";
+export type WritePermissionStatus = "read_only" | "write_allowed" | "limited_write";
+export type ScanDepth = "shallow" | "standard" | "targeted" | "deep";
+export type CodebaseSize = "small" | "medium" | "large" | "huge";
+export type ImportInterviewChoice = "skip" | "quick" | "full" | "manager_decides";
 export type ReasoningEffort = "minimal" | "low" | "medium" | "high";
 export type SandboxMode = "workspace-write" | "read-only";
 export type ApprovalPolicy = "on-request" | "untrusted" | "never";
@@ -114,6 +121,13 @@ export interface Project {
   latest_milestone: string | null;
   latest_activity: string | null;
   handoff_status: string | null;
+  source_type: ProjectSourceType;
+  source_path: string | null;
+  import_mode: ImportMode | null;
+  imported_at: string | null;
+  scan_status: ScanStatus;
+  last_indexed_at: string | null;
+  write_permission_status: WritePermissionStatus;
   display_status: string;
   created_at: string;
   updated_at: string;
@@ -182,6 +196,112 @@ export interface ProjectUnderstanding {
   constraints_json: string[];
   confidence_by_category_json: Record<string, number>;
   updated_at: string;
+}
+
+export interface ImportFolderResponse {
+  project: Project;
+  scan_started: boolean;
+  warnings: string[];
+  recommended_next_route: string;
+}
+
+export interface CodebaseMap {
+  project_id: number;
+  source_path: string;
+  languages_json: string[];
+  frameworks_json: string[];
+  package_managers_json: string[];
+  build_tools_json: string[];
+  test_frameworks_json: string[];
+  entry_points_json: string[];
+  build_commands_json: string[];
+  test_commands_json: string[];
+  important_folders_json: string[];
+  docs_json: string[];
+  agent_instructions_json: Array<Record<string, unknown>>;
+  config_files_json: string[];
+  ci_config_json: string[];
+  deployment_config_json: string[];
+  git_status_json: Record<string, unknown>;
+  risk_flags_json: string[];
+  scan_depth: ScanDepth | string;
+  codebase_size: CodebaseSize | string;
+  recommended_scan_strategy: string;
+  indexed_areas_json: string[];
+  unindexed_areas_json: string[];
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CodebaseUnderstanding {
+  project_id: number;
+  summary: string;
+  architecture_summary: string;
+  detected_stack_json: string[];
+  likely_run_instructions_json: string[];
+  likely_test_instructions_json: string[];
+  risk_summary: string;
+  missing_context_json: string[];
+  suggested_next_steps_json: string[];
+  recommended_interview_mode: ImportInterviewChoice;
+  confidence_by_area_json: Record<string, number>;
+  generation_mode: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ImportedCodebaseSafety {
+  project_id: number;
+  read_only_scan_completed: boolean;
+  write_permission_status: WritePermissionStatus;
+  require_snapshot_before_edits: boolean;
+  require_approval_for_dependency_changes: boolean;
+  require_approval_for_test_commands: boolean;
+  require_approval_for_build_commands: boolean;
+  require_approval_for_formatting: boolean;
+  require_approval_for_package_file_changes: boolean;
+  destructive_commands_blocked: boolean;
+  updated_at: string;
+}
+
+export interface AgentInstructionsStatus {
+  project_id: number;
+  has_agents_md: boolean;
+  agents_md_path: string | null;
+  summary: string;
+  recommended_action: "none" | "create" | "update" | "review";
+  created_at: string;
+  updated_at: string;
+}
+
+export interface AgentsMdProposal {
+  project_id: number;
+  recommended_path: string;
+  summary: string;
+  proposal_markdown: string;
+}
+
+export interface ImportInterviewChoiceResponse {
+  next_route: string;
+  questions: InterviewQuestion[];
+  manager_note: string;
+}
+
+export interface ImportedCodebaseRequestResult {
+  project_id: number;
+  classification: "analysis" | "bugfix" | "feature" | "refactor" | "docs" | "test" | "security" | "performance" | "migration" | "cleanup" | "unknown";
+  decision:
+    | "answer_directly"
+    | "ask_quick_question"
+    | "create_task_plan"
+    | "run_targeted_scan"
+    | "request_command_approval"
+    | "request_write_permission"
+    | "recommend_snapshot_first";
+  manager_note: string;
+  suggested_questions: string[];
+  targeted_scan_targets: string[];
+  warnings: string[];
 }
 
 export interface Plan {
@@ -792,6 +912,179 @@ export interface ChangeRequest {
   impact_estimate: string;
   status: string;
   related_tasks_json: number[];
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CapabilityBenchmark {
+  id: number;
+  provider: string;
+  model: string;
+  runner_mode: RunnerMode | string;
+  category: string;
+  score: number;
+  sample_size: number;
+  notes: string | null;
+  last_run_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CapabilityMatrixEntry {
+  provider: string;
+  model: string;
+  runner_mode: RunnerMode | string;
+  scores: Record<string, number | null>;
+  sample_size: number;
+  notes: string[];
+  recommendation_note: string;
+}
+
+export interface AgentPerformanceRecord {
+  id: number;
+  project_id: number | null;
+  agent_archetype: string;
+  agent_name: string | null;
+  provider: string | null;
+  model: string | null;
+  runner_mode: RunnerMode | string;
+  task_category: string;
+  task_id: number | null;
+  outcome: string;
+  duration_seconds: number | null;
+  review_passed: boolean | null;
+  tests_passed: boolean | null;
+  failure_summary: string | null;
+  created_at: string;
+}
+
+export interface AgentReputationSummary {
+  archetype: string;
+  provider: string | null;
+  model: string | null;
+  total_tasks: number;
+  success_rate: number;
+  common_failure_modes: string[];
+  recommended_for: string[];
+  avoid_for: string[];
+  confidence: number;
+}
+
+export interface ProjectPlaybook {
+  id: number;
+  key: string;
+  name: string;
+  description: string;
+  suggested_interview_categories_json: string[];
+  suggested_swarm_mode: string | null;
+  suggested_agent_archetypes_json: string[];
+  suggested_validation_recipe_json: Array<Record<string, unknown>>;
+  common_risks_json: string[];
+  suggested_docs_json: string[];
+  typical_structure_json: string[];
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ProjectPlaybookSuggestion {
+  project_id: number;
+  playbook_key: string | null;
+  status: string;
+  why: string;
+  playbook: ProjectPlaybook | null;
+}
+
+export interface ContextPackSection {
+  id: number;
+  context_pack_id: number;
+  section_type: string;
+  title: string;
+  content_markdown: string;
+  source_refs_json: string[];
+  created_at: string;
+}
+
+export interface ContextPack {
+  id: number;
+  project_id: number;
+  agent_id: number | null;
+  task_id: number | null;
+  title: string;
+  goal: string;
+  included_docs_json: string[];
+  included_files_json: string[];
+  excluded_files_json: string[];
+  known_decisions_json: string[];
+  relevant_assumptions_json: string[];
+  validation_steps_json: string[];
+  token_budget_hint: number | null;
+  warnings_json: string[];
+  sections: ContextPackSection[];
+  created_at: string;
+  updated_at: string;
+}
+
+export interface RiskRecord {
+  id: number;
+  project_id: number;
+  title: string;
+  description: string;
+  severity: RiskLevel;
+  likelihood: "low" | "medium" | "high";
+  owner_agent_id: number | null;
+  mitigation: string | null;
+  status: "open" | "monitoring" | "mitigated" | "accepted" | "closed";
+  related_task_id: number | null;
+  created_by: "manager" | "user" | "agent" | "system";
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ScopeChangeSignal {
+  id: number;
+  project_id: number;
+  source: string;
+  summary: string;
+  severity: "low" | "medium" | "high";
+  related_task_id: number | null;
+  related_message_id: number | null;
+  suggested_action: "include_now" | "defer" | "create_future_milestone" | "ask_user";
+  status: "open" | "accepted" | "deferred" | "dismissed";
+  created_at: string;
+  resolved_at: string | null;
+}
+
+export interface SwarmLaunchSimulation {
+  id: number;
+  project_id: number;
+  swarm_plan_id: number | null;
+  safe_to_launch_count: number;
+  should_wait_count: number;
+  needs_user_approval_count: number;
+  conflict_warnings_json: string[];
+  bottlenecks_json: string[];
+  recommended_launch_order_json: Array<Record<string, unknown>>;
+  created_at: string;
+}
+
+export interface ValidationCoverageArea {
+  id: number;
+  project_id: number;
+  area: string;
+  coverage_status: "none" | "planned" | "partial" | "validated" | "failed" | "skipped";
+  evidence_summary: string | null;
+  related_validation_step_id: number | null;
+  last_updated: string;
+}
+
+export interface UserPreference {
+  id: number;
+  key: string;
+  value_json: unknown;
+  source: "setup" | "user" | "manager_observed" | "imported";
+  scope: "global" | "project";
+  project_id: number | null;
+  editable: boolean;
   created_at: string;
   updated_at: string;
 }

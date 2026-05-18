@@ -4,6 +4,38 @@
 
 Codex Mission Control is a local-first desktop app for running a manager-led coding workflow across multiple agent providers. It helps one user supervise planning, task routing, worker execution, diagnostics, and final handoff from a single interface.
 
+Mission Control can also be packaged for Codex desktop plugin usage, where Codex chat acts as the bridge surface and Mission Control Manager remains the orchestration authority.
+
+## Background orchestration + Codex plugin mode
+
+Mission Control can now run as a localhost-only background daemon and expose a thin MCP bridge for Codex desktop.
+
+That split matters:
+
+- Codex chat is the bridge to the user
+- Mission Control Manager stays inside Mission Control
+- worker runners stay behind Mission Control approvals
+- the dashboard remains useful, but optional
+
+Bridge flow:
+
+1. Codex attaches the current workspace to Mission Control
+2. Codex starts or resumes an orchestration request
+3. Mission Control Manager plans and coordinates background work
+4. Pending approvals or manager questions are relayed back into Codex chat
+5. Codex sends the user’s answer back through the bridge
+6. Mission Control returns status updates and final handoff
+
+Daemon and plugin docs:
+
+- [Codex Plugin Mode](docs/CODEX_PLUGIN_MODE.md)
+- [MCP Security](docs/MCP_SECURITY.md)
+- [Codex Plugin Install](docs/CODEX_PLUGIN_INSTALL.md)
+- [Bridge Runtime](docs/BRIDGE_RUNTIME.md)
+- [Pending Decisions](docs/PENDING_DECISIONS.md)
+- [Plugin Health Doctor](docs/PLUGIN_HEALTH_DOCTOR.md)
+- [Chat-Native Handoffs](docs/CHAT_NATIVE_HANDOFFS.md)
+
 ## What it does
 
 - Guides first-time users through setup, provider selection, and startup defaults
@@ -13,8 +45,10 @@ Codex Mission Control is a local-first desktop app for running a manager-led cod
 - Routes every project through a manager-centered workspace keyed by project ID
 - Builds adaptive swarm plans instead of relying on one fixed worker roster
 - Coordinates manager and worker agents while preventing overlapping writable paths
+- Applies deterministic risk assessment, approval policy, and redacted audit logging before dangerous actions proceed
 - Streams live orchestration events into the workspace shell over SSE
 - Produces a final handoff with run instructions, tests, limitations, and follow-up work
+- Packages Codex-facing skills, prompts, and MCP wiring for plugin-based Mission Control usage
 
 ## Startup model
 
@@ -114,6 +148,16 @@ python -m pip install -e .[dev]
 python -m uvicorn main:app --app-dir src --reload
 ```
 
+### Backend daemon only
+
+```powershell
+.\scripts\start-mission-control-daemon.ps1
+```
+
+```bash
+./scripts/start-mission-control-daemon.sh
+```
+
 ### Frontend
 
 ```powershell
@@ -147,6 +191,15 @@ Reports include:
 - recommended fixes
 
 Diagnostics intentionally redact API keys, tokens, and sensitive environment variables.
+
+## Approval safety
+
+Mission Control keeps command, tool, plugin, connected-account, and deployment approvals behind an explicit policy layer.
+
+- high-risk and critical actions do not auto-approve
+- approval decisions are written to a redacted audit log
+- risk assessment is deterministic and does not execute a command just to classify it
+- the local daemon is intended to stay on loopback, not as a public control plane
 
 ## Resetting setup intentionally
 
@@ -395,6 +448,11 @@ More detail:
 - [Architecture](docs/ARCHITECTURE.md)
 - [Workflow](docs/WORKFLOW.md)
 - [Provider Integration](docs/CODEX_INTEGRATION.md)
+- [Codex Plugin Install](docs/CODEX_PLUGIN_INSTALL.md)
+- [Bridge Runtime](docs/BRIDGE_RUNTIME.md)
+- [Pending Decisions](docs/PENDING_DECISIONS.md)
+- [Plugin Health Doctor](docs/PLUGIN_HEALTH_DOCTOR.md)
+- [Chat-Native Handoffs](docs/CHAT_NATIVE_HANDOFFS.md)
 - [Security](docs/SECURITY.md)
 
 ## Current limits

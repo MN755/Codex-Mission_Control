@@ -1929,6 +1929,8 @@ export function ProjectWorkspacePage() {
                   onGenerateConfidenceFollowUp: promptManagerForConfidenceFollowUp,
                   onAskManagerToReviewRecovery: promptManagerToReviewRecovery,
                   onAskManagerToClassifyChangeRequest: promptManagerToClassifyChangeRequest,
+                  onRequestWritePermission: () => void runAction(() => api.updateWritePermission(workspace.project.id, "write_allowed"), "Updating write permission..."),
+                  onOpenImportReview: () => navigate(`/projects/${workspace.project.id}/import/review`),
                 })
               }
             />
@@ -2032,6 +2034,8 @@ export function ProjectWorkspacePage() {
                 onGenerateConfidenceFollowUp: promptManagerForConfidenceFollowUp,
                 onAskManagerToReviewRecovery: promptManagerToReviewRecovery,
                 onAskManagerToClassifyChangeRequest: promptManagerToClassifyChangeRequest,
+                onRequestWritePermission: () => void runAction(() => api.updateWritePermission(workspace.project.id, "write_allowed"), "Updating write permission..."),
+                onOpenImportReview: () => navigate(`/projects/${workspace.project.id}/import/review`),
               })
             }
           />
@@ -3393,6 +3397,8 @@ function renderProjectWidgetBody(
     onGenerateConfidenceFollowUp: (categories: string[]) => void;
     onAskManagerToReviewRecovery: (item: Record<string, unknown>) => void;
     onAskManagerToClassifyChangeRequest: (item: Record<string, unknown>) => void;
+    onRequestWritePermission: () => void;
+    onOpenImportReview: () => void;
   },
 ) {
   if (!data) {
@@ -3466,6 +3472,8 @@ function renderProjectWidgetBody(
     case "Decision Ledger":
     case "Agent Stuck Detection":
     case "Merge / Review Gates":
+    case "Approval Audit Log":
+    case "Risk Assessment":
     case "What Changed Timeline":
     case "Agent Report Inbox":
     case "Human Attention Queue":
@@ -3610,6 +3618,29 @@ function renderProjectWidgetBody(
         />
       );
     }
+    case "Security Policy": {
+      const rows = Array.isArray(payload.rows) ? (payload.rows as Array<Record<string, unknown>>) : [];
+      const notes = Array.isArray(payload.notes) ? (payload.notes as string[]) : [];
+      return (
+        <>
+          <ProjectWidgetFacts
+            rows={rows.map((row) => ({
+              label: String(row.label ?? "Policy"),
+              value: String(row.value ?? "Unknown"),
+            }))}
+          />
+          {notes.length ? (
+            <div className="mission-widget-note-list">
+              {notes.map((note) => (
+                <p key={note} className="section-footnote">
+                  {note}
+                </p>
+              ))}
+            </div>
+          ) : null}
+        </>
+      );
+    }
     case "Repo Intelligence":
       return (
         <ProjectWidgetFacts
@@ -3620,6 +3651,102 @@ function renderProjectWidgetBody(
             { label: "Important folders", value: Array.isArray(payload.important_folders) ? String((payload.important_folders as string[]).length) : "0" },
           ]}
         />
+      );
+    case "Codebase Map":
+      return (
+        <>
+          <ProjectWidgetFacts
+            rows={[
+              { label: "Languages", value: Array.isArray(payload.languages) ? ((payload.languages as string[]).join(", ") || "Unknown") : "Unknown" },
+              { label: "Frameworks", value: Array.isArray(payload.frameworks) ? ((payload.frameworks as string[]).join(", ") || "Unknown") : "Unknown" },
+              { label: "Commands", value: Array.isArray(payload.build_commands) ? String((payload.build_commands as string[]).length + ((payload.test_commands as string[] | undefined)?.length ?? 0)) : "0" },
+              { label: "Folders", value: Array.isArray(payload.important_folders) ? String((payload.important_folders as string[]).length) : "0" },
+            ]}
+          />
+          <div className="mission-widget-actions">
+            <button type="button" className="button-ghost" onClick={actions.onOpenImportReview}>
+              Open import review
+            </button>
+          </div>
+        </>
+      );
+    case "Codebase Understanding":
+      return (
+        <>
+          <p className="section-footnote">{String(payload.summary ?? "No summary available.")}</p>
+          <ProjectWidgetFacts
+            rows={[
+              { label: "Run confidence", value: String(Math.round(Number((payload.confidence_by_area as Record<string, number> | undefined)?.run_commands ?? 0) * 100)) + "%" },
+              { label: "Test confidence", value: String(Math.round(Number((payload.confidence_by_area as Record<string, number> | undefined)?.test_commands ?? 0) * 100)) + "%" },
+              { label: "Interview mode", value: String(payload.recommended_interview_mode ?? "Unknown") },
+              { label: "Generation", value: String(payload.generation_mode ?? "Unknown") },
+            ]}
+          />
+          <div className="mission-widget-actions">
+            <button type="button" className="button-ghost" onClick={actions.onOpenImportReview}>
+              Review report
+            </button>
+          </div>
+        </>
+      );
+    case "Imported Codebase Safety":
+      return (
+        <>
+          <ProjectWidgetFacts
+            rows={[
+              { label: "Write mode", value: String(payload.write_permission_status ?? "Unknown") },
+              { label: "Snapshot first", value: payload.require_snapshot_before_edits ? "Recommended" : "Optional" },
+              { label: "Build approval", value: payload.require_approval_for_build_commands ? "Required" : "Relaxed" },
+              { label: "Test approval", value: payload.require_approval_for_test_commands ? "Required" : "Relaxed" },
+            ]}
+          />
+          <div className="mission-widget-actions">
+            {payload.write_permission_status === "read_only" ? (
+              <button type="button" className="button-ghost" onClick={actions.onRequestWritePermission}>
+                Request write permission
+              </button>
+            ) : null}
+            <button type="button" className="button-ghost" onClick={actions.onOpenImportReview}>
+              Review safety
+            </button>
+          </div>
+        </>
+      );
+    case "AGENTS.md Status":
+      return (
+        <>
+          <ProjectWidgetFacts
+            rows={[
+              { label: "Present", value: payload.has_agents_md ? "Yes" : "No" },
+              { label: "Action", value: String(payload.recommended_action ?? "Unknown") },
+              { label: "Path", value: String(payload.path ?? "Not detected") },
+              { label: "Summary", value: String(payload.summary ?? "No summary available") },
+            ]}
+          />
+          <div className="mission-widget-actions">
+            <button type="button" className="button-ghost" onClick={actions.onOpenImportReview}>
+              Review AGENTS.md
+            </button>
+          </div>
+        </>
+      );
+    case "Scan Coverage":
+      return (
+        <>
+          <ProjectWidgetFacts
+            rows={[
+              { label: "Depth", value: String(payload.scan_depth ?? "Unknown") },
+              { label: "Size", value: String(payload.codebase_size ?? "Unknown") },
+              { label: "Indexed", value: Array.isArray(payload.indexed_areas) ? String((payload.indexed_areas as string[]).length) : "0" },
+              { label: "Unindexed", value: Array.isArray(payload.unindexed_areas) ? String((payload.unindexed_areas as string[]).length) : "0" },
+            ]}
+          />
+          <div className="mission-widget-actions">
+            <button type="button" className="button-ghost" onClick={actions.onOpenImportReview}>
+              Open scan review
+            </button>
+          </div>
+        </>
       );
     case "Validation Recipe": {
       const steps = Array.isArray(payload.steps) ? (payload.steps as Array<Record<string, unknown>>) : [];

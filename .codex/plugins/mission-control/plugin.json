@@ -1,0 +1,20 @@
+{
+  "manifest_format": "provisional-placeholder",
+  "name": "mission-control",
+  "display_name": "Mission Control",
+  "version": "0.1.0",
+  "description": "Repo-local Codex plugin bundle for Mission Control background orchestration.",
+  "status": "draft",
+  "mcp": {
+    "example_config": "./mcp/mission-control-mcp.local.json"
+  },
+  "skills": [
+    "mission-control-bridge"
+  ],
+  "prompts": [
+    "use-mission-control"
+  ],
+  "assets": {
+    "approval_card_placeholder": "./assets/approval-card-placeholder.json"
+  }
+}

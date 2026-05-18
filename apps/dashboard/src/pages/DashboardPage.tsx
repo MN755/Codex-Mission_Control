@@ -360,6 +360,7 @@ function renderDashboardWidgetBody(instance: WidgetInstance, data: WidgetDataRes
     case "Recent Decisions":
     case "Project Health Overview":
     case "Recent Change Requests":
+    case "Imported Projects":
       return items.length ? <WidgetList items={items} /> : <p className="section-footnote">{data.empty_state ?? "Nothing to show."}</p>;
     case "Runner & Provider Status":
       return (

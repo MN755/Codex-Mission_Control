@@ -11,6 +11,13 @@ StartupProviderChoice = ProviderId
 StartupStartMode = Literal["new_project", "guided_walkthrough"]
 RunnerMode = Literal["auto", "cli", "app_server", "dry_run"]
 ManagerMode = Literal["auto", "provider", "codex", "deterministic"]
+ProjectSourceType = Literal["idea", "existing_folder", "cloned_repo", "docs_import"]
+ImportMode = Literal["linked", "copied", "cloned"]
+ScanStatus = Literal["not_started", "in_progress", "completed", "failed"]
+WritePermissionStatus = Literal["read_only", "write_allowed", "limited_write"]
+ScanDepth = Literal["shallow", "standard", "targeted", "deep"]
+CodebaseSize = Literal["small", "medium", "large", "huge"]
+InterviewChoice = Literal["skip", "quick", "full", "manager_decides"]
 AgentStatus = Literal["idle", "starting", "working", "waiting", "needs_review", "blocked", "done", "stopped", "error"]
 TaskStatus = Literal["backlog", "assigned", "working", "waiting_on_paths", "needs_review", "done", "blocked"]
 PlanAction = Literal["approve_build", "simplify", "ambitious", "usability", "quality", "rewrite", "feature_delta"]
@@ -44,6 +51,49 @@ QuestionStatus = Literal["pending", "answered", "auto_decided", "cancelled"]
 ApprovalRequestType = Literal["command", "tool", "plugin", "connected_app"]
 ApprovalRequestStatus = Literal["pending", "approved_once", "denied", "allowed_for_project", "expired"]
 RiskLevel = Literal["low", "medium", "high", "critical"]
+SecurityScope = Literal["global", "project"]
+DefaultExecutionPolicy = Literal["ask", "allow_low_risk", "deny"]
+NetworkAccessPolicy = Literal["ask", "allow", "deny"]
+WriteAccessPolicy = Literal["read_only", "workspace_write", "limited_paths"]
+ExternalAccountPolicy = Literal["ask", "deny"]
+DeploymentPolicy = Literal["ask", "deny"]
+DestructiveActionPolicy = Literal["deny", "critical_approval"]
+ApprovalAuditDecision = Literal["approved", "denied", "allowed_for_project", "expired", "auto_approved", "blocked"]
+ApprovalAuditActor = Literal["user", "manager", "policy", "system"]
+OrchestrationSource = Literal["codex_plugin", "dashboard", "cli", "desktop"]
+OrchestrationStatus = Literal["initializing", "planning", "waiting_for_user", "running", "paused", "completed", "failed"]
+AttachMode = Literal["auto", "new_project", "existing_codebase"]
+AttachPolicy = Literal["reuse_existing", "create_new", "ask"]
+PendingDecisionType = Literal[
+    "manager_question",
+    "command_approval",
+    "tool_approval",
+    "write_permission",
+    "swarm_approval",
+    "snapshot_approval",
+    "recovery_decision",
+    "handoff_review",
+    "scope_change_decision",
+    "safe_mode_confirmation",
+]
+PendingDecisionStatus = Literal["pending", "answered", "expired", "cancelled"]
+BridgeMessageSourceType = Literal["manager", "system", "agent", "security", "diagnostics", "handoff"]
+BridgeMessageType = Literal[
+    "status_update",
+    "approval_request",
+    "manager_question",
+    "warning",
+    "blocked",
+    "handoff_ready",
+    "failed",
+    "recovery_options",
+    "swarm_update",
+    "diagnostic_summary",
+    "event_digest",
+    "safe_mode_update",
+]
+BridgeRedactionStatus = Literal["clean", "redacted"]
+EventDigestWindow = Literal["last_5_minutes", "last_15_minutes", "since_last_user_interaction", "since_orchestration_start"]
 ProjectActionType = Literal["no_action", "manager_question", "command_approval", "tool_approval", "blocker", "handoff_ready", "degraded", "paused", "error"]
 ProjectActionSeverity = Literal["info", "warning", "danger", "success"]
 AgentDisplayStatus = Literal["active", "thinking", "coding", "running", "reviewing", "monitoring", "waiting", "idle", "blocked", "error", "retired"]
@@ -103,6 +153,16 @@ WidgetArea = Literal[
 WidgetSize = Literal["small", "medium", "large", "full"]
 WidgetDataStatus = Literal["ready", "warning", "empty", "coming_soon", "needs_setup", "unsupported"]
 WidgetCategory = Literal["Attention", "Swarm", "Agents", "Safety", "Quality", "Docs", "Models", "Tools", "Diagnostics", "Handoff", "Change Management"]
+ConflictType = Literal["path_overlap", "file_edit_collision", "task_dependency", "review_disagreement", "merge_conflict", "unknown"]
+ConflictStatus = Literal["detected", "manager_review", "resolving", "resolved", "dismissed"]
+ConflictResolution = Literal["serialize_tasks", "choose_agent_a", "choose_agent_b", "merge_changes", "split_file_ownership", "ask_user", "spawn_conflict_resolver_agent", "rollback_one_side"]
+EvidenceType = Literal["command_output", "test_result", "build_result", "file_change", "artifact", "screenshot", "report", "manual_note"]
+EvidenceStatus = Literal["passed", "failed", "not_run", "unknown"]
+SnapshotType = Literal["git_commit", "git_branch", "filesystem_marker", "manual"]
+SnapshotStatus = Literal["available", "failed", "unsupported"]
+RecoveryStatus = Literal["proposed", "accepted", "rejected", "completed"]
+AgentLoadLevel = Literal["idle", "light", "normal", "heavy", "blocked"]
+ProjectHealthState = Literal["healthy", "needs_review", "blocked", "ready_for_handoff", "unstable", "unknown"]
 SwarmIntensity = Literal["low", "medium", "high", "extreme"]
 
 
@@ -113,6 +173,11 @@ class ProjectCreate(BaseModel):
     provider: ProviderId = "codex"
     runner_mode: RunnerMode = "auto"
     manager_mode: ManagerMode = "auto"
+    source_type: ProjectSourceType = "idea"
+    source_path: str | None = None
+    import_mode: ImportMode | None = None
+    scan_status: ScanStatus = "not_started"
+    write_permission_status: WritePermissionStatus = "write_allowed"
 
 
 class ProjectRead(BaseModel):
@@ -133,6 +198,13 @@ class ProjectRead(BaseModel):
     latest_milestone: str | None = None
     latest_activity: str | None = None
     handoff_status: str | None = None
+    source_type: ProjectSourceType = "idea"
+    source_path: str | None = None
+    import_mode: ImportMode | None = None
+    imported_at: datetime | None = None
+    scan_status: ScanStatus = "not_started"
+    last_indexed_at: datetime | None = None
+    write_permission_status: WritePermissionStatus = "write_allowed"
     display_status: str = "planning"
     created_at: datetime
     updated_at: datetime
@@ -665,6 +737,265 @@ class ApprovalRequestRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class SecurityPolicyRead(BaseModel):
+    id: int
+    scope: SecurityScope
+    project_id: int | None = None
+    default_command_policy: DefaultExecutionPolicy
+    default_tool_policy: DefaultExecutionPolicy
+    network_access_policy: NetworkAccessPolicy
+    write_access_policy: WriteAccessPolicy
+    external_account_policy: ExternalAccountPolicy
+    deployment_policy: DeploymentPolicy
+    destructive_action_policy: DestructiveActionPolicy
+    auto_approve_low_risk: bool
+    auto_approve_medium_risk: bool
+    high_risk_requires_user: bool
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class SecurityPolicyUpdate(BaseModel):
+    default_command_policy: DefaultExecutionPolicy = "ask"
+    default_tool_policy: DefaultExecutionPolicy = "ask"
+    network_access_policy: NetworkAccessPolicy = "ask"
+    write_access_policy: WriteAccessPolicy = "workspace_write"
+    external_account_policy: ExternalAccountPolicy = "ask"
+    deployment_policy: DeploymentPolicy = "deny"
+    destructive_action_policy: DestructiveActionPolicy = "critical_approval"
+    auto_approve_low_risk: bool = False
+    auto_approve_medium_risk: bool = False
+    high_risk_requires_user: bool = True
+
+
+class RiskAssessRequest(BaseModel):
+    project_id: int | None = None
+    action_type: str
+    title: str | None = None
+    summary: str | None = None
+    command: str | None = None
+    tool_name: str | None = None
+    cwd: str | None = None
+    affected_paths_json: list[str] = Field(default_factory=list)
+    external_access_requested: bool = False
+    modifies_files: bool = False
+    modifies_package_files: bool = False
+    deletes_files: bool = False
+    deploys: bool = False
+    accesses_network: bool = False
+    accesses_credentials: bool = False
+    writes_outside_workspace: bool = False
+
+
+class RiskAssessmentRead(BaseModel):
+    id: int
+    project_id: int | None = None
+    action_type: str
+    title: str
+    summary: str
+    risk_level: RiskLevel
+    reasons_json: list[str] = Field(default_factory=list)
+    affected_paths_json: list[str] = Field(default_factory=list)
+    external_access_json: dict[str, Any] = Field(default_factory=dict)
+    recommended_policy: str
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class ApprovalAuditLogRead(BaseModel):
+    id: int
+    project_id: int | None = None
+    orchestration_id: int | None = None
+    decision_id: int | None = None
+    action_type: str
+    action_summary: str
+    risk_level: RiskLevel
+    decision: ApprovalAuditDecision
+    decided_by: ApprovalAuditActor
+    reason: str
+    created_at: datetime
+    metadata_json: dict[str, Any] = Field(default_factory=dict)
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class OrchestrationAttachRequest(BaseModel):
+    workspace_path: str
+    project_name: str | None = None
+    mode: AttachMode = "auto"
+    read_only_first: bool = True
+    attach_policy: AttachPolicy = "reuse_existing"
+
+
+class RunnerAvailabilityRead(BaseModel):
+    runner_type: str
+    availability: bool
+    config_status: str
+    supports_background: bool
+    supports_streaming: bool
+    supports_approvals: bool
+    notes: list[str] = Field(default_factory=list)
+
+
+class OrchestrationSessionRead(BaseModel):
+    id: int
+    project_id: int
+    workspace_path: str
+    source: OrchestrationSource
+    user_request: str
+    status: OrchestrationStatus
+    manager_status: str
+    created_at: datetime
+    updated_at: datetime
+    completed_at: datetime | None = None
+    metadata_json: dict[str, Any] = Field(default_factory=dict)
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class OrchestrationAttachRead(BaseModel):
+    project: ProjectRead
+    orchestration: OrchestrationSessionRead | None = None
+    attach_outcome: str
+    reused_existing_project: bool = False
+    reused_existing_orchestration: bool = False
+    user_action_required: bool = False
+    pending_decision_id: int | None = None
+    message: str
+
+
+class OrchestrationCreateRequest(BaseModel):
+    project_id: int
+    user_request: str = Field(min_length=1)
+    source: OrchestrationSource = "codex_plugin"
+    orchestration_id: int | None = None
+
+
+class OrchestrationEventRead(BaseModel):
+    id: int
+    orchestration_id: int
+    project_id: int
+    event_type: str
+    payload_json: dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class PendingDecisionRead(BaseModel):
+    id: int
+    project_id: int | None = None
+    orchestration_id: int | None = None
+    decision_type: PendingDecisionType
+    title: str
+    message: str
+    requesting_agent_id: int | None = None
+    related_task_id: int | None = None
+    risk_level: RiskLevel
+    options: list[dict[str, Any]] = Field(default_factory=list)
+    options_json: list[dict[str, Any]] = Field(default_factory=list)
+    recommended_option: str | None = None
+    status: PendingDecisionStatus
+    created_at: datetime
+    presentation: dict[str, Any] | None = None
+    presentation_json: dict[str, Any] | None = None
+    answered_at: datetime | None = None
+    answer_json: dict[str, Any] | None = None
+    related_agent_id: int | None = None
+
+
+class PendingDecisionAnswerRequest(BaseModel):
+    option_id: str
+    selected_text: str
+    free_text: str | None = None
+
+
+class BridgeMessageRead(BaseModel):
+    id: str
+    project_id: int | None = None
+    orchestration_id: int | None = None
+    source_type: BridgeMessageSourceType
+    message_type: BridgeMessageType
+    title: str
+    summary: str
+    user_action_required: bool = False
+    risk_level: RiskLevel | None = None
+    options_json: list[dict[str, Any]] | None = None
+    machine_payload_json: dict[str, Any] | None = None
+    fallback_markdown: str
+    redaction_status: BridgeRedactionStatus = "clean"
+    created_at: datetime
+    expires_at: datetime | None = None
+    resolved_at: datetime | None = None
+
+
+class PendingDecisionAnswerResultRead(BaseModel):
+    decision: PendingDecisionRead
+    next_status_summary: BridgeMessageRead | None = None
+
+
+class SafeModeStatusRead(BaseModel):
+    project_id: int
+    enabled: bool
+    require_all_command_approvals: bool
+    destructive_actions_blocked: bool
+    deployment_tools_blocked: bool
+    external_account_tools_require_approval: bool
+    dynamic_spawning_paused: bool
+    require_read_only_scan_for_imported_codebases: bool
+    bridge_message: BridgeMessageRead
+
+
+class ResumeWorkspaceRequest(BaseModel):
+    workspace_path: str
+    attach_policy: AttachPolicy = "reuse_existing"
+
+
+class ResumeWorkspaceRead(BaseModel):
+    workspace_path: str
+    status: Literal["found_active", "found_recent", "found_project_only", "not_found"]
+    message: str
+    project: ProjectRead | None = None
+    orchestration: OrchestrationSessionRead | None = None
+    status_summary: BridgeMessageRead | None = None
+    pending_decisions: list[PendingDecisionRead] = Field(default_factory=list)
+    user_action_required: bool = False
+
+
+class OrchestrationStatusRead(BaseModel):
+    orchestration_id: int
+    project_id: int
+    project_name: str
+    orchestration_status: OrchestrationStatus
+    manager_status: str
+    current_phase: str
+    active_agents: list[dict[str, Any]] = Field(default_factory=list)
+    pending_decisions_count: int = 0
+    recent_events: list[dict[str, Any]] = Field(default_factory=list)
+    current_blockers: list[str] = Field(default_factory=list)
+    next_expected_action: str
+    user_action_required: bool = False
+    handoff_readiness: str = "not_ready"
+    runner_inventory: list[RunnerAvailabilityRead] = Field(default_factory=list)
+
+
+class DaemonStatusRead(BaseModel):
+    status: str
+    mode: str
+    host: str
+    port: int
+    pid: int
+    started_at: datetime
+    token_configured: bool = False
+    active_orchestrations: int = 0
+    runner_inventory: list[RunnerAvailabilityRead] = Field(default_factory=list)
+    dashboard_url: str
+    notes: list[str] = Field(default_factory=list)
+
+
 class ProjectActionRead(BaseModel):
     id: str
     project_id: int
@@ -870,6 +1201,8 @@ class RecoveryPlanRead(BaseModel):
     project_id: int
     trigger_type: str
     trigger_summary: str
+    related_agent_id: int | None = None
+    related_task_id: int | None = None
     suggested_actions_json: list[str] = Field(default_factory=list)
     selected_action: str | None = None
     status: str
@@ -900,7 +1233,9 @@ class ReviewGateRead(BaseModel):
     status: str
     required: bool = True
     related_task_id: int | None = None
+    related_agent_id: int | None = None
     required_checks_json: list[str] = Field(default_factory=list)
+    evidence_ids_json: list[int] = Field(default_factory=list)
     result_summary: str | None = None
     updated_at: datetime
 
@@ -983,6 +1318,157 @@ class RepoIntelligenceSummaryRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class ImportFolderRequest(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=200)
+    folder_path: str = Field(min_length=1)
+    import_mode: ImportMode = "linked"
+    start_read_only_scan: bool = True
+
+
+class ImportFolderResponse(BaseModel):
+    project: ProjectRead
+    scan_started: bool
+    warnings: list[str] = Field(default_factory=list)
+    recommended_next_route: str
+
+
+class CodebaseMapRead(BaseModel):
+    project_id: int
+    source_path: str
+    languages_json: list[str] = Field(default_factory=list)
+    frameworks_json: list[str] = Field(default_factory=list)
+    package_managers_json: list[str] = Field(default_factory=list)
+    build_tools_json: list[str] = Field(default_factory=list)
+    test_frameworks_json: list[str] = Field(default_factory=list)
+    entry_points_json: list[str] = Field(default_factory=list)
+    build_commands_json: list[str] = Field(default_factory=list)
+    test_commands_json: list[str] = Field(default_factory=list)
+    important_folders_json: list[str] = Field(default_factory=list)
+    docs_json: list[str] = Field(default_factory=list)
+    agent_instructions_json: list[dict[str, Any]] = Field(default_factory=list)
+    config_files_json: list[str] = Field(default_factory=list)
+    ci_config_json: list[str] = Field(default_factory=list)
+    deployment_config_json: list[str] = Field(default_factory=list)
+    git_status_json: dict[str, Any] = Field(default_factory=dict)
+    risk_flags_json: list[str] = Field(default_factory=list)
+    scan_depth: ScanDepth | str
+    codebase_size: CodebaseSize | str
+    recommended_scan_strategy: str
+    indexed_areas_json: list[str] = Field(default_factory=list)
+    unindexed_areas_json: list[str] = Field(default_factory=list)
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class CodebaseUnderstandingRead(BaseModel):
+    project_id: int
+    summary: str
+    architecture_summary: str
+    detected_stack_json: list[str] = Field(default_factory=list)
+    likely_run_instructions_json: list[str] = Field(default_factory=list)
+    likely_test_instructions_json: list[str] = Field(default_factory=list)
+    risk_summary: str
+    missing_context_json: list[str] = Field(default_factory=list)
+    suggested_next_steps_json: list[str] = Field(default_factory=list)
+    recommended_interview_mode: InterviewChoice
+    confidence_by_area_json: dict[str, float] = Field(default_factory=dict)
+    generation_mode: str
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class AgentInstructionsStatusRead(BaseModel):
+    project_id: int
+    has_agents_md: bool
+    agents_md_path: str | None = None
+    summary: str
+    recommended_action: Literal["none", "create", "update", "review"]
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class AgentsMdProposalRead(BaseModel):
+    project_id: int
+    recommended_path: str
+    summary: str
+    proposal_markdown: str
+
+
+class ImportedCodebaseSafetyRead(BaseModel):
+    project_id: int
+    read_only_scan_completed: bool
+    write_permission_status: WritePermissionStatus
+    require_snapshot_before_edits: bool
+    require_approval_for_dependency_changes: bool
+    require_approval_for_test_commands: bool
+    require_approval_for_build_commands: bool
+    require_approval_for_formatting: bool
+    require_approval_for_package_file_changes: bool
+    destructive_commands_blocked: bool
+    updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class ImportedCodebaseSafetyUpdate(BaseModel):
+    write_permission_status: WritePermissionStatus | None = None
+    require_snapshot_before_edits: bool | None = None
+    require_approval_for_dependency_changes: bool | None = None
+    require_approval_for_test_commands: bool | None = None
+    require_approval_for_build_commands: bool | None = None
+    require_approval_for_formatting: bool | None = None
+    require_approval_for_package_file_changes: bool | None = None
+    destructive_commands_blocked: bool | None = None
+
+
+class WritePermissionRequest(BaseModel):
+    write_permission_status: WritePermissionStatus
+
+
+class ImportInterviewChoiceRequest(BaseModel):
+    choice: InterviewChoice
+
+
+class ImportInterviewChoiceResponse(BaseModel):
+    next_route: str
+    questions: list[InterviewQuestionRead] = Field(default_factory=list)
+    manager_note: str
+
+
+class TargetedCodebaseScanRequest(BaseModel):
+    target_paths: list[str] | None = None
+    request_text: str | None = None
+    scan_reason: str | None = None
+
+
+class ImportedCodebaseRequest(BaseModel):
+    message: str = Field(min_length=1)
+
+
+class ImportedCodebaseRequestRead(BaseModel):
+    project_id: int
+    classification: Literal["analysis", "bugfix", "feature", "refactor", "docs", "test", "security", "performance", "migration", "cleanup", "unknown"]
+    decision: Literal[
+        "answer_directly",
+        "ask_quick_question",
+        "create_task_plan",
+        "run_targeted_scan",
+        "request_command_approval",
+        "request_write_permission",
+        "recommend_snapshot_first",
+    ]
+    manager_note: str
+    suggested_questions: list[str] = Field(default_factory=list)
+    targeted_scan_targets: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+
+
 class ValidationRecipeRead(BaseModel):
     id: int
     project_id: int
@@ -1021,6 +1507,518 @@ class ChangeRequestRead(BaseModel):
     impact_estimate: str
     status: str
     related_tasks_json: list[int] = Field(default_factory=list)
+    related_handoff_id: int | None = None
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class ChangeRequestUpdate(BaseModel):
+    classification: str | None = None
+    impact_estimate: str | None = None
+    status: str | None = None
+    related_tasks_json: list[int] | None = None
+    related_handoff_id: int | None = None
+
+
+class ChangeRequestTriageRead(BaseModel):
+    id: int
+    classification: str
+    impact_estimate: str
+    status: str
+    note: str
+
+
+class ConflictRecordRead(BaseModel):
+    id: int
+    project_id: int
+    conflict_type: ConflictType
+    title: str
+    summary: str
+    involved_agent_ids_json: list[int] = Field(default_factory=list)
+    involved_task_ids_json: list[int] = Field(default_factory=list)
+    affected_paths_json: list[str] = Field(default_factory=list)
+    severity: RiskLevel
+    status: ConflictStatus
+    suggested_resolution_json: list[str] = Field(default_factory=list)
+    selected_resolution: ConflictResolution | str | None = None
+    created_at: datetime
+    resolved_at: datetime | None = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class ConflictResolveRequest(BaseModel):
+    resolution: ConflictResolution | str
+
+
+class HandoffEvidenceCreate(BaseModel):
+    evidence_type: EvidenceType
+    claim: str = Field(min_length=1)
+    summary: str = Field(min_length=1)
+    source_path: str | None = None
+    command: str | None = None
+    status: EvidenceStatus = "unknown"
+    metadata_json: dict[str, Any] = Field(default_factory=dict)
+
+
+class HandoffEvidenceRead(BaseModel):
+    id: int
+    project_id: int
+    handoff_id: int | None = None
+    evidence_type: EvidenceType | str
+    claim: str
+    summary: str
+    source_path: str | None = None
+    command: str | None = None
+    status: EvidenceStatus | str
+    created_at: datetime
+    metadata_json: dict[str, Any] = Field(default_factory=dict)
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class EvidenceBasedHandoffRead(BaseModel):
+    id: int
+    project_id: int
+    title: str
+    summary: str
+    what_was_built: str
+    how_to_run: str
+    how_to_use: str
+    tests_run_json: list[dict[str, Any]] = Field(default_factory=list)
+    known_limitations_json: list[str] = Field(default_factory=list)
+    suggested_next_steps_json: list[str] = Field(default_factory=list)
+    evidence_ids_json: list[int] = Field(default_factory=list)
+    confidence_level: str
+    dry_run: bool = False
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class RunbookRead(BaseModel):
+    id: int
+    project_id: int
+    content_markdown: str
+    generated_from_handoff_id: int | None = None
+    generated_at: datetime
+    updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class RunbookUpdate(BaseModel):
+    content_markdown: str = Field(min_length=1)
+
+
+class AgentExecutionTraceRead(BaseModel):
+    id: int
+    project_id: int
+    agent_id: int | None = None
+    task_id: int | None = None
+    run_id: int | None = None
+    prompt_summary: str
+    prompt_path: str | None = None
+    response_summary: str
+    report_json: dict[str, Any] = Field(default_factory=dict)
+    files_changed_json: list[str] = Field(default_factory=list)
+    approvals_requested_json: list[dict[str, Any]] = Field(default_factory=list)
+    commands_attempted_json: list[str] = Field(default_factory=list)
+    manager_decision_after: str | None = None
+    redaction_status: str
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class ProjectSnapshotCreate(BaseModel):
+    label: str = Field(min_length=1)
+    description: str = Field(min_length=1)
+    created_before_task_id: int | None = None
+    created_before_agent_id: int | None = None
+
+
+class ProjectSnapshotRead(BaseModel):
+    id: int
+    project_id: int
+    snapshot_type: SnapshotType | str
+    label: str
+    description: str
+    git_ref: str | None = None
+    created_before_task_id: int | None = None
+    created_before_agent_id: int | None = None
+    status: SnapshotStatus | str
+    created_at: datetime
+    metadata_json: dict[str, Any] = Field(default_factory=dict)
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class SnapshotRestorePlanRead(BaseModel):
+    snapshot_id: int
+    project_id: int
+    status: SnapshotStatus | str
+    summary: str
+    steps: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+
+
+class RecoveryPlanCreate(BaseModel):
+    trigger_type: str = Field(min_length=1)
+    trigger_summary: str = Field(min_length=1)
+    related_agent_id: int | None = None
+    related_task_id: int | None = None
+    suggested_actions_json: list[str] = Field(default_factory=list)
+
+
+class RecoveryPlanSelectRequest(BaseModel):
+    action: str = Field(min_length=1)
+
+
+class AgentLoadSnapshotRead(BaseModel):
+    id: int
+    project_id: int
+    agent_id: int
+    active_task_count: int
+    waiting_task_count: int
+    blocked_task_count: int
+    idle_duration_seconds: int | None = None
+    load_level: AgentLoadLevel | str
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class AgentLoadRebalanceRead(BaseModel):
+    overloaded_agents: list[dict[str, Any]] = Field(default_factory=list)
+    idle_agents: list[dict[str, Any]] = Field(default_factory=list)
+    suggested_reassignments: list[dict[str, Any]] = Field(default_factory=list)
+    risks: list[str] = Field(default_factory=list)
+
+
+class ReviewGateCreate(BaseModel):
+    gate_type: str = Field(min_length=1)
+    title: str = Field(min_length=1)
+    required: bool = True
+    related_task_id: int | None = None
+    related_agent_id: int | None = None
+    required_checks_json: list[str] = Field(default_factory=list)
+    evidence_ids_json: list[int] = Field(default_factory=list)
+    result_summary: str | None = None
+    status: str = "pending"
+
+
+class ReviewGateUpdate(BaseModel):
+    status: str | None = None
+    required: bool | None = None
+    related_task_id: int | None = None
+    related_agent_id: int | None = None
+    required_checks_json: list[str] | None = None
+    evidence_ids_json: list[int] | None = None
+    result_summary: str | None = None
+
+
+class ProjectHealthRead(BaseModel):
+    state: ProjectHealthState | str
+    score: int
+    reasons: list[str] = Field(default_factory=list)
+    top_risks: list[str] = Field(default_factory=list)
+    next_action: str
+
+
+class ProjectTimelineEventCreate(BaseModel):
+    event_type: str = Field(min_length=1)
+    title: str = Field(min_length=1)
+    summary: str = Field(min_length=1)
+    related_agent_id: int | None = None
+    related_task_id: int | None = None
+    related_handoff_id: int | None = None
+    severity: ProjectActionSeverity = "info"
+
+
+class ProjectTimelineEventRead(BaseModel):
+    id: int
+    project_id: int
+    event_type: str
+    title: str
+    summary: str
+    related_agent_id: int | None = None
+    related_task_id: int | None = None
+    related_handoff_id: int | None = None
+    severity: ProjectActionSeverity | str
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class CapabilityBenchmarkCreate(BaseModel):
+    provider: str = Field(min_length=1)
+    model: str = Field(min_length=1)
+    runner_mode: RunnerMode = "auto"
+    category: str = Field(min_length=1)
+    score: int = Field(ge=0, le=100)
+    sample_size: int = Field(default=1, ge=0)
+    notes: str | None = None
+    last_run_at: datetime | None = None
+
+
+class CapabilityBenchmarkRead(BaseModel):
+    id: int
+    provider: str
+    model: str
+    runner_mode: RunnerMode | str
+    category: str
+    score: int
+    sample_size: int
+    notes: str | None = None
+    last_run_at: datetime | None = None
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class CapabilityMatrixEntryRead(BaseModel):
+    provider: str
+    model: str
+    runner_mode: RunnerMode | str
+    scores: dict[str, int | None] = Field(default_factory=dict)
+    sample_size: int = 0
+    notes: list[str] = Field(default_factory=list)
+    recommendation_note: str
+
+
+class AgentPerformanceRecordCreate(BaseModel):
+    project_id: int | None = None
+    agent_archetype: str = Field(min_length=1)
+    agent_name: str | None = None
+    provider: str | None = None
+    model: str | None = None
+    runner_mode: RunnerMode = "auto"
+    task_category: str = Field(min_length=1)
+    task_id: int | None = None
+    outcome: str = "unknown"
+    duration_seconds: int | None = Field(default=None, ge=0)
+    review_passed: bool | None = None
+    tests_passed: bool | None = None
+    failure_summary: str | None = None
+
+
+class AgentPerformanceRecordRead(BaseModel):
+    id: int
+    project_id: int | None = None
+    agent_archetype: str
+    agent_name: str | None = None
+    provider: str | None = None
+    model: str | None = None
+    runner_mode: RunnerMode | str
+    task_category: str
+    task_id: int | None = None
+    outcome: str
+    duration_seconds: int | None = None
+    review_passed: bool | None = None
+    tests_passed: bool | None = None
+    failure_summary: str | None = None
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class AgentReputationSummaryRead(BaseModel):
+    archetype: str
+    provider: str | None = None
+    model: str | None = None
+    total_tasks: int
+    success_rate: float
+    common_failure_modes: list[str] = Field(default_factory=list)
+    recommended_for: list[str] = Field(default_factory=list)
+    avoid_for: list[str] = Field(default_factory=list)
+    confidence: int = 0
+
+
+class ProjectPlaybookRead(BaseModel):
+    id: int
+    key: str
+    name: str
+    description: str
+    suggested_interview_categories_json: list[str] = Field(default_factory=list)
+    suggested_swarm_mode: str | None = None
+    suggested_agent_archetypes_json: list[str] = Field(default_factory=list)
+    suggested_validation_recipe_json: list[dict[str, Any]] = Field(default_factory=list)
+    common_risks_json: list[str] = Field(default_factory=list)
+    suggested_docs_json: list[str] = Field(default_factory=list)
+    typical_structure_json: list[str] = Field(default_factory=list)
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class ProjectPlaybookSuggestionRead(BaseModel):
+    project_id: int
+    playbook_key: str | None = None
+    status: str
+    why: str
+    playbook: ProjectPlaybookRead | None = None
+
+
+class ProjectPlaybookApplyRequest(BaseModel):
+    playbook_key: str = Field(min_length=1)
+
+
+class ContextPackBuildRequest(BaseModel):
+    agent_id: int | None = None
+    task_id: int | None = None
+    title: str | None = None
+    goal: str | None = None
+    token_budget_hint: int | None = Field(default=None, ge=0)
+
+
+class ContextPackSectionRead(BaseModel):
+    id: int
+    context_pack_id: int
+    section_type: str
+    title: str
+    content_markdown: str
+    source_refs_json: list[str] = Field(default_factory=list)
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class ContextPackRead(BaseModel):
+    id: int
+    project_id: int
+    agent_id: int | None = None
+    task_id: int | None = None
+    title: str
+    goal: str
+    included_docs_json: list[str] = Field(default_factory=list)
+    included_files_json: list[str] = Field(default_factory=list)
+    excluded_files_json: list[str] = Field(default_factory=list)
+    known_decisions_json: list[str] = Field(default_factory=list)
+    relevant_assumptions_json: list[str] = Field(default_factory=list)
+    validation_steps_json: list[str] = Field(default_factory=list)
+    token_budget_hint: int | None = None
+    warnings_json: list[str] = Field(default_factory=list)
+    sections: list[ContextPackSectionRead] = Field(default_factory=list)
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class RiskRecordCreate(BaseModel):
+    title: str = Field(min_length=1)
+    description: str = Field(min_length=1)
+    severity: RiskLevel = "medium"
+    likelihood: Literal["low", "medium", "high"] = "medium"
+    owner_agent_id: int | None = None
+    mitigation: str | None = None
+    status: Literal["open", "monitoring", "mitigated", "accepted", "closed"] = "open"
+    related_task_id: int | None = None
+    created_by: Literal["manager", "user", "agent", "system"] = "manager"
+
+
+class RiskRecordUpdate(BaseModel):
+    title: str | None = None
+    description: str | None = None
+    severity: RiskLevel | None = None
+    likelihood: Literal["low", "medium", "high"] | None = None
+    owner_agent_id: int | None = None
+    mitigation: str | None = None
+    status: Literal["open", "monitoring", "mitigated", "accepted", "closed"] | None = None
+    related_task_id: int | None = None
+
+
+class RiskRecordRead(BaseModel):
+    id: int
+    project_id: int
+    title: str
+    description: str
+    severity: RiskLevel
+    likelihood: Literal["low", "medium", "high"]
+    owner_agent_id: int | None = None
+    mitigation: str | None = None
+    status: Literal["open", "monitoring", "mitigated", "accepted", "closed"]
+    related_task_id: int | None = None
+    created_by: Literal["manager", "user", "agent", "system"]
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class ScopeChangeAnalyzeRequest(BaseModel):
+    source: str = "manager"
+    summary: str | None = None
+    related_task_id: int | None = None
+    related_message_id: int | None = None
+
+
+class ScopeChangeResolveRequest(BaseModel):
+    status: Literal["accepted", "deferred", "dismissed"]
+
+
+class ScopeChangeSignalRead(BaseModel):
+    id: int
+    project_id: int
+    source: str
+    summary: str
+    severity: Literal["low", "medium", "high"]
+    related_task_id: int | None = None
+    related_message_id: int | None = None
+    suggested_action: Literal["include_now", "defer", "create_future_milestone", "ask_user"]
+    status: Literal["open", "accepted", "deferred", "dismissed"]
+    created_at: datetime
+    resolved_at: datetime | None = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class SwarmLaunchSimulationRead(BaseModel):
+    id: int
+    project_id: int
+    swarm_plan_id: int | None = None
+    safe_to_launch_count: int
+    should_wait_count: int
+    needs_user_approval_count: int
+    conflict_warnings_json: list[str] = Field(default_factory=list)
+    bottlenecks_json: list[str] = Field(default_factory=list)
+    recommended_launch_order_json: list[dict[str, Any]] = Field(default_factory=list)
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class ValidationCoverageAreaRead(BaseModel):
+    id: int
+    project_id: int
+    area: str
+    coverage_status: Literal["none", "planned", "partial", "validated", "failed", "skipped"]
+    evidence_summary: str | None = None
+    related_validation_step_id: int | None = None
+    last_updated: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class UserPreferenceUpsert(BaseModel):
+    value_json: Any
+    source: Literal["setup", "user", "manager_observed", "imported"] = "user"
+    editable: bool = True
+
+
+class UserPreferenceRead(BaseModel):
+    id: int
+    key: str
+    value_json: Any
+    source: Literal["setup", "user", "manager_observed", "imported"]
+    scope: Literal["global", "project"]
+    project_id: int | None = None
+    editable: bool
     created_at: datetime
     updated_at: datetime
 
@@ -1251,6 +2249,17 @@ class HandoffListItemRead(BaseModel):
     tests_count: int = 0
     run_instructions: list[str] = Field(default_factory=list)
     known_limitations: list[str] = Field(default_factory=list)
+    confidence_level: str | None = None
+    evidence_status: str | None = None
+    missing_evidence: list[str] = Field(default_factory=list)
+    dry_run: bool = False
+
+
+class OrchestrationHandoffRead(BaseModel):
+    ready: bool = False
+    status: str
+    message: str
+    handoff: HandoffListItemRead | None = None
 
 
 class DiagnosticReportListItemRead(BaseModel):
@@ -1378,3 +2387,30 @@ class SystemStatusRead(BaseModel):
 
 class CodexStatusRead(SystemStatusRead):
     pass
+
+
+PluginHealthState = Literal["ready", "degraded", "broken"]
+PluginHealthCheckState = Literal["ready", "degraded", "broken", "unknown"]
+
+
+class PluginHealthCheckRead(BaseModel):
+    key: str
+    label: str
+    status: PluginHealthCheckState
+    summary: str
+    recommended_fix: str | None = None
+    details_json: dict[str, Any] = Field(default_factory=dict)
+    checked_at: datetime
+
+
+class PluginHealthSummaryRead(BaseModel):
+    status: PluginHealthState
+    checks: list[PluginHealthCheckRead] = Field(default_factory=list)
+    recommended_next_steps: list[str] = Field(default_factory=list)
+    safe_troubleshooting_commands: list[str] = Field(default_factory=list)
+    codex_chat_markdown: str
+    checked_at: datetime
+    notes: list[str] = Field(default_factory=list)
+
+
+PluginHealthRead = PluginHealthSummaryRead

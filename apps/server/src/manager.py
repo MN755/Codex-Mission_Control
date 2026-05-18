@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import subprocess
 from collections import Counter
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -13,6 +14,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app_profile import display_name_or_default, get_or_create_app_profile, update_app_profile
+from capabilities import CAPABILITY_CATEGORIES, capability_service
 from codex_auth import auth_service
 from codex_runner.app_server_runner import AppServerCodexRunner
 from codex_runner.base import BaseCodexRunner, RunnerContext, RunnerSettings
@@ -25,20 +27,31 @@ from config import (
     DEFAULT_RUNNER_MODE,
     WORKTREE_ROOT,
 )
+from context_packs import context_pack_service
 from events import EventService
+from intelligence import planning_intelligence_service, reputation_service, scope_creep_service
 from interview import INTERVIEW_CATEGORIES, select_fallback_questions
 from diagnostics import list_diagnostic_reports
+from imported_codebase import import_service
 from models import (
     Agent,
     AgentArchetype,
     AgentRun,
+    AgentInstructionsStatus,
     AppProfile,
     AppEvent,
     ApprovalRequest,
     AgentContract,
+    AgentExecutionTrace,
     AgentStuckSignal,
     ChangeRequest,
+    ConflictRecord,
     DecisionRecord,
+    CodebaseMap,
+    CodebaseUnderstanding,
+    EvidenceBasedHandoff,
+    HandoffEvidence,
+    ImportedCodebaseSafety,
     InterviewQuestion,
     InterviewSession,
     HandoffQualityPreference,
@@ -52,11 +65,14 @@ from models import (
     Project,
     ProjectConfidence,
     ProjectEvent,
+    ProjectSnapshot,
     ProjectSettings,
+    ProjectTimelineEvent,
     ProjectUnderstanding,
     RecoveryPlan,
     RepoIntelligenceSummary,
     ReviewGate,
+    Runbook,
     SandboxProfile,
     SwarmBudget,
     SwarmAgentSpec,
@@ -68,8 +84,11 @@ from models import (
     ValidationRecipe,
     WidgetDefinition,
     WidgetInstance,
+    AgentLoadSnapshot,
     utc_now,
 )
+from playbooks import playbook_service
+from preferences import preference_service
 from planner import build_plan_markdown
 from project_settings import (
     ResolvedRunSettings,
@@ -94,6 +113,8 @@ from prompts import (
     manager_swarm_prompt,
 )
 from provider_support import default_label, normalize_provider, provider_label, provider_uses_adapter
+from risk import risk_service
+from security import redact_text, redact_value, security_service
 from schemas import (
     AppProfileUpdate,
     ManagerDocFile,
@@ -108,8 +129,10 @@ from schemas import (
     WorkerReport,
 )
 from swarm import AGENT_ARCHETYPE_CATALOG, SWARM_RISK_LEVELS
+from simulation import simulation_service
 from task_board import build_initial_tasks, can_assign_task, conflicting_agents
 from tool_catalog import TOOL_CATALOG, catalog_with_permissions
+from validation_coverage import validation_coverage_service
 from widget_catalog import (
     DASHBOARD_WIDGET_DEFAULTS,
     DASHBOARD_WIDGET_TYPES,
@@ -370,6 +393,58 @@ class RunnerRegistry:
         if runner_type == "app_server":
             return self.runners["codex_app_server"]
         raise KeyError(f"Unknown runner type: {runner_type}")
+
+    async def inventory(self) -> list[dict[str, Any]]:
+        codex_cli_ready = await self.codex_cli_available()
+        app_server_ready = await self.app_server_available()
+        claude_ready = await self.claude_cli_available()
+        return [
+            {
+                "runner_type": "dry_run",
+                "availability": True,
+                "config_status": "ready",
+                "supports_background": True,
+                "supports_streaming": True,
+                "supports_approvals": True,
+                "notes": ["Always available for offline orchestration simulation."],
+            },
+            {
+                "runner_type": "codex_cli",
+                "availability": codex_cli_ready,
+                "config_status": "ready" if codex_cli_ready else "missing_or_not_logged_in",
+                "supports_background": True,
+                "supports_streaming": False,
+                "supports_approvals": True,
+                "notes": ["Uses the local Codex CLI session and approval flow."],
+            },
+            {
+                "runner_type": "codex_app_server",
+                "availability": app_server_ready,
+                "config_status": "ready" if app_server_ready else "experimental_or_unavailable",
+                "supports_background": True,
+                "supports_streaming": True,
+                "supports_approvals": True,
+                "notes": ["Experimental app-server path for Codex-backed background work."],
+            },
+            {
+                "runner_type": "claude_code_cli",
+                "availability": claude_ready,
+                "config_status": "ready" if claude_ready else "missing_or_unavailable",
+                "supports_background": True,
+                "supports_streaming": False,
+                "supports_approvals": True,
+                "notes": ["Uses the locally configured Claude Code CLI when available."],
+            },
+            {
+                "runner_type": "external_adapter",
+                "availability": False,
+                "config_status": "requires_project_settings",
+                "supports_background": True,
+                "supports_streaming": False,
+                "supports_approvals": True,
+                "notes": ["Availability depends on the project's configured adapter command."],
+            },
+        ]
 
 
 class MissionControlService:
@@ -933,10 +1008,25 @@ class MissionControlService:
         understanding: ProjectUnderstanding,
         latest_plan: Plan | None = None,
         *,
+        intelligence_context: dict[str, Any] | None = None,
         goal_override: str | None = None,
         scale_hint: str | None = None,
     ) -> ManagerSwarmPlanPayload:
+        intelligence_context = intelligence_context or {}
         mode = self._choose_swarm_mode(project, preferences, understanding, manifest)
+        playbook = intelligence_context.get("playbook") or {}
+        if preferences.optimization_mode == "manager_decides" and playbook.get("status") in {"suggested", "applied"}:
+            playbook_key = playbook.get("key")
+            if playbook_key in {"fastapi_react_web_app", "generic_custom", "local_desktop_app"}:
+                mode = "balanced"
+            elif playbook_key == "existing_repo_cleanup":
+                mode = "massive_codebase"
+            elif playbook_key in {"browser_extension", "data_ingestion_pipeline"}:
+                mode = "high_quality"
+            elif playbook_key in {"static_docs_site", "osint_dashboard"}:
+                mode = "documentation_heavy"
+            elif playbook_key == "ai_local_tool":
+                mode = "research_planning"
         buckets = self._repo_path_buckets(manifest)
         capacity = self._swarm_capacity_limit(preferences)
         goal = goal_override or f"Plan the most useful worker swarm for {project.name} during {project.status}."
@@ -950,6 +1040,10 @@ class MissionControlService:
         def add(spec: ManagerSwarmSpecPayload) -> None:
             if len(specs) < capacity:
                 specs.append(spec)
+
+        def model_policy_for(category: str, fallback: str) -> str:
+            recommendation = intelligence_context.get("model_policy_hints", {}).get(category)
+            return str(recommendation or fallback)
 
         def frontend_paths() -> list[str]:
             return buckets["frontend"] or ["src"]
@@ -969,7 +1063,7 @@ class MissionControlService:
                     archetype="feature",
                     name="Vertical Slice Builder",
                     mission="Own the first usable end-to-end slice and keep it runnable early.",
-                    model_policy="Prefer the default worker model with medium reasoning for fast iteration.",
+                    model_policy=model_policy_for("code_editing", "Prefer the default worker model with medium reasoning for fast iteration."),
                     allowed_paths=frontend_paths(),
                     forbidden_paths=docs_paths(),
                     spawn_phase="build_start",
@@ -983,7 +1077,7 @@ class MissionControlService:
                     archetype="backend",
                     name="Core Flow Builder",
                     mission="Implement the main backend or domain flow that unblocks the MVP path.",
-                    model_policy="Prefer the default worker model with medium reasoning.",
+                    model_policy=model_policy_for("bug_fixing", "Prefer the default worker model with medium reasoning."),
                     allowed_paths=backend_paths(),
                     forbidden_paths=docs_paths(),
                     spawn_phase="build_start",
@@ -997,7 +1091,7 @@ class MissionControlService:
                     archetype="integration",
                     name="Slice Integrator",
                     mission="Bridge UI and backend edges once the first slice exists.",
-                    model_policy="Prefer the default worker model with medium reasoning.",
+                    model_policy=model_policy_for("long_context_planning", "Prefer the default worker model with medium reasoning."),
                     allowed_paths=frontend_paths() + backend_paths(),
                     forbidden_paths=docs_paths(),
                     spawn_phase="after_first_slice",
@@ -1011,7 +1105,7 @@ class MissionControlService:
                     archetype="test",
                     name="Smoke Test Runner",
                     mission="Validate the fast slice without slowing the build loop with excessive ceremony.",
-                    model_policy="Prefer a careful model only when commands need explanation.",
+                    model_policy=model_policy_for("test_generation", "Prefer a careful model only when commands need explanation."),
                     allowed_paths=test_paths(),
                     forbidden_paths=[],
                     spawn_phase="after_first_slice",
@@ -1028,13 +1122,13 @@ class MissionControlService:
             )
             validation_strategy.insert(0, "Prioritize a runnable vertical slice, then smoke-check it immediately.")
         elif mode == "high_quality":
-            add(self._make_swarm_spec("architect", "Architecture Steward", "Stabilize boundaries before high-scrutiny work fans out.", "Prefer the default worker model with higher reasoning.", buckets["subsystems"][:2], docs_paths(), "plan_review", "Architecture and path ownership are accepted.", 10, ["repo_mapping", "design_notes"]))
-            add(self._make_swarm_spec("feature", "Implementation Specialist", "Build the main feature slice with explicit review handoff points.", "Prefer the default worker model with medium reasoning.", frontend_paths() + backend_paths(), docs_paths(), "build_start", "Main implementation slice is complete and in review.", 20, ["feature_work", "tests"]))
-            add(self._make_swarm_spec("test", "Validation Specialist", "Expand test depth and regression coverage before handoff.", "Prefer a more careful model when explaining failures.", test_paths() + backend_paths(), [], "build_start", "Validation coverage matches the requested quality bar.", 30, ["test_runner", "smoke_checks"]))
-            add(self._make_swarm_spec("reviewer", "Code Review Specialist", "Review risky changes for regressions, gaps, and weak assumptions.", "Prefer the default worker model with higher reasoning.", frontend_paths() + backend_paths(), [], "after_first_implementation", "Review queue is cleared or converted into specific follow-ups.", 35, ["code_review", "diff_analysis"]))
-            add(self._make_swarm_spec("security", "Security Review Specialist", "Audit auth, secrets, and approval-sensitive flows.", "Prefer a careful reasoning profile for security-sensitive review.", backend_paths() + buckets["data"], [], "after_architecture", "Security-sensitive decisions are documented and reviewed.", 40, ["security_review", "config_audit"]))
+            add(self._make_swarm_spec("architect", "Architecture Steward", "Stabilize boundaries before high-scrutiny work fans out.", model_policy_for("long_context_planning", "Prefer the default worker model with higher reasoning."), buckets["subsystems"][:2], docs_paths(), "plan_review", "Architecture and path ownership are accepted.", 10, ["repo_mapping", "design_notes"]))
+            add(self._make_swarm_spec("feature", "Implementation Specialist", "Build the main feature slice with explicit review handoff points.", model_policy_for("code_editing", "Prefer the default worker model with medium reasoning."), frontend_paths() + backend_paths(), docs_paths(), "build_start", "Main implementation slice is complete and in review.", 20, ["feature_work", "tests"]))
+            add(self._make_swarm_spec("test", "Validation Specialist", "Expand test depth and regression coverage before handoff.", model_policy_for("test_generation", "Prefer a more careful model when explaining failures."), test_paths() + backend_paths(), [], "build_start", "Validation coverage matches the requested quality bar.", 30, ["test_runner", "smoke_checks"]))
+            add(self._make_swarm_spec("reviewer", "Code Review Specialist", "Review risky changes for regressions, gaps, and weak assumptions.", model_policy_for("reliability", "Prefer the default worker model with higher reasoning."), frontend_paths() + backend_paths(), [], "after_first_implementation", "Review queue is cleared or converted into specific follow-ups.", 35, ["code_review", "diff_analysis"]))
+            add(self._make_swarm_spec("security", "Security Review Specialist", "Audit auth, secrets, and approval-sensitive flows.", model_policy_for("shell_command_reasoning", "Prefer a careful reasoning profile for security-sensitive review."), backend_paths() + buckets["data"], [], "after_architecture", "Security-sensitive decisions are documented and reviewed.", 40, ["security_review", "config_audit"]))
             if preferences.docs_depth != "minimal":
-                add(self._make_swarm_spec("release_handoff", "Release Handoff Writer", "Prepare evidence-backed handoff notes and validation summary.", "Prefer the default worker model with medium reasoning.", docs_paths(), frontend_paths() + backend_paths(), "validation", "Handoff notes and run instructions are complete.", 45, ["handoff_packaging", "release_notes"]))
+                add(self._make_swarm_spec("release_handoff", "Release Handoff Writer", "Prepare evidence-backed handoff notes and validation summary.", model_policy_for("docs_writing", "Prefer the default worker model with medium reasoning."), docs_paths(), frontend_paths() + backend_paths(), "validation", "Handoff notes and run instructions are complete.", 45, ["handoff_packaging", "release_notes"]))
             bottlenecks.extend(
                 [
                     "Review and security feedback can bottleneck the main implementation if scope stays fuzzy.",
@@ -1116,11 +1210,19 @@ class MissionControlService:
             add(self._make_swarm_spec("docs", "Developer Guide Writer", "Document internal development and extension flows for maintainers.", "Prefer the default worker model for structured docs.", docs_paths(), frontend_paths() + backend_paths(), "validation", "Developer-facing docs are publishable and current.", 55, ["docs_editing"]))
 
         if scale_hint == "up" and len(specs) < capacity:
-            add(self._make_swarm_spec("feature", "Overflow Implementation Agent", "Pick up an isolated slice when the current bottleneck is raw implementation throughput.", "Prefer the default worker model with medium reasoning.", frontend_paths() or backend_paths(), docs_paths(), "build_start", "The overflow slice is complete or unnecessary.", 70, ["feature_work"]))
+            add(self._make_swarm_spec("feature", "Overflow Implementation Agent", "Pick up an isolated slice when the current bottleneck is raw implementation throughput.", model_policy_for("speed", "Prefer the default worker model with medium reasoning."), frontend_paths() or backend_paths(), docs_paths(), "build_start", "The overflow slice is complete or unnecessary.", 70, ["feature_work"]))
             bottlenecks.insert(0, "Scale-up requested: implementation throughput was judged more valuable than tighter coordination.")
         if scale_hint == "down" and len(specs) > 2:
             specs = specs[:-1]
             bottlenecks.insert(0, "Scale-down requested: retire the least critical parallel lane before it turns into overhead.")
+
+        open_risks = intelligence_context.get("open_risks") or []
+        for risk in open_risks[:2]:
+            bottlenecks.append(f"Risk pressure: {risk.get('title')}")
+        coverage = intelligence_context.get("validation_coverage") or []
+        missing_coverage = [item.get("area") for item in coverage if item.get("coverage_status") in {"none", "failed"}]
+        for area in missing_coverage[:3]:
+            validation_strategy.append(f"Add explicit validation coverage for {area}.")
 
         recommended = max(1, min(capacity, len(specs)))
         coordination_risk = "high" if recommended >= 7 or mode == "massive_codebase" else "medium" if recommended >= 5 or mode in {"documentation_heavy", "high_quality"} else "low"
@@ -1451,6 +1553,1096 @@ class MissionControlService:
         )
         return record
 
+    def _record_timeline_event(
+        self,
+        db: Session,
+        project: Project,
+        *,
+        event_type: str,
+        title: str,
+        summary: str,
+        severity: str = "info",
+        related_agent_id: int | None = None,
+        related_task_id: int | None = None,
+        related_handoff_id: int | None = None,
+    ) -> ProjectTimelineEvent:
+        existing = db.scalar(
+            select(ProjectTimelineEvent)
+            .where(
+                ProjectTimelineEvent.project_id == project.id,
+                ProjectTimelineEvent.event_type == event_type,
+                ProjectTimelineEvent.title == title,
+                ProjectTimelineEvent.summary == summary,
+            )
+            .order_by(ProjectTimelineEvent.id.desc())
+        )
+        if existing is not None:
+            return existing
+        event = ProjectTimelineEvent(
+            project_id=project.id,
+            event_type=event_type,
+            title=title,
+            summary=summary,
+            severity=severity,
+            related_agent_id=related_agent_id,
+            related_task_id=related_task_id,
+            related_handoff_id=related_handoff_id,
+        )
+        db.add(event)
+        db.flush()
+        self.events.publish(
+            db,
+            project.id,
+            "timeline_event_created",
+            {
+                "project_id": project.id,
+                "timeline_event_id": event.id,
+                "event_type": event_type,
+                "severity": severity,
+            },
+        )
+        return event
+
+    @staticmethod
+    def _markdown_list(items: list[str]) -> str:
+        cleaned = [str(item).strip() for item in items if str(item).strip()]
+        if not cleaned:
+            return "- Not recorded."
+        return "\n".join(f"- {item}" for item in cleaned)
+
+    def _handoff_evidence_or_create(
+        self,
+        db: Session,
+        project: Project,
+        *,
+        evidence_type: str,
+        claim: str,
+        summary: str,
+        status: str,
+        source_path: str | None = None,
+        command: str | None = None,
+        metadata_json: dict[str, Any] | None = None,
+        handoff_id: int | None = None,
+    ) -> HandoffEvidence:
+        claim = redact_text(claim)
+        summary = redact_text(summary)
+        command = redact_text(command) if command else None
+        metadata_json = redact_value(metadata_json or {})
+        existing = db.scalar(
+            select(HandoffEvidence)
+            .where(
+                HandoffEvidence.project_id == project.id,
+                HandoffEvidence.evidence_type == evidence_type,
+                HandoffEvidence.claim == claim,
+                HandoffEvidence.summary == summary,
+                HandoffEvidence.source_path == source_path,
+                HandoffEvidence.command == command,
+            )
+            .order_by(HandoffEvidence.id.desc())
+        )
+        if existing is None:
+            existing = HandoffEvidence(
+                project_id=project.id,
+                handoff_id=handoff_id,
+                evidence_type=evidence_type,
+                claim=claim,
+                summary=summary,
+                source_path=source_path,
+                command=command,
+                status=status,
+                metadata_json=dict(metadata_json),
+            )
+            db.add(existing)
+        else:
+            existing.handoff_id = handoff_id or existing.handoff_id
+            existing.status = status
+            existing.metadata_json = dict(metadata_json or existing.metadata_json or {})
+        db.flush()
+        return existing
+
+    def _latest_evidence_handoff(self, db: Session, project_id: int) -> EvidenceBasedHandoff | None:
+        return db.scalar(
+            select(EvidenceBasedHandoff)
+            .where(EvidenceBasedHandoff.project_id == project_id)
+            .order_by(EvidenceBasedHandoff.created_at.desc(), EvidenceBasedHandoff.id.desc())
+        )
+
+    def _ensure_agent_execution_traces(self, db: Session, project: Project) -> list[AgentExecutionTrace]:
+        agent_ids = [agent.id for agent in db.scalars(select(Agent).where(Agent.project_id == project.id))]
+        if not agent_ids:
+            return []
+        runs = list(
+            db.scalars(
+                select(AgentRun)
+                .where(AgentRun.agent_id.in_(agent_ids))
+                .order_by(AgentRun.started_at.desc(), AgentRun.id.desc())
+            )
+        )
+        existing_run_ids = {
+            trace.run_id
+            for trace in db.scalars(select(AgentExecutionTrace).where(AgentExecutionTrace.project_id == project.id))
+            if trace.run_id is not None
+        }
+        agents_by_id = {agent.id: agent for agent in db.scalars(select(Agent).where(Agent.project_id == project.id))}
+        tasks_by_id = {task.id: task for task in db.scalars(select(Task).where(Task.project_id == project.id))}
+        for run in runs:
+            if run.id in existing_run_ids:
+                continue
+            agent = agents_by_id.get(run.agent_id)
+            task = tasks_by_id.get(run.task_id) if run.task_id is not None else None
+            raw_report = self._redact_payload(run.report_json or {})
+            files_changed = [str(item) for item in (raw_report.get("files_changed") or []) if str(item).strip()]
+            tests_run = [str(item) for item in (raw_report.get("tests_run") or []) if str(item).strip()]
+            approvals = [
+                self._serialize_approval(entry)
+                for entry in db.scalars(
+                    select(ApprovalRequest)
+                    .where(
+                        ApprovalRequest.project_id == project.id,
+                        ApprovalRequest.requesting_agent_id == run.agent_id,
+                        ApprovalRequest.task_id == run.task_id,
+                    )
+                    .order_by(ApprovalRequest.created_at.desc(), ApprovalRequest.id.desc())
+                )
+            ][:5]
+            prompt_bits = [agent.mission if agent and agent.mission else None, task.goal if task else None, task.scope if task else None]
+            prompt_summary = " | ".join(bit for bit in prompt_bits if bit) or f"{agent.name if agent else 'Worker'} executed a recorded run."
+            response_summary = str(raw_report.get("summary") or run.status or "Run completed.")
+            commands_attempted = []
+            if run.runner_type:
+                commands_attempted.append(f"runner:{run.runner_type}")
+            commands_attempted.extend(tests_run[:3])
+            trace = AgentExecutionTrace(
+                project_id=project.id,
+                agent_id=run.agent_id,
+                task_id=run.task_id,
+                run_id=run.id,
+                prompt_summary=prompt_summary[:1000],
+                prompt_path=run.logs_path or run.event_log_path,
+                response_summary=response_summary[:1000],
+                report_json=raw_report if isinstance(raw_report, dict) else {},
+                files_changed_json=files_changed[:40],
+                approvals_requested_json=approvals,
+                commands_attempted_json=commands_attempted[:20],
+                manager_decision_after=run.manager_action,
+                redaction_status="redacted_summary",
+            )
+            db.add(trace)
+        db.flush()
+        return list(
+            db.scalars(
+                select(AgentExecutionTrace)
+                .where(AgentExecutionTrace.project_id == project.id)
+                .order_by(AgentExecutionTrace.created_at.desc(), AgentExecutionTrace.id.desc())
+            )
+        )
+
+    def _sync_agent_load_snapshots(self, db: Session, project: Project) -> list[AgentLoadSnapshot]:
+        agents = list(db.scalars(select(Agent).where(Agent.project_id == project.id).order_by(Agent.id.asc())))
+        tasks = list(db.scalars(select(Task).where(Task.project_id == project.id).order_by(Task.id.asc())))
+        latest_by_agent = {
+            entry.agent_id: entry
+            for entry in db.scalars(
+                select(AgentLoadSnapshot)
+                .where(AgentLoadSnapshot.project_id == project.id)
+                .order_by(AgentLoadSnapshot.created_at.desc(), AgentLoadSnapshot.id.desc())
+            )
+        }
+        now = utc_now()
+        snapshots: list[AgentLoadSnapshot] = []
+        for agent in agents:
+            if agent.kind != "worker":
+                continue
+            active_task_count = sum(1 for task in tasks if task.assigned_agent_id == agent.id and task.status == "working")
+            waiting_task_count = sum(1 for task in tasks if task.assigned_agent_id == agent.id and task.status in {"assigned", "waiting_on_paths", "needs_review"})
+            blocked_task_count = sum(1 for task in tasks if task.assigned_agent_id == agent.id and task.status == "blocked")
+            idle_duration_seconds = None
+            if agent.status in {"idle", "waiting", "done", "stopped"}:
+                last_update = agent.last_update if agent.last_update.tzinfo else agent.last_update.replace(tzinfo=timezone.utc)
+                idle_duration_seconds = max(0, int((now - last_update).total_seconds()))
+            if blocked_task_count or agent.status in {"blocked", "error"}:
+                load_level = "blocked"
+            elif active_task_count >= 3:
+                load_level = "heavy"
+            elif active_task_count >= 1 or waiting_task_count >= 2:
+                load_level = "normal"
+            elif waiting_task_count == 1:
+                load_level = "light"
+            else:
+                load_level = "idle"
+            latest = latest_by_agent.get(agent.id)
+            if latest is None or (
+                latest.active_task_count != active_task_count
+                or latest.waiting_task_count != waiting_task_count
+                or latest.blocked_task_count != blocked_task_count
+                or latest.idle_duration_seconds != idle_duration_seconds
+                or latest.load_level != load_level
+            ):
+                latest = AgentLoadSnapshot(
+                    project_id=project.id,
+                    agent_id=agent.id,
+                    active_task_count=active_task_count,
+                    waiting_task_count=waiting_task_count,
+                    blocked_task_count=blocked_task_count,
+                    idle_duration_seconds=idle_duration_seconds,
+                    load_level=load_level,
+                )
+                db.add(latest)
+            snapshots.append(latest)
+        db.flush()
+        self.events.publish(db, project.id, "agent_load_updated", {"project_id": project.id, "snapshot_count": len(snapshots)})
+        return snapshots
+
+    def _ensure_derived_handoff_evidence(
+        self,
+        db: Session,
+        project: Project,
+        *,
+        handoff_id: int | None = None,
+    ) -> list[HandoffEvidence]:
+        agent_ids = [agent.id for agent in db.scalars(select(Agent).where(Agent.project_id == project.id))]
+        runs = list(db.scalars(select(AgentRun).where(AgentRun.agent_id.in_(agent_ids)).order_by(AgentRun.id.asc()))) if agent_ids else []
+        evidence: list[HandoffEvidence] = []
+        for run in runs:
+            raw_report = run.report_json or {}
+            tests_run = [str(item) for item in raw_report.get("tests_run", []) if str(item).strip()]
+            files_changed = [str(item) for item in raw_report.get("files_changed", []) if str(item).strip()]
+            if files_changed:
+                evidence.append(
+                    self._handoff_evidence_or_create(
+                        db,
+                        project,
+                        handoff_id=handoff_id,
+                        evidence_type="file_change",
+                        claim=f"Recorded file changes from run {run.id}",
+                        summary=", ".join(files_changed[:6]),
+                        status="passed" if run.status not in {"error", "failed"} else "failed",
+                        source_path=run.logs_path or run.event_log_path,
+                        metadata_json={"run_id": run.id, "files_changed": files_changed[:20]},
+                    )
+                )
+            for test_name in tests_run:
+                evidence.append(
+                    self._handoff_evidence_or_create(
+                        db,
+                        project,
+                        handoff_id=handoff_id,
+                        evidence_type="test_result",
+                        claim=test_name,
+                        summary=f"Recorded from run {run.id}.",
+                        status="passed" if run.status not in {"error", "failed"} and run.exit_code in {None, 0} else "failed",
+                        source_path=run.logs_path or run.stdout_path,
+                        command=test_name,
+                        metadata_json={"run_id": run.id, "runner_type": run.runner_type},
+                    )
+                )
+            if raw_report.get("summary"):
+                evidence.append(
+                    self._handoff_evidence_or_create(
+                        db,
+                        project,
+                        handoff_id=handoff_id,
+                        evidence_type="report",
+                        claim=f"Worker report from run {run.id}",
+                        summary=str(raw_report.get("summary")),
+                        status="passed" if run.status not in {"error", "failed"} else "failed",
+                        source_path=run.logs_path,
+                        metadata_json={"run_id": run.id, "runner_type": run.runner_type},
+                    )
+                )
+        return list(
+            db.scalars(
+                select(HandoffEvidence)
+                .where(HandoffEvidence.project_id == project.id)
+                .order_by(HandoffEvidence.created_at.desc(), HandoffEvidence.id.desc())
+            )
+        )
+
+    def _missing_handoff_evidence(self, review_gates: list[ReviewGate], evidence: list[HandoffEvidence]) -> list[str]:
+        missing: list[str] = []
+        has_passed_test = any(item.evidence_type in {"test_result", "build_result"} and item.status == "passed" for item in evidence)
+        has_any_evidence = bool(evidence)
+        required_failed = [gate.title for gate in review_gates if gate.required and gate.status == "failed"]
+        required_pending = [gate.title for gate in review_gates if gate.required and gate.status == "pending"]
+        if not has_passed_test:
+            missing.append("No passing build or test evidence is recorded.")
+        if not has_any_evidence:
+            missing.append("No handoff evidence has been recorded yet.")
+        missing.extend(f"Required gate unresolved: {title}" for title in required_failed + required_pending)
+        return missing
+
+    def _handoff_confidence_level(self, *, dry_run: bool, review_gates: list[ReviewGate], evidence: list[HandoffEvidence], missing_evidence: list[str]) -> str:
+        if any(gate.required and gate.status == "failed" for gate in review_gates):
+            return "low"
+        if missing_evidence:
+            return "medium" if evidence else "low"
+        if dry_run:
+            return "medium"
+        return "high"
+
+    def _serialize_handoff_record(self, db: Session, project: Project, handoff: EvidenceBasedHandoff | None) -> dict[str, Any]:
+        if handoff is None:
+            return {
+                "project_id": project.id,
+                "project_name": project.name,
+                "project_slug": self._effective_project_slug(project),
+                "created_at": project.updated_at,
+                "status": "not_ready",
+                "summary": "No handoff is recorded yet.",
+                "artifacts_path": project.docs_path or str(self._project_docs_dir(project)),
+                "tests_count": 0,
+                "run_instructions": [],
+                "known_limitations": [],
+                "confidence_level": "low",
+                "evidence_status": "missing",
+                "missing_evidence": ["No evidence-backed handoff has been generated yet."],
+                "dry_run": project.runner_mode == "dry_run",
+            }
+        return {
+            "project_id": project.id,
+            "project_name": project.name,
+            "project_slug": self._effective_project_slug(project),
+            "created_at": handoff.created_at,
+            "status": "ready" if handoff.confidence_level != "low" else "needs_review",
+            "summary": redact_text(handoff.summary),
+            "artifacts_path": project.docs_path or str(self._project_docs_dir(project)),
+            "tests_count": len(handoff.tests_run_json or []),
+            "run_instructions": [line.strip("- ").strip() for line in handoff.how_to_run.splitlines() if line.strip()],
+            "known_limitations": [redact_text(str(item)) for item in list(handoff.known_limitations_json or [])],
+            "confidence_level": handoff.confidence_level,
+            "evidence_status": "backed" if handoff.evidence_ids_json else "missing",
+            "missing_evidence": list((project.final_report_json or {}).get("missing_evidence") or []),
+            "dry_run": handoff.dry_run,
+        }
+
+    def detect_conflicts(self, db: Session, project: Project) -> list[ConflictRecord]:
+        reservations = self._active_reservations(db, project.id)
+        tasks_by_id = {task.id: task for task in db.scalars(select(Task).where(Task.project_id == project.id))}
+        existing = {
+            (entry.conflict_type, entry.title): entry
+            for entry in db.scalars(
+                select(ConflictRecord)
+                .where(ConflictRecord.project_id == project.id, ConflictRecord.status != "resolved")
+                .order_by(ConflictRecord.id.asc())
+            )
+        }
+        active_keys: set[tuple[str, str]] = set()
+        by_path: dict[str, list[PathReservation]] = {}
+        for reservation in reservations:
+            by_path.setdefault(reservation.path, []).append(reservation)
+        for path, items in by_path.items():
+            agent_ids = sorted({item.agent_id for item in items})
+            task_ids = sorted({item.task_id for item in items})
+            if len(agent_ids) < 2:
+                continue
+            conflict_type = "file_edit_collision" if "." in Path(path).name else "path_overlap"
+            title = f"Parallel edit pressure on {path}"
+            summary = f"{len(agent_ids)} agents currently claim the same path target."
+            key = (conflict_type, title)
+            active_keys.add(key)
+            record = existing.get(key)
+            if record is None:
+                record = ConflictRecord(
+                    project_id=project.id,
+                    conflict_type=conflict_type,
+                    title=title,
+                    summary=summary,
+                    involved_agent_ids_json=agent_ids,
+                    involved_task_ids_json=task_ids,
+                    affected_paths_json=[path],
+                    severity="high",
+                    status="manager_review",
+                    suggested_resolution_json=[
+                        "serialize_tasks",
+                        "split_file_ownership",
+                        "spawn_conflict_resolver_agent",
+                        "ask_user",
+                    ],
+                )
+                db.add(record)
+                self._record_manager_message(
+                    db,
+                    project,
+                    role="system",
+                    message_type="blocker_report",
+                    content_markdown=(
+                        f"Conflict detected: **{title}**\n\n"
+                        f"{summary}\n\n"
+                        "Manager should pick a resolution strategy before parallel edits turn into a merge-conflict confetti cannon."
+                    ),
+                    metadata_json={"conflict_type": conflict_type, "response_mode": "reliability_conflict"},
+                )
+                self._record_timeline_event(
+                    db,
+                    project,
+                    event_type="conflict_detected",
+                    title=title,
+                    summary=summary,
+                    severity="warning",
+                )
+            else:
+                record.summary = summary
+                record.involved_agent_ids_json = agent_ids
+                record.involved_task_ids_json = task_ids
+                record.affected_paths_json = [path]
+                record.severity = "high"
+                record.status = "manager_review"
+        for task in tasks_by_id.values():
+            if task.status != "waiting_on_paths":
+                continue
+            blocked_paths = [path for path in task.allowed_paths_json if path in by_path]
+            if not blocked_paths:
+                continue
+            title = f"Task dependency conflict for {task.title}"
+            summary = f"{task.title} is waiting on {len(blocked_paths)} locked path(s)."
+            key = ("task_dependency", title)
+            active_keys.add(key)
+            record = existing.get(key)
+            if record is None:
+                db.add(
+                    ConflictRecord(
+                        project_id=project.id,
+                        conflict_type="task_dependency",
+                        title=title,
+                        summary=summary,
+                        involved_agent_ids_json=sorted({reservation.agent_id for path in blocked_paths for reservation in by_path.get(path, [])}),
+                        involved_task_ids_json=[task.id],
+                        affected_paths_json=blocked_paths[:10],
+                        severity="medium",
+                        status="detected",
+                        suggested_resolution_json=["serialize_tasks", "split_file_ownership", "ask_user"],
+                    )
+                )
+        for key, record in existing.items():
+            if key not in active_keys and record.status != "resolved":
+                record.status = "dismissed"
+                record.resolved_at = utc_now()
+        db.flush()
+        conflicts = list(
+            db.scalars(
+                select(ConflictRecord)
+                .where(ConflictRecord.project_id == project.id)
+                .order_by(ConflictRecord.created_at.desc(), ConflictRecord.id.desc())
+            )
+        )
+        if conflicts:
+            self.events.publish(db, project.id, "conflict_detected", {"project_id": project.id, "count": len([item for item in conflicts if item.status != "resolved"])})
+        return conflicts
+
+    def resolve_conflict(self, db: Session, conflict_id: int, resolution: str) -> ConflictRecord:
+        conflict = db.get(ConflictRecord, conflict_id)
+        if conflict is None:
+            raise ValueError("Conflict not found")
+        project = db.get(Project, conflict.project_id)
+        if project is None:
+            raise ValueError("Project not found")
+        conflict.selected_resolution = resolution
+        conflict.status = "resolved"
+        conflict.resolved_at = utc_now()
+        related_tasks = list(db.scalars(select(Task).where(Task.id.in_(conflict.involved_task_ids_json or []))))
+        if resolution == "serialize_tasks" and len(related_tasks) > 1:
+            for task in related_tasks[1:]:
+                if task.status in TASK_OPEN_STATUSES:
+                    task.status = "waiting_on_paths"
+                    task.waiting_reason = f"Serialized after conflict resolution for {conflict.title}."
+        elif resolution in {"choose_agent_a", "choose_agent_b"} and related_tasks:
+            preferred_index = 0 if resolution == "choose_agent_a" else 1
+            keep_task_id = conflict.involved_task_ids_json[preferred_index] if len(conflict.involved_task_ids_json or []) > preferred_index else related_tasks[0].id
+            for task in related_tasks:
+                if task.id != keep_task_id and task.status in TASK_OPEN_STATUSES:
+                    task.status = "waiting_on_paths"
+                    task.waiting_reason = f"Paused after {resolution} resolved {conflict.title}."
+        self._record_decision(
+            db,
+            project,
+            decision_type="conflict_resolution",
+            title=conflict.title,
+            decision=resolution,
+            reason=conflict.summary,
+            made_by="manager",
+            impact_areas=["reliability", "conflicts"],
+            reversible=resolution != "rollback_one_side",
+        )
+        self._record_manager_message(
+            db,
+            project,
+            role="system",
+            message_type="system_notice",
+            content_markdown=f"Conflict resolved: **{conflict.title}** -> `{resolution}`",
+            metadata_json={"conflict_id": conflict.id, "resolution": resolution, "response_mode": "reliability_conflict"},
+        )
+        self._record_timeline_event(
+            db,
+            project,
+            event_type="conflict_resolved",
+            title=conflict.title,
+            summary=f"Resolved with strategy: {resolution}.",
+            severity="success",
+        )
+        self.events.publish(db, project.id, "conflict_resolved", {"project_id": project.id, "conflict_id": conflict.id, "resolution": resolution})
+        db.flush()
+        return conflict
+
+    def list_conflicts(self, db: Session, project: Project) -> list[ConflictRecord]:
+        return list(
+            db.scalars(
+                select(ConflictRecord)
+                .where(ConflictRecord.project_id == project.id)
+                .order_by(ConflictRecord.created_at.desc(), ConflictRecord.id.desc())
+            )
+        )
+
+    def add_handoff_evidence(self, db: Session, project: Project, payload: dict[str, Any]) -> HandoffEvidence:
+        evidence = self._handoff_evidence_or_create(
+            db,
+            project,
+            evidence_type=str(payload["evidence_type"]),
+            claim=str(payload["claim"]).strip(),
+            summary=str(payload["summary"]).strip(),
+            source_path=payload.get("source_path"),
+            command=payload.get("command"),
+            status=str(payload.get("status") or "unknown"),
+            metadata_json=dict(payload.get("metadata_json") or {}),
+        )
+        self.events.publish(db, project.id, "handoff_evidence_created", {"project_id": project.id, "evidence_id": evidence.id})
+        self._record_timeline_event(
+            db,
+            project,
+            event_type="handoff_evidence_created",
+            title=f"Evidence added: {evidence.claim[:120]}",
+            summary=evidence.summary,
+            severity="info",
+        )
+        return evidence
+
+    def list_handoff_evidence(self, db: Session, project: Project) -> list[HandoffEvidence]:
+        self._ensure_derived_handoff_evidence(db, project)
+        return list(
+            db.scalars(
+                select(HandoffEvidence)
+                .where(HandoffEvidence.project_id == project.id)
+                .order_by(HandoffEvidence.created_at.desc(), HandoffEvidence.id.desc())
+            )
+        )
+
+    def generate_evidence_handoff(self, db: Session, project: Project) -> EvidenceBasedHandoff:
+        tasks = list(db.scalars(select(Task).where(Task.project_id == project.id).order_by(Task.priority.asc(), Task.id.asc())))
+        overview = self._project_overview(db, project, tasks, self._derive_current_action(db, project, []))
+        review_gates = self._sync_review_gates(
+            db,
+            project,
+            tasks=tasks,
+            overview=overview,
+            testing_depth=self._ensure_swarm_preferences(db, project).testing_depth,
+            conflicts=self.detect_conflicts(db, project),
+        )
+        evidence = self._ensure_derived_handoff_evidence(db, project)
+        done_titles = [task.title for task in tasks if task.status == "done"]
+        final_report = project.final_report_json or {}
+        what_was_built = self._markdown_list([*done_titles, *[str(item) for item in final_report.get("what_was_built", []) if str(item).strip()]])
+        how_to_run_items = [redact_text(str(item)) for item in final_report.get("how_to_run", []) if str(item).strip()]
+        if not how_to_run_items:
+            repo = self._scan_repo_intelligence(db, project)
+            how_to_run_items = list(repo.build_commands_json[:1]) + list(repo.test_commands_json[:1])
+            if not how_to_run_items:
+                how_to_run_items = ["No verified run commands are recorded yet."]
+        how_to_use_items = [redact_text(str(item)) for item in final_report.get("how_to_use", []) if str(item).strip()] or ["Use the Manager workspace to review current state and follow the runbook for local operation."]
+        limitations = [redact_text(str(item)) for item in final_report.get("known_limitations", []) if str(item).strip()]
+        if not limitations and project.runner_mode == "dry_run":
+            limitations.append("This handoff was produced in dry-run mode, so execution claims are limited to recorded simulation evidence.")
+        tests_run_json = [
+            {
+                "claim": item.claim,
+                "status": item.status,
+                "summary": item.summary,
+                "command": item.command,
+            }
+            for item in evidence
+            if item.evidence_type in {"test_result", "build_result", "command_output"}
+        ]
+        missing_evidence = self._missing_handoff_evidence(review_gates, evidence)
+        confidence = self._handoff_confidence_level(
+            dry_run=project.runner_mode == "dry_run",
+            review_gates=review_gates,
+            evidence=evidence,
+            missing_evidence=missing_evidence,
+        )
+        next_steps = [redact_text(str(item)) for item in final_report.get("suggested_next_improvements", []) if str(item).strip()]
+        if any(gate.required and gate.status != "passed" for gate in review_gates):
+            next_steps.append("Resolve remaining required review gates before calling this handoff production-ready.")
+        handoff = EvidenceBasedHandoff(
+            project_id=project.id,
+            title=f"{project.name} evidence-backed handoff",
+            summary=redact_text(str(final_report.get("summary_markdown") or final_report.get("summary") or f"{project.name} is ready for handoff review.")),
+            what_was_built=what_was_built,
+            how_to_run=self._markdown_list(how_to_run_items),
+            how_to_use=self._markdown_list(how_to_use_items),
+            tests_run_json=tests_run_json or [{"claim": "Validation", "status": "not_run", "summary": "No verified test or build evidence is recorded yet.", "command": None}],
+            known_limitations_json=limitations,
+            suggested_next_steps_json=next_steps,
+            evidence_ids_json=[item.id for item in evidence],
+            confidence_level=confidence,
+            dry_run=project.runner_mode == "dry_run",
+        )
+        db.add(handoff)
+        db.flush()
+        for item in evidence:
+            item.handoff_id = handoff.id
+        project.status = "handoff_ready" if confidence in {"medium", "high"} else project.status
+        project.handoff_status = "ready" if confidence == "high" else "needs_review"
+        project.final_report_json = {
+            "summary_markdown": handoff.summary,
+            "what_was_built": [line[2:] for line in handoff.what_was_built.splitlines() if line.startswith("- ")],
+            "how_to_run": [line[2:] for line in handoff.how_to_run.splitlines() if line.startswith("- ")],
+            "how_to_use": [line[2:] for line in handoff.how_to_use.splitlines() if line.startswith("- ")],
+            "tests_builds_run": [f"{entry['status']}: {entry['claim']}" for entry in handoff.tests_run_json],
+            "known_limitations": list(handoff.known_limitations_json or []),
+            "suggested_next_improvements": list(handoff.suggested_next_steps_json or []),
+            "missing_evidence": missing_evidence,
+            "confidence_level": confidence,
+            "dry_run": handoff.dry_run,
+            "evidence_ids": list(handoff.evidence_ids_json or []),
+        }
+        self._record_timeline_event(
+            db,
+            project,
+            event_type="handoff_updated",
+            title="Evidence-based handoff updated",
+            summary=f"Handoff confidence is {confidence}.",
+            severity="success" if confidence == "high" else "warning",
+            related_handoff_id=handoff.id,
+        )
+        if missing_evidence:
+            self._record_manager_message(
+                db,
+                project,
+                role="system",
+                message_type="handoff_report",
+                content_markdown=(
+                    "Handoff evidence warning:\n\n"
+                    + "\n".join(f"- {item}" for item in missing_evidence)
+                ),
+                metadata_json={"handoff_id": handoff.id, "response_mode": "reliability_handoff"},
+            )
+        self.events.publish(db, project.id, "handoff_updated", {"project_id": project.id, "handoff_id": handoff.id, "confidence_level": confidence})
+        db.flush()
+        return handoff
+
+    def generate_runbook(self, db: Session, project: Project) -> Runbook:
+        repo = self._scan_repo_intelligence(db, project)
+        handoff = self._latest_evidence_handoff(db, project.id)
+        runbook = db.scalar(select(Runbook).where(Runbook.project_id == project.id).order_by(Runbook.updated_at.desc(), Runbook.id.desc()))
+        build_command = repo.build_commands_json[0] if repo.build_commands_json else "No build command detected."
+        test_command = repo.test_commands_json[0] if repo.test_commands_json else "No automated test command detected."
+        logs_location = str(self._project_docs_dir(project))
+        deploy_note = "No deployment config detected." if not repo.deployment_config_json else f"Deployment config: {', '.join(repo.deployment_config_json[:3])}"
+        content = "\n\n".join(
+            [
+                "# Runbook",
+                "## How to start dev server\n" + self._markdown_list([
+                    "Backend: cd apps/server && python -m uvicorn main:app --app-dir src --reload",
+                    "Frontend: cd apps/dashboard && npm run dev",
+                ]),
+                "## How to run tests\n" + self._markdown_list([test_command]),
+                "## How to build\n" + self._markdown_list([build_command]),
+                "## How to debug common failures\n" + self._markdown_list([
+                    "Check Manager Chat for approval blockers, conflicts, and recovery plans.",
+                    "Inspect Agent Black Box traces for redacted execution summaries.",
+                    "Use Snapshots restore plans before any destructive rollback idea gets clever.",
+                ]),
+                "## How to reset local state\n" + self._markdown_list([
+                    "Re-run startup checks from Diagnostics if provider/runtime state drifted.",
+                    "Archive or pause the project before reassigning tasks aggressively.",
+                ]),
+                "## Where logs live\n" + self._markdown_list([logs_location]),
+                "## How to deploy if configured\n" + self._markdown_list([deploy_note]),
+                "## Known operational risks\n" + self._markdown_list(
+                    list(handoff.known_limitations_json if handoff else []) or ["No handoff-backed operational risks are recorded yet."]
+                ),
+            ]
+        )
+        if runbook is None:
+            runbook = Runbook(project_id=project.id, content_markdown=content, generated_from_handoff_id=handoff.id if handoff else None)
+            db.add(runbook)
+        else:
+            runbook.content_markdown = content
+            runbook.generated_from_handoff_id = handoff.id if handoff else None
+            runbook.generated_at = utc_now()
+        db.flush()
+        self._record_timeline_event(db, project, event_type="runbook_updated", title="Runbook updated", summary="Operational runbook was generated from current repo and handoff state.")
+        self.events.publish(db, project.id, "runbook_updated", {"project_id": project.id, "runbook_id": runbook.id})
+        return runbook
+
+    def update_runbook(self, db: Session, project: Project, content_markdown: str) -> Runbook:
+        runbook = db.scalar(select(Runbook).where(Runbook.project_id == project.id).order_by(Runbook.updated_at.desc(), Runbook.id.desc()))
+        if runbook is None:
+            runbook = Runbook(project_id=project.id, content_markdown=content_markdown)
+            db.add(runbook)
+        else:
+            runbook.content_markdown = content_markdown
+        db.flush()
+        self.events.publish(db, project.id, "runbook_updated", {"project_id": project.id, "runbook_id": runbook.id})
+        return runbook
+
+    def get_runbook(self, db: Session, project: Project) -> Runbook | None:
+        return db.scalar(select(Runbook).where(Runbook.project_id == project.id).order_by(Runbook.updated_at.desc(), Runbook.id.desc()))
+
+    def list_agent_traces(self, db: Session, project: Project) -> list[AgentExecutionTrace]:
+        return self._ensure_agent_execution_traces(db, project)
+
+    def get_agent_trace(self, db: Session, trace_id: int) -> AgentExecutionTrace:
+        trace = db.get(AgentExecutionTrace, trace_id)
+        if trace is None:
+            raise ValueError("Agent trace not found")
+        return trace
+
+    def create_project_snapshot(
+        self,
+        db: Session,
+        project: Project,
+        *,
+        label: str,
+        description: str,
+        created_before_task_id: int | None = None,
+        created_before_agent_id: int | None = None,
+    ) -> ProjectSnapshot:
+        workspace = Path(project.workspace_path)
+        metadata: dict[str, Any] = {"workspace_path": str(workspace)}
+        snapshot_type = "filesystem_marker"
+        status = "unsupported"
+        git_ref = None
+        if self._is_git_workspace(project):
+            try:
+                head = subprocess.run(
+                    ["git", "rev-parse", "HEAD"],
+                    cwd=project.workspace_path,
+                    capture_output=True,
+                    text=True,
+                    check=True,
+                )
+                branch = subprocess.run(
+                    ["git", "branch", "--show-current"],
+                    cwd=project.workspace_path,
+                    capture_output=True,
+                    text=True,
+                    check=True,
+                )
+                dirty = subprocess.run(
+                    ["git", "status", "--porcelain"],
+                    cwd=project.workspace_path,
+                    capture_output=True,
+                    text=True,
+                    check=True,
+                )
+                snapshot_type = "git_commit"
+                status = "available"
+                git_ref = head.stdout.strip() or None
+                metadata.update({"branch": branch.stdout.strip(), "dirty": bool(dirty.stdout.strip())})
+            except (subprocess.SubprocessError, FileNotFoundError):
+                metadata["error"] = "Git metadata could not be collected."
+        else:
+            metadata["note"] = "Workspace is not a Git repository, so only a non-destructive marker can be recorded."
+        snapshot = ProjectSnapshot(
+            project_id=project.id,
+            snapshot_type=snapshot_type,
+            label=label,
+            description=description,
+            git_ref=git_ref,
+            created_before_task_id=created_before_task_id,
+            created_before_agent_id=created_before_agent_id,
+            status=status,
+            metadata_json=metadata,
+        )
+        db.add(snapshot)
+        db.flush()
+        self._record_timeline_event(
+            db,
+            project,
+            event_type="snapshot_created",
+            title=f"Snapshot created: {label}",
+            summary=description,
+            severity="info",
+        )
+        self.events.publish(db, project.id, "snapshot_created", {"project_id": project.id, "snapshot_id": snapshot.id, "status": status})
+        return snapshot
+
+    def list_snapshots(self, db: Session, project: Project) -> list[ProjectSnapshot]:
+        return list(
+            db.scalars(
+                select(ProjectSnapshot)
+                .where(ProjectSnapshot.project_id == project.id)
+                .order_by(ProjectSnapshot.created_at.desc(), ProjectSnapshot.id.desc())
+            )
+        )
+
+    def build_restore_plan(self, db: Session, snapshot_id: int) -> dict[str, Any]:
+        snapshot = db.get(ProjectSnapshot, snapshot_id)
+        if snapshot is None:
+            raise ValueError("Snapshot not found")
+        warnings: list[str] = []
+        steps: list[str] = []
+        summary = "Restore plan prepared."
+        if snapshot.status != "available" or snapshot.snapshot_type != "git_commit" or not snapshot.git_ref:
+            summary = "Snapshot restore is not directly supported for this workspace."
+            warnings.append("No safe Git restore target is recorded. Do not invent a rollback and call it a feature.")
+            steps.append("Review workspace state manually.")
+        else:
+            if snapshot.metadata_json.get("dirty"):
+                warnings.append("Working tree was dirty when this snapshot was recorded. A restore must account for uncommitted changes.")
+            steps.extend(
+                [
+                    f"Review current changes with: git status",
+                    f"Inspect diff against snapshot: git diff {snapshot.git_ref}..HEAD",
+                    "Create a fresh safety branch before any restore operation.",
+                    f"Only after approval, consider checking out or branching from {snapshot.git_ref}.",
+                ]
+            )
+        return {
+            "snapshot_id": snapshot.id,
+            "project_id": snapshot.project_id,
+            "status": snapshot.status,
+            "summary": summary,
+            "steps": steps,
+            "warnings": warnings,
+        }
+
+    def create_recovery_plan(self, db: Session, project: Project, payload: dict[str, Any]) -> RecoveryPlan:
+        plan = RecoveryPlan(
+            project_id=project.id,
+            trigger_type=str(payload["trigger_type"]).strip(),
+            trigger_summary=str(payload["trigger_summary"]).strip(),
+            related_agent_id=payload.get("related_agent_id"),
+            related_task_id=payload.get("related_task_id"),
+            suggested_actions_json=[str(item) for item in (payload.get("suggested_actions_json") or []) if str(item).strip()],
+            status="proposed",
+        )
+        db.add(plan)
+        db.flush()
+        self._record_manager_message(
+            db,
+            project,
+            role="system",
+            message_type="blocker_report",
+            content_markdown=f"Recovery plan proposed: **{plan.trigger_summary}**",
+            related_agent_id=plan.related_agent_id,
+            related_task_id=plan.related_task_id,
+            metadata_json={"recovery_plan_id": plan.id, "response_mode": "reliability_recovery"},
+        )
+        self._record_timeline_event(db, project, event_type="recovery_plan_created", title="Recovery plan proposed", summary=plan.trigger_summary, severity="warning", related_agent_id=plan.related_agent_id, related_task_id=plan.related_task_id)
+        self.events.publish(db, project.id, "recovery_plan_created", {"project_id": project.id, "plan_id": plan.id})
+        return plan
+
+    def list_recovery_plans(self, db: Session, project: Project) -> list[RecoveryPlan]:
+        support = self._ensure_widget_support_records(db, project)
+        return support["recovery_plans"]
+
+    def select_recovery_action(self, db: Session, plan_id: int, action: str) -> RecoveryPlan:
+        plan = db.get(RecoveryPlan, plan_id)
+        if plan is None:
+            raise ValueError("Recovery plan not found")
+        project = db.get(Project, plan.project_id)
+        if project is None:
+            raise ValueError("Project not found")
+        plan.selected_action = action
+        plan.status = "accepted"
+        plan.resolved_at = utc_now() if action in {"pause_project", "ask_user"} else plan.resolved_at
+        self._record_decision(
+            db,
+            project,
+            decision_type="recovery_plan",
+            title=f"Recovery: {plan.trigger_type}",
+            decision=action,
+            reason=plan.trigger_summary,
+            made_by="manager",
+            impact_areas=["reliability", "recovery"],
+            related_task_id=plan.related_task_id,
+            related_agent_id=plan.related_agent_id,
+            reversible=action not in {"simplify_scope"},
+        )
+        self.events.publish(db, project.id, "recovery_action_selected", {"project_id": project.id, "plan_id": plan.id, "action": action})
+        return plan
+
+    def get_agent_load(self, db: Session, project: Project) -> list[AgentLoadSnapshot]:
+        return self._sync_agent_load_snapshots(db, project)
+
+    def build_agent_rebalance_plan(self, db: Session, project: Project) -> dict[str, Any]:
+        snapshots = self._sync_agent_load_snapshots(db, project)
+        agents_by_id = {agent.id: agent for agent in db.scalars(select(Agent).where(Agent.project_id == project.id))}
+        overloaded = [snap for snap in snapshots if snap.load_level in {"heavy", "blocked"}]
+        idle = [snap for snap in snapshots if snap.load_level == "idle"]
+        suggested_reassignments: list[dict[str, Any]] = []
+        for overloaded_entry, idle_entry in zip(overloaded, idle):
+            overloaded_agent = agents_by_id.get(overloaded_entry.agent_id)
+            idle_agent = agents_by_id.get(idle_entry.agent_id)
+            if not overloaded_agent or not idle_agent:
+                continue
+            suggested_reassignments.append(
+                {
+                    "from_agent_id": overloaded_agent.id,
+                    "from_agent_name": overloaded_agent.name,
+                    "to_agent_id": idle_agent.id,
+                    "to_agent_name": idle_agent.name,
+                    "note": "Reassign only if the task boundaries and path locks stay compatible.",
+                }
+            )
+        return {
+            "overloaded_agents": [
+                {
+                    "agent_id": snap.agent_id,
+                    "agent_name": agents_by_id.get(snap.agent_id).name if agents_by_id.get(snap.agent_id) else f"Agent {snap.agent_id}",
+                    "load_level": snap.load_level,
+                    "active_task_count": snap.active_task_count,
+                    "blocked_task_count": snap.blocked_task_count,
+                }
+                for snap in overloaded
+            ],
+            "idle_agents": [
+                {
+                    "agent_id": snap.agent_id,
+                    "agent_name": agents_by_id.get(snap.agent_id).name if agents_by_id.get(snap.agent_id) else f"Agent {snap.agent_id}",
+                    "load_level": snap.load_level,
+                    "idle_duration_seconds": snap.idle_duration_seconds,
+                }
+                for snap in idle
+            ],
+            "suggested_reassignments": suggested_reassignments,
+            "risks": [
+                "Do not rebalance high-risk work without checking contracts and path locks.",
+                "Idle agents are not free if their archetype does not match the task.",
+            ],
+        }
+
+    def create_review_gate(self, db: Session, project: Project, payload: dict[str, Any]) -> ReviewGate:
+        gate = ReviewGate(
+            project_id=project.id,
+            gate_type=str(payload["gate_type"]).strip(),
+            title=str(payload["title"]).strip(),
+            status=str(payload.get("status") or "pending"),
+            required=bool(payload.get("required", True)),
+            related_task_id=payload.get("related_task_id"),
+            related_agent_id=payload.get("related_agent_id"),
+            required_checks_json=[str(item) for item in (payload.get("required_checks_json") or []) if str(item).strip()],
+            evidence_ids_json=[int(item) for item in (payload.get("evidence_ids_json") or [])],
+            result_summary=payload.get("result_summary"),
+        )
+        db.add(gate)
+        db.flush()
+        self.events.publish(db, project.id, "review_gate_updated", {"project_id": project.id, "gate_id": gate.id, "status": gate.status})
+        return gate
+
+    def update_review_gate(self, db: Session, gate_id: int, payload: dict[str, Any]) -> ReviewGate:
+        gate = db.get(ReviewGate, gate_id)
+        if gate is None:
+            raise ValueError("Review gate not found")
+        for field in ["status", "required", "related_task_id", "related_agent_id", "result_summary"]:
+            if field in payload and payload[field] is not None:
+                setattr(gate, field, payload[field])
+        if "required_checks_json" in payload and payload["required_checks_json"] is not None:
+            gate.required_checks_json = [str(item) for item in payload["required_checks_json"]]
+        if "evidence_ids_json" in payload and payload["evidence_ids_json"] is not None:
+            gate.evidence_ids_json = [int(item) for item in payload["evidence_ids_json"]]
+        db.flush()
+        self.events.publish(db, gate.project_id, "review_gate_updated", {"project_id": gate.project_id, "gate_id": gate.id, "status": gate.status})
+        return gate
+
+    def get_project_health(self, db: Session, project: Project) -> dict[str, Any]:
+        tasks = list(db.scalars(select(Task).where(Task.project_id == project.id).order_by(Task.priority.asc(), Task.id.asc())))
+        settings = self._project_settings(db, project)
+        _ = settings
+        degraded: list[str] = []
+        current_action = self._derive_current_action(db, project, degraded)
+        overview = self._project_overview(db, project, tasks, current_action)
+        support = self._ensure_widget_support_records(db, project, tasks=tasks, degraded_notices=degraded, current_action=current_action, overview=overview)
+        return support["health"]
+
+    def list_change_requests(self, db: Session, project: Project) -> list[ChangeRequest]:
+        return list(
+            db.scalars(
+                select(ChangeRequest)
+                .where(ChangeRequest.project_id == project.id)
+                .order_by(ChangeRequest.updated_at.desc(), ChangeRequest.id.desc())
+            )
+        )
+
+    def triage_change_request(self, db: Session, change_request_id: int) -> dict[str, Any]:
+        record = db.get(ChangeRequest, change_request_id)
+        if record is None:
+            raise ValueError("Change request not found")
+        text = record.request_text.lower()
+        if any(token in text for token in {"bug", "fix", "broken", "error"}):
+            classification = "bugfix"
+        elif any(token in text for token in {"docs", "readme", "guide"}):
+            classification = "docs"
+        elif any(token in text for token in {"test", "coverage", "validate"}):
+            classification = "test"
+        elif any(token in text for token in {"deploy", "release", "hosting"}):
+            classification = "deployment"
+        elif any(token in text for token in {"refactor", "cleanup"}):
+            classification = "refactor"
+        elif any(token in text for token in {"polish", "ux", "ui"}):
+            classification = "polish"
+        else:
+            classification = "feature"
+        impact = "architectural" if any(token in text for token in {"architecture", "database", "rewrite", "platform"}) else "large" if len(text) > 180 else "medium" if len(text) > 80 else "small"
+        record.classification = classification
+        record.impact_estimate = impact
+        record.status = "triaged"
+        db.flush()
+        project = db.get(Project, record.project_id)
+        if project is not None:
+            self._record_manager_message(
+                db,
+                project,
+                role="system",
+                message_type="system_notice",
+                content_markdown=f"Change request triaged: **{classification}** / **{impact}** for _{record.request_text}_",
+                metadata_json={"change_request_id": record.id, "response_mode": "reliability_change_request"},
+            )
+            self._record_timeline_event(db, project, event_type="change_request_updated", title="Change request triaged", summary=record.request_text, severity="info")
+            self.events.publish(db, project.id, "change_request_updated", {"project_id": project.id, "change_request_id": record.id, "status": record.status})
+        return {
+            "id": record.id,
+            "classification": classification,
+            "impact_estimate": impact,
+            "status": record.status,
+            "note": "Triage is deterministic for now. It is better than random, which is not saying much, but still useful.",
+        }
+
+    def update_change_request(self, db: Session, change_request_id: int, payload: dict[str, Any]) -> ChangeRequest:
+        record = db.get(ChangeRequest, change_request_id)
+        if record is None:
+            raise ValueError("Change request not found")
+        for field in ["classification", "impact_estimate", "status", "related_handoff_id"]:
+            if field in payload and payload[field] is not None:
+                setattr(record, field, payload[field])
+        if "related_tasks_json" in payload and payload["related_tasks_json"] is not None:
+            record.related_tasks_json = [int(item) for item in payload["related_tasks_json"]]
+        db.flush()
+        self.events.publish(db, record.project_id, "change_request_updated", {"project_id": record.project_id, "change_request_id": record.id, "status": record.status})
+        return record
+
+    def list_timeline_events(self, db: Session, project: Project) -> list[ProjectTimelineEvent]:
+        return list(
+            db.scalars(
+                select(ProjectTimelineEvent)
+                .where(ProjectTimelineEvent.project_id == project.id)
+                .order_by(ProjectTimelineEvent.created_at.desc(), ProjectTimelineEvent.id.desc())
+            )
+        )
+
+    def create_timeline_event(self, db: Session, project: Project, payload: dict[str, Any]) -> ProjectTimelineEvent:
+        return self._record_timeline_event(
+            db,
+            project,
+            event_type=str(payload["event_type"]).strip(),
+            title=str(payload["title"]).strip(),
+            summary=str(payload["summary"]).strip(),
+            severity=str(payload.get("severity") or "info"),
+            related_agent_id=payload.get("related_agent_id"),
+            related_task_id=payload.get("related_task_id"),
+            related_handoff_id=payload.get("related_handoff_id"),
+        )
+
     def create_change_request(self, db: Session, project: Project, request_text: str) -> ChangeRequest:
         normalized = " ".join(str(request_text or "").strip().split())
         if not normalized:
@@ -1497,6 +2689,46 @@ class MissionControlService:
                 "Ask the Manager to classify scope, estimate impact, and decide whether it belongs in the current milestone."
             ),
             metadata_json={"change_request_id": record.id, "response_mode": "system_notice"},
+        )
+        signals = scope_creep_service.analyze(
+            db,
+            project,
+            {"source": "change_request", "summary": normalized, "related_message_id": None, "related_task_id": None},
+        )
+        high_signal = next((item for item in signals if item.severity == "high" and item.status == "open"), None)
+        if high_signal is not None:
+            existing_scope_question = db.scalar(
+                select(ManagerQuestion)
+                .where(
+                    ManagerQuestion.project_id == project.id,
+                    ManagerQuestion.status == "pending",
+                )
+                .order_by(ManagerQuestion.id.desc())
+            )
+            if existing_scope_question is None or not (
+                existing_scope_question.metadata_json
+                and existing_scope_question.metadata_json.get("scope_signal_id") == high_signal.id
+            ):
+                self._create_question(
+                    db,
+                    project,
+                    question="This expands scope beyond the approved MVP. Include now, defer, or create future milestone?",
+                    options_json=[
+                        {"id": "include_now", "label": "Include now"},
+                        {"id": "defer", "label": "Defer"},
+                        {"id": "create_future_milestone", "label": "Create future milestone"},
+                    ],
+                    impact="high",
+                    manager_recommendation="create_future_milestone",
+                    metadata_json={"scope_signal_id": high_signal.id, "question_type": "scope_creep"},
+                )
+        self._record_timeline_event(
+            db,
+            project,
+            event_type="change_request_created",
+            title="Change request logged",
+            summary=normalized,
+            severity="info",
         )
         return record
 
@@ -1763,13 +2995,15 @@ class MissionControlService:
         stuck_signals: list[AgentStuckSignal],
         tasks: list[Task],
     ) -> list[RecoveryPlan]:
-        triggers: list[tuple[str, str, list[str]]] = []
+        triggers: list[tuple[str, str, int | None, int | None, list[str]]] = []
         blocked_tasks = [task for task in tasks if task.status == "blocked"]
         if current_action["type"] in {"blocker", "error", "degraded"}:
             triggers.append(
                 (
                     current_action["type"],
                     str(current_action["message"]),
+                    current_action.get("requesting_agent_id"),
+                    current_action.get("related_task_id"),
                     ["Retry same agent", "Spawn Debug Agent", "Simplify scope", "Ask user / ask Manager"],
                 )
             )
@@ -1778,6 +3012,8 @@ class MissionControlService:
                 (
                     "blocked_task",
                     f"{len(blocked_tasks)} task(s) are blocked.",
+                    blocked_tasks[0].assigned_agent_id if blocked_tasks else None,
+                    blocked_tasks[0].id if blocked_tasks else None,
                     ["Retry same agent", "Split task", "Simplify scope", "Ask user / ask Manager"],
                 )
             )
@@ -1786,6 +3022,8 @@ class MissionControlService:
                 (
                     "stuck_agents",
                     f"{len(stuck_signals)} agent(s) may be stuck.",
+                    stuck_signals[0].agent_id if stuck_signals else None,
+                    None,
                     ["Retry same agent", "Spawn Debug Agent", "Split task", "Ask user / ask Manager"],
                 )
             )
@@ -1794,7 +3032,7 @@ class MissionControlService:
             for entry in db.scalars(select(RecoveryPlan).where(RecoveryPlan.project_id == project.id, RecoveryPlan.resolved_at.is_(None)))
         }
         active_keys: set[tuple[str, str]] = set()
-        for trigger_type, summary, actions in triggers:
+        for trigger_type, summary, related_agent_id, related_task_id, actions in triggers:
             key = (trigger_type, summary)
             active_keys.add(key)
             entry = existing.get(key)
@@ -1803,10 +3041,22 @@ class MissionControlService:
                     project_id=project.id,
                     trigger_type=trigger_type,
                     trigger_summary=summary,
+                    related_agent_id=related_agent_id,
+                    related_task_id=related_task_id,
                     suggested_actions_json=actions,
                     status="proposed",
                 )
                 db.add(entry)
+                self._record_timeline_event(
+                    db,
+                    project,
+                    event_type="recovery_plan_created",
+                    title=f"Recovery proposed: {trigger_type}",
+                    summary=summary,
+                    severity="warning",
+                    related_agent_id=related_agent_id,
+                    related_task_id=related_task_id,
+                )
         for key, entry in existing.items():
             if key not in active_keys:
                 entry.resolved_at = utc_now()
@@ -1829,8 +3079,14 @@ class MissionControlService:
         tasks: list[Task],
         overview: dict[str, Any],
         testing_depth: str,
+        conflicts: list[ConflictRecord] | None = None,
     ) -> list[ReviewGate]:
+        conflicts = conflicts or []
         task_status_counts = Counter(task.status for task in tasks)
+        latest_handoff = self._latest_evidence_handoff(db, project.id)
+        latest_handoff_evidence_ids = list(latest_handoff.evidence_ids_json or []) if latest_handoff is not None else []
+        unresolved_conflicts = [entry for entry in conflicts if entry.status not in {"resolved", "dismissed"}]
+        missing_evidence = list((project.final_report_json or {}).get("missing_evidence") or [])
         requirements = {
             "code_review": {
                 "title": "Code review gate",
@@ -1838,6 +3094,7 @@ class MissionControlService:
                 "checks": ["No tasks remain in review.", "No unresolved blockers remain."],
                 "status": "passed" if task_status_counts.get("needs_review", 0) == 0 else "pending",
                 "summary": "Review tasks are clear." if task_status_counts.get("needs_review", 0) == 0 else "Tasks still require review.",
+                "evidence_ids": [],
             },
             "test": {
                 "title": "Validation gate",
@@ -1845,6 +3102,7 @@ class MissionControlService:
                 "checks": ["Validation recipe is defined.", "Critical tests or smoke checks are accounted for."],
                 "status": "passed" if overview["checklist"][4]["status"] == "complete" else ("failed" if task_status_counts.get("blocked", 0) else "pending"),
                 "summary": overview["checklist"][4]["detail"],
+                "evidence_ids": latest_handoff_evidence_ids,
             },
             "security": {
                 "title": "Security gate",
@@ -1852,6 +3110,7 @@ class MissionControlService:
                 "checks": ["Security-sensitive areas reviewed when required."],
                 "status": "passed" if overview["checklist"][3]["status"] == "complete" else "pending",
                 "summary": overview["checklist"][3]["detail"],
+                "evidence_ids": [],
             },
             "docs": {
                 "title": "Documentation gate",
@@ -1859,13 +3118,23 @@ class MissionControlService:
                 "checks": ["README, handoff notes, and run instructions are ready enough."],
                 "status": "passed" if overview["checklist"][5]["status"] == "complete" else "pending",
                 "summary": overview["checklist"][5]["detail"],
+                "evidence_ids": [],
             },
             "handoff": {
                 "title": "Handoff gate",
                 "required": True,
                 "checks": ["Overall readiness is acceptable for handoff."],
-                "status": "passed" if overview["handoff_progress"] >= 90 else "pending",
-                "summary": f"Handoff progress is {overview['handoff_progress']}%.",
+                "status": "passed" if latest_handoff is not None and latest_handoff.confidence_level == "high" and not missing_evidence else ("failed" if missing_evidence else "pending"),
+                "summary": f"Handoff progress is {overview['handoff_progress']}%." if not missing_evidence else "; ".join(missing_evidence[:3]),
+                "evidence_ids": latest_handoff_evidence_ids,
+            },
+            "conflict_resolution": {
+                "title": "Conflict resolution gate",
+                "required": bool(unresolved_conflicts),
+                "checks": ["Parallel edit conflicts are resolved before handoff or risky reassignment."],
+                "status": "passed" if not unresolved_conflicts else ("failed" if any(item.severity in {"high", "critical"} for item in unresolved_conflicts) else "pending"),
+                "summary": "No active conflicts." if not unresolved_conflicts else f"{len(unresolved_conflicts)} unresolved conflict(s) remain.",
+                "evidence_ids": [],
             },
         }
         existing = {entry.gate_type: entry for entry in db.scalars(select(ReviewGate).where(ReviewGate.project_id == project.id))}
@@ -1880,6 +3149,7 @@ class MissionControlService:
             gate.required_checks_json = list(payload["checks"])
             gate.status = str(payload["status"])
             gate.result_summary = str(payload["summary"])
+            gate.evidence_ids_json = list(payload.get("evidence_ids", []))
         db.flush()
         return list(db.scalars(select(ReviewGate).where(ReviewGate.project_id == project.id).order_by(ReviewGate.required.desc(), ReviewGate.gate_type.asc())))
 
@@ -2196,7 +3466,11 @@ class MissionControlService:
         review_gates: list[ReviewGate],
         pending_approvals: list[dict[str, Any]],
         blocked_agents: list[dict[str, Any]],
+        conflicts: list[ConflictRecord] | None = None,
+        evidence: list[HandoffEvidence] | None = None,
     ) -> dict[str, Any]:
+        conflicts = conflicts or []
+        evidence = evidence or []
         reasons: list[str] = []
         risks: list[str] = []
         score = 80
@@ -2215,6 +3489,11 @@ class MissionControlService:
             reasons.append(f"{len(stuck_signals)} stuck-signal(s) detected.")
             risks.append("At least one agent is stalled or repeatedly failing.")
             score -= 15
+        unresolved_conflicts = [conflict for conflict in conflicts if conflict.status not in {"resolved", "dismissed"}]
+        if unresolved_conflicts:
+            reasons.append(f"{len(unresolved_conflicts)} unresolved conflict(s) remain.")
+            risks.append("Parallel work is colliding instead of cooperating.")
+            score -= 20
         failed_gates = [gate for gate in review_gates if gate.status == "failed"]
         pending_gates = [gate for gate in review_gates if gate.required and gate.status == "pending"]
         if failed_gates:
@@ -2224,12 +3503,17 @@ class MissionControlService:
         elif pending_gates:
             reasons.append(f"{len(pending_gates)} required gate(s) are still pending.")
             score -= 8
+        missing_evidence = self._missing_handoff_evidence(review_gates, evidence)
+        if missing_evidence:
+            reasons.append(f"{len(missing_evidence)} handoff evidence gap(s) exist.")
+            risks.append("Handoff confidence is weaker than it should be because proof is missing.")
+            score -= 10
         readiness = str(overview["readiness_label"]).lower()
         if readiness == "good" and score >= 75 and not reasons:
             state = "healthy"
         elif "handoff" in project.status or overview["handoff_progress"] >= 95:
             state = "ready_for_handoff"
-        elif current_action["type"] in {"blocker", "error"}:
+        elif current_action["type"] in {"blocker", "error"} or unresolved_conflicts:
             state = "blocked"
         elif stuck_signals or failed_gates:
             state = "unstable"
@@ -2322,10 +3606,18 @@ class MissionControlService:
         budget = self._sync_swarm_budget(db, project)
         contracts = self._sync_agent_contracts(db, project)
         path_locks = self._sync_path_locks(db, project)
+        conflicts = self.detect_conflicts(db, project)
         confidence = self._sync_project_confidence(db, project)
         stuck_signals = self._ensure_stuck_signals(db, project)
         recovery_plans = self._ensure_recovery_plans(db, project, current_action=current_action, stuck_signals=stuck_signals, tasks=tasks)
-        review_gates = self._sync_review_gates(db, project, tasks=tasks, overview=overview, testing_depth=self._ensure_swarm_preferences(db, project).testing_depth)
+        review_gates = self._sync_review_gates(
+            db,
+            project,
+            tasks=tasks,
+            overview=overview,
+            testing_depth=self._ensure_swarm_preferences(db, project).testing_depth,
+            conflicts=conflicts,
+        )
         model_policy = self._ensure_model_policy(db, project)
         tool_routing = self._ensure_tool_routing_policies(db, project)
         sandbox_profiles = self._ensure_sandbox_profiles(db, project)
@@ -2333,6 +3625,13 @@ class MissionControlService:
         repo = self._scan_repo_intelligence(db, project)
         validation_recipe = self._ensure_validation_recipe(db, project)
         handoff_quality = self._ensure_handoff_quality(db, project)
+        traces = self._ensure_agent_execution_traces(db, project)
+        snapshots = self.list_snapshots(db, project)
+        agent_load = self._sync_agent_load_snapshots(db, project)
+        timeline = self.list_timeline_events(db, project)
+        evidence = self.list_handoff_evidence(db, project)
+        latest_handoff = self._latest_evidence_handoff(db, project.id)
+        runbook = self.get_runbook(db, project)
         decisions = self._sync_decision_records(db, project)
         blocked_agents = [agent for agent in self._sorted_workspace_agents(db, project.id) if agent["display_status"] in {"blocked", "error"}]
         pending_approvals = self.list_pending_approvals(db, project)
@@ -2344,11 +3643,14 @@ class MissionControlService:
             review_gates=review_gates,
             pending_approvals=pending_approvals,
             blocked_agents=blocked_agents,
+            conflicts=conflicts,
+            evidence=evidence,
         )
         return {
             "budget": budget,
             "contracts": contracts,
             "path_locks": path_locks,
+            "conflicts": conflicts,
             "confidence": confidence,
             "stuck_signals": stuck_signals,
             "recovery_plans": recovery_plans,
@@ -2360,6 +3662,13 @@ class MissionControlService:
             "repo": repo,
             "validation_recipe": validation_recipe,
             "handoff_quality": handoff_quality,
+            "handoff_evidence": evidence,
+            "latest_handoff": latest_handoff,
+            "runbook": runbook,
+            "agent_traces": traces,
+            "snapshots": snapshots,
+            "agent_load": agent_load,
+            "timeline": timeline,
             "decisions": decisions,
             "health": health,
             "blocked_agents": blocked_agents,
@@ -2559,7 +3868,11 @@ class MissionControlService:
         if instance.widget_type == "Recent Handoffs":
             if not recent_handoffs:
                 return self._serialize_widget_data(instance, status="empty", empty_state="No handoffs yet. Completed work will appear here.")
-            return self._serialize_widget_data(instance, status="ready", data_json={"items": recent_handoffs[:5]})
+            return self._serialize_widget_data(
+                instance,
+                status="warning" if any(item.get("missing_evidence") for item in recent_handoffs[:5]) else "ready",
+                data_json={"items": recent_handoffs[:5]},
+            )
         if instance.widget_type == "Runner & Provider Status":
             provider_rows = [
                 {
@@ -2635,6 +3948,80 @@ class MissionControlService:
             if not items:
                 return self._serialize_widget_data(instance, status="empty", empty_state="No active swarm budgets exist yet.")
             return self._serialize_widget_data(instance, status="warning" if warnings else "ready", data_json={"items": items}, warnings_json=warnings[:5])
+        if instance.widget_type == "Model Capability Overview":
+            summary = capability_service.benchmark_summary(db)
+            if not summary["has_data"]:
+                return self._serialize_widget_data(instance, status="empty", empty_state="No benchmark data yet. Manager will use default policy.")
+            return self._serialize_widget_data(
+                instance,
+                status="ready",
+                data_json={
+                    "items": [
+                        {
+                            "title": category.replace("_", " "),
+                            "detail": f"{entry['provider']} / {entry['model']} • score {entry['score']}",
+                        }
+                        for category, entry in summary["top_categories"].items()
+                    ],
+                    "matrix": summary["matrix"],
+                },
+            )
+        if instance.widget_type == "Global Agent Reputation":
+            reputation = reputation_service.summarize(db)
+            if not reputation:
+                return self._serialize_widget_data(instance, status="empty", empty_state="Not enough history yet.")
+            return self._serialize_widget_data(
+                instance,
+                status="ready",
+                data_json={
+                    "items": [
+                        {
+                            "title": f"{item['archetype']} ({item['model'] or item['provider'] or 'default'})",
+                            "detail": f"success {int(item['success_rate'] * 100)}% • confidence {item['confidence']}",
+                        }
+                        for item in reputation[:8]
+                    ]
+                },
+            )
+        if instance.widget_type == "Common Risks":
+            items = risk_service.common_risks(db)
+            if not items:
+                return self._serialize_widget_data(instance, status="empty", empty_state="No common risks are active right now.")
+            return self._serialize_widget_data(instance, status="warning", data_json={"items": items})
+        if instance.widget_type == "Recent Scope Changes":
+            signals = scope_creep_service.recent_signals(db, limit=10)
+            if not signals:
+                return self._serialize_widget_data(instance, status="empty", empty_state="No scope changes have been recorded yet.")
+            return self._serialize_widget_data(
+                instance,
+                status="warning" if any(item.severity == "high" and item.status == "open" for item in signals) else "ready",
+                data_json={
+                    "items": [
+                        {
+                            "title": item.summary,
+                            "detail": f"{item.severity} • {item.suggested_action} • {item.status}",
+                        }
+                        for item in signals
+                    ]
+                },
+            )
+        if instance.widget_type == "Preference Summary":
+            preferences = preference_service.get_effective_preferences(db, project=None)
+            if not preferences:
+                return self._serialize_widget_data(instance, status="empty", empty_state="No global preferences are stored yet.")
+            return self._serialize_widget_data(
+                instance,
+                status="ready",
+                data_json={
+                    "items": [
+                        {
+                            "title": item.key,
+                            "detail": f"{item.value_json} • {item.source}",
+                        }
+                        for item in preferences[:8]
+                    ]
+                },
+            )
         if instance.widget_type == "Blocked Agents":
             if not blocked_agents:
                 return self._serialize_widget_data(instance, status="empty", empty_state="No agents are currently blocked.")
@@ -2705,6 +4092,59 @@ class MissionControlService:
                     for item in items
                 ]},
             )
+        if instance.widget_type == "Active Conflicts":
+            items = []
+            for project in projects[:10]:
+                for conflict in self.list_conflicts(db, project):
+                    if conflict.status in {"resolved", "dismissed"}:
+                        continue
+                    items.append(
+                        {
+                            "project_id": project.id,
+                            "project_name": project.name,
+                            "title": conflict.title,
+                            "detail": conflict.summary,
+                            "severity": conflict.severity,
+                            "status": conflict.status,
+                        }
+                    )
+            if not items:
+                return self._serialize_widget_data(instance, status="empty", empty_state="No active cross-project conflicts are recorded.")
+            return self._serialize_widget_data(instance, status="warning", data_json={"items": items[:10]})
+        if instance.widget_type == "Recovery Needed":
+            items = []
+            for project in projects[:10]:
+                for plan in self.list_recovery_plans(db, project):
+                    if plan.status in {"completed", "rejected"} or plan.resolved_at is not None:
+                        continue
+                    items.append(
+                        {
+                            "project_id": project.id,
+                            "project_name": project.name,
+                            "title": plan.trigger_summary,
+                            "detail": f"{plan.trigger_type} · {plan.status}",
+                        }
+                    )
+            if not items:
+                return self._serialize_widget_data(instance, status="empty", empty_state="No active recovery plans are waiting right now.")
+            return self._serialize_widget_data(instance, status="warning", data_json={"items": items[:10]})
+        if instance.widget_type == "Imported Projects":
+            imported = [
+                {
+                    "project_id": item.id,
+                    "project_name": item.name,
+                    "project_slug": self._effective_project_slug(item),
+                    "source_path": item.source_path or item.workspace_path,
+                    "scan_status": item.scan_status,
+                    "write_permission_status": item.write_permission_status,
+                    "codebase_size": (item.codebase_map.codebase_size if item.codebase_map else "unknown"),
+                }
+                for item in projects
+                if item.source_type in {"existing_folder", "cloned_repo", "docs_import"}
+            ][:10]
+            if not imported:
+                return self._serialize_widget_data(instance, status="empty", empty_state="No imported projects exist yet.")
+            return self._serialize_widget_data(instance, status="ready", data_json={"items": imported})
         return self._serialize_widget_data(instance, status="empty", empty_state=WIDGET_EMPTY_STATE)
 
     async def _project_widget_data_for_instance(
@@ -2732,6 +4172,216 @@ class MissionControlService:
                 return self._serialize_widget_data(instance, status="empty", empty_state="No swarm plan exists yet. Ask the Manager to generate one.")
             warnings = [swarm_plan["usage_warning"]] if swarm_plan.get("usage_warning") else []
             return self._serialize_widget_data(instance, status="warning" if warnings else "ready", data_json=swarm_plan, warnings_json=warnings)
+        if instance.widget_type == "Model Capability Matrix":
+            matrix = capability_service.capability_matrix(db)
+            if not matrix:
+                return self._serialize_widget_data(instance, status="empty", empty_state="No benchmark data yet. Manager will use default policy.")
+            return self._serialize_widget_data(
+                instance,
+                status="ready",
+                data_json={
+                    "categories": CAPABILITY_CATEGORIES,
+                    "rows": matrix,
+                    "recommendation_note": "No benchmark data yet. Manager will use default policy." if not matrix else "",
+                },
+            )
+        if instance.widget_type == "Agent Reputation":
+            reputation = reputation_service.summarize(db, project)
+            if not reputation:
+                return self._serialize_widget_data(instance, status="empty", empty_state="Not enough history yet.")
+            return self._serialize_widget_data(
+                instance,
+                status="ready",
+                data_json={
+                    "items": [
+                        {
+                            "title": f"{item['archetype']} ({item['model'] or item['provider'] or 'default'})",
+                            "detail": f"success {int(item['success_rate'] * 100)}% • best: {', '.join(item['recommended_for']) or 'unknown'}",
+                            "weak_spots": item["avoid_for"],
+                        }
+                        for item in reputation[:8]
+                    ]
+                },
+            )
+        if instance.widget_type == "Project Playbook":
+            state = playbook_service.project_playbook_state(db, project)
+            playbook = state.get("playbook")
+            if playbook is None:
+                return self._serialize_widget_data(instance, status="empty", empty_state="No playbook is selected yet.")
+            return self._serialize_widget_data(
+                instance,
+                status="ready",
+                data_json={
+                    "playbook_key": state.get("playbook_key"),
+                    "playbook_name": playbook.name,
+                    "status": state.get("status"),
+                    "why": state.get("why"),
+                    "common_risks": list(playbook.common_risks_json or []),
+                    "validation": list(playbook.suggested_validation_recipe_json or []),
+                },
+            )
+        if instance.widget_type == "Context Packs":
+            packs = context_pack_service.list_context_packs(db, project)[:8]
+            if not packs:
+                return self._serialize_widget_data(instance, status="empty", empty_state="No context packs have been built yet.")
+            return self._serialize_widget_data(
+                instance,
+                status="warning" if any(item["warnings_json"] for item in packs) else "ready",
+                data_json={
+                    "items": [
+                        {
+                            "title": item["title"],
+                            "detail": f"files {len(item['included_files_json'])} • docs {len(item['included_docs_json'])} • warnings {len(item['warnings_json'])}",
+                            "task_id": item["task_id"],
+                            "agent_id": item["agent_id"],
+                        }
+                        for item in packs
+                    ]
+                },
+            )
+        if instance.widget_type == "Risk Register":
+            risks = risk_service.list_risks(db, project)
+            if not risks:
+                return self._serialize_widget_data(instance, status="empty", empty_state="No risks are recorded yet.")
+            return self._serialize_widget_data(
+                instance,
+                status="warning" if any(item.severity in {"high", "critical"} and item.status in {"open", "monitoring"} for item in risks) else "ready",
+                data_json={
+                    "items": [
+                        {
+                            "title": item.title,
+                            "detail": f"{item.severity}/{item.likelihood} • {item.status} • mitigation: {item.mitigation or 'none'}",
+                            "owner": item.owner_agent_id,
+                        }
+                        for item in risks[:10]
+                    ]
+                },
+            )
+        if instance.widget_type == "Security Policy":
+            policy = security_service.get_policy(db, project=project)
+            return self._serialize_widget_data(
+                instance,
+                status="ready",
+                data_json={
+                    "rows": [
+                        {"label": "Command policy", "value": policy.default_command_policy},
+                        {"label": "Tool policy", "value": policy.default_tool_policy},
+                        {"label": "Network", "value": policy.network_access_policy},
+                        {"label": "Writes", "value": policy.write_access_policy},
+                        {"label": "External accounts", "value": policy.external_account_policy},
+                        {"label": "Deployment", "value": policy.deployment_policy},
+                        {"label": "Destructive actions", "value": policy.destructive_action_policy},
+                    ],
+                    "notes": [
+                        "High-risk actions require explicit user approval."
+                        if policy.high_risk_requires_user
+                        else "High-risk actions are not manually gated. Review this policy carefully."
+                    ],
+                },
+            )
+        if instance.widget_type == "Approval Audit Log":
+            logs = security_service.list_audit_logs(db, project=project)[:10]
+            if not logs:
+                return self._serialize_widget_data(instance, status="empty", empty_state="No approval audit entries exist yet.")
+            return self._serialize_widget_data(
+                instance,
+                status="warning" if any(item.decision == "blocked" for item in logs) else "ready",
+                data_json={
+                    "items": [
+                        {
+                            "title": item.action_summary,
+                            "detail": f"{item.decision} - {item.risk_level} - {item.decided_by}",
+                        }
+                        for item in logs
+                    ]
+                },
+            )
+        if instance.widget_type == "Risk Assessment":
+            assessments = security_service.recent_risk_assessments(db, project=project)[:10]
+            if not assessments:
+                return self._serialize_widget_data(instance, status="empty", empty_state="No risk assessments have been recorded yet.")
+            return self._serialize_widget_data(
+                instance,
+                status="warning" if any(item.risk_level in {"high", "critical"} for item in assessments) else "ready",
+                data_json={
+                    "items": [
+                        {
+                            "title": item.title,
+                            "detail": f"{item.risk_level} - {item.recommended_policy}",
+                        }
+                        for item in assessments
+                    ]
+                },
+            )
+        if instance.widget_type == "Scope Creep":
+            signals = [item for item in scope_creep_service.list_signals(db, project) if item.status == "open"]
+            if not signals:
+                return self._serialize_widget_data(instance, status="empty", empty_state="No open scope changes exist right now.")
+            return self._serialize_widget_data(
+                instance,
+                status="warning" if any(item.severity == "high" for item in signals) else "ready",
+                data_json={
+                    "items": [
+                        {
+                            "title": item.summary,
+                            "detail": f"{item.severity} • {item.suggested_action} • {item.status}",
+                        }
+                        for item in signals[:10]
+                    ]
+                },
+            )
+        if instance.widget_type == "Agent Launch Simulation":
+            simulation = simulation_service.latest_simulation(db, project)
+            if simulation is None:
+                return self._serialize_widget_data(instance, status="empty", empty_state="No launch simulation exists yet. Generate or revise a swarm plan first.")
+            return self._serialize_widget_data(
+                instance,
+                status="warning" if simulation.should_wait_count or simulation.conflict_warnings_json else "ready",
+                data_json={
+                    "safe_to_launch_count": simulation.safe_to_launch_count,
+                    "should_wait_count": simulation.should_wait_count,
+                    "needs_user_approval_count": simulation.needs_user_approval_count,
+                    "conflicts": list(simulation.conflict_warnings_json or []),
+                    "bottlenecks": list(simulation.bottlenecks_json or []),
+                    "recommended_launch_order": list(simulation.recommended_launch_order_json or []),
+                },
+            )
+        if instance.widget_type == "Validation Coverage":
+            coverage = validation_coverage_service.coverage_summary(db, project)
+            items = coverage["items"]
+            if not items:
+                return self._serialize_widget_data(instance, status="empty", empty_state="No validation coverage exists yet.")
+            return self._serialize_widget_data(
+                instance,
+                status="warning" if coverage["gaps"] else "ready",
+                data_json={
+                    "items": [
+                        {
+                            "title": item.area,
+                            "detail": f"{item.coverage_status} • {item.evidence_summary or 'No evidence recorded yet.'}",
+                        }
+                        for item in items
+                    ],
+                    "gaps": coverage["gaps"],
+                },
+            )
+        if instance.widget_type == "Preference Memory":
+            preferences = preference_service.get_effective_preferences(db, project)
+            if not preferences:
+                return self._serialize_widget_data(instance, status="empty", empty_state="No active preferences affect this project yet.")
+            return self._serialize_widget_data(
+                instance,
+                status="ready",
+                data_json={
+                    "items": [
+                        {
+                            "title": item.key,
+                            "detail": f"{item.value_json} • {item.source} • {item.scope}",
+                        }
+                        for item in preferences[:10]
+                    ]
+                },
+            )
         if instance.widget_type == "Swarm Budget":
             budget: SwarmBudget = support["budget"]
             warnings = []
@@ -2752,6 +4402,140 @@ class MissionControlService:
                     "premium_models_only_for": list(budget.premium_models_only_for or []),
                 },
                 warnings_json=warnings,
+            )
+        if instance.widget_type == "Conflict Resolver":
+            conflicts: list[ConflictRecord] = [entry for entry in support["conflicts"] if entry.status not in {"resolved", "dismissed"}]
+            if not conflicts:
+                return self._serialize_widget_data(instance, status="empty", empty_state="No active conflicts are recorded right now.")
+            return self._serialize_widget_data(
+                instance,
+                status="warning",
+                data_json={
+                    "items": [
+                        {
+                            "id": entry.id,
+                            "title": entry.title,
+                            "detail": entry.summary,
+                            "severity": entry.severity,
+                            "status": entry.status,
+                            "affected_paths": list(entry.affected_paths_json or []),
+                            "involved_agents": list(entry.involved_agent_ids_json or []),
+                            "suggested_resolution": list(entry.suggested_resolution_json or []),
+                        }
+                        for entry in conflicts[:10]
+                    ]
+                },
+            )
+        if instance.widget_type == "Evidence Handoff":
+            latest_handoff: EvidenceBasedHandoff | None = support["latest_handoff"]
+            evidence: list[HandoffEvidence] = support["handoff_evidence"]
+            if latest_handoff is None and not evidence:
+                return self._serialize_widget_data(instance, status="empty", empty_state="No evidence-backed handoff exists yet.")
+            missing_evidence = list((project.final_report_json or {}).get("missing_evidence") or [])
+            return self._serialize_widget_data(
+                instance,
+                status="warning" if missing_evidence else "ready",
+                data_json={
+                    "title": latest_handoff.title if latest_handoff else f"{project.name} handoff",
+                    "summary": latest_handoff.summary if latest_handoff else "Evidence exists but no handoff summary has been generated yet.",
+                    "confidence_level": latest_handoff.confidence_level if latest_handoff else "low",
+                    "dry_run": latest_handoff.dry_run if latest_handoff else project.runner_mode == "dry_run",
+                    "evidence_count": len(evidence),
+                    "missing_evidence": missing_evidence,
+                    "claims": [
+                        {"claim": item.claim, "summary": item.summary, "status": item.status}
+                        for item in evidence[:8]
+                    ],
+                },
+                warnings_json=missing_evidence,
+            )
+        if instance.widget_type == "Runbook":
+            runbook: Runbook | None = support["runbook"]
+            if runbook is None:
+                return self._serialize_widget_data(instance, status="empty", empty_state="No runbook has been generated yet.")
+            sections = [line[3:].strip() for line in runbook.content_markdown.splitlines() if line.startswith("## ")]
+            expected_sections = [
+                "How to start dev server",
+                "How to run tests",
+                "How to build",
+                "How to debug common failures",
+                "How to reset local state",
+                "Where logs live",
+                "How to deploy if configured",
+                "Known operational risks",
+            ]
+            missing_sections = [section for section in expected_sections if section not in sections]
+            return self._serialize_widget_data(
+                instance,
+                status="warning" if missing_sections else "ready",
+                data_json={
+                    "last_generated": runbook.generated_at,
+                    "updated_at": runbook.updated_at,
+                    "missing_sections": missing_sections,
+                    "content_preview": runbook.content_markdown[:1200],
+                    "run_commands": [line[2:] for line in runbook.content_markdown.splitlines() if line.startswith("- ")][:6],
+                },
+                warnings_json=[f"Missing section: {section}" for section in missing_sections[:4]],
+            )
+        if instance.widget_type == "Agent Black Box":
+            traces: list[AgentExecutionTrace] = support["agent_traces"]
+            if not traces:
+                return self._serialize_widget_data(instance, status="empty", empty_state="No agent execution traces have been recorded yet.")
+            return self._serialize_widget_data(
+                instance,
+                status="ready",
+                data_json={
+                    "items": [
+                        {
+                            "id": trace.id,
+                            "title": trace.prompt_summary,
+                            "detail": trace.response_summary,
+                            "files_changed": list(trace.files_changed_json or []),
+                            "commands_attempted": list(trace.commands_attempted_json or []),
+                            "manager_decision_after": trace.manager_decision_after,
+                            "redaction_status": trace.redaction_status,
+                            "created_at": trace.created_at,
+                        }
+                        for trace in traces[:10]
+                    ]
+                },
+            )
+        if instance.widget_type == "Snapshots":
+            snapshots: list[ProjectSnapshot] = support["snapshots"]
+            if not snapshots:
+                return self._serialize_widget_data(instance, status="empty", empty_state="No snapshots have been recorded for this project yet.")
+            return self._serialize_widget_data(
+                instance,
+                status="warning" if any(entry.status != "available" for entry in snapshots[:6]) else "ready",
+                data_json={
+                    "items": [
+                        {
+                            "id": entry.id,
+                            "title": entry.label,
+                            "detail": entry.description,
+                            "snapshot_type": entry.snapshot_type,
+                            "status": entry.status,
+                            "git_ref": entry.git_ref,
+                        }
+                        for entry in snapshots[:8]
+                    ]
+                },
+            )
+        if instance.widget_type == "Agent Load Balancer":
+            load_snapshots: list[AgentLoadSnapshot] = support["agent_load"]
+            if not load_snapshots:
+                return self._serialize_widget_data(instance, status="empty", empty_state="No agent load snapshots exist yet.")
+            rebalance = self.build_agent_rebalance_plan(db, project)
+            return self._serialize_widget_data(
+                instance,
+                status="warning" if rebalance["overloaded_agents"] else "ready",
+                data_json={
+                    "idle_agents": rebalance["idle_agents"],
+                    "overloaded_agents": rebalance["overloaded_agents"],
+                    "suggested_reassignments": rebalance["suggested_reassignments"],
+                    "risks": rebalance["risks"],
+                },
+                warnings_json=list(rebalance["risks"][:3]),
             )
         if instance.widget_type == "Agent Contracts":
             contracts: list[AgentContract] = support["contracts"]
@@ -2965,6 +4749,102 @@ class MissionControlService:
                     ],
                 },
             )
+        if instance.widget_type == "Codebase Map":
+            record: CodebaseMap = import_service.get_codebase_map(db, project)
+            if not record.languages_json and not record.frameworks_json and not record.important_folders_json and project.source_type == "idea":
+                return self._serialize_widget_data(instance, status="empty", empty_state="This project was started from an idea, so imported-codebase mapping is not active.")
+            if not record.languages_json and not record.frameworks_json and not record.important_folders_json:
+                return self._serialize_widget_data(instance, status="empty", empty_state="Codebase map is not available yet. Run the read-only scan first.")
+            return self._serialize_widget_data(
+                instance,
+                status="ready",
+                data_json={
+                    "source_path": record.source_path,
+                    "languages": list(record.languages_json or []),
+                    "frameworks": list(record.frameworks_json or []),
+                    "package_managers": list(record.package_managers_json or []),
+                    "build_tools": list(record.build_tools_json or []),
+                    "test_frameworks": list(record.test_frameworks_json or []),
+                    "important_folders": list(record.important_folders_json or []),
+                    "docs": list(record.docs_json or []),
+                    "build_commands": list(record.build_commands_json or []),
+                    "test_commands": list(record.test_commands_json or []),
+                    "git_status": dict(record.git_status_json or {}),
+                    "risk_flags": list(record.risk_flags_json or []),
+                },
+            )
+        if instance.widget_type == "Codebase Understanding":
+            record: CodebaseUnderstanding = import_service.get_codebase_understanding(db, project)
+            if not record.summary:
+                return self._serialize_widget_data(instance, status="empty", empty_state="Codebase understanding is not available yet.")
+            return self._serialize_widget_data(
+                instance,
+                status="ready",
+                data_json={
+                    "summary": record.summary,
+                    "architecture_summary": record.architecture_summary,
+                    "detected_stack": list(record.detected_stack_json or []),
+                    "likely_run_instructions": list(record.likely_run_instructions_json or []),
+                    "likely_test_instructions": list(record.likely_test_instructions_json or []),
+                    "risk_summary": record.risk_summary,
+                    "missing_context": list(record.missing_context_json or []),
+                    "suggested_next_steps": list(record.suggested_next_steps_json or []),
+                    "recommended_interview_mode": record.recommended_interview_mode,
+                    "generation_mode": record.generation_mode,
+                    "confidence_by_area": dict(record.confidence_by_area_json or {}),
+                },
+            )
+        if instance.widget_type == "Imported Codebase Safety":
+            safety: ImportedCodebaseSafety = import_service.ensure_safety(db, project)
+            if project.source_type == "idea":
+                return self._serialize_widget_data(instance, status="empty", empty_state="Imported-codebase safety mode is only relevant for imported repos.")
+            return self._serialize_widget_data(
+                instance,
+                status="warning" if safety.write_permission_status == "read_only" else "ready",
+                data_json={
+                    "read_only_scan_completed": safety.read_only_scan_completed,
+                    "write_permission_status": safety.write_permission_status,
+                    "require_snapshot_before_edits": safety.require_snapshot_before_edits,
+                    "require_approval_for_dependency_changes": safety.require_approval_for_dependency_changes,
+                    "require_approval_for_test_commands": safety.require_approval_for_test_commands,
+                    "require_approval_for_build_commands": safety.require_approval_for_build_commands,
+                    "require_approval_for_formatting": safety.require_approval_for_formatting,
+                    "require_approval_for_package_file_changes": safety.require_approval_for_package_file_changes,
+                    "destructive_commands_blocked": safety.destructive_commands_blocked,
+                },
+                warnings_json=["Write permission is still read-only."] if safety.write_permission_status == "read_only" else [],
+            )
+        if instance.widget_type == "AGENTS.md Status":
+            status_record: AgentInstructionsStatus = import_service.get_agents_status(db, project)
+            if project.source_type == "idea" and not status_record.has_agents_md:
+                return self._serialize_widget_data(instance, status="empty", empty_state="AGENTS.md status is mainly useful for imported repos.")
+            return self._serialize_widget_data(
+                instance,
+                status="ready" if status_record.has_agents_md else "warning",
+                data_json={
+                    "has_agents_md": status_record.has_agents_md,
+                    "path": status_record.agents_md_path,
+                    "summary": status_record.summary,
+                    "recommended_action": status_record.recommended_action,
+                },
+                warnings_json=["AGENTS.md is missing."] if not status_record.has_agents_md else [],
+            )
+        if instance.widget_type == "Scan Coverage":
+            record: CodebaseMap = import_service.get_codebase_map(db, project)
+            if not record.scan_depth:
+                return self._serialize_widget_data(instance, status="empty", empty_state="Scan coverage is not available yet.")
+            return self._serialize_widget_data(
+                instance,
+                status="warning" if record.unindexed_areas_json else "ready",
+                data_json={
+                    "scan_depth": record.scan_depth,
+                    "codebase_size": record.codebase_size,
+                    "recommended_scan_strategy": record.recommended_scan_strategy,
+                    "indexed_areas": list(record.indexed_areas_json or []),
+                    "unindexed_areas": list(record.unindexed_areas_json or []),
+                },
+                warnings_json=["Some areas still need targeted scan coverage."] if record.unindexed_areas_json else [],
+            )
         if instance.widget_type == "Manager Assumptions":
             assumptions: list[ManagerAssumption] = support["assumptions"]
             if not assumptions:
@@ -3063,7 +4943,15 @@ class MissionControlService:
         if instance.widget_type == "Handoff Progress":
             return self._serialize_widget_data(instance, status="ready", data_json=overview)
         if instance.widget_type == "What Changed Timeline":
-            items = self._activity_log(db, project)[:10]
+            items = [
+                {
+                    "title": entry.title,
+                    "detail": entry.summary,
+                    "severity": entry.severity,
+                    "created_at": entry.created_at,
+                }
+                for entry in support["timeline"][:10]
+            ]
             if not items:
                 return self._serialize_widget_data(instance, status="empty", empty_state="No project timeline entries exist yet.")
             return self._serialize_widget_data(instance, status="ready", data_json={"items": items})
@@ -3210,6 +5098,10 @@ class MissionControlService:
     def _project_display_status(self, project: Project) -> str:
         if project.archived_at:
             return "archived"
+        if project.status in {"import_scanning"}:
+            return "import_scanning"
+        if project.status in {"import_review"}:
+            return "import_review"
         if project.status in {"handoff_ready"}:
             return "ready_for_handoff"
         if project.status in {"blocked"}:
@@ -3267,6 +5159,13 @@ class MissionControlService:
             "latest_milestone": latest_milestone,
             "latest_activity": latest_activity,
             "handoff_status": handoff_status,
+            "source_type": project.source_type,
+            "source_path": project.source_path,
+            "import_mode": project.import_mode,
+            "imported_at": project.imported_at,
+            "scan_status": project.scan_status,
+            "last_indexed_at": project.last_indexed_at,
+            "write_permission_status": project.write_permission_status,
             "display_status": self._project_display_status(project),
             "created_at": project.created_at,
             "updated_at": project.updated_at,
@@ -3295,18 +5194,7 @@ class MissionControlService:
         return active_projects[:3]
 
     def _redact_payload(self, value: Any) -> Any:
-        if isinstance(value, dict):
-            redacted: dict[str, Any] = {}
-            for key, nested in value.items():
-                lowered = key.lower()
-                if any(token in lowered for token in {"token", "secret", "password", "api_key", "authorization"}):
-                    redacted[key] = "[redacted]"
-                else:
-                    redacted[key] = self._redact_payload(nested)
-            return redacted
-        if isinstance(value, list):
-            return [self._redact_payload(item) for item in value]
-        return value
+        return redact_value(value)
 
     def _publish_workspace_state(self, db: Session, project_id: int) -> None:
         self.events.publish(db, project_id, "project_action_updated", {"project_id": project_id})
@@ -3778,6 +5666,40 @@ class MissionControlService:
         task_id: int | None = None,
         runner_ref: str | None = None,
     ) -> ApprovalRequest:
+        evaluation = security_service.evaluate_action(
+            db,
+            {
+                "project_id": project.id,
+                "action_type": request_type,
+                "title": title,
+                "summary": reason_short,
+                "command": request_payload_json.get("command"),
+                "tool_name": request_payload_json.get("tool_name") or title,
+                "cwd": cwd,
+                "affected_paths_json": request_payload_json.get("affected_paths_json") or request_payload_json.get("affected_paths") or [],
+                "external_access_requested": request_type in {"plugin", "connected_account"},
+                "modifies_files": bool(request_payload_json.get("modifies_files")),
+                "modifies_package_files": bool(request_payload_json.get("modifies_package_files")),
+                "deletes_files": bool(request_payload_json.get("deletes_files")),
+                "deploys": bool(request_payload_json.get("deploys")),
+                "accesses_network": bool(request_payload_json.get("accesses_network")),
+                "accesses_credentials": bool(request_payload_json.get("accesses_credentials")),
+                "writes_outside_workspace": bool(request_payload_json.get("writes_outside_workspace")),
+            },
+            project=project,
+        )
+        assessed_risk = str(evaluation["assessment"]["risk_level"] or risk_level)
+        initial_status = "pending"
+        resolved_by: str | None = None
+        resolved_at: datetime | None = None
+        if evaluation["decision"] == "auto_approved":
+            initial_status = "approved_once"
+            resolved_by = "policy"
+            resolved_at = utc_now()
+        elif evaluation["decision"] == "blocked":
+            initial_status = "denied"
+            resolved_by = "policy"
+            resolved_at = utc_now()
         approval = ApprovalRequest(
             project_id=project.id,
             request_type=request_type,
@@ -3785,15 +5707,32 @@ class MissionControlService:
             task_id=task_id,
             title=title,
             reason_short=reason_short,
-            risk_level=risk_level,
-            status="pending",
+            risk_level=assessed_risk,
+            status=initial_status,
             cwd=cwd,
             request_payload_json=self._redact_payload(request_payload_json),
             runner_ref=runner_ref,
+            resolved_by=resolved_by,
+            resolved_at=resolved_at,
         )
         db.add(approval)
         db.flush()
         self.events.publish(db, project.id, "approval_created", {"approval_id": approval.id, "request_type": approval.request_type})
+        if initial_status != "pending":
+            security_service.log_audit(
+                db,
+                project=project,
+                action_type=request_type,
+                action_summary=title,
+                risk_level=approval.risk_level,
+                decision="auto_approved" if initial_status == "approved_once" else "blocked",
+                decided_by="policy",
+                reason=str(evaluation["reason"]),
+                metadata_json={"approval_id": approval.id, "cwd": cwd, "request_type": request_type},
+            )
+            self._record_approval_resolution_message(db, project, approval)
+            self.events.publish(db, project.id, "approval_resolved", {"approval_id": approval.id, "status": approval.status})
+            self._advance_dry_run_after_approval(db, project, approval)
         self._publish_workspace_state(db, project.id)
         return approval
 
@@ -4973,6 +6912,7 @@ class MissionControlService:
 
     def _deterministic_plan(
         self,
+        db: Session,
         project: Project,
         questions: list[InterviewQuestion],
         understanding: ProjectUnderstanding | None,
@@ -4980,6 +6920,30 @@ class MissionControlService:
         note: str | None = None,
     ) -> ManagerPlan:
         content_markdown, summary_json = build_plan_markdown(project, questions, understanding=understanding, action_bias=action_bias, note=note)
+        intelligence = planning_intelligence_service.build_context(db, project)
+        playbook = intelligence.get("playbook") or {}
+        preferences = intelligence.get("preferences") or []
+        coverage = intelligence.get("validation_coverage") or []
+        open_risks = intelligence.get("open_risks") or []
+        coverage_gaps = [item["area"] for item in coverage if item.get("coverage_status") in {"none", "failed"}]
+        if playbook.get("key"):
+            content_markdown += (
+                "\n## Intelligence Layer Inputs\n"
+                f"- Suggested playbook: {playbook.get('key')} ({playbook.get('status')})\n"
+                f"- Why: {playbook.get('why')}\n"
+            )
+        if preferences:
+            content_markdown += "\n### Active Preferences\n" + "\n".join(
+                f"- {item.get('key')}: {item.get('value_json')}" for item in preferences[:6]
+            )
+            content_markdown += "\n"
+        if coverage_gaps:
+            content_markdown += "\n### Validation Gaps\n" + "\n".join(f"- {gap}" for gap in coverage_gaps[:5]) + "\n"
+        summary_json["intelligence"] = intelligence
+        if coverage_gaps:
+            summary_json["validation_plan"] = list(summary_json["validation_plan"]) + [f"Close validation gap for {gap}." for gap in coverage_gaps[:3]]
+        if open_risks:
+            summary_json["risks"] = list(dict.fromkeys(list(summary_json["risks"]) + [item["title"] for item in open_risks[:3]]))
         return ManagerPlan(
             refined_summary=summary_json["refined_summary"],
             mvp_scope=summary_json["mvp_scope"],
@@ -5166,16 +7130,23 @@ class MissionControlService:
         latest_plan = self._latest_plan(db, project.id)
         understanding = self._project_understanding(project)
         manifest = self._workspace_manifest_summary(project)
+        intelligence_context = planning_intelligence_service.build_context(db, project)
+        intelligence_context["model_policy_hints"] = {
+            category: planning_intelligence_service.recommend_model_policy(db, category)
+            for category in CAPABILITY_CATEGORIES
+        }
         fallback_payload = self._deterministic_swarm_plan(
             project,
             preferences,
             manifest,
             understanding,
             latest_plan,
+            intelligence_context=intelligence_context,
             goal_override=goal,
             scale_hint=scale_hint,
         )
         context = await self._swarm_context_payload(db, project, preferences)
+        context["intelligence_layer"] = intelligence_context
         if revision_note:
             context["revision_note"] = revision_note
         if scale_hint:
@@ -5217,6 +7188,45 @@ class MissionControlService:
             swarm_plan_id=plan.id,
             metadata_json={"manager_mode_used": manager_mode_used, "revision_note": revision_note, "scale_hint": scale_hint},
         )
+        simulation = simulation_service.simulate_launch(db, project, plan)
+        if simulation.conflict_warnings_json or simulation.bottlenecks_json:
+            risk_service.create_risk(
+                db,
+                project,
+                {
+                    "title": "Swarm launch coordination risk",
+                    "description": "Launch simulation found conflicts or bottlenecks that could waste swarm effort.",
+                    "severity": "high" if simulation.should_wait_count or simulation.conflict_warnings_json else "medium",
+                    "likelihood": "medium",
+                    "mitigation": "Review the Agent Launch Simulation widget before broad spawn.",
+                    "status": "monitoring",
+                    "created_by": "system",
+                },
+            )
+        if simulation.should_wait_count > 0 or simulation.needs_user_approval_count > 0:
+            existing_launch_question = db.scalar(
+                select(ManagerQuestion)
+                .where(ManagerQuestion.project_id == project.id, ManagerQuestion.status == "pending")
+                .order_by(ManagerQuestion.id.desc())
+            )
+            if existing_launch_question is None or not (
+                existing_launch_question.metadata_json
+                and existing_launch_question.metadata_json.get("question_type") == "launch_simulation"
+                and existing_launch_question.metadata_json.get("swarm_plan_id") == plan.id
+            ):
+                self._create_question(
+                    db,
+                    project,
+                    question="Launch simulation found concerns. Revise swarm, wait, or launch anyway?",
+                    options_json=[
+                        {"id": "revise", "label": "Revise swarm"},
+                        {"id": "wait", "label": "Wait"},
+                        {"id": "launch_anyway", "label": "Launch anyway"},
+                    ],
+                    impact="high",
+                    manager_recommendation="revise",
+                    metadata_json={"question_type": "launch_simulation", "swarm_plan_id": plan.id},
+                )
         return self._serialize_swarm_plan(db, project, plan) or {}
 
     def approve_swarm_plan(self, db: Session, project: Project, swarm_plan_id: int) -> dict[str, Any]:
@@ -5381,6 +7391,12 @@ class MissionControlService:
         return sync
 
     def _deterministic_task_decomposition(self, db: Session, project: Project, plan: Plan | None) -> ManagerTaskDecomposition:
+        intelligence = planning_intelligence_service.build_context(db, project)
+        validation_gaps = [
+            str(item.get("area"))
+            for item in (intelligence.get("validation_coverage") or [])
+            if item.get("coverage_status") in {"none", "failed"}
+        ]
         swarm_plan = self._current_swarm_plan_record(db, project.id)
         if swarm_plan is not None:
             specs = self._swarm_specs_for_plan(db, swarm_plan.id)
@@ -5395,7 +7411,8 @@ class MissionControlService:
                         priority=spec.priority,
                         allowed_paths=spec.allowed_paths_json or ["src"],
                         forbidden_paths=spec.forbidden_paths_json or [],
-                        validation_steps=list(swarm_plan.validation_strategy_json or ["Record what was tested or reviewed."]),
+                        validation_steps=list(swarm_plan.validation_strategy_json or ["Record what was tested or reviewed."])
+                        + [f"Close validation gap for {gap}." for gap in validation_gaps[:2]],
                         success_criteria=[spec.retire_when or "Assigned mission is complete."],
                         estimated_complexity="medium",
                         dependencies=[],
@@ -6010,45 +8027,14 @@ class MissionControlService:
         handoffs: list[dict[str, Any]] = []
         projects = self._ordered_projects(db, include_archived=True)
         for project in projects:
-            if not project.final_report_json:
+            latest_handoff = self._latest_evidence_handoff(db, project.id)
+            if latest_handoff is None and not project.final_report_json:
                 continue
-            report = project.final_report_json or {}
-            card = self._project_card_data(db, project)
-            tests = report.get("tests_builds_run") or report.get("tests_run") or []
-            run_instructions = report.get("how_to_run") or []
-            known_limitations = report.get("known_limitations") or []
-            handoffs.append(
-                {
-                    "project_id": project.id,
-                    "project_name": project.name,
-                    "project_slug": str(card["slug"]),
-                    "created_at": project.updated_at,
-                    "status": str(card["handoff_status"]),
-                    "summary": str(report.get("summary_markdown") or report.get("summary") or "Handoff ready."),
-                    "artifacts_path": str(card["docs_path"]),
-                    "tests_count": len(tests if isinstance(tests, list) else []),
-                    "run_instructions": [str(item) for item in run_instructions] if isinstance(run_instructions, list) else [],
-                    "known_limitations": [str(item) for item in known_limitations] if isinstance(known_limitations, list) else [],
-                }
-            )
+            handoffs.append(self._serialize_handoff_record(db, project, latest_handoff))
         return sorted(handoffs, key=lambda item: item["created_at"], reverse=True)
 
     def get_project_handoff_summary(self, db: Session, project: Project) -> dict[str, Any]:
-        report = project.final_report_json or {}
-        tests = report.get("tests_builds_run") or report.get("tests_run") or []
-        card = self._project_card_data(db, project)
-        return {
-            "project_id": project.id,
-            "project_name": project.name,
-            "project_slug": str(card["slug"]),
-            "created_at": project.updated_at,
-            "status": str(card["handoff_status"]),
-            "summary": str(report.get("summary_markdown") or report.get("summary") or "No handoff is recorded yet."),
-            "artifacts_path": str(card["docs_path"]),
-            "tests_count": len(tests if isinstance(tests, list) else []),
-            "run_instructions": [str(item) for item in report.get("how_to_run", [])] if isinstance(report.get("how_to_run"), list) else [],
-            "known_limitations": [str(item) for item in report.get("known_limitations", [])] if isinstance(report.get("known_limitations"), list) else [],
-        }
+        return self._serialize_handoff_record(db, project, self._latest_evidence_handoff(db, project.id))
 
     def get_tool_catalog(self, db: Session) -> list[dict[str, Any]]:
         profile = self._app_profile(db)
@@ -6133,6 +8119,8 @@ class MissionControlService:
         )
         db.add(manager_agent)
         db.flush()
+        playbook_service.suggest_playbook(db, project, persist=True)
+        validation_coverage_service.recompute(db, project)
         self.events.publish(db, project.id, "project.created", {"project_id": project.id, "name": project.name})
         return project
 
@@ -6396,6 +8384,8 @@ class MissionControlService:
         if not project:
             raise ValueError("Project not found")
         if status == "allowed_for_project":
+            if not security_service.may_allow_for_project(approval.risk_level):
+                raise ValueError("High-risk approvals cannot be allowed for the whole project.")
             settings = self._ensure_project_settings(db, project)
             overrides = dict(settings.approval_overrides_json or {})
             overrides[self._approval_signature(approval)] = {
@@ -6405,6 +8395,18 @@ class MissionControlService:
                 "cwd": approval.cwd,
             }
             settings.approval_overrides_json = overrides
+        audit_decision = "approved" if status == "approved_once" else status
+        security_service.log_audit(
+            db,
+            project=project,
+            action_type=approval.request_type,
+            action_summary=approval.title,
+            risk_level=approval.risk_level,
+            decision=audit_decision,
+            decided_by="user",
+            reason=approval.reason_short,
+            metadata_json={"approval_id": approval.id, "cwd": approval.cwd, "request_type": approval.request_type},
+        )
         self._record_approval_resolution_message(db, project, approval)
         self.events.publish(db, project.id, "approval_resolved", {"approval_id": approval.id, "status": approval.status})
         self._advance_dry_run_after_approval(db, project, approval)
@@ -6759,11 +8761,12 @@ class MissionControlService:
                 "assumptions": list(understanding.assumptions_json or []),
                 "constraints": list(understanding.constraints_json or []),
                 "confidence_by_category": dict(understanding.confidence_by_category_json or {}),
+                "intelligence_layer": planning_intelligence_service.build_context(db, project),
                 "action_bias": action_bias,
                 "note": note,
             },
             model_schema=ManagerPlan,
-            fallback_factory=lambda: self._deterministic_plan(project, questions, understanding, action_bias=action_bias, note=note),
+            fallback_factory=lambda: self._deterministic_plan(db, project, questions, understanding, action_bias=action_bias, note=note),
         )
         next_version = (db.scalar(select(func.max(Plan.version)).where(Plan.project_id == project.id)) or 0) + 1
         for old_plan in db.scalars(select(Plan).where(Plan.project_id == project.id)):
@@ -6777,6 +8780,8 @@ class MissionControlService:
         )
         db.add(plan)
         project.status = "plan_ready"
+        risk_service.register_plan_risks(db, project, manager_plan.risks)
+        validation_coverage_service.recompute(db, project)
         self.events.publish(db, project.id, "plan.generated", {"plan_id": plan.id, "version": next_version})
         return plan
 
@@ -6821,6 +8826,7 @@ class MissionControlService:
             payload={
                 "plan_summary": latest_plan.summary_json if latest_plan else {},
                 "plan_markdown": latest_plan.content_markdown if latest_plan else "",
+                "intelligence_layer": planning_intelligence_service.build_context(db, project),
             },
             model_schema=ManagerTaskDecomposition,
             fallback_factory=lambda: self._deterministic_task_decomposition(db, project, latest_plan),
@@ -7048,6 +9054,7 @@ class MissionControlService:
         settings_record = self._project_settings(db, project)
         resolved_settings = resolve_worker_settings(project, settings_record, agent)
         latest_plan = self._latest_plan(db, project.id)
+        context_pack_payload = context_pack_service.build_context_pack(db, project, agent_id=agent.id, task_id=task.id)
         runner = await self.runners.get_runner_for_settings(resolved_settings)
         context = RunnerContext(
             project=project,
@@ -7055,6 +9062,7 @@ class MissionControlService:
             task=task,
             docs_path=project.docs_path or str(self._project_docs_dir(project)),
             plan_markdown=latest_plan.content_markdown if latest_plan else None,
+            context_pack_markdown=context_pack_service.render_markdown(context_pack_payload),
             settings=self._runner_settings_payload(resolved_settings),
         )
         handle = await runner.start_task(context)
@@ -7187,6 +9195,55 @@ class MissionControlService:
                 task.status = "blocked" if report.status == "blocked" else "assigned"
         self._release_reservations(db, project.id, task_id=task.id if task else None, agent_id=agent.id)
         agent.status = "waiting"
+        duration_seconds = None
+        if run.started_at and run.finished_at:
+            duration_seconds = max(0, int((run.finished_at - run.started_at).total_seconds()))
+        outcome = {
+            "done": "success",
+            "needs_review": "needs_review",
+            "blocked": "blocked",
+            "error": "failed",
+        }.get(report.status, "unknown")
+        failure_summary = None
+        if report.blockers:
+            failure_summary = report.blockers[0]
+        elif report.risks and report.status != "done":
+            failure_summary = report.risks[0]
+        reputation_service.record(
+            db,
+            {
+                "project_id": project.id,
+                "agent_archetype": agent.archetype or (task.agent_role if task else None) or "generalist",
+                "agent_name": agent.name,
+                "provider": (run.effective_settings_json or {}).get("provider") if isinstance(run.effective_settings_json, dict) else None,
+                "model": (run.effective_settings_json or {}).get("model") if isinstance(run.effective_settings_json, dict) else agent.active_model,
+                "runner_mode": run.runner_type or project.runner_mode,
+                "task_category": (task.agent_role or task.title) if task else "general",
+                "task_id": task.id if task else None,
+                "outcome": outcome,
+                "duration_seconds": duration_seconds,
+                "review_passed": True if report.status == "done" else False if report.status == "needs_review" else None,
+                "tests_passed": True if report.tests_run and report.status == "done" else False if report.tests_run else None,
+                "failure_summary": failure_summary,
+            },
+        )
+        if report.status in {"blocked", "error"} and task is not None:
+            risk_service.create_risk(
+                db,
+                project,
+                {
+                    "title": f"{task.title} stalled",
+                    "description": report.summary,
+                    "severity": "high" if report.status == "error" else "medium",
+                    "likelihood": "medium",
+                    "mitigation": failure_summary or "Manager should route a fix or de-scope the blocker.",
+                    "status": "open",
+                    "related_task_id": task.id,
+                    "owner_agent_id": agent.id,
+                    "created_by": "agent",
+                },
+            )
+        validation_coverage_service.recompute(db, project)
         self.events.publish(db, project.id, "worker.report.received", {"run_id": run.id, "task_id": run.task_id, "status": report.status, "summary": report.summary})
         decision, manager_mode_used = await self._resolve_manager_model(
             db,
@@ -7202,6 +9259,7 @@ class MissionControlService:
                     {"id": item.id, "title": item.title, "status": item.status}
                     for item in db.scalars(select(Task).where(Task.project_id == project.id).order_by(Task.priority.asc()))
                 ],
+                "intelligence_layer": planning_intelligence_service.build_context(db, project),
             },
             model_schema=ManagerWorkerDecision,
             fallback_factory=lambda: self._deterministic_worker_decision(db, project, agent, task, report),

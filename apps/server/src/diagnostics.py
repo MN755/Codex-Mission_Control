@@ -12,6 +12,7 @@ from typing import Any
 
 from config import LAUNCHER_ROOT, RUNTIME_LOGS_ROOT
 from runtime_paths import diagnostics_root, runtime_path_payload
+from security.redaction import redact_text, redact_value
 
 
 SENSITIVE_ENV_KEYS = {"OPENAI_API_KEY", "ANTHROPIC_API_KEY", "XAI_API_KEY", "CODEX_API_KEY"}
@@ -21,18 +22,13 @@ def _tail(path: Path, max_lines: int = 40) -> list[str]:
     if not path.exists() or not path.is_file():
         return []
     try:
-        return path.read_text(encoding="utf-8", errors="ignore").splitlines()[-max_lines:]
+        return [redact_text(line) for line in path.read_text(encoding="utf-8", errors="ignore").splitlines()[-max_lines:]]
     except OSError:
         return []
 
 
 def _redact_value(value: str) -> str:
-    stripped = value.strip()
-    if stripped.startswith("sk-"):
-        return "sk-***redacted***"
-    if len(stripped) > 16:
-        return f"{stripped[:4]}***redacted***{stripped[-2:]}"
-    return "***redacted***"
+    return str(redact_value(value))
 
 
 def _sanitized_environment() -> dict[str, str]:
@@ -76,10 +72,10 @@ def write_diagnostic_report(
 
     payload = {
         "timestamp": timestamp.isoformat(),
-        "startup_status": startup_status,
-        "system_status": system_status,
-        "settings_status": settings_status,
-        "recent_errors": recent_errors,
+        "startup_status": redact_value(startup_status),
+        "system_status": redact_value(system_status),
+        "settings_status": redact_value(settings_status),
+        "recent_errors": redact_value(recent_errors),
         "platform": {
             "platform": platform.platform(),
             "system": platform.system(),
@@ -91,7 +87,7 @@ def write_diagnostic_report(
         "runtime_paths": runtime_path_payload(),
         "sanitized_environment": _sanitized_environment(),
         "recent_launcher_logs": launcher_logs,
-        "recent_runtime_logs": runtime_logs,
+        "recent_runtime_logs": redact_value(runtime_logs),
         "recommended_fixes": recommended_fixes,
     }
 
