@@ -173,7 +173,7 @@ def test_project_settings_resolution_prefers_role_overrides() -> None:
         db.close()
 
 
-def test_worker_settings_can_use_external_adapter() -> None:
+def test_worker_settings_normalizes_legacy_external_adapter_to_custom() -> None:
     from db import SessionLocal, init_db
 
     init_db()
@@ -190,7 +190,7 @@ def test_worker_settings_can_use_external_adapter() -> None:
 
         worker_settings = resolve_worker_settings(project, settings, worker)
 
-        assert worker_settings.provider == "external_adapter"
+        assert worker_settings.provider == "custom"
         assert worker_settings.adapter_command == "python"
         assert worker_settings.adapter_args == ["adapter.py", "--json"]
     finally:

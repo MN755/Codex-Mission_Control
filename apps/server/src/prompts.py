@@ -80,6 +80,55 @@ MANAGER_HANDOFF_SCHEMA = {
     "suggested_next_improvements": ["string"],
 }
 
+MANAGER_INTERVIEW_SCHEMA = {
+    "understanding": {
+        "summary": "string",
+        "known_facts": {},
+        "unknowns": {},
+        "assumptions": ["string"],
+        "constraints": ["string"],
+        "confidence_by_category": {"product goal": 0.0},
+    },
+    "next_questions": [
+        {
+            "question": "string",
+            "why": "string",
+            "category": "product goal|target users|MVP scope|core features|nice-to-have features|platform/runtime|UI/UX style|data/storage|authentication/security|integrations/connectors|agent/tool behavior|approvals/sandboxing|testing/validation|deployment/distribution|performance constraints|privacy/local-first constraints|future expansion|handoff format",
+            "impact": "low|medium|high",
+            "options": [{"id": "string", "label": "string", "description": "string"}],
+            "allow_custom_answer": False,
+            "affects": ["string"],
+        }
+    ],
+    "more_questions_needed": True,
+    "stop_reason": "string or null",
+}
+
+MANAGER_SWARM_PLAN_SCHEMA = {
+    "mode": "fastest_build|balanced|high_quality|documentation_heavy|research_planning|massive_codebase|manager_decides",
+    "goal": "string",
+    "recommended_agent_count": 5,
+    "coordination_risk": "low|medium|high",
+    "path_conflict_risk": "low|medium|high",
+    "expected_bottlenecks": ["string"],
+    "strategy_summary": "string",
+    "validation_strategy": ["string"],
+    "specs": [
+        {
+            "archetype": "frontend|backend|feature|docs|test|reviewer|security|planner|architect|integration|ops|research|migration|refactor|performance|data|ui_polish|release_handoff",
+            "name": "string",
+            "mission": "string",
+            "model_policy": "string",
+            "toolset": ["string"],
+            "allowed_paths": ["string"],
+            "forbidden_paths": ["string"],
+            "spawn_phase": "string",
+            "retire_when": "string",
+            "priority": 50,
+        }
+    ],
+}
+
 
 def manager_system_prompt(project: Project) -> str:
     return f"""You are the Manager AI for Codex Mission Control.
@@ -104,11 +153,12 @@ When you reply with structured content, keep it concise and machine-friendly.
 """
 
 
-def project_context_block(project: Project, docs_path: str, plan_markdown: str | None = None) -> str:
+def project_context_block(project: Project, docs_path: str, plan_markdown: str | None = None, user_name: str | None = None) -> str:
     plan_section = f"\nCurrent approved plan:\n{plan_markdown}\n" if plan_markdown else ""
     return f"""Project: {project.name}
 Workspace path: {project.workspace_path}
 Project docs path: {docs_path}
+Preferred user name: {user_name or project.created_by or "Operator"}
 Primary goal: ship a usable MVP quickly without fake demos.
 {plan_section}
 """
@@ -153,10 +203,11 @@ Return only a JSON object matching the schema as your final answer.
 """
 
 
-def manager_message_prompt(project: Project, docs_path: str, user_message: str) -> str:
+def manager_message_prompt(project: Project, docs_path: str, user_message: str, user_name: str | None = None) -> str:
     return f"""You are the Manager AI for the project "{project.name}".
 
 Project docs live at: {docs_path}
+Call the user "{user_name or project.created_by or "Operator"}" unless they ask you to change that.
 
 The user sent this message:
 {user_message}
@@ -174,8 +225,9 @@ def manager_action_prompt(
     response_schema: dict,
     payload: dict,
     plan_markdown: str | None = None,
+    user_name: str | None = None,
 ) -> str:
-    context = project_context_block(project, docs_path, plan_markdown)
+    context = project_context_block(project, docs_path, plan_markdown, user_name)
     return f"""You are the Manager AI for Codex Mission Control.
 
 Action: {action}
@@ -185,18 +237,96 @@ Objective:
 {context}
 
 Input payload:
-{json.dumps(payload, indent=2)}
+{json.dumps(payload, indent=2, default=str)}
 
 Response rules:
 - Return only valid JSON.
 - Do not wrap the JSON in markdown fences.
 - Match this schema exactly:
-{json.dumps(response_schema, indent=2)}
+{json.dumps(response_schema, indent=2, default=str)}
 
 Manager priorities, in order:
 1. Usability for the user
 2. Speed of building
 3. Quality
+"""
+
+
+def manager_interview_prompt(
+    project: Project,
+    *,
+    action: str,
+    objective: str,
+    payload: dict,
+    response_schema: dict,
+    user_name: str | None = None,
+) -> str:
+    return f"""You are the Manager AI for Codex Mission Control.
+
+Project: {project.name}
+Project idea:
+{project.idea}
+
+Action: {action}
+Objective:
+{objective}
+
+Preferred user name: {user_name or project.created_by or "Operator"}
+
+Interview requirements:
+- You are interviewing the user to gather project-specific requirements.
+- Do not ask generic questions unless they are clearly relevant to this project.
+- Use the project idea, current docs, tool availability, provider settings, prior answers, and known constraints.
+- Ask the highest-impact unknowns first.
+- Avoid asking about topics that are already answered or already confident enough.
+- Every question must be multiple choice and materially affect implementation or handoff quality.
+- Include "Not sure, recommend one" only when it genuinely helps unblock the user.
+- Stop early when enough information exists to plan the project responsibly.
+- Return only valid JSON matching the schema exactly.
+
+Input payload:
+{json.dumps(payload, indent=2, default=str)}
+
+Response schema:
+{json.dumps(response_schema, indent=2, default=str)}
+"""
+
+
+def manager_swarm_prompt(
+    project: Project,
+    *,
+    payload: dict,
+    response_schema: dict,
+    user_name: str | None = None,
+) -> str:
+    return f"""You are the Manager AI for Codex Mission Control.
+
+Project: {project.name}
+Project idea:
+{project.idea}
+
+Preferred user name: {user_name or project.created_by or "Operator"}
+
+You are producing an adaptive swarm plan for this specific project.
+
+Swarm planning rules:
+- Choose the largest useful swarm, not the largest possible swarm.
+- More agents are not automatically better.
+- Avoid spawning vague agents or multiple agents that will obviously fight over the same files.
+- Use the project idea, docs, repo shape, interview understanding, runner/tool limits, and project preferences.
+- Multiple agents from the same archetype are allowed only when they have distinct missions and path ownership.
+- Documentation-heavy projects may use multiple docs specialists.
+- High-quality projects should emphasize review, testing, and security.
+- Massive codebases should assign subsystem or path ownership before aggressive parallel edits.
+- If architecture is still unclear, bias toward planner, architect, and research help before broad implementation parallelism.
+- Explain the strategy, coordination risk, path conflict risk, and likely bottlenecks.
+- Return only valid JSON matching the schema exactly.
+
+Input payload:
+{json.dumps(payload, indent=2, default=str)}
+
+Response schema:
+{json.dumps(response_schema, indent=2, default=str)}
 """
 
 

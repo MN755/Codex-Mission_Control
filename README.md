@@ -2,209 +2,404 @@
 
 ![Codex Mission Control logo](apps/desktop/assets/mission-control-logo.png)
 
-Codex Mission Control is a local-first desktop app for orchestrating multiple coding agents through a single manager interface. It turns a rough project idea into docs, an interview, a scoped plan, coordinated worker tasks, and a final handoff without requiring the user to talk to each worker directly.
+Codex Mission Control is a local-first desktop app for running a manager-led coding workflow across multiple agent providers. It helps one user supervise planning, task routing, worker execution, diagnostics, and final handoff from a single interface.
 
-## Why it exists
+## What it does
 
-Most local agent workflows break down when the user has to manually re-prompt every worker, track overlapping file edits, and remember what happened between runs. Mission Control adds a lightweight manager layer on top of local agent tooling so one person can supervise a small AI build team from a single desktop app.
+- Guides first-time users through setup, provider selection, and startup defaults
+- Routes every launch through a real startup coordinator with health checks and retries
+- Opens into a persistent home shell after startup instead of dropping straight into a single project page
+- Builds project docs, interviews the user, creates a plan, and decomposes work into tasks
+- Routes every project through a manager-centered workspace keyed by project ID
+- Builds adaptive swarm plans instead of relying on one fixed worker roster
+- Coordinates manager and worker agents while preventing overlapping writable paths
+- Streams live orchestration events into the workspace shell over SSE
+- Produces a final handoff with run instructions, tests, limitations, and follow-up work
 
-## Highlights
+## Startup model
 
-- Desktop-first UX for Windows, macOS, and Linux
-- Local FastAPI + SQLite backend with React frontend
-- Guided intake, interview, planning, build monitor, and handoff flow
-- Manager orchestration with deterministic fallback
-- Worker coordination with path reservation and conflict prevention
-- Dry-run mode for demos and UI testing
-- Codex CLI support with ChatGPT sign-in or optional API-key login
-- Claude Code and external adapter support
-- One-click launch scripts and cross-platform packaging workflow
+Mission Control has two startup modes:
 
-## Current status
+- `first_time`: shown only until setup is explicitly completed
+- `regular`: used on normal launches after setup
 
-This is an MVP focused on proving the workflow locally:
+Startup always routes through `/startup`, where the app checks:
 
-- The core product works as a local desktop app
-- Codex CLI is the most complete live provider path today
-- Codex app-server support exists but remains experimental
-- Claude Code and external adapters are supported through CLI-style runners
+- runtime paths
+- database readiness
+- settings and app state
+- project storage
+- backend route availability
+- optional provider capabilities such as Codex CLI, login status, app-server, Ollama, and other adapters
 
-## Quick start
+If an optional provider check fails, Mission Control can continue in degraded mode. If required checks fail, the startup coordinator retries targeted checks up to three times, then generates a diagnostic report and routes to the startup error screen.
 
-### Requirements
+## First-time setup wizard
 
-- Python 3.10+
-- Node.js 20+
-- A supported local webview backend
-  - Windows: WebView2 recommended
-  - macOS: native Cocoa webview path
-  - Linux: WebKitGTK or Qt-based backend depending on environment
+The first-time wizard walks through:
 
-### Install dependencies
+1. Welcome
+2. Username
+3. Provider
+4. API or Login
+5. Connect Accounts
+6. Model / Runner Defaults
+7. Finish
 
-Backend:
+Important behavior:
 
-```powershell
-cd apps/server
-python -m pip install -e .[dev]
-```
+- first-run state is stored in the local backend database, not browser localStorage
+- setup does not reappear after ordinary code updates or version changes
+- Codex via ChatGPT Login does not require an API key
+- API-based providers are clearly marked as API-key-based
+- raw API keys are not stored in Mission Control's SQLite database or diagnostics
 
-Frontend:
+## Supported providers
 
-```powershell
-cd apps/dashboard
-npm install
-```
+- `codex`
+- `ollama`
+- `openai_api`
+- `anthropic_api`
+- `xai_api`
+- `claude_code`
+- `custom`
 
-### Start the app
+Recommended default:
 
-Windows PowerShell:
+- `codex` via local ChatGPT-backed Codex CLI login
+
+Other providers are supported when their local CLI, endpoint, or adapter is available. Model availability depends on the selected provider and the current local session.
+
+## Launching the app
+
+### Windows
+
+PowerShell:
 
 ```powershell
 .\scripts\start-mission-control.ps1
 ```
 
-Windows double-click:
+Double-click:
 
-- Run `scripts/start-mission-control.bat`
+- `scripts/start-mission-control.bat`
 
-macOS or Linux:
-
-```bash
-./scripts/start-mission-control.sh
-```
-
-### Create a desktop shortcut on Windows
+Create a desktop shortcut:
 
 ```powershell
 .\scripts\create-desktop-shortcut.ps1
 ```
 
-### Stop a source-launched instance on Windows
+### macOS or Linux
 
-```powershell
-.\scripts\stop-mission-control.ps1
+```bash
+./scripts/start-mission-control.sh
 ```
 
-## Authentication and providers
+All launcher entrypoints route the app through `/startup`, not directly to the dashboard.
 
-### Codex
+## Development setup
 
-- Recommended path: sign in with ChatGPT through the local Codex CLI
-- Device-code sign-in is available as a fallback
-- Optional API-key login is available, but it may use API billing depending on your account
-- Mission Control does not edit `~/.codex/config.toml` by default
-- Mission Control does not store raw API keys in its own database
+### Requirements
 
-### Claude Code
+- Python 3.10+
+- Node.js 20+
+- A supported local desktop webview backend
 
-- Uses the local Claude Code CLI
-- Authentication is managed outside Mission Control
-
-### External adapter
-
-- Lets you wire in another local LLM command or wrapper
-- Mission Control sends task context over stdin and environment variables
-
-## What the app does
-
-1. Create local project docs inside `<workspace>/mission-control/`
-2. Run a structured interview with 6, 20, or 50 questions
-3. Generate a reviewable plan
-4. Decompose the plan into milestone-based worker tasks
-5. Launch workers, stream events, and track reservations in the build monitor
-6. Ingest worker reports and route next actions automatically
-7. Generate a structured handoff with run instructions and known limitations
-
-## Runner modes
-
-- `dry_run`: offline simulation for demos, tests, and UI work
-- `cli`: use the selected local provider CLI directly
-- `app_server`: experimental Codex-only app-server integration
-- `auto`: choose the best supported runner for the selected provider and fall back safely
-
-## Manager modes
-
-- `auto`: try live provider-backed manager turns, then fall back deterministically
-- `provider`: prefer live provider-backed manager turns
-- `deterministic`: local rules and templates only
-
-## Model settings
-
-Mission Control stores model settings per project.
-
-- Empty model fields mean `use provider default`
-- Empty reasoning fields mean `use provider default`
-- Worker settings can be overridden by role
-- Per-run overrides take precedence over global provider defaults
-
-## Packaging
-
-Source packaging scripts:
-
-- `scripts/package-desktop.ps1`
-- `scripts/package-desktop.sh`
-- `scripts/package-desktop.py`
-
-GitHub Actions workflow:
-
-- `.github/workflows/package-desktop.yml`
-
-Packaging targets:
-
-- Windows: standalone `.exe`
-- macOS: `.app` bundle
-- Linux: portable bundle and AppImage when tooling is available
-
-## Development
-
-Backend dev server:
+### Backend
 
 ```powershell
 cd apps/server
+python -m pip install -e .[dev]
 python -m uvicorn main:app --app-dir src --reload
 ```
 
-Frontend dev server:
+### Frontend
 
 ```powershell
 cd apps/dashboard
+npm install
 npm run dev
 ```
 
-Browser fallback mode on Windows:
+### Browser fallback on Windows
 
 ```powershell
 .\scripts\start-mission-control.ps1 -Mode web
 ```
 
-## Repository layout
+## Diagnostics
 
-```text
-apps/
-  dashboard/   React desktop UI
-  desktop/     Desktop shell and packaging assets
-  server/      FastAPI backend, orchestration logic, runners
-docs/          Public design and operations docs
-scripts/       Launch, stop, shortcut, and packaging scripts
-workspace/     Local workspace placeholder
-```
+Mission Control writes startup diagnostics to:
 
-## Documentation
+- source runs: `apps/server/.runtime/diagnostics/`
+- packaged builds: the writable app-data runtime directory used by the desktop shell
+
+Reports include:
+
+- startup summary
+- failed and degraded checks
+- runtime path state
+- database state
+- settings and app-state state
+- provider detection summaries
+- recent startup errors
+- recommended fixes
+
+Diagnostics intentionally redact API keys, tokens, and sensitive environment variables.
+
+## Resetting setup intentionally
+
+Mission Control does not auto-reset first-run state. That is deliberate.
+
+If you need to rerun setup in development:
+
+1. Back up the runtime database.
+2. Remove or reset the single app-profile record that stores `first_run_completed`.
+3. Restart the app and allow `/startup` to route back into `/setup`.
+
+There is no automatic destructive reset in the normal user flow by default.
+
+## Project workflow
+
+1. Start in the dashboard
+2. Create a project from a general idea
+3. Run the interview
+4. Review and approve the plan
+5. Review the adaptive swarm plan and approve it when required
+6. Generate and assign tasks
+7. Work inside the project workspace:
+   - top action banner tells whether the user is needed
+   - center manager chat is the only user-facing conversation surface
+   - left sidebar shows worker agent status
+   - the swarm strategy panel shows mode, risks, bottlenecks, and scaling controls
+   - right sidebar shows the manager queue and project widgets
+   - command and tool approvals are resolved inline above the manager input
+8. Monitor workers, path reservations, and swarm scaling decisions
+9. Review handoff output
+10. Request follow-up changes through the manager
+
+## Adaptive swarm planning
+
+Mission Control no longer assumes one fixed roster like `Planner + Coder + Tester + Docs`.
+
+Instead, the Manager creates a **Swarm Plan** per project or milestone. The plan decides:
+
+- swarm mode
+- recommended and maximum agent count
+- specialized agent names and missions
+- allowed and forbidden paths
+- toolset and model policy
+- spawn timing and retirement conditions
+- coordination and path-conflict risk
+- expected bottlenecks
+- validation strategy
+
+Supported optimization modes:
+
+- `fastest_build`
+- `balanced`
+- `high_quality`
+- `documentation_heavy`
+- `research_planning`
+- `massive_codebase`
+- `manager_decides`
+
+Project-level swarm preferences control:
+
+- optimization mode
+- swarm aggressiveness
+- max agents
+- approval threshold for large swarms
+- dynamic spawning and retirement
+- docs depth
+- testing depth
+
+Dry-run mode demonstrates different swarm behavior honestly. It can simulate adaptive spawn and retire decisions, but it does not claim that real provider-backed Codex agents were launched.
+
+## Post-start command center
+
+After startup completes, Mission Control uses two explicit shells:
+
+- a **home shell** for `Dashboard`, `Archive`, `Handoffs`, `Models & Runners`, `Skills & Tools`, `Diagnostics`, and `Settings`
+- a **project workspace shell** for `/projects/:projectId/:projectSlug?`
+
+The home shell keeps navigation, runtime status, and quick project access stable. The project workspace shell keeps the manager conversation centered while workers, queue state, and widgets stay visible around it.
+
+## Dashboard and archive
+
+The dashboard is the post-start home base. It includes:
+
+- a Recent Projects bar
+- a New Project card
+- a real persisted widget grid
+- a bottom-right widget selector
+
+Sidebar project behavior is intentionally constrained:
+
+- up to 3 pinned or most-recent projects stay in the main sidebar
+- older or archived projects overflow into `Archive`
+- archive, pin, and restore actions remain tied to project IDs, not project names
+
+Archive supports search, sorting, filtering, pinning, and archive or unarchive actions without destructive delete-by-default behavior.
+
+## Widget system
+
+Mission Control now uses a real widget system instead of a string list pretending to be layout state.
+
+Core widget model:
+
+- `WidgetDefinition`: seeded catalog entry with scope, category, size, and capability metadata
+- `WidgetInstance`: persisted placement, order, size, collapsed state, and per-widget config
+- `WidgetDataResponse`: scoped data payload with status, warnings, and honest empty states
+- `AppEvent` plus project events: targeted SSE refresh instead of blunt full-page reloads
+
+Supported scopes:
+
+- `dashboard`
+- `project`
+
+Supported areas:
+
+- dashboard: `dashboard_main`, `dashboard_right`, `dashboard_bottom`, `dashboard_custom`
+- project: `project_right_sidebar`, `project_bottom`, `project_overview`, `project_custom`
+
+This pass intentionally exposes the core areas first instead of pretending a full drag-and-drop builder is somehow the urgent problem:
+
+- dashboard: `dashboard_main`, `dashboard_bottom`
+- project: `project_right_sidebar`, `project_bottom`
+
+Default dashboard widgets:
+
+- `Needs Attention`
+- `Active Builds`
+- `Recent Handoffs`
+- `Runner & Provider Status`
+- `Swarm Budget Overview`
+- `Project Health Overview`
+
+Default project widgets:
+
+- `Swarm Strategy`
+- `Swarm Budget`
+- `Agent Contracts`
+- `Path Ownership Map`
+- `Decision Ledger`
+- `Project Health Score`
+- `Validation Recipe`
+- `Manager Assumptions`
+- `Handoff Quality`
+
+Empty widget areas use the exact in-product message:
+
+`Select the plus symbol in the bottom-right corner to add customizable widgets!`
+
+## Widgets vs Manager Chat vs tools
+
+Mission Control now draws a hard boundary between summary panels, decisions, and execution. Amazing what happens when an app stops trying to do everything from every card.
+
+Widgets are for:
+
+- concise state summaries
+- health and risk visibility
+- swarm posture and ownership visibility
+- model, sandbox, and tool-routing summaries
+- handoff readiness and change-management summaries
+
+Manager Chat is for:
+
+- approvals
+- manager questions
+- recovery proposals
+- assumption changes
+- change-request triage
+- swarm revision prompts
+
+Tools stay in `Skills & Tools`:
+
+- widgets can summarize tool routing and approval posture
+- widgets do not execute web search, browser tests, deployments, or other built-in tools
+- Manager Chat remains the place where tool approvals and follow-up decisions surface
+
+## High-impact project widgets
+
+Project widgets currently emphasize the parts of the workspace that actually change execution quality instead of ornamental dashboard filler:
+
+- `Swarm Budget`: active agents, intensity, approval threshold, premium-model pressure, and dynamic-spawn pause state
+- `Agent Contracts`: mission, boundaries, allowed tools, validation expectations, and completion shape per agent
+- `Path Ownership Map`: active path locks, waiting work, and conflict risk instead of magical thinking about concurrent edits
+- `Decision Ledger`: manager decisions, user approvals, assumptions, and reversible changes
+- `Confidence Tracker`: low-confidence planning areas and unknowns by category
+- `Failure Recovery`: recovery proposals without unsafe rollback theater
+- `Agent Stuck Detection`: timeout, repeated-error, and repeated-approval signals
+- `Merge / Review Gates`: required gates for code review, tests, docs, security, and handoff
+- `Repo Intelligence`: safe filesystem scanning for frameworks, entry points, build commands, CI, and deployment config without running untrusted commands
+- `Validation Recipe`: persisted validation steps and approval posture
+- `Handoff Quality`: the expected output quality level and included sections
+- `Change Request Mode`: follow-up requests and their manager triage state
+
+## Project workspace model
+
+Project routes use:
+
+- `/projects/:projectId/:projectSlug?`
+
+Important behavior:
+
+- `projectId` is authoritative
+- `projectSlug` is cosmetic
+- missing or incorrect slugs are redirected to the canonical slug
+- the app never loads a project by name alone
+
+The workspace core loop is intentionally manager-led:
+
+- the user talks only to the Manager AI
+- follow-up questions are answered in structured cards
+- command and tool approvals are recorded as project-scoped decisions
+- worker activity is visible without exposing raw logs by default
+- dry-run mode seeds a safe simulated question-and-approval loop so the UI can be exercised without live Codex execution
+
+## Models, tools, diagnostics, and handoffs
+
+Mission Control keeps these post-start pages separate so each surface stays focused:
+
+- `Models & Runners`: project-specific provider, model, reasoning, sandbox, and approval settings
+- `Skills & Tools`: local tool catalog with availability, risk, and permission policy
+- `Diagnostics`: startup status, runtime status, saved reports, and retry actions
+- `Handoffs`: completed project handoffs derived from real final reports
+
+Important behavior:
+
+- `Models & Runners` is project-scoped by design
+- empty model values mean `use provider default`
+- diagnostics reports are stored locally and redact secrets
+- tool availability is honest about unsupported or not-yet-configured environments
+
+## Runner modes
+
+- `dry_run`: local simulation for demos and UI testing
+- `cli`: provider CLI execution
+- `app_server`: experimental Codex app-server path
+- `auto`: choose the best supported live path and fall back safely
+
+## Security posture
+
+- local-first by default
+- no required OpenAI API keys for the Codex login path
+- no raw API keys stored in Mission Control state
+- loopback-only backend by default
+- sandbox and approval defaults remain conservative
+
+More detail:
 
 - [Architecture](docs/ARCHITECTURE.md)
-- [Provider Integration](docs/CODEX_INTEGRATION.md)
 - [Workflow](docs/WORKFLOW.md)
+- [Provider Integration](docs/CODEX_INTEGRATION.md)
 - [Security](docs/SECURITY.md)
 
-## Limitations
+## Current limits
 
-- Codex app-server is still experimental
-- Native desktop behavior depends on the host webview backend
-- Packaged binaries are unsigned unless you add platform signing separately
-- Provider feature depth varies between Codex, Claude Code, and external adapters
-- Validation quality depends on the target workspace and available local tooling
-
-## License and usage note
-
-This project is designed to run against local provider tooling and the user’s existing account/session where supported. Review your provider terms, local authentication setup, and billing model before using API-key-based flows.
+- Codex app-server support remains experimental
+- Provider capability depth varies by local CLI or adapter
+- Packaged binaries are unsigned unless you add platform signing yourself
+- Connected accounts in setup are honest placeholders unless you configure them separately

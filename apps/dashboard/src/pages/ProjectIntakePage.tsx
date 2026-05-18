@@ -5,7 +5,8 @@ import { api } from "../api/client";
 import { AppShell } from "../components/AppShell";
 import { LoadingBlock } from "../components/LoadingBlock";
 import { SectionCard } from "../components/SectionCard";
-import type { CodexStatus, ManagerMode, Project, ProviderId, RunnerMode } from "../types";
+import { PROVIDER_OPTIONS, providerLabel, providerUsesAdapter } from "../lib/providers";
+import type { AppProfile, CodexStatus, ManagerMode, Project, ProviderId, RunnerMode } from "../types";
 
 function normalizePath(value: string): string {
   return value.replace(/\\/g, "/").replace(/\/+$/, "");
@@ -22,8 +23,11 @@ export function ProjectIntakePage() {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const demoMode = searchParams.get("mode") === "demo";
+  const guidedMode = searchParams.get("guided") === "1";
+  const startupProviderChoice = (searchParams.get("providerChoice") as ProviderId | null) ?? null;
   const [projects, setProjects] = useState<Project[]>([]);
   const [codexStatus, setCodexStatus] = useState<CodexStatus | null>(null);
+  const [profile, setProfile] = useState<AppProfile | null>(null);
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -31,7 +35,7 @@ export function ProjectIntakePage() {
     name: "",
     idea: "",
     workspace_path: "workspace/demo-project",
-    provider: "codex" as ProviderId,
+    provider: (startupProviderChoice ?? "codex") as ProviderId,
     runner_mode: (demoMode ? "dry_run" : "auto") as RunnerMode,
     manager_mode: (demoMode ? "deterministic" : "auto") as ManagerMode,
   });
@@ -51,13 +55,19 @@ export function ProjectIntakePage() {
   useEffect(() => {
     async function load() {
       try {
-        const [status, projectList] = await Promise.all([api.getSystemStatus(), api.listProjects()]);
+        const [status, projectList, workspaceProfile] = await Promise.all([api.getSystemStatus(), api.listProjects(), api.getProfile()]);
         const demoWorkspace = deriveDemoWorkspace(status.runtime_directory);
         startTransition(() => {
           setCodexStatus(status);
           setProjects(projectList);
+          setProfile(workspaceProfile);
           setForm((current) => ({
             ...current,
+            provider: startupProviderChoice ?? workspaceProfile.selected_provider ?? workspaceProfile.preferred_provider_choice,
+            runner_mode:
+              demoMode || workspaceProfile.preferred_start_mode === "guided_walkthrough"
+                ? "dry_run"
+                : workspaceProfile.default_runner_mode ?? current.runner_mode,
             workspace_path: demoMode || current.workspace_path === "workspace/demo-project" ? demoWorkspace : current.workspace_path,
           }));
           setLoading(false);
@@ -88,11 +98,33 @@ export function ProjectIntakePage() {
   return (
     <AppShell
       title="Project Intake"
-      subtitle={demoMode ? "Dry-run demo mode is active. The form defaults to a safe local simulation flow." : "Turn a raw idea into local project docs, an interview flow, and a buildable plan."}
+      subtitle={
+        guidedMode
+          ? "Guided walkthrough mode is active. Mission Control will keep the first pass safe, local, and easier to inspect."
+          : demoMode
+            ? "Dry-run demo mode is active. The form defaults to a safe local simulation flow."
+            : "Turn a raw idea into local project docs, an interview flow, and a buildable plan."
+      }
     >
       <div className="intake-grid">
         <SectionCard title="Create project docs" subtitle="The manager will create local planning docs before any coding starts.">
           <form className="stack-form" onSubmit={handleSubmit}>
+            {profile?.display_name ? (
+              <div className="startup-note-card">
+                <strong>Created by {profile.display_name}</strong>
+                <p>The manager will address you by this name. You can change it later from the project Settings page.</p>
+              </div>
+            ) : null}
+            {startupProviderChoice || profile?.selected_provider ? (
+              <div className="startup-note-card">
+                <strong>Starting tool: {providerLabel(startupProviderChoice ?? profile?.selected_provider ?? "codex")}</strong>
+                <p>
+                  {providerUsesAdapter(startupProviderChoice ?? profile?.selected_provider ?? "codex")
+                    ? "This project uses an adapter-based provider path. Configure the exact local command in Settings before you launch live agents."
+                    : "This project inherited your startup provider choice and is ready for local setup."}
+                </p>
+              </div>
+            ) : null}
             <label>
               Project name
               <input
@@ -126,9 +158,11 @@ export function ProjectIntakePage() {
                   value={form.provider}
                   onChange={(event) => setForm((current) => ({ ...current, provider: event.target.value as ProviderId }))}
                 >
-                  <option value="codex">Codex</option>
-                  <option value="claude_code">Claude Code</option>
-                  <option value="external_adapter">External adapter</option>
+                  {PROVIDER_OPTIONS.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
                 </select>
               </label>
               <label>
@@ -202,7 +236,7 @@ export function ProjectIntakePage() {
               <div className="status-list">
                 <h3>Runtime</h3>
                 <ul>
-                  <li>{codexStatus.runtime_directory}</li>
+                  <li>Managed local runtime folder</li>
                   <li>Backend port: {codexStatus.backend_port}</li>
                   <li>Frontend port: {codexStatus.frontend_port ?? "Unknown"}</li>
                   <li>Dry-run available: {codexStatus.dry_run_available ? "yes" : "no"}</li>
@@ -229,10 +263,10 @@ export function ProjectIntakePage() {
         <SectionCard title="Existing projects" subtitle="Resume a previous orchestration run.">
           <div className="resume-list">
             {projects.map((project) => (
-              <button key={project.id} className="resume-item" onClick={() => navigate(`/projects/${project.id}/build`)}>
+              <button key={project.id} className="resume-item" onClick={() => navigate(project.slug ? `/projects/${project.id}/${project.slug}` : `/projects/${project.id}`)}>
                 <strong>{project.name}</strong>
                 <span>{project.status}</span>
-                <small>{project.workspace_path}</small>
+                <small>{project.created_by ? `Created by ${project.created_by}` : project.workspace_path}</small>
               </button>
             ))}
             {!projects.length ? <p>No projects yet. Create the first one above.</p> : null}

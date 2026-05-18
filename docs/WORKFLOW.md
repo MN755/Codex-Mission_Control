@@ -1,129 +1,399 @@
 # Workflow
 
-This document describes the intended operator flow for Mission Control from launch to handoff.
+This document describes the user-visible workflow from launch through handoff.
 
-## 1. Launch
+## 1. Startup
 
-The app can be started in three common ways:
+Every app launch routes through `/startup`.
 
-- `scripts/start-mission-control.ps1` on Windows
-- `scripts/start-mission-control.bat` for double-click Windows launch
-- `scripts/start-mission-control.sh` on macOS or Linux
+The startup coordinator decides between:
 
-The desktop shell is the default experience. Browser mode remains available as an explicit fallback for development or recovery.
+- `first_time`
+- `regular`
+- `degraded`
+- `error`
 
-## 2. Choose auth and provider
+Required startup checks:
 
-On startup, Mission Control presents an auth and launch surface.
+- runtime paths
+- database
+- settings
+- project storage
+- backend route availability
 
-For Codex projects, the user can:
+Optional checks:
 
-- sign in with ChatGPT
-- use a device-code flow
-- optionally use an API key
+- Codex CLI and login state
+- Codex app-server
+- Claude Code CLI
+- Ollama endpoint
+- API-provider environment/session hints
+- custom adapter presence
+- external account placeholders such as GitHub, Vercel, and Notion
 
-For Claude Code and external adapters:
+If a required check fails, Mission Control retries targeted startup work up to three times. If only optional checks fail, the app can continue in degraded mode.
 
-- Mission Control assumes the local provider auth flow is handled outside the app
+## 2. First-time setup
 
-## 3. Create a project
+First-time setup is shown only until the local app-state record is marked complete.
 
-Project intake collects:
+The setup wizard steps are:
 
-- project name
-- project idea
-- workspace path
-- provider
-- runner mode
-- manager mode
+1. Welcome
+2. Username
+3. Provider
+4. API or Login
+5. Connect Accounts
+6. Model / Runner Defaults
+7. Finish
 
-At this point Mission Control creates:
+Setup completion persists:
 
-- the project record
+- username
+- selected provider
+- auth mode
+- connected-account summary
+- default runner mode
+- model defaults
+- sandbox and approval defaults
+
+Ordinary updates do not reset setup.
+
+## 3. Dashboard
+
+Once setup is complete, `/startup` routes to `/dashboard`.
+
+The dashboard is the post-start landing surface and includes:
+
+- recent projects
+- a new-project entry point
+- degraded-mode warnings when relevant
+- a real widget grid with persistent instances
+
+Dashboard navigation rules:
+
+- up to 3 pinned or most-recent projects stay in the sidebar
+- overflow or archived projects move to `Archive`
+- the widget selector is intentionally simple and local-first
+- dashboard widgets are global summaries, not execution surfaces
+
+Default dashboard widgets include:
+
+- `Needs Attention`
+- `Active Builds`
+- `Recent Handoffs`
+- `Runner & Provider Status`
+- `Swarm Budget Overview`
+- `Project Health Overview`
+
+## 4. Project intake
+
+The user creates a project from a general idea.
+
+Mission Control stores:
+
+- project metadata
+- provider and runner defaults
 - a reserved manager agent
-- initial planning docs in `<workspace>/mission-control/`
+- local project docs under `<workspace>/mission-control/`
 
-No coding should start during intake.
+No coding should begin at intake time.
 
-## 4. Run the interview
+## 5. Interview
 
-The interview step narrows scope before work begins.
+The interview sharpens scope before execution.
 
-- The user selects 6, 20, or 50 questions
-- Questions are presented one at a time
-- Answers are stored and shown in the UI
-- The manager uses those answers to shape the plan
+- the user chooses a question budget from 0 to 500
+- the budget is a cap, not a quota
+- the manager analyzes the project idea, docs, provider settings, runner/tool availability, and prior answers before asking anything
+- questions are generated in small adaptive batches, usually 3 to 5 at a time
+- each question is multiple choice and includes why it is being asked, category, impact, and the decision it affects
+- the manager can stop early when enough information exists
+- answers and project understanding are stored locally
+- deterministic fallback still exists for dry-run, tests, and provider failures, but it is labeled honestly as fallback generation
 
-## 5. Review the plan
+Interview state now persists:
 
-Mission Control generates a versioned plan that includes:
+- question budget
+- questions asked
+- questions remaining
+- manager confidence by category
+- known facts
+- unknowns
+- assumptions
+- stop reason and stopped-early state
 
-- summary
-- scope
+## 6. Plan review
+
+The manager produces a reviewable plan with:
+
+- refined summary
+- MVP scope
 - milestones
-- agent roster
 - task structure
+- agent roster
+- validation approach
 - risks
 - definition of done
 
-The user can approve the plan or request directional changes.
+The user can approve the plan or redirect it.
 
-## 6. Generate tasks
+Plan review can now also preview swarm posture through widget-backed summaries:
 
-After approval, the manager decomposes the plan into milestone-based tasks.
+- recommended agent count
+- specialized roster
+- missions and bottlenecks
+- risk notes
+- approval thresholds
 
-Rules:
+## 7. Swarm planning
 
-- Milestone 1 should produce a runnable vertical slice
-- Later milestones can deepen quality, polish, integrations, or testing
-- Each task includes scope, validation, success criteria, and path hints
+Before or during a milestone, the manager can create an adaptive swarm plan instead of forcing one static worker roster onto every project.
 
-## 7. Start workers
+Swarm planning inputs include:
 
-The build monitor is where orchestration becomes active.
+- project idea and current phase
+- repo shape and docs
+- interview understanding
+- provider and runner settings
+- tool availability
+- swarm preferences such as optimization mode, aggressiveness, docs depth, and testing depth
 
-- Workers start through the selected runner
-- Effective models are resolved from project settings
-- Writable paths are reserved before a task begins
-- Conflicting work is moved to `waiting_on_paths`
-- Events stream into the live monitor over SSE
+Swarm planning outputs include:
 
-The user does not talk directly to worker agents.
+- swarm mode
+- recommended agent count
+- specialized agent names and missions
+- path ownership and forbidden areas
+- tool/model policy
+- spawn timing and retirement conditions
+- coordination and path-conflict risk
+- expected bottlenecks
+- validation strategy
 
-## 8. Route work automatically
+Mission Control supports these swarm modes:
 
-When a worker finishes:
+- `fastest_build`
+- `balanced`
+- `high_quality`
+- `documentation_heavy`
+- `research_planning`
+- `massive_codebase`
+- `manager_decides`
 
-- its report is parsed and stored
-- task state is updated
-- the manager decides what happens next
+The manager is expected to choose the largest useful swarm, not the largest possible swarm. Large swarms can require user approval when they exceed the project threshold.
 
-Possible next actions include:
+## 8. Task generation
 
-- assign next task
-- request fix
-- wait
-- mark blocked
-- escalate to user
+After plan approval, Mission Control decomposes work into milestone-based tasks.
 
-## 9. Validate and hand off
+Task generation rules:
 
-Before handoff, Mission Control should confirm that:
+- milestone 1 should create a runnable vertical slice
+- later milestones add polish, integrations, and deeper validation
+- each task includes scope, allowed paths, forbidden paths, dependencies, validation steps, and success criteria
 
-- required tasks are complete or explicitly deferred
-- recorded validation steps are complete or marked as not run
-- handoff content has been generated
+## 9. Project workspace
 
-The final handoff includes:
+The project workspace is now the main execution surface.
+
+Canonical route:
+
+- `/projects/:projectId/:projectSlug?`
+
+Route safety rules:
+
+- `projectId` is the source of truth
+- `projectSlug` is cosmetic
+- wrong or missing slugs are redirected to the canonical slug
+- Mission Control never loads a project by name alone
+
+Workspace layout:
+
+- top project action banner
+- left worker agent sidebar
+- center manager chat
+- right manager queue and project widgets
+- lower built-in task board and activity log
+
+The workspace also exposes a swarm strategy view so the user can understand:
+
+- which swarm mode the manager chose
+- how many agents are active vs allowed
+- current bottlenecks
+- coordination and path-conflict risk
+- pending scale-up or scale-down decisions
+- whether dynamic spawning or retirement is enabled
+
+The user talks only to the manager. Workers do not open separate user chats.
+
+Default project widgets include:
+
+- `Swarm Strategy`
+- `Swarm Budget`
+- `Agent Contracts`
+- `Path Ownership Map`
+- `Decision Ledger`
+- `Project Health Score`
+- `Validation Recipe`
+- `Manager Assumptions`
+- `Handoff Quality`
+
+Other project widgets can be added as needed for:
+
+- confidence tracking
+- failure recovery
+- stuck-agent detection
+- review gates
+- model policy
+- tool routing policy
+- sandbox profiles
+- repo intelligence
+- handoff progress
+- change requests
+
+## 10. Archive and overflow
+
+Archive exists so the main sidebar stays focused.
+
+Archive behavior:
+
+- shows archived projects
+- shows non-sidebar overflow projects
+- supports search, sorting, and status filtering
+- supports pin, archive, and unarchive actions
+
+Archive is organizational, not destructive.
+
+## 11. Manager loop
+
+The manager loop is designed to answer one question quickly:
+
+- does the user need to do anything right now?
+
+The action banner derives that state from:
+
+- pending manager questions
+- pending command or tool approvals
+- blocked tasks
+- degraded runner state
+- handoff readiness
+
+Manager questions:
+
+- use structured options instead of freeform text
+- can auto-decide only for low or medium impact
+- log auto-decisions as manager assumptions
+
+Approvals:
+
+- are project-scoped
+- are recorded inline above the manager input
+- are logged as manager-visible decisions
+- do not show raw logs by default
+
+Manager queue entries can now include swarm decisions such as:
+
+- spawn a new docs specialist after backend stabilizes
+- retire a research agent after architecture is settled
+- add another test or debug agent after repeated failures
+- scale down idle implementation agents once review gates take over
+
+Widget boundary rules:
+
+- widgets summarize state and point to next actions
+- Manager Chat owns actual decisions, approvals, and recovery choices
+- built-in tools stay in `Skills & Tools`
+- widgets can summarize tool routing and approval posture, but they do not execute tools directly
+
+## 12. App settings and project settings
+
+Mission Control separates app-level preferences from project-level runtime controls.
+
+Project settings can now include swarm preferences such as:
+
+- optimization mode
+- swarm aggressiveness
+- max agents
+- approval threshold above a configured agent count
+- dynamic spawn and retirement toggles
+- docs depth
+- testing depth
+
+Widget instances also persist lightweight layout controls:
+
+- area
+- order
+- size
+- collapsed state
+- enabled state
+
+App-wide settings include:
+
+- display name
+- theme
+- startup behavior
+- notification preferences
+- dashboard widget preferences
+
+Project-specific settings live under `Models & Runners` and include:
+
+- manager model
+- default worker model
+- role-based overrides
+- runner mode
+- sandbox mode
+- approval policy
+
+## 12. Skills, tools, and diagnostics
+
+The post-start command center includes dedicated pages for:
+
+- `Skills & Tools`
+- `Diagnostics`
+- `Handoffs`
+
+These pages expose:
+
+- honest tool availability and permission policy
+- startup and runtime health summaries
+- saved diagnostic reports
+- completed handoffs derived from final reports
+
+## 13. Real-time behavior
+
+Workspace state streams over SSE.
+
+Key live updates include:
+
+- manager message creation
+- question creation and resolution
+- approval creation and resolution
+- agent status changes
+- task updates
+- manager queue updates
+
+## 14. Handoff
+
+Mission Control generates a handoff only after required work is complete or explicitly deferred.
+
+The handoff includes:
 
 - what was built
 - how to run it
 - how to use it
 - tests and builds recorded
 - limitations
-- risks
+- remaining risks
 - suggested next improvements
 
-## 10. Continue iterating
+## 15. Diagnostics and recovery
 
-Change requests return to the manager path rather than bypassing orchestration. The same project can continue through multiple plan, build, and handoff cycles.
+If startup or provider checks fail, the app can:
+
+- continue in degraded mode when core services are still healthy
+- generate a diagnostic report
+- expose the diagnostics folder
+- retry startup without destructive reset behavior
+
+Diagnostics for source runs are saved under `apps/server/.runtime/diagnostics/`.

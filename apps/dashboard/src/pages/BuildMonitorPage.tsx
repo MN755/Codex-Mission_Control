@@ -9,18 +9,9 @@ import { LoadingBlock } from "../components/LoadingBlock";
 import { ManagerPanel } from "../components/ManagerPanel";
 import { SectionCard } from "../components/SectionCard";
 import { TaskBoard } from "../components/TaskBoard";
+import { providerDefaultLabel, providerLabel } from "../lib/providers";
 import { useProjectStream } from "../state/useProjectStream";
 import type { Agent, CodexStatus, LogRead, Plan, Project, ProjectEvent, ProjectSettings, Reservation, Task } from "../types";
-
-function providerDefaultLabel(provider: string | null | undefined) {
-  if (provider === "claude_code") {
-    return "Claude Code default";
-  }
-  if (provider === "external_adapter") {
-    return "Adapter default";
-  }
-  return "Codex default";
-}
 
 export function BuildMonitorPage() {
   const { projectId } = useParams();
@@ -112,7 +103,8 @@ export function BuildMonitorPage() {
       rightRail={
         project ? (
           <div className="header-stack">
-            <span className="header-chip">Provider: {settings?.provider ?? status?.selected_provider ?? "codex"}</span>
+            {project.created_by ? <span className="header-chip">Created by: {project.created_by}</span> : null}
+            <span className="header-chip">Provider: {providerLabel(settings?.provider ?? status?.selected_provider ?? "codex")}</span>
             <span className="header-chip">Runner: {settings?.runner_mode ?? project.runner_mode}</span>
             <span className="header-chip">Status: {project.status}</span>
           </div>
@@ -213,7 +205,7 @@ export function BuildMonitorPage() {
                 <div className="status-grid">
                   <div className="metric-card">
                     <span>Provider</span>
-                    <strong>{settings?.provider ?? status.selected_provider}</strong>
+                    <strong>{providerLabel(settings?.provider ?? status.selected_provider)}</strong>
                   </div>
                   <div className="metric-card">
                     <span>Manager model</span>

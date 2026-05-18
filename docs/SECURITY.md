@@ -1,94 +1,197 @@
 # Security
 
-Mission Control is intended to be local-first and least-surprising by default. This document covers the main trust boundaries and operating assumptions for the MVP.
+Mission Control is designed to be local-first, explicit about trust boundaries, and conservative by default.
 
 ## Default posture
 
-- Runs locally by default
-- Binds the backend to loopback addresses
-- Uses local provider CLIs instead of a separate hosted auth layer
-- Avoids dangerous bypass flags by default
-- Stores orchestration state locally
+- backend bound to loopback by default
+- local SQLite state
+- local runtime folders
+- local provider CLIs or endpoints
+- no required cloud control plane
 
-## Authentication
+## Startup and diagnostics
+
+Startup checks are split into:
+
+- required checks that must pass for normal startup
+- optional checks that can fail without blocking the dashboard
+
+If required checks fail repeatedly, Mission Control writes a diagnostic report to the local diagnostics folder. Reports are meant to help with local recovery, not to export secrets.
+
+Diagnostics do not intentionally include:
+
+- raw API keys
+- auth tokens
+- cookie values
+- full environment dumps with sensitive names
+
+## Authentication model
 
 ### Codex
 
-- Preferred path: ChatGPT-backed local sign-in
-- Device-code sign-in is available as a fallback
-- API-key login is optional
+Recommended path:
 
-Mission Control does not store raw API keys in its own database. If an API-key login path is used, it is passed to the local Codex login flow rather than retained as an application secret.
+- local Codex CLI with ChatGPT-backed sign-in
+
+Fallbacks:
+
+- device-code login
+- optional API-key login
+
+Mission Control does not require an API key for the Codex login path and does not store raw API keys in its own SQLite database.
 
 ### Other providers
 
-- Claude Code auth is managed by the local Claude environment
-- External adapter auth is managed by the adapter or wrapper command
+- Claude Code auth is managed outside Mission Control
+- Ollama is treated as a local endpoint, not a hosted secret flow
+- API-based providers are explicitly marked as API-key-based
+- custom adapters are trusted only to the extent the adapter command is trusted
 
-## Network exposure
+## Provider configuration
 
-Mission Control is not designed to be exposed publicly.
+Mission Control prefers per-run overrides instead of mutating global provider config.
 
-- Keep the backend on localhost
-- Treat any non-loopback binding as a deliberate, higher-risk configuration
-- Do not expose experimental provider surfaces without additional controls
+- empty model fields mean `use provider default`
+- empty reasoning-effort fields mean `use provider default`
+- the app does not rewrite global Codex config by default
 
 ## Workspace safety
 
-Mission Control tries to reduce agent collisions rather than pretending they do not happen.
+Mission Control does not assume workers can safely edit the same files.
 
-- Git-backed work can be isolated through worktree-oriented flows
-- Non-git workspaces use path reservations
-- Conflicting tasks are held in `waiting_on_paths`
-- Generated docs stay inside the selected workspace
+- path reservations are recorded for active work
+- conflicting tasks move to `waiting_on_paths`
+- write-capable work is coordinated instead of allowed to overlap silently
 
-## Runner safety defaults
+This is a safety measure, not a perfect sandbox.
 
-The intended defaults are:
+## Project-scoped decisions
+
+Workspace questions, approvals, messages, and queue items are project-scoped.
+
+That means:
+
+- the canonical workspace route uses `projectId` as the source of truth
+- slug mismatches redirect instead of silently loading a different project
+- approval decisions are submitted with the current project context
+- command and tool approvals are logged as explicit user decisions
+
+Mission Control does not auto-approve high-risk actions and does not auto-decide high-impact manager questions.
+
+## Tool permissions
+
+The `Skills & Tools` page exposes a local catalog with explicit permission policy.
+
+Important behavior:
+
+- unsupported environments are marked honestly instead of faked
+- higher-risk tools default to ask-first policies
+- permission overrides are stored locally, not inferred from vague usage history
+- tool access policy is separate from provider authentication state
+
+## Sandbox and approval defaults
+
+Intended defaults:
 
 - sandbox: `workspace-write`
 - approval: `on-request`
 
-Mission Control does not silently escalate around those defaults. If a task needs more access, the intended behavior is to surface that need instead of bypassing guardrails behind the user’s back.
+Mission Control should surface when a task needs broader access instead of bypassing those defaults behind the user's back.
 
-## Provider configuration
+## Widget boundary security
 
-Mission Control prefers per-run overrides to global mutation.
+Mission Control now uses widgets heavily, but widgets are intentionally summary surfaces rather than secret tunnels into execution.
 
-- Empty model fields mean `use provider default`
-- Empty reasoning fields mean `use provider default`
-- Project settings are scoped to Mission Control
-- The app does not rewrite global Codex config by default
+Rules:
 
-## Logging and local data
+- widgets summarize state
+- Manager Chat owns approvals, questions, and recovery decisions
+- built-in tools remain in `Skills & Tools`
+- widgets do not execute web search, browser tests, deployments, or similar tools directly
 
-Mission Control stores local runtime data such as:
+That boundary matters because blending summaries, approvals, and execution into the same card is how apps accidentally become permission-confusion generators.
 
-- SQLite state
+## Widget data safety
+
+Widget data is scoped and persisted:
+
+- dashboard widgets are global summaries
+- project widgets are scoped to a single project ID
+- widget instances store placement, size, order, and config
+- widget data responses store summary data, warnings, and honest empty states
+
+Widget APIs should not leak one project's decision history, path ownership, recovery state, or assumptions into another project's view.
+
+## Repo intelligence safety
+
+The `Repo Intelligence` widget uses a lightweight filesystem scan only.
+
+Important guardrail:
+
+- it reads files and metadata
+- it does not execute build commands, test commands, package scripts, or other untrusted repo commands
+
+That keeps repo indexing useful without turning “show me the framework” into “surprise, we ran whatever nonsense was hiding in `package.json`.”
+
+## Path ownership and coordination safety
+
+Mission Control now exposes both low-level path reservations and higher-level `PathLock` ownership data.
+
+Safety intent:
+
+- multiple agents should not silently edit the same writable area
+- ownership conflicts should be visible before they become merge sludge
+- widgets can show waiting locks and conflicts without granting edit access
+
+This still is not a perfect sandbox. It is a coordination layer that reduces easy mistakes and makes conflicts explicit.
+
+## Runtime storage
+
+Source runs store runtime data under `apps/server/.runtime`.
+
+That can include:
+
+- SQLite database
 - launcher metadata
 - run logs
-- stdout and stderr captures
+- diagnostics
 - event logs
 
-Source runs use `apps/server/.runtime`. Packaged builds use a writable local app-data directory.
+Packaged builds use a writable local app-data directory chosen by the desktop shell.
 
-## Desktop packaging considerations
+## Event streams
 
-- Packaged builds are unsigned unless platform signing is added separately
-- Unsigned binaries may trigger operating-system trust warnings
-- Linux AppImage generation depends on system-compatible tooling
+Mission Control now emits both project-scoped and app-scoped live events:
 
-## Known security limits
+- `ProjectEvent` for workspace updates
+- `AppEvent` for global dashboard and widget refresh
+
+Security posture:
+
+- streams are local-first and intended for loopback use
+- event payloads carry summary data and invalidation hints
+- widgets should refresh targeted data instead of reloading large payloads by default
+
+## Reset behavior
+
+Mission Control does not automatically reset first-run setup or runtime state after code updates or version changes.
+
+Intentional setup reset is a manual development operation unless a dedicated admin or reset tool is added later. Back up runtime data before changing the app-state record.
+
+## Network exposure
+
+Mission Control is not intended to be exposed publicly without additional controls.
+
+- keep the backend on localhost
+- treat non-loopback binding as a deliberate higher-risk configuration
+- do not assume experimental provider surfaces are hardened for public exposure
+
+## Known limits
 
 - Codex app-server support is experimental
-- External adapters can widen the trust boundary depending on how they are implemented
-- Provider model availability and behavior depend on the current local account and session
-- The MVP does not attempt enterprise policy enforcement or centralized secrets management
-
-## Recommended operating practice
-
-- Use ChatGPT-backed Codex sign-in when you want to stay off API billing
-- Use dry-run mode for UI demos and workflow validation
-- Review any external adapter wrapper before trusting it on sensitive code
-- Keep the selected workspace narrow and intentional
-- Treat packaged binaries as local-distribution artifacts unless you add signing and notarization
+- custom adapters may widen the trust boundary
+- connected-account cards in setup are placeholders unless you configure real integrations
+- unsigned desktop binaries may trigger OS trust warnings until you add signing or notarization
+- approval payloads are redacted by default, so the workspace is optimized for safe summaries rather than full raw execution detail
+- tool availability may vary by OS, installed local runtimes, and external setup outside Mission Control

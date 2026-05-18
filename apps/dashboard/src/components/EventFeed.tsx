@@ -1,28 +1,19 @@
 import type { ProjectEvent } from "../types";
+import { providerDefaultLabel } from "../lib/providers";
 
 export function EventFeed({ events }: { events: ProjectEvent[] }) {
-  function defaultLabel(provider: unknown) {
-    if (provider === "claude_code") {
-      return "Claude Code default";
-    }
-    if (provider === "external_adapter") {
-      return "Adapter default";
-    }
-    return "Codex default";
-  }
-
   function renderSummary(event: ProjectEvent) {
     const payload = event.payload_json;
     if (event.event_type === "agent.started") {
       const settings = (payload.effective_settings as Record<string, unknown> | undefined) ?? {};
       const provider = settings.provider;
-      const providerDefault = defaultLabel(provider);
+      const providerDefault = providerDefaultLabel(typeof provider === "string" ? provider : undefined);
       return `${payload.agent_name ?? "Agent"} started task #${payload.task_id ?? "?"} with ${String(settings.model ?? providerDefault)} / ${String(settings.reasoning_effort ?? providerDefault)} on ${payload.runner ?? "runner"}.`;
     }
     if (event.event_type === "manager.mode.provider" || event.event_type === "manager.mode.codex") {
       const settings = (payload.effective_settings as Record<string, unknown> | undefined) ?? {};
       const provider = payload.provider ?? settings.provider;
-      return `Manager used ${payload.runner ?? "runner"} for ${payload.action ?? "a turn"} via ${String(provider ?? "live provider")} with ${String(settings.model ?? defaultLabel(provider))}.`;
+      return `Manager used ${payload.runner ?? "runner"} for ${payload.action ?? "a turn"} via ${String(provider ?? "live provider")} with ${String(settings.model ?? providerDefaultLabel(typeof provider === "string" ? provider : undefined))}.`;
     }
     if (event.event_type === "settings.updated") {
       return `Settings saved for ${String(payload.provider ?? "provider")}. Manager model: ${String(payload.manager_model ?? "provider default")}. Worker model: ${String(payload.default_worker_model ?? "provider default")}.`;

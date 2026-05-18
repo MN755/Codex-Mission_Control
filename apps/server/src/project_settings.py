@@ -45,6 +45,8 @@ def get_or_create_project_settings(db: Session, project: Project) -> ProjectSett
         per_role_model_overrides_json={},
         per_role_reasoning_overrides_json={},
         adapter_args_json=[],
+        workspace_widgets_json=[],
+        approval_overrides_json={},
     )
     db.add(settings)
     db.flush()
@@ -74,6 +76,8 @@ def update_project_settings(db: Session, project: Project, payload: ProjectSetti
     settings.runner_mode = payload.runner_mode
     settings.sandbox_mode = payload.sandbox_mode
     settings.approval_policy = payload.approval_policy
+    settings.workspace_widgets_json = [item.strip() for item in payload.workspace_widgets_json if item and item.strip()]
+    settings.approval_overrides_json = dict(payload.approval_overrides_json or {})
     project.runner_mode = payload.runner_mode
     db.flush()
     return settings
@@ -94,6 +98,8 @@ def settings_summary(settings: ProjectSettings) -> dict:
         "runner_mode": settings.runner_mode,
         "sandbox_mode": settings.sandbox_mode,
         "approval_policy": settings.approval_policy,
+        "workspace_widgets_json": settings.workspace_widgets_json or [],
+        "approval_overrides_json": settings.approval_overrides_json or {},
         "created_at": settings.created_at,
         "updated_at": settings.updated_at,
     }

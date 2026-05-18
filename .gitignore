@@ -15,6 +15,7 @@ workspace/worktrees/
 workspace/demo-project/
 apps/server/.pytest_cache/
 apps/server/.runtime/
+apps/server/.runtime-test/
 apps/dashboard/.vite/
 apps/dashboard/.npm-cache/
 apps/dashboard/vite*.log

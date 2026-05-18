@@ -1,14 +1,16 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 import subprocess
-from pathlib import Path
 from typing import Any
+from urllib.error import URLError
+from urllib.request import urlopen
 
 from config import DEFAULT_BACKEND_PORT, RUNTIME_ROOT, get_codex_home, load_launcher_config
-from provider_support import normalize_provider, provider_label
+from provider_support import normalize_provider, provider_label, supports_app_server, supports_builtin_auth, supports_reasoning_effort
 
 
 def _run_command(args: list[str]) -> tuple[bool, str]:
@@ -114,7 +116,7 @@ def detect_claude_code_status() -> dict[str, Any]:
     cli_ok, cli_output = _run_command(["claude", "--version"])
     notes = [
         "Claude Code login is managed by the local Claude Code CLI, not by Mission Control.",
-        "Mission Control can pass --model per run, but reasoning effort and app-server features are not assumed.",
+        "Mission Control can pass per-run model overrides when the CLI supports them.",
     ]
     return {
         "provider": "claude_code",
@@ -134,18 +136,75 @@ def detect_claude_code_status() -> dict[str, Any]:
     }
 
 
-def detect_external_adapter_status(adapter_command: str | None = None) -> dict[str, Any]:
+def detect_ollama_status(endpoint: str | None = None) -> dict[str, Any]:
+    base = (endpoint or "http://localhost:11434").rstrip("/")
+    summary = f"Ollama endpoint configured at {base}."
+    reachable = False
+    available_models: list[str] = []
+    try:
+        with urlopen(f"{base}/api/tags", timeout=3) as response:
+            body = response.read().decode("utf-8", errors="ignore")
+            payload = json.loads(body)
+            models = payload.get("models") if isinstance(payload, dict) else []
+            if isinstance(models, list):
+                available_models = [str(item.get("name")) for item in models if isinstance(item, dict) and item.get("name")]
+            reachable = response.status == 200
+            summary = f"Ollama endpoint reachable at {base}."
+    except (URLError, TimeoutError, json.JSONDecodeError, OSError):
+        summary = f"Ollama endpoint not reachable at {base}."
+    return {
+        "provider": "ollama",
+        "label": "Ollama",
+        "cli_detected": reachable,
+        "cli_version": base,
+        "login_status": summary,
+        "auth_mode": "local",
+        "authenticated": reachable,
+        "auth_status_detectable": True,
+        "supports_model_override": True,
+        "supports_reasoning_effort": True,
+        "supports_app_server": False,
+        "supports_builtin_auth": False,
+        "available_models": available_models,
+        "notes": ["Ollama is local-first. Mission Control expects a local adapter or wrapper command for live execution."],
+        "reachable": reachable,
+        "summary": summary,
+    }
+
+
+def detect_env_api_status(provider: str, *, env_key: str, label: str) -> dict[str, Any]:
+    configured = bool(os.environ.get(env_key))
+    return {
+        "provider": provider,
+        "label": label,
+        "cli_detected": configured,
+        "cli_version": env_key if configured else None,
+        "login_status": f"{env_key} {'is configured' if configured else 'is not configured in the current environment.'}",
+        "auth_mode": "api_key" if configured else None,
+        "authenticated": configured,
+        "auth_status_detectable": True,
+        "supports_model_override": True,
+        "supports_reasoning_effort": False,
+        "supports_app_server": False,
+        "supports_builtin_auth": False,
+        "available_models": [],
+        "notes": ["API providers are supported without storing keys inside Mission Control."],
+    }
+
+
+def detect_custom_status(adapter_command: str | None = None, adapter_args: list[str] | None = None) -> dict[str, Any]:
     command = (adapter_command or "").strip()
     detected = bool(command and shutil.which(command))
     notes = [
-        "Mission Control does not manage authentication for external adapters.",
-        "External adapters receive model, reasoning, sandbox, and approval values through environment variables and stdin.",
+        "Mission Control does not manage authentication for custom providers.",
+        "Custom providers run through local adapter commands rather than direct built-in integrations.",
     ]
+    version = " ".join([command, *(adapter_args or [])]).strip() if command else None
     return {
-        "provider": "external_adapter",
-        "label": "External adapter",
+        "provider": "custom",
+        "label": "Custom provider",
         "cli_detected": detected,
-        "cli_version": command if detected else None,
+        "cli_version": version if detected else None,
         "login_status": "Adapter-defined authentication",
         "auth_mode": None,
         "authenticated": False,
@@ -159,22 +218,26 @@ def detect_external_adapter_status(adapter_command: str | None = None) -> dict[s
     }
 
 
-def detect_provider_statuses(adapter_command: str | None = None) -> list[dict[str, Any]]:
+def detect_provider_statuses(adapter_command: str | None = None, ollama_endpoint: str | None = None, adapter_args: list[str] | None = None) -> list[dict[str, Any]]:
     return [
         detect_codex_status(),
+        detect_ollama_status(ollama_endpoint),
+        detect_env_api_status("openai_api", env_key="OPENAI_API_KEY", label="OpenAI API"),
+        detect_env_api_status("anthropic_api", env_key="ANTHROPIC_API_KEY", label="Anthropic API"),
+        detect_env_api_status("xai_api", env_key="XAI_API_KEY", label="xAI API"),
         detect_claude_code_status(),
-        detect_external_adapter_status(adapter_command),
+        detect_custom_status(adapter_command, adapter_args),
     ]
 
 
-def detect_system_status(*, selected_provider: str = "codex", adapter_command: str | None = None) -> dict[str, Any]:
+def detect_system_status(*, selected_provider: str = "codex", adapter_command: str | None = None, ollama_endpoint: str | None = None, adapter_args: list[str] | None = None) -> dict[str, Any]:
     normalized_provider = normalize_provider(selected_provider)
     launcher_config = load_launcher_config()
-    provider_statuses = detect_provider_statuses(adapter_command)
+    provider_statuses = detect_provider_statuses(adapter_command, ollama_endpoint, adapter_args)
     provider_lookup = {entry["provider"]: entry for entry in provider_statuses}
     selected = provider_lookup.get(normalized_provider, provider_lookup["codex"])
     codex = provider_lookup["codex"]
-    notes = list(dict.fromkeys([*selected.get("notes", []), *codex.get("notes", [])]))
+    notes = list(dict.fromkeys(selected.get("notes", []) + codex.get("notes", [])))
     return {
         "selected_provider": normalized_provider,
         "selected_provider_label": provider_label(normalized_provider),
@@ -183,7 +246,7 @@ def detect_system_status(*, selected_provider: str = "codex", adapter_command: s
         "login_status": selected["login_status"],
         "auth_mode": selected["auth_mode"],
         "authenticated": selected["authenticated"],
-        "app_server_supported": bool(selected.get("supports_app_server")),
+        "app_server_supported": bool(supports_app_server(normalized_provider)),
         "app_server_handshake_status": "unsupported" if normalized_provider != "codex" else "not_checked",
         "app_server_transport": "stdio_jsonrpc" if normalized_provider == "codex" else "unsupported",
         "effective_runner_mode": "auto",

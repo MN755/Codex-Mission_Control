@@ -90,7 +90,7 @@ def main() -> None:
     host = "127.0.0.1"
     port = _find_free_port(host)
     health_url = f"http://{host}:{port}/api/health"
-    app_url = f"http://{host}:{port}/"
+    app_url = f"http://{host}:{port}/startup"
 
     config = uvicorn.Config(
         fastapi_app,

@@ -2,20 +2,11 @@ import { useEffect, useState } from "react";
 import { useParams } from "react-router-dom";
 
 import { api } from "../api/client";
-import { AppShell } from "../components/AppShell";
 import { LoadingBlock } from "../components/LoadingBlock";
+import { ProjectShell } from "../components/ProjectShell";
 import { SectionCard } from "../components/SectionCard";
+import { providerDefaultLabel, providerLabel } from "../lib/providers";
 import type { Plan, Project, ProjectSettings, Task } from "../types";
-
-function providerDefaultLabel(provider: unknown) {
-  if (provider === "claude_code") {
-    return "Claude Code default";
-  }
-  if (provider === "external_adapter") {
-    return "Adapter default";
-  }
-  return "Codex default";
-}
 
 export function HandoffPage() {
   const { projectId } = useParams();
@@ -65,8 +56,8 @@ export function HandoffPage() {
   const roleModelOverrides = (modelsUsed.role_model_overrides as Record<string, string> | undefined) ?? settings?.per_role_model_overrides_json ?? {};
 
   return (
-    <AppShell
-      projectId={numericProjectId}
+    <ProjectShell
+      project={project}
       title="Final Handoff"
       subtitle="The manager only declares completion after the project reaches a real terminal state."
       rightRail={project ? <span className="header-chip">{project.status}</span> : null}
@@ -81,7 +72,7 @@ export function HandoffPage() {
                 <li key={item}>{item}</li>
               ))}
               <li>Project docs path: {project?.docs_path ?? "Not generated"}</li>
-              <li>Provider used: {providerUsed}</li>
+              <li>Provider used: {providerLabel(providerUsed)}</li>
               <li>Runner mode used: {project?.runner_mode}</li>
               <li>Manager model: {String(modelsUsed.manager_model ?? settings?.manager_model ?? providerDefaultLabel(providerUsed))}</li>
               <li>Default worker model: {String(modelsUsed.default_worker_model ?? settings?.default_worker_model ?? providerDefaultLabel(providerUsed))}</li>
@@ -136,7 +127,7 @@ export function HandoffPage() {
 
           <SectionCard title="Models used" subtitle="These are the project-scoped model settings that were active for the build.">
             <ul className="flat-list">
-              <li>Provider: {providerUsed}</li>
+              <li>Provider: {providerLabel(providerUsed)}</li>
               <li>Manager model: {String(modelsUsed.manager_model ?? settings?.manager_model ?? providerDefaultLabel(providerUsed))}</li>
               <li>Manager reasoning: {String(modelsUsed.manager_reasoning_effort ?? settings?.manager_reasoning_effort ?? providerDefaultLabel(providerUsed))}</li>
               <li>Default worker model: {String(modelsUsed.default_worker_model ?? settings?.default_worker_model ?? providerDefaultLabel(providerUsed))}</li>
@@ -154,6 +145,6 @@ export function HandoffPage() {
           </SectionCard>
         </div>
       )}
-    </AppShell>
+    </ProjectShell>
   );
 }

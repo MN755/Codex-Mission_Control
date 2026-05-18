@@ -127,18 +127,15 @@ function Start-TrackedShellProcess {
 
   $stdoutPath = Join-Path $launcherDir "$Name.stdout.log"
   $stderrPath = Join-Path $launcherDir "$Name.stderr.log"
-  $powershellPath = Join-Path $env:WINDIR "System32\WindowsPowerShell\v1.0\powershell.exe"
-  $scriptPath = Join-Path $launcherDir "$Name.launch.ps1"
+  $cmdPath = Join-Path $env:WINDIR "System32\cmd.exe"
+  $scriptPath = Join-Path $launcherDir "$Name.launch.cmd"
   $scriptContent = @"
-`$ErrorActionPreference = 'Stop'
-Set-Location '$WorkingDirectory'
-& {
-$Command
-} *>> '$stdoutPath'
+@echo off
+cd /d "$WorkingDirectory"
+$Command 1>>"$stdoutPath" 2>>"$stderrPath"
 "@
   Set-Content -Path $scriptPath -Value $scriptContent -Encoding UTF8
-  $windowArg = if ($Hidden) { "-WindowStyle Hidden" } else { "" }
-  $commandLine = "`"$powershellPath`" $windowArg -NoProfile -ExecutionPolicy Bypass -File `"$scriptPath`""
+  $commandLine = "`"$cmdPath`" /d /c `"$scriptPath`""
   $result = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{
     CommandLine = $commandLine
     CurrentDirectory = $WorkingDirectory
@@ -251,14 +248,15 @@ function Start-WebMode {
   $npmPath = Get-RequiredCommand -Names @("npm.cmd", "npm")
   $backendHealthUrl = "http://${effectiveHost}:${effectiveBackendPort}/api/health"
   $frontendUrl = "http://${effectiveHost}:${effectiveFrontendPort}"
+  $startupUrl = "${frontendUrl}/startup"
 
   $backendHealthy = Test-BackendHealthy
   $frontendHealthy = Test-FrontendHealthy
 
   if ($backendHealthy -and $frontendHealthy) {
-    Write-Status "Backend and frontend are already healthy. Opening the dashboard only."
+    Write-Status "Backend and frontend are already healthy. Opening the startup route."
     if ($autoOpenBrowser) {
-      Start-Process $frontendUrl | Out-Null
+      Start-Process $startupUrl | Out-Null
     }
     return
   }
@@ -280,7 +278,7 @@ function Start-WebMode {
   }
 
   if (-not $backendHealthy) {
-    $backendCommand = "& '$pythonPath' -m uvicorn main:app --app-dir src --host $effectiveHost --port $effectiveBackendPort"
+    $backendCommand = "`"$pythonPath`" -m uvicorn main:app --app-dir src --host $effectiveHost --port $effectiveBackendPort"
     $metadata.backend = Start-TrackedShellProcess `
       -Name "backend" `
       -WorkingDirectory (Join-Path $repoRoot "apps\server") `
@@ -293,7 +291,7 @@ function Start-WebMode {
   }
 
   if (-not $frontendHealthy) {
-    $frontendCommand = "& '$npmPath' run dev -- --host $effectiveHost --port $effectiveFrontendPort"
+    $frontendCommand = "`"$npmPath`" run dev -- --host $effectiveHost --port $effectiveFrontendPort"
     $metadata.frontend = Start-TrackedShellProcess `
       -Name "frontend" `
       -WorkingDirectory (Join-Path $repoRoot "apps\dashboard") `
@@ -309,10 +307,10 @@ function Start-WebMode {
   Write-Status "Launcher metadata written to $pidFile"
 
   if ($autoOpenBrowser) {
-    Write-Status "Opening $frontendUrl"
-    Start-Process $frontendUrl | Out-Null
+    Write-Status "Opening $startupUrl"
+    Start-Process $startupUrl | Out-Null
   } else {
-    Write-Status "Browser auto-open is disabled. Open $frontendUrl manually."
+    Write-Status "Browser auto-open is disabled. Open $startupUrl manually."
   }
 }
 

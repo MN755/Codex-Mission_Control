@@ -2,14 +2,17 @@ from __future__ import annotations
 
 import asyncio
 import json
-from datetime import datetime, timezone
+import re
+from collections import Counter
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, TypeVar
 
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, Field, ValidationError
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from app_profile import display_name_or_default, get_or_create_app_profile, update_app_profile
 from codex_auth import auth_service
 from codex_runner.app_server_runner import AppServerCodexRunner
 from codex_runner.base import BaseCodexRunner, RunnerContext, RunnerSettings
@@ -23,8 +26,50 @@ from config import (
     WORKTREE_ROOT,
 )
 from events import EventService
-from interview import select_questions
-from models import Agent, AgentRun, InterviewQuestion, InterviewSession, PathReservation, Plan, Project, ProjectSettings, Task, utc_now
+from interview import INTERVIEW_CATEGORIES, select_fallback_questions
+from diagnostics import list_diagnostic_reports
+from models import (
+    Agent,
+    AgentArchetype,
+    AgentRun,
+    AppProfile,
+    AppEvent,
+    ApprovalRequest,
+    AgentContract,
+    AgentStuckSignal,
+    ChangeRequest,
+    DecisionRecord,
+    InterviewQuestion,
+    InterviewSession,
+    HandoffQualityPreference,
+    ManagerMessage,
+    ManagerAssumption,
+    ManagerQuestion,
+    ModelPolicy,
+    PathReservation,
+    PathLock,
+    Plan,
+    Project,
+    ProjectConfidence,
+    ProjectEvent,
+    ProjectSettings,
+    ProjectUnderstanding,
+    RecoveryPlan,
+    RepoIntelligenceSummary,
+    ReviewGate,
+    SandboxProfile,
+    SwarmBudget,
+    SwarmAgentSpec,
+    SwarmEvent,
+    SwarmPlan,
+    SwarmPreferences,
+    Task,
+    ToolRoutingPolicy,
+    ValidationRecipe,
+    WidgetDefinition,
+    WidgetInstance,
+    utc_now,
+)
 from planner import build_plan_markdown
 from project_settings import (
     ResolvedRunSettings,
@@ -37,16 +82,42 @@ from project_settings import (
 from prompts import (
     MANAGER_DOC_UPDATE_SCHEMA,
     MANAGER_HANDOFF_SCHEMA,
+    MANAGER_INTERVIEW_SCHEMA,
     MANAGER_PLAN_SCHEMA,
+    MANAGER_SWARM_PLAN_SCHEMA,
     MANAGER_TASK_DECOMPOSITION_SCHEMA,
     MANAGER_WORKER_DECISION_SCHEMA,
     docs_manifest_path,
     manager_action_prompt,
+    manager_interview_prompt,
     manager_message_prompt,
+    manager_swarm_prompt,
 )
-from provider_support import default_label, normalize_provider, provider_label
-from schemas import ManagerDocFile, ManagerDocUpdate, ManagerHandoff, ManagerPlan, ManagerTaskDecomposition, ManagerTaskItem, ManagerWorkerDecision, ProjectSettingsUpdate, WorkerReport
+from provider_support import default_label, normalize_provider, provider_label, provider_uses_adapter
+from schemas import (
+    AppProfileUpdate,
+    ManagerDocFile,
+    ManagerDocUpdate,
+    ManagerHandoff,
+    ManagerPlan,
+    ManagerTaskDecomposition,
+    ManagerTaskItem,
+    ManagerWorkerDecision,
+    ProjectSettingsUpdate,
+    SwarmPreferencesUpdate,
+    WorkerReport,
+)
+from swarm import AGENT_ARCHETYPE_CATALOG, SWARM_RISK_LEVELS
 from task_board import build_initial_tasks, can_assign_task, conflicting_agents
+from tool_catalog import TOOL_CATALOG, catalog_with_permissions
+from widget_catalog import (
+    DASHBOARD_WIDGET_DEFAULTS,
+    DASHBOARD_WIDGET_TYPES,
+    PROJECT_WIDGET_DEFAULTS,
+    PROJECT_WIDGET_TYPES,
+    WIDGET_CATALOG,
+    WIDGET_CATALOG_BY_TYPE,
+)
 
 
 DOC_FILENAMES = [
@@ -61,6 +132,84 @@ DOC_FILENAMES = [
 ]
 TASK_OPEN_STATUSES = {"backlog", "assigned", "working", "waiting_on_paths", "needs_review", "blocked"}
 TASK_STARTABLE_STATUSES = {"backlog", "assigned", "waiting_on_paths"}
+WORKSPACE_WIDGETS = [
+    "Milestones",
+    "Test Status",
+    "Changed Files",
+    "Artifacts",
+    "Path Locks",
+    "Model Usage",
+    "Connected Tools",
+    "Recent Decisions",
+    "Handoff Progress",
+]
+WORKFLOW_PHASES = [
+    ("intake", "Intake"),
+    ("interview", "Interview"),
+    ("plan_review", "Plan Review"),
+    ("build", "Build"),
+    ("validation", "Validation"),
+    ("handoff", "Handoff"),
+]
+OVERVIEW_SECTIONS = [
+    ("architecture", "Architecture"),
+    ("frontend", "Frontend"),
+    ("backend", "Backend"),
+    ("auth_security", "Auth & Security"),
+    ("testing", "Testing"),
+    ("documentation", "Documentation"),
+]
+SWARM_DEFAULT_PREFERENCES = {
+    "optimization_mode": "balanced",
+    "swarm_aggressiveness": "medium",
+    "max_agents": 8,
+    "require_approval_above_agent_count": 10,
+    "allow_dynamic_spawning": True,
+    "allow_dynamic_retirement": True,
+    "docs_depth": "standard",
+    "testing_depth": "standard",
+}
+DASHBOARD_WIDGETS = [
+    "Needs Attention",
+    "Active Builds",
+    "Recent Handoffs",
+    "Runner & Provider Status",
+    "Connected Accounts",
+    "Model Defaults",
+    "Blocked Agents",
+    "Diagnostics Summary",
+]
+DASHBOARD_DEFAULT_WIDGETS = [
+    "Needs Attention",
+    "Active Builds",
+    "Recent Handoffs",
+    "Runner & Provider Status",
+]
+WIDGET_EMPTY_STATE = "Select the plus symbol in the bottom-right corner to add customizable widgets!"
+INTERVIEW_CATEGORY_SET = set(INTERVIEW_CATEGORIES)
+DISPLAY_STATUS_PRIORITY = {
+    "blocked": 0,
+    "error": 0,
+    "running": 1,
+    "coding": 1,
+    "active": 1,
+    "thinking": 2,
+    "reviewing": 2,
+    "monitoring": 2,
+    "waiting": 3,
+    "idle": 4,
+    "retired": 5,
+}
+ATTENTION_PRIORITY = {
+    "error": 0,
+    "blocker": 1,
+    "command_approval": 2,
+    "tool_approval": 2,
+    "manager_question": 3,
+    "handoff_ready": 4,
+    "degraded": 5,
+}
+SWARM_COORDINATION_PRIORITY = {"low": 0, "medium": 1, "high": 2}
 TManagerModel = TypeVar("TManagerModel", bound=BaseModel)
 
 
@@ -78,6 +227,57 @@ def _validate_model(schema: type[TManagerModel], payload: dict[str, Any]) -> TMa
 
 class InterviewGeneration(BaseModel):
     questions: list[dict[str, Any]]
+
+
+class InterviewUnderstandingPayload(BaseModel):
+    summary: str
+    known_facts: dict[str, Any] = Field(default_factory=dict)
+    unknowns: dict[str, Any] = Field(default_factory=dict)
+    assumptions: list[str] = Field(default_factory=list)
+    constraints: list[str] = Field(default_factory=list)
+    confidence_by_category: dict[str, float] = Field(default_factory=dict)
+
+
+class InterviewTurnQuestion(BaseModel):
+    question: str
+    why: str
+    category: str
+    impact: str
+    options: list[dict[str, str]] = Field(default_factory=list)
+    allow_custom_answer: bool = False
+    affects: list[str] = Field(default_factory=list)
+
+
+class InterviewTurnPayload(BaseModel):
+    understanding: InterviewUnderstandingPayload
+    next_questions: list[InterviewTurnQuestion] = Field(default_factory=list)
+    more_questions_needed: bool = False
+    stop_reason: str | None = None
+
+
+class ManagerSwarmSpecPayload(BaseModel):
+    archetype: str
+    name: str
+    mission: str
+    model_policy: str
+    toolset: list[str] = Field(default_factory=list)
+    allowed_paths: list[str] = Field(default_factory=list)
+    forbidden_paths: list[str] = Field(default_factory=list)
+    spawn_phase: str = "build_start"
+    retire_when: str
+    priority: int = 50
+
+
+class ManagerSwarmPlanPayload(BaseModel):
+    mode: str
+    goal: str
+    recommended_agent_count: int
+    coordination_risk: str
+    path_conflict_risk: str
+    expected_bottlenecks: list[str] = Field(default_factory=list)
+    strategy_summary: str
+    validation_strategy: list[str] = Field(default_factory=list)
+    specs: list[ManagerSwarmSpecPayload] = Field(default_factory=list)
 
 
 class RunnerRegistry:
@@ -129,7 +329,7 @@ class RunnerRegistry:
                 return "unavailable"
             if requested_mode in {"auto", "cli"}:
                 return "claude_code_cli" if await self.claude_cli_available() else "unavailable"
-        if provider == "external_adapter":
+        if provider_uses_adapter(provider):
             if requested_mode == "app_server":
                 return "unavailable"
             if requested_mode in {"auto", "cli"}:
@@ -200,7 +400,4285 @@ class MissionControlService:
         return manager_agent
 
     def _project_settings(self, db: Session, project: Project) -> ProjectSettings:
+        if project.settings is not None:
+            return project.settings
+        profile = self._app_profile(db)
+        timestamp = utc_now()
+        return ProjectSettings(
+            project_id=project.id,
+            provider=normalize_provider(profile.selected_provider or "codex"),
+            manager_model=profile.manager_model,
+            default_worker_model=profile.default_worker_model,
+            manager_reasoning_effort=profile.manager_reasoning_effort,
+            default_worker_reasoning_effort=profile.default_worker_reasoning_effort,
+            per_role_model_overrides_json={},
+            per_role_reasoning_overrides_json={},
+            adapter_command=profile.adapter_command,
+            adapter_args_json=list(profile.adapter_args_json or []),
+            runner_mode=project.runner_mode or profile.default_runner_mode or DEFAULT_RUNNER_MODE,
+            sandbox_mode=profile.sandbox_mode,
+            approval_policy=profile.approval_policy,
+            workspace_widgets_json=[],
+            approval_overrides_json={},
+            created_at=timestamp,
+            updated_at=timestamp,
+        )
+
+    def _ensure_project_settings(self, db: Session, project: Project) -> ProjectSettings:
         return get_or_create_project_settings(db, project)
+
+    def _swarm_preferences(self, project: Project) -> SwarmPreferences:
+        if project.swarm_preferences is not None:
+            return project.swarm_preferences
+        timestamp = utc_now()
+        return SwarmPreferences(
+            project_id=project.id,
+            optimization_mode=SWARM_DEFAULT_PREFERENCES["optimization_mode"],
+            swarm_aggressiveness=SWARM_DEFAULT_PREFERENCES["swarm_aggressiveness"],
+            max_agents=SWARM_DEFAULT_PREFERENCES["max_agents"],
+            require_approval_above_agent_count=SWARM_DEFAULT_PREFERENCES["require_approval_above_agent_count"],
+            allow_dynamic_spawning=SWARM_DEFAULT_PREFERENCES["allow_dynamic_spawning"],
+            allow_dynamic_retirement=SWARM_DEFAULT_PREFERENCES["allow_dynamic_retirement"],
+            docs_depth=SWARM_DEFAULT_PREFERENCES["docs_depth"],
+            testing_depth=SWARM_DEFAULT_PREFERENCES["testing_depth"],
+            created_at=timestamp,
+            updated_at=timestamp,
+        )
+
+    def _ensure_swarm_preferences(self, db: Session, project: Project) -> SwarmPreferences:
+        preferences = project.swarm_preferences
+        if preferences is not None:
+            return preferences
+        preferences = self._swarm_preferences(project)
+        db.add(preferences)
+        db.flush()
+        project.swarm_preferences = preferences
+        return preferences
+
+    def _serialize_swarm_preferences(self, preferences: SwarmPreferences) -> dict[str, Any]:
+        return {
+            "project_id": preferences.project_id,
+            "optimization_mode": preferences.optimization_mode,
+            "swarm_aggressiveness": preferences.swarm_aggressiveness,
+            "max_agents": preferences.max_agents,
+            "require_approval_above_agent_count": preferences.require_approval_above_agent_count,
+            "allow_dynamic_spawning": preferences.allow_dynamic_spawning,
+            "allow_dynamic_retirement": preferences.allow_dynamic_retirement,
+            "docs_depth": preferences.docs_depth,
+            "testing_depth": preferences.testing_depth,
+            "created_at": preferences.created_at,
+            "updated_at": preferences.updated_at,
+        }
+
+    def _ensure_agent_archetypes(self, db: Session) -> list[AgentArchetype]:
+        existing = {entry.name: entry for entry in db.scalars(select(AgentArchetype).order_by(AgentArchetype.name.asc()))}
+        created = False
+        for payload in AGENT_ARCHETYPE_CATALOG:
+            entry = existing.get(str(payload["name"]))
+            if entry is None:
+                entry = AgentArchetype(name=str(payload["name"]))
+                db.add(entry)
+                existing[entry.name] = entry
+                created = True
+            entry.purpose = str(payload["purpose"])
+            entry.default_guidelines = str(payload["default_guidelines"])
+            entry.default_tools_json = list(payload.get("default_tools_json") or [])
+            entry.default_permissions_json = dict(payload.get("default_permissions_json") or {})
+            entry.spawn_triggers_json = list(payload.get("spawn_triggers_json") or [])
+            entry.retirement_triggers_json = list(payload.get("retirement_triggers_json") or [])
+            entry.risk_profile = str(payload.get("risk_profile") or "medium")
+        if created:
+            db.flush()
+        return sorted(existing.values(), key=lambda item: item.name.lower())
+
+    def _archetype_lookup(self, db: Session) -> dict[str, AgentArchetype]:
+        return {entry.name: entry for entry in self._ensure_agent_archetypes(db)}
+
+    def _app_profile(self, db: Session) -> AppProfile:
+        return get_or_create_app_profile(db)
+
+    def _preferred_user_name(self, db: Session, project: Project | None = None) -> str:
+        profile = self._app_profile(db)
+        if profile.display_name:
+            return display_name_or_default(profile.display_name)
+        if project and project.created_by:
+            return display_name_or_default(project.created_by)
+        return display_name_or_default(None)
+
+    @staticmethod
+    def _slugify(value: str) -> str:
+        slug = re.sub(r"[^a-z0-9]+", "-", value.strip().lower()).strip("-")
+        return slug or "project"
+
+    def _effective_project_slug(self, project: Project) -> str:
+        return project.slug or self._slugify(project.name)
+
+    def _ensure_project_slug(self, project: Project) -> str:
+        if not project.slug:
+            project.slug = self._slugify(project.name)
+        return project.slug
+
+    def _project_route(self, project: Project) -> str:
+        slug = self._effective_project_slug(project)
+        return f"/projects/{project.id}/{slug}" if slug else f"/projects/{project.id}"
+
+    def _project_understanding(self, project: Project) -> ProjectUnderstanding:
+        if project.understanding is not None:
+            return project.understanding
+        return ProjectUnderstanding(
+            project_id=project.id,
+            summary="",
+            known_facts_json={},
+            unknowns_json={},
+            assumptions_json=[],
+            constraints_json=[],
+            confidence_by_category_json={},
+            updated_at=utc_now(),
+        )
+
+    def _ensure_project_understanding(self, db: Session, project: Project) -> ProjectUnderstanding:
+        understanding = project.understanding
+        if understanding is not None:
+            return understanding
+        understanding = ProjectUnderstanding(
+            project_id=project.id,
+            summary="",
+            known_facts_json={},
+            unknowns_json={},
+            assumptions_json=[],
+            constraints_json=[],
+            confidence_by_category_json={},
+            updated_at=utc_now(),
+        )
+        db.add(understanding)
+        db.flush()
+        project.understanding = understanding
+        return understanding
+
+    @staticmethod
+    def _normalize_interview_budget(question_budget: int | None, legacy_question_count: int | None = None) -> int:
+        raw_value = question_budget if question_budget is not None else legacy_question_count
+        if raw_value is None:
+            return 20
+        return max(0, min(500, int(raw_value)))
+
+    @staticmethod
+    def _normalize_confidence_map(payload: dict[str, Any] | None) -> dict[str, float]:
+        normalized: dict[str, float] = {}
+        for key, value in (payload or {}).items():
+            key_text = str(key).strip()
+            if not key_text:
+                continue
+            try:
+                numeric = float(value)
+            except (TypeError, ValueError):
+                continue
+            normalized[key_text] = max(0.0, min(1.0, numeric))
+        return normalized
+
+    @staticmethod
+    def _normalize_string_list(values: Any) -> list[str]:
+        if not isinstance(values, list):
+            return []
+        return [str(item).strip() for item in values if str(item).strip()]
+
+    @staticmethod
+    def _normalize_mapping_payload(values: Any) -> dict[str, Any]:
+        if not isinstance(values, dict):
+            return {}
+        normalized: dict[str, Any] = {}
+        for key, value in values.items():
+            key_text = str(key).strip()
+            if not key_text:
+                continue
+            normalized[key_text] = value
+        return normalized
+
+    @staticmethod
+    def _question_answer_text(question: InterviewQuestion) -> str:
+        if question.custom_answer:
+            return question.custom_answer.strip()
+        return (question.selected_text or "").strip()
+
+    @staticmethod
+    def _answered_interview_questions(session: InterviewSession) -> list[InterviewQuestion]:
+        return [question for question in session.questions if question.status == "answered" or question.selected_option_id or question.selected_option]
+
+    @staticmethod
+    def _pending_interview_questions(session: InterviewSession) -> list[InterviewQuestion]:
+        return sorted(
+            [
+                question
+                for question in session.questions
+                if question.status == "pending" and not question.selected_option_id and not question.selected_option
+            ],
+            key=lambda item: item.index,
+        )
+
+    def _default_understanding_payload(self, project: Project, *, question_budget: int) -> InterviewUnderstandingPayload:
+        return InterviewUnderstandingPayload(
+            summary=f"The manager is refining the project understanding for {project.name}.",
+            known_facts={
+                "project": [
+                    {"label": "Project title", "value": project.name},
+                    {"label": "Raw idea", "value": project.idea},
+                ]
+            },
+            unknowns={
+                "priority": [
+                    "The best first user-facing slice is not fully confirmed yet.",
+                    "Architecture and validation depth still depend on interview answers.",
+                ]
+            },
+            assumptions=(["The manager will proceed with explicit assumptions because the question budget is zero."] if question_budget == 0 else []),
+            constraints=[
+                f"Runner mode preference: {project.runner_mode}",
+                f"Manager mode preference: {project.manager_mode}",
+            ],
+            confidence_by_category={},
+        )
+
+    def _project_docs_summary(self, project: Project) -> dict[str, Any]:
+        docs_root = Path(project.docs_path) if project.docs_path else self._project_docs_dir(project)
+        if not docs_root.exists():
+            return {"docs_present": False, "snippets": []}
+
+        snippets: list[dict[str, str]] = []
+        for filename in ("PROJECT_BRIEF.md", "PRODUCT_VISION.md", "MVP_SCOPE.md", "ARCHITECTURE_NOTES.md", "README.md"):
+            path = docs_root / filename
+            if not path.exists() or not path.is_file():
+                continue
+            try:
+                content = path.read_text(encoding="utf-8", errors="ignore").strip()
+            except OSError:
+                continue
+            if not content:
+                continue
+            snippets.append({"filename": filename, "excerpt": content[:700]})
+            if len(snippets) >= 3:
+                break
+        return {"docs_present": bool(snippets), "snippets": snippets}
+
+    def _workspace_manifest_summary(self, project: Project) -> dict[str, Any]:
+        workspace = Path(project.workspace_path)
+        if not workspace.exists():
+            return {"exists": False, "detected_files": [], "top_level_directories": [], "entry_count": 0}
+        detected_files = [
+            name
+            for name in (
+                "README.md",
+                "package.json",
+                "vite.config.ts",
+                "vite.config.js",
+                "pyproject.toml",
+                "requirements.txt",
+                "Cargo.toml",
+                "go.mod",
+                "docker-compose.yml",
+                "Dockerfile",
+            )
+            if (workspace / name).exists()
+        ]
+        top_level_directories = sorted(
+            [
+                item.name
+                for item in workspace.iterdir()
+                if item.is_dir() and item.name not in {".git", ".venv", "node_modules", "__pycache__"}
+            ]
+        )[:12]
+        return {
+            "exists": True,
+            "detected_files": detected_files,
+            "top_level_directories": top_level_directories,
+            "entry_count": len(top_level_directories) + len(detected_files),
+        }
+
+    async def _interview_context_payload(self, db: Session, project: Project, session: InterviewSession | None = None) -> dict[str, Any]:
+        settings = self._project_settings(db, project)
+        status = await self.get_system_status(db, project)
+        tool_catalog = self.get_tool_catalog(db)
+        understanding = self._project_understanding(project)
+        active_session = session or self._latest_session(db, project.id)
+        answered_questions = []
+        if active_session is not None:
+            answered_questions = [
+                {
+                    "index": question.index,
+                    "question": question.question,
+                    "category": question.category,
+                    "answer": self._question_answer_text(question),
+                    "selected_option_id": question.selected_option_id or question.selected_option,
+                }
+                for question in sorted(self._answered_interview_questions(active_session), key=lambda item: item.index)
+            ]
+
+        provider_status = next(
+            (
+                item
+                for item in status.get("provider_statuses", [])
+                if str(item.get("provider")) == str(status.get("selected_provider"))
+            ),
+            {},
+        )
+        return {
+            "project_title": project.name,
+            "raw_idea": project.idea,
+            "workspace_path": project.workspace_path,
+            "docs_path": project.docs_path,
+            "existing_docs_summary": self._project_docs_summary(project),
+            "workspace_manifest_summary": self._workspace_manifest_summary(project),
+            "settings": {
+                "provider": settings.provider,
+                "manager_model": settings.manager_model,
+                "default_worker_model": settings.default_worker_model,
+                "manager_reasoning_effort": settings.manager_reasoning_effort,
+                "default_worker_reasoning_effort": settings.default_worker_reasoning_effort,
+                "runner_mode": settings.runner_mode,
+                "sandbox_mode": settings.sandbox_mode,
+                "approval_policy": settings.approval_policy,
+            },
+            "available_tools": [
+                {
+                    "id": item["id"],
+                    "name": item["name"],
+                    "availability": item["availability"],
+                    "permission_policy": item["permission_policy"],
+                    "risk_level": item["risk_level"],
+                }
+                for item in tool_catalog
+            ],
+            "provider_status": {
+                "selected_provider": status.get("selected_provider"),
+                "selected_manager_model": status.get("selected_manager_model"),
+                "selected_default_worker_model": status.get("selected_default_worker_model"),
+                "effective_runner_mode": status.get("effective_runner_mode"),
+                "authenticated": status.get("authenticated"),
+                "available_models": list(status.get("available_models", [])),
+                "provider_notes": list(provider_status.get("notes", [])) if isinstance(provider_status, dict) else [],
+            },
+            "previous_answers": answered_questions,
+            "known_facts": dict(understanding.known_facts_json or {}),
+            "unknowns": dict(understanding.unknowns_json or {}),
+            "assumptions": list(understanding.assumptions_json or []),
+            "constraints": list(understanding.constraints_json or []),
+            "confidence_by_category": dict(understanding.confidence_by_category_json or {}),
+        }
+
+    async def _swarm_context_payload(self, db: Session, project: Project, preferences: SwarmPreferences) -> dict[str, Any]:
+        settings = self._project_settings(db, project)
+        understanding = self._project_understanding(project)
+        latest_plan = self._latest_plan(db, project.id)
+        manifest = self._workspace_manifest_summary(project)
+        status = await self.get_system_status(db, project)
+        current_agents = [
+            {
+                "name": agent.name,
+                "archetype": agent.archetype,
+                "status": agent.status,
+                "mission": agent.mission,
+                "locked_paths": list(agent.locked_paths_json or []),
+            }
+            for agent in db.scalars(select(Agent).where(Agent.project_id == project.id, Agent.kind == "worker").order_by(Agent.id.asc()))
+        ]
+        return {
+            "project": {
+                "name": project.name,
+                "idea": project.idea,
+                "status": project.status,
+                "workspace_path": project.workspace_path,
+                "docs_path": project.docs_path,
+                "latest_milestone": project.latest_milestone,
+            },
+            "preferences": self._serialize_swarm_preferences(preferences),
+            "settings": {
+                "provider": settings.provider,
+                "runner_mode": settings.runner_mode,
+                "sandbox_mode": settings.sandbox_mode,
+                "approval_policy": settings.approval_policy,
+                "manager_model": settings.manager_model,
+                "default_worker_model": settings.default_worker_model,
+            },
+            "understanding": self.get_project_understanding(project),
+            "docs_summary": self._project_docs_summary(project),
+            "repo_summary": manifest,
+            "plan_summary": latest_plan.summary_json if latest_plan else None,
+            "available_tools": [
+                {
+                    "id": item["id"],
+                    "availability": item["availability"],
+                    "permission_policy": item["permission_policy"],
+                    "risk_level": item["risk_level"],
+                }
+                for item in self.get_tool_catalog(db)
+            ],
+            "provider_status": {
+                "selected_provider": status.get("selected_provider"),
+                "effective_runner_mode": status.get("effective_runner_mode"),
+                "authenticated": status.get("authenticated"),
+                "available_models": list(status.get("available_models", [])),
+            },
+            "current_agents": current_agents,
+            "open_tasks": [
+                {"title": task.title, "status": task.status, "agent_role": task.agent_role}
+                for task in db.scalars(select(Task).where(Task.project_id == project.id).order_by(Task.priority.asc(), Task.id.asc()))
+            ],
+        }
+
+    @staticmethod
+    def _titleize_path_label(value: str) -> str:
+        parts = [part for part in re.split(r"[^a-zA-Z0-9]+", value) if part]
+        return " ".join(part[:1].upper() + part[1:] for part in parts) or "General"
+
+    def _repo_path_buckets(self, manifest: dict[str, Any]) -> dict[str, list[str]]:
+        directories = [str(item) for item in manifest.get("top_level_directories", []) if str(item).strip()]
+        frontend = [item for item in directories if item.lower() in {"app", "src", "ui", "web", "frontend", "client", "components"}]
+        backend = [item for item in directories if item.lower() in {"server", "backend", "api", "services", "worker"}]
+        docs = [item for item in directories if "doc" in item.lower() or item.lower() in {"examples", "guides"}]
+        tests = [item for item in directories if "test" in item.lower() or "spec" in item.lower() or item.lower() == "e2e"]
+        data = [item for item in directories if item.lower() in {"data", "db", "database", "migrations", "sql"}]
+        ops = [item for item in directories if item.lower() in {"ops", "infra", "deploy", "scripts", ".github"}]
+        subsystems = [item for item in directories if item not in {".github"}][:5]
+        if not frontend and "package.json" in manifest.get("detected_files", []):
+            frontend = ["src"]
+        if not backend and any(item in manifest.get("detected_files", []) for item in {"pyproject.toml", "requirements.txt", "go.mod"}):
+            backend = ["server"]
+        if not docs:
+            docs = ["docs", "README.md"]
+        if not tests:
+            tests = ["tests"]
+        return {
+            "frontend": frontend[:3],
+            "backend": backend[:3],
+            "docs": docs[:5],
+            "tests": tests[:3],
+            "data": data[:3],
+            "ops": ops[:3],
+            "subsystems": subsystems[:5] or ["src"],
+        }
+
+    def _choose_swarm_mode(
+        self,
+        project: Project,
+        preferences: SwarmPreferences,
+        understanding: ProjectUnderstanding,
+        manifest: dict[str, Any],
+    ) -> str:
+        if preferences.optimization_mode != "manager_decides":
+            return preferences.optimization_mode
+        idea = f"{project.name}\n{project.idea}".lower()
+        unknowns = len(understanding.unknowns_json or {})
+        if preferences.docs_depth in {"detailed", "publishable"} or any(token in idea for token in {"docs", "documentation", "guide", "developer portal"}):
+            return "documentation_heavy"
+        if preferences.testing_depth in {"extensive", "release_grade"} or any(token in idea for token in {"security", "auth", "payments", "compliance"}):
+            return "high_quality"
+        if len(manifest.get("top_level_directories", [])) >= 6:
+            return "massive_codebase"
+        if unknowns >= 3 or project.status in {"draft", "plan_ready"}:
+            return "research_planning"
+        if preferences.swarm_aggressiveness in {"large", "maximum"} or any(token in idea for token in {"mvp", "prototype", "ship fast", "quickly"}):
+            return "fastest_build"
+        return "balanced"
+
+    def _swarm_capacity_limit(self, preferences: SwarmPreferences) -> int:
+        aggressiveness_cap = {
+            "small": 4,
+            "medium": 6,
+            "large": 8,
+            "maximum": 12,
+            "manager_decides": preferences.max_agents,
+        }.get(preferences.swarm_aggressiveness, preferences.max_agents)
+        return max(1, min(preferences.max_agents, aggressiveness_cap))
+
+    def _make_swarm_spec(
+        self,
+        archetype: str,
+        name: str,
+        mission: str,
+        model_policy: str,
+        allowed_paths: list[str],
+        forbidden_paths: list[str],
+        spawn_phase: str,
+        retire_when: str,
+        priority: int,
+        toolset: list[str] | None = None,
+    ) -> ManagerSwarmSpecPayload:
+        deduped_allowed: list[str] = []
+        for item in allowed_paths:
+            text = str(item).strip()
+            if text and text not in deduped_allowed:
+                deduped_allowed.append(text)
+        deduped_forbidden: list[str] = []
+        for item in forbidden_paths:
+            text = str(item).strip()
+            if text and text not in deduped_forbidden and text not in deduped_allowed:
+                deduped_forbidden.append(text)
+        return ManagerSwarmSpecPayload(
+            archetype=archetype,
+            name=name,
+            mission=mission,
+            model_policy=model_policy,
+            toolset=list(toolset or []),
+            allowed_paths=deduped_allowed,
+            forbidden_paths=deduped_forbidden,
+            spawn_phase=spawn_phase,
+            retire_when=retire_when,
+            priority=priority,
+        )
+
+    def _deterministic_swarm_plan(
+        self,
+        project: Project,
+        preferences: SwarmPreferences,
+        manifest: dict[str, Any],
+        understanding: ProjectUnderstanding,
+        latest_plan: Plan | None = None,
+        *,
+        goal_override: str | None = None,
+        scale_hint: str | None = None,
+    ) -> ManagerSwarmPlanPayload:
+        mode = self._choose_swarm_mode(project, preferences, understanding, manifest)
+        buckets = self._repo_path_buckets(manifest)
+        capacity = self._swarm_capacity_limit(preferences)
+        goal = goal_override or f"Plan the most useful worker swarm for {project.name} during {project.status}."
+        specs: list[ManagerSwarmSpecPayload] = []
+        bottlenecks: list[str] = []
+        validation_strategy: list[str] = [
+            "Keep validation aligned with the swarm mode and explicit project risk.",
+            "Record what was actually tested, reviewed, or deferred.",
+        ]
+
+        def add(spec: ManagerSwarmSpecPayload) -> None:
+            if len(specs) < capacity:
+                specs.append(spec)
+
+        def frontend_paths() -> list[str]:
+            return buckets["frontend"] or ["src"]
+
+        def backend_paths() -> list[str]:
+            return buckets["backend"] or ["server"]
+
+        def docs_paths() -> list[str]:
+            return buckets["docs"] or ["docs", "README.md"]
+
+        def test_paths() -> list[str]:
+            return buckets["tests"] or ["tests"]
+
+        if mode == "fastest_build":
+            add(
+                self._make_swarm_spec(
+                    archetype="feature",
+                    name="Vertical Slice Builder",
+                    mission="Own the first usable end-to-end slice and keep it runnable early.",
+                    model_policy="Prefer the default worker model with medium reasoning for fast iteration.",
+                    allowed_paths=frontend_paths(),
+                    forbidden_paths=docs_paths(),
+                    spawn_phase="build_start",
+                    retire_when="The first runnable vertical slice is merged and demoable.",
+                    priority=10,
+                    toolset=["feature_work", "tests"],
+                )
+            )
+            add(
+                self._make_swarm_spec(
+                    archetype="backend",
+                    name="Core Flow Builder",
+                    mission="Implement the main backend or domain flow that unblocks the MVP path.",
+                    model_policy="Prefer the default worker model with medium reasoning.",
+                    allowed_paths=backend_paths(),
+                    forbidden_paths=docs_paths(),
+                    spawn_phase="build_start",
+                    retire_when="The core flow behind the vertical slice is stable.",
+                    priority=15,
+                    toolset=["api_editing", "tests"],
+                )
+            )
+            add(
+                self._make_swarm_spec(
+                    archetype="integration",
+                    name="Slice Integrator",
+                    mission="Bridge UI and backend edges once the first slice exists.",
+                    model_policy="Prefer the default worker model with medium reasoning.",
+                    allowed_paths=frontend_paths() + backend_paths(),
+                    forbidden_paths=docs_paths(),
+                    spawn_phase="after_first_slice",
+                    retire_when="The primary workflow can be demonstrated without manual stitching.",
+                    priority=25,
+                    toolset=["integration_work"],
+                )
+            )
+            add(
+                self._make_swarm_spec(
+                    archetype="test",
+                    name="Smoke Test Runner",
+                    mission="Validate the fast slice without slowing the build loop with excessive ceremony.",
+                    model_policy="Prefer a careful model only when commands need explanation.",
+                    allowed_paths=test_paths(),
+                    forbidden_paths=[],
+                    spawn_phase="after_first_slice",
+                    retire_when="Smoke validation is recorded and obvious breakages are fixed or documented.",
+                    priority=35,
+                    toolset=["test_runner", "smoke_checks"],
+                )
+            )
+            bottlenecks.extend(
+                [
+                    "Parallel implementation will stall if UI and backend paths are not kept separate.",
+                    "Fast slicing can outrun validation if the smoke tester is starved too long.",
+                ]
+            )
+            validation_strategy.insert(0, "Prioritize a runnable vertical slice, then smoke-check it immediately.")
+        elif mode == "high_quality":
+            add(self._make_swarm_spec("architect", "Architecture Steward", "Stabilize boundaries before high-scrutiny work fans out.", "Prefer the default worker model with higher reasoning.", buckets["subsystems"][:2], docs_paths(), "plan_review", "Architecture and path ownership are accepted.", 10, ["repo_mapping", "design_notes"]))
+            add(self._make_swarm_spec("feature", "Implementation Specialist", "Build the main feature slice with explicit review handoff points.", "Prefer the default worker model with medium reasoning.", frontend_paths() + backend_paths(), docs_paths(), "build_start", "Main implementation slice is complete and in review.", 20, ["feature_work", "tests"]))
+            add(self._make_swarm_spec("test", "Validation Specialist", "Expand test depth and regression coverage before handoff.", "Prefer a more careful model when explaining failures.", test_paths() + backend_paths(), [], "build_start", "Validation coverage matches the requested quality bar.", 30, ["test_runner", "smoke_checks"]))
+            add(self._make_swarm_spec("reviewer", "Code Review Specialist", "Review risky changes for regressions, gaps, and weak assumptions.", "Prefer the default worker model with higher reasoning.", frontend_paths() + backend_paths(), [], "after_first_implementation", "Review queue is cleared or converted into specific follow-ups.", 35, ["code_review", "diff_analysis"]))
+            add(self._make_swarm_spec("security", "Security Review Specialist", "Audit auth, secrets, and approval-sensitive flows.", "Prefer a careful reasoning profile for security-sensitive review.", backend_paths() + buckets["data"], [], "after_architecture", "Security-sensitive decisions are documented and reviewed.", 40, ["security_review", "config_audit"]))
+            if preferences.docs_depth != "minimal":
+                add(self._make_swarm_spec("release_handoff", "Release Handoff Writer", "Prepare evidence-backed handoff notes and validation summary.", "Prefer the default worker model with medium reasoning.", docs_paths(), frontend_paths() + backend_paths(), "validation", "Handoff notes and run instructions are complete.", 45, ["handoff_packaging", "release_notes"]))
+            bottlenecks.extend(
+                [
+                    "Review and security feedback can bottleneck the main implementation if scope stays fuzzy.",
+                    "High-quality mode slows down when tests and implementation touch the same unstable paths.",
+                ]
+            )
+            validation_strategy.insert(0, "Require review, security, and testing coverage before calling the build ready.")
+        elif mode == "documentation_heavy":
+            add(self._make_swarm_spec("feature", "Core Builder", "Ship the working slice that the documentation will explain.", "Prefer the default worker model with medium reasoning.", frontend_paths() + backend_paths(), docs_paths(), "build_start", "The documented product path is real and stable enough to describe.", 10, ["feature_work"]))
+            add(self._make_swarm_spec("docs", "README Writer", "Own the quick-start README and project orientation copy.", "Prefer the default worker model for concise docs writing.", ["README.md", *docs_paths()], frontend_paths() + backend_paths(), "build_start", "README and setup instructions are accurate.", 20, ["docs_editing"]))
+            add(self._make_swarm_spec("docs", "User Guide Writer", "Document user-facing workflows and examples.", "Prefer the default worker model for end-user docs.", docs_paths(), backend_paths(), "after_first_slice", "User workflows are documented with realistic examples.", 25, ["docs_editing"]))
+            add(self._make_swarm_spec("docs", "API Docs Writer", "Document API behavior, payloads, and constraints if the project has backend flows.", "Prefer the default worker model for reference docs.", docs_paths() + backend_paths(), frontend_paths(), "after_backend_stabilizes", "API docs reflect the current backend behavior.", 30, ["docs_editing"]))
+            add(self._make_swarm_spec("docs", "Example Flow Writer", "Create example snippets and handoff-ready walkthroughs.", "Prefer the default worker model for examples and usage notes.", ["examples", *docs_paths()], backend_paths(), "validation", "Examples are usable and handoff-ready.", 35, ["docs_editing", "handoff_notes"]))
+            add(self._make_swarm_spec("reviewer", "Docs Reviewer", "Catch stale claims, missing steps, and confusing explanations.", "Prefer the default worker model with higher reasoning.", docs_paths(), [], "validation", "Documentation review comments are closed.", 40, ["code_review"]))
+            bottlenecks.extend(
+                [
+                    "Documentation quality will collapse if the product path is still moving underneath multiple writers.",
+                    "API docs should wait until backend behavior stabilizes enough to avoid rewriting everything twice.",
+                ]
+            )
+            validation_strategy.insert(0, "Validate that every major doc artifact maps to a real runnable or reviewable product path.")
+        elif mode == "research_planning":
+            add(self._make_swarm_spec("research", "Discovery Researcher", "Reduce the highest-impact unknowns before broad implementation begins.", "Prefer the default worker model with higher reasoning.", docs_paths() + buckets["subsystems"][:2], frontend_paths() + backend_paths(), "plan_review", "The biggest architectural and scope unknowns are reduced.", 10, ["research", "option_analysis"]))
+            add(self._make_swarm_spec("planner", "Scope Planner", "Turn research and interview signals into milestone-safe work packages.", "Prefer the default worker model with medium reasoning.", docs_paths(), frontend_paths() + backend_paths(), "plan_review", "Milestones and path-safe tasks are clear enough for worker execution.", 15, ["task_planning", "doc_updates"]))
+            add(self._make_swarm_spec("architect", "System Architect", "Decide boundaries and ownership before spawning multiple builders.", "Prefer the default worker model with higher reasoning.", buckets["subsystems"][:3], docs_paths(), "plan_review", "Architecture and ownership are explicit enough for execution.", 20, ["repo_mapping", "design_notes"]))
+            add(self._make_swarm_spec("feature", "Prototype Builder", "Prepare a minimal implementation spike once research converges.", "Prefer the default worker model with medium reasoning.", frontend_paths() + backend_paths(), docs_paths(), "after_architecture", "The first prototype confirms the chosen direction.", 30, ["feature_work"]))
+            bottlenecks.extend(
+                [
+                    "Research-heavy mode stalls if implementation starts before decisions actually converge.",
+                    "The planner and architect need current docs or they will optimize stale assumptions.",
+                ]
+            )
+            validation_strategy.insert(0, "Treat architecture confidence as the gate before aggressive build parallelism.")
+        elif mode == "massive_codebase":
+            add(self._make_swarm_spec("research", "Repo Mapper", "Map the repo before anyone starts broad edits.", "Prefer the default worker model with higher reasoning.", buckets["subsystems"], [], "plan_review", "Subsystem ownership is mapped and documented.", 10, ["repo_mapping"]))
+            add(self._make_swarm_spec("architect", "Ownership Architect", "Set path ownership, review gates, and interface boundaries.", "Prefer the default worker model with higher reasoning.", buckets["subsystems"], [], "plan_review", "Path strategy is explicit and accepted.", 15, ["design_notes"]))
+            for index, subsystem in enumerate(buckets["subsystems"][: max(1, min(3, capacity - 3))], start=1):
+                add(
+                    self._make_swarm_spec(
+                        archetype="feature",
+                        name=f"{self._titleize_path_label(subsystem)} Subsystem Builder",
+                        mission=f"Own implementation work under {subsystem} without crossing subsystem boundaries.",
+                        model_policy="Prefer the default worker model with medium reasoning and strict path ownership.",
+                        allowed_paths=[subsystem],
+                        forbidden_paths=[item for item in buckets["subsystems"] if item != subsystem],
+                        spawn_phase="after_path_mapping",
+                        retire_when=f"The {subsystem} slice is complete or handed off for review.",
+                        priority=20 + index * 5,
+                        toolset=["feature_work", "tests"],
+                    )
+                )
+            add(self._make_swarm_spec("integration", "Subsystem Integrator", "Resolve contract edges between subsystem builders.", "Prefer the default worker model with higher reasoning.", buckets["subsystems"], docs_paths(), "after_subsystem_progress", "Cross-subsystem interfaces are stable.", 45, ["integration_work"]))
+            add(self._make_swarm_spec("reviewer", "Regression Reviewer", "Review boundary changes and path conflicts before they spread.", "Prefer the default worker model with higher reasoning.", buckets["subsystems"], [], "validation", "Boundary-risk review is complete.", 50, ["code_review"]))
+            bottlenecks.extend(
+                [
+                    "Without strict path ownership, subsystem builders will collide and waste time.",
+                    "Integration becomes the choke point once subsystem work lands in parallel.",
+                ]
+            )
+            validation_strategy.insert(0, "Validate subsystem contracts and path ownership before parallel changes merge.")
+        else:
+            add(self._make_swarm_spec("planner", "Execution Planner", "Keep milestones and task routing coherent while the build moves.", "Prefer the default worker model with medium reasoning.", docs_paths(), frontend_paths() + backend_paths(), "plan_review", "Milestone routing is stable enough to hand off.", 10, ["task_planning"]))
+            add(self._make_swarm_spec("frontend", "UI Workflow Builder", "Own the user-facing surface and key interaction flow.", "Prefer the default worker model with medium reasoning.", frontend_paths(), backend_paths(), "build_start", "Core UI flow is implemented and reviewable.", 20, ["ui_editing"]))
+            add(self._make_swarm_spec("backend", "Service Flow Builder", "Own the main backend or service logic for the MVP.", "Prefer the default worker model with medium reasoning.", backend_paths(), frontend_paths(), "build_start", "Core service behavior is stable enough for review.", 25, ["api_editing"]))
+            add(self._make_swarm_spec("test", "Validation Specialist", "Keep testing honest without overwhelming the main build loop.", "Prefer a careful model when reporting failures.", test_paths() + backend_paths(), [], "after_first_slice", "The main user workflow has explicit validation evidence.", 35, ["test_runner"]))
+            if preferences.docs_depth != "minimal":
+                add(self._make_swarm_spec("docs", "Handoff Writer", "Keep handoff docs current enough that they do not become an afterthought.", "Prefer the default worker model for concise operational docs.", docs_paths(), frontend_paths() + backend_paths(), "validation", "Handoff notes and run instructions are complete.", 40, ["docs_editing", "handoff_notes"]))
+            bottlenecks.extend(
+                [
+                    "Balanced mode still needs clear ownership or the build will drift into parallel chaos.",
+                    "Validation and docs can lag if implementation keeps changing late.",
+                ]
+            )
+            validation_strategy.insert(0, "Keep one validation specialist close enough to the main build to catch regressions early.")
+
+        if preferences.testing_depth in {"extensive", "release_grade"} and all(spec.archetype != "security" for spec in specs) and len(specs) < capacity:
+            add(self._make_swarm_spec("security", "Release Risk Auditor", "Review high-risk auth, secrets, and approval-sensitive behavior before handoff.", "Prefer a careful reasoning profile for release-grade risk checks.", backend_paths() + buckets["data"], [], "validation", "Release-grade risks are either closed or documented.", 60, ["security_review"]))
+        if preferences.docs_depth == "publishable" and len([spec for spec in specs if spec.archetype == "docs"]) < 3 and len(specs) < capacity:
+            add(self._make_swarm_spec("docs", "Developer Guide Writer", "Document internal development and extension flows for maintainers.", "Prefer the default worker model for structured docs.", docs_paths(), frontend_paths() + backend_paths(), "validation", "Developer-facing docs are publishable and current.", 55, ["docs_editing"]))
+
+        if scale_hint == "up" and len(specs) < capacity:
+            add(self._make_swarm_spec("feature", "Overflow Implementation Agent", "Pick up an isolated slice when the current bottleneck is raw implementation throughput.", "Prefer the default worker model with medium reasoning.", frontend_paths() or backend_paths(), docs_paths(), "build_start", "The overflow slice is complete or unnecessary.", 70, ["feature_work"]))
+            bottlenecks.insert(0, "Scale-up requested: implementation throughput was judged more valuable than tighter coordination.")
+        if scale_hint == "down" and len(specs) > 2:
+            specs = specs[:-1]
+            bottlenecks.insert(0, "Scale-down requested: retire the least critical parallel lane before it turns into overhead.")
+
+        recommended = max(1, min(capacity, len(specs)))
+        coordination_risk = "high" if recommended >= 7 or mode == "massive_codebase" else "medium" if recommended >= 5 or mode in {"documentation_heavy", "high_quality"} else "low"
+        path_conflict_risk = "high" if mode == "massive_codebase" else "medium" if any(len(spec.allowed_paths) > 1 for spec in specs) else "low"
+        strategy_summary = (
+            f"{self._titleize_path_label(mode.replace('_', ' '))} mode with {recommended} worker lane(s). "
+            f"Bias toward {('throughput' if mode == 'fastest_build' else 'review depth' if mode == 'high_quality' else 'documentation quality' if mode == 'documentation_heavy' else 'research clarity' if mode == 'research_planning' else 'subsystem ownership' if mode == 'massive_codebase' else 'balanced execution')} "
+            f"while keeping path ownership explicit."
+        )
+        return ManagerSwarmPlanPayload(
+            mode=mode,
+            goal=goal,
+            recommended_agent_count=recommended,
+            coordination_risk=coordination_risk,
+            path_conflict_risk=path_conflict_risk,
+            expected_bottlenecks=bottlenecks[:5],
+            strategy_summary=strategy_summary,
+            validation_strategy=validation_strategy[:4],
+            specs=specs[:capacity],
+        )
+
+    def _update_project_understanding(
+        self,
+        db: Session,
+        project: Project,
+        payload: InterviewUnderstandingPayload,
+    ) -> ProjectUnderstanding:
+        understanding = self._ensure_project_understanding(db, project)
+        understanding.summary = payload.summary.strip()
+        understanding.known_facts_json = self._normalize_mapping_payload(payload.known_facts)
+        understanding.unknowns_json = self._normalize_mapping_payload(payload.unknowns)
+        understanding.assumptions_json = self._normalize_string_list(payload.assumptions)
+        understanding.constraints_json = self._normalize_string_list(payload.constraints)
+        understanding.confidence_by_category_json = self._normalize_confidence_map(payload.confidence_by_category)
+        understanding.updated_at = utc_now()
+        db.flush()
+        self.events.publish(db, project.id, "project_understanding.updated", {"project_id": project.id})
+        return understanding
+
+    def _mirror_session_understanding(self, session: InterviewSession, understanding: ProjectUnderstanding) -> None:
+        session.confidence_json = dict(understanding.confidence_by_category_json or {})
+        session.known_facts_json = dict(understanding.known_facts_json or {})
+        session.unknowns_json = dict(understanding.unknowns_json or {})
+
+    def _refresh_interview_session_state(self, session: InterviewSession, *, project: Project | None = None) -> InterviewSession:
+        pending = self._pending_interview_questions(session)
+        answered = sorted(self._answered_interview_questions(session), key=lambda item: item.index)
+        session.current_index = pending[0].index if pending else min(len(answered), max(session.question_count - 1, 0))
+        if session.status != "superseded":
+            if pending:
+                session.status = "in_progress"
+                if project is not None:
+                    project.status = "interview_in_progress"
+            elif session.status == "completed":
+                session.status = "completed"
+                if project is not None:
+                    project.status = "interview_complete"
+            elif project is not None:
+                project.status = "interview_in_progress"
+        return session
+
+    def _build_interview_summary(self, project: Project, understanding: ProjectUnderstanding) -> str:
+        if understanding.summary.strip():
+            return understanding.summary.strip()
+        known_count = sum(len(value) for value in understanding.known_facts_json.values() if isinstance(value, list))
+        if known_count:
+            return f"The manager has captured {known_count} project decisions for {project.name}."
+        return f"The manager is still collecting the minimum signal required to plan {project.name}."
+
+    def _append_local_answer_to_understanding(self, understanding: ProjectUnderstanding, question: InterviewQuestion) -> None:
+        category = (question.category or "core features").strip()
+        known_facts = dict(understanding.known_facts_json or {})
+        category_entries = list(known_facts.get(category, [])) if isinstance(known_facts.get(category), list) else []
+        category_entries.append(
+            {
+                "question": question.question,
+                "answer": self._question_answer_text(question),
+                "selected_option_id": question.selected_option_id or question.selected_option,
+                "affects": list(question.affects_json or []),
+            }
+        )
+        known_facts[category] = category_entries
+        understanding.known_facts_json = known_facts
+
+        confidence = dict(understanding.confidence_by_category_json or {})
+        confidence[category] = max(float(confidence.get(category, 0.0)), 0.65 if question.custom_answer else 0.55)
+        understanding.confidence_by_category_json = self._normalize_confidence_map(confidence)
+        understanding.updated_at = utc_now()
+        understanding.summary = self._build_interview_summary(question.session.project, understanding)
+
+    def _serialize_understanding_record(self, project: Project, understanding: ProjectUnderstanding) -> dict[str, Any]:
+        return {
+            "project_id": project.id,
+            "summary": self._build_interview_summary(project, understanding),
+            "known_facts_json": dict(understanding.known_facts_json or {}),
+            "unknowns_json": dict(understanding.unknowns_json or {}),
+            "assumptions_json": list(understanding.assumptions_json or []),
+            "constraints_json": list(understanding.constraints_json or []),
+            "confidence_by_category_json": self._normalize_confidence_map(dict(understanding.confidence_by_category_json or {})),
+            "updated_at": understanding.updated_at,
+        }
+
+    def _serialize_widget_definition(self, definition: WidgetDefinition) -> dict[str, Any]:
+        return {
+            "id": definition.id,
+            "widget_type": definition.widget_type,
+            "title": definition.title,
+            "description": definition.description,
+            "scope": definition.scope,
+            "default_area": definition.default_area,
+            "default_size": definition.default_size,
+            "category": definition.category,
+            "requires_project": definition.requires_project,
+            "requires_tool": definition.requires_tool,
+            "coming_soon": definition.coming_soon,
+            "risk_level": definition.risk_level,
+        }
+
+    def _serialize_widget_instance(self, instance: WidgetInstance) -> dict[str, Any]:
+        return {
+            "id": instance.id,
+            "scope": instance.scope,
+            "project_id": instance.project_id,
+            "widget_type": instance.widget_type,
+            "area": instance.area,
+            "order_index": instance.order_index,
+            "size": instance.size,
+            "collapsed": instance.collapsed,
+            "enabled": instance.enabled,
+            "config_json": dict(instance.config_json or {}),
+            "created_at": instance.created_at,
+            "updated_at": instance.updated_at,
+        }
+
+    def _serialize_widget_data(
+        self,
+        instance: WidgetInstance,
+        *,
+        status: str,
+        data_json: dict[str, Any] | None = None,
+        empty_state: str | None = None,
+        warnings_json: list[str] | None = None,
+        updated_at: datetime | None = None,
+    ) -> dict[str, Any]:
+        definition = WIDGET_CATALOG_BY_TYPE.get(instance.widget_type, {})
+        return {
+            "widget_instance_id": instance.id,
+            "widget_type": instance.widget_type,
+            "title": str(definition.get("title") or instance.widget_type),
+            "status": status,
+            "data_json": dict(data_json or {}),
+            "empty_state": empty_state,
+            "warnings_json": list(warnings_json or []),
+            "updated_at": updated_at or instance.updated_at,
+        }
+
+    def _ensure_widget_definitions(self, db: Session) -> list[WidgetDefinition]:
+        existing = {item.widget_type: item for item in db.scalars(select(WidgetDefinition).order_by(WidgetDefinition.widget_type.asc()))}
+        changed = False
+        for payload in WIDGET_CATALOG:
+            widget_type = str(payload["widget_type"])
+            definition = existing.get(widget_type)
+            if definition is None:
+                definition = WidgetDefinition(widget_type=widget_type)
+                db.add(definition)
+                existing[widget_type] = definition
+                changed = True
+            definition.title = str(payload["title"])
+            definition.description = str(payload["description"])
+            definition.scope = str(payload["scope"])
+            definition.default_area = str(payload["default_area"])
+            definition.default_size = str(payload["default_size"])
+            definition.category = str(payload["category"])
+            definition.requires_project = bool(payload.get("requires_project", False))
+            definition.requires_tool = str(payload["requires_tool"]) if payload.get("requires_tool") else None
+            definition.coming_soon = bool(payload.get("coming_soon", False))
+            definition.risk_level = str(payload["risk_level"]) if payload.get("risk_level") else None
+        if changed:
+            db.flush()
+        return sorted(existing.values(), key=lambda item: (item.scope, item.title.lower()))
+
+    def _widget_catalog_for_scope(self, db: Session, scope: str) -> list[dict[str, Any]]:
+        return [
+            self._serialize_widget_definition(definition)
+            for definition in self._ensure_widget_definitions(db)
+            if definition.scope == scope
+        ]
+
+    def _widget_instances_query(self, db: Session, *, scope: str, project_id: int | None) -> list[WidgetInstance]:
+        query = select(WidgetInstance).where(WidgetInstance.scope == scope)
+        if project_id is None:
+            query = query.where(WidgetInstance.project_id.is_(None))
+        else:
+            query = query.where(WidgetInstance.project_id == project_id)
+        query = query.order_by(WidgetInstance.area.asc(), WidgetInstance.order_index.asc(), WidgetInstance.id.asc())
+        return list(db.scalars(query))
+
+    def _normalize_widget_order(self, db: Session, *, scope: str, project_id: int | None) -> None:
+        counters: dict[str, int] = {}
+        for instance in self._widget_instances_query(db, scope=scope, project_id=project_id):
+            next_index = counters.get(instance.area, 0)
+            if instance.order_index != next_index:
+                instance.order_index = next_index
+            counters[instance.area] = next_index + 1
+        db.flush()
+
+    def _seed_widget_instances(
+        self,
+        db: Session,
+        *,
+        scope: str,
+        project_id: int | None,
+        widget_types: list[str],
+    ) -> list[WidgetInstance]:
+        definitions = {item.widget_type: item for item in self._ensure_widget_definitions(db)}
+        allowed_widget_types = DASHBOARD_WIDGET_TYPES if scope == "dashboard" else PROJECT_WIDGET_TYPES
+        instances: list[WidgetInstance] = []
+        area_counts: Counter[str] = Counter()
+        for widget_type in widget_types:
+            if widget_type not in allowed_widget_types:
+                continue
+            definition = definitions.get(widget_type)
+            if definition is None:
+                continue
+            instance = WidgetInstance(
+                scope=scope,
+                project_id=project_id,
+                widget_type=widget_type,
+                area=definition.default_area,
+                order_index=area_counts[definition.default_area],
+                size=definition.default_size,
+                collapsed=False,
+                enabled=True,
+                config_json={},
+            )
+            area_counts[definition.default_area] += 1
+            db.add(instance)
+            instances.append(instance)
+        db.flush()
+        return instances
+
+    def _mirror_dashboard_widget_legacy(self, profile: AppProfile, instances: list[WidgetInstance]) -> None:
+        profile.dashboard_widgets_json = [instance.widget_type for instance in instances if instance.enabled]
+        preferences = dict(profile.dashboard_widget_preferences_json or {})
+        preferences["initialized"] = True
+        profile.dashboard_widget_preferences_json = preferences
+
+    def _mirror_project_widget_legacy(self, settings: ProjectSettings, instances: list[WidgetInstance]) -> None:
+        settings.workspace_widgets_json = [instance.widget_type for instance in instances if instance.enabled]
+
+    def _dashboard_widget_instances(self, db: Session, profile: AppProfile) -> list[WidgetInstance]:
+        self._ensure_widget_definitions(db)
+        instances = self._widget_instances_query(db, scope="dashboard", project_id=None)
+        if not instances:
+            configured = [item for item in (profile.dashboard_widgets_json or []) if item in DASHBOARD_WIDGET_TYPES]
+            preferences = dict(profile.dashboard_widget_preferences_json or {})
+            seed_types = configured or ([] if preferences.get("initialized") else list(DASHBOARD_WIDGET_DEFAULTS))
+            instances = self._seed_widget_instances(db, scope="dashboard", project_id=None, widget_types=seed_types)
+        self._normalize_widget_order(db, scope="dashboard", project_id=None)
+        instances = self._widget_instances_query(db, scope="dashboard", project_id=None)
+        self._mirror_dashboard_widget_legacy(profile, instances)
+        return instances
+
+    def _project_widget_instances(self, db: Session, project: Project, settings: ProjectSettings) -> list[WidgetInstance]:
+        self._ensure_widget_definitions(db)
+        instances = self._widget_instances_query(db, scope="project", project_id=project.id)
+        if not instances:
+            configured = [item for item in (settings.workspace_widgets_json or []) if item in PROJECT_WIDGET_TYPES]
+            seed_types = configured or list(PROJECT_WIDGET_DEFAULTS)
+            instances = self._seed_widget_instances(db, scope="project", project_id=project.id, widget_types=seed_types)
+        self._normalize_widget_order(db, scope="project", project_id=project.id)
+        instances = self._widget_instances_query(db, scope="project", project_id=project.id)
+        self._mirror_project_widget_legacy(settings, instances)
+        return instances
+
+    def _workspace_widgets(self, db: Session, project: Project, settings: ProjectSettings) -> list[str]:
+        return [instance.widget_type for instance in self._project_widget_instances(db, project, settings) if instance.enabled]
+
+    def _dashboard_widgets(self, db: Session, profile: AppProfile) -> list[str]:
+        return [instance.widget_type for instance in self._dashboard_widget_instances(db, profile) if instance.enabled]
+
+    def _record_decision(
+        self,
+        db: Session,
+        project: Project,
+        *,
+        decision_type: str,
+        title: str,
+        decision: str,
+        reason: str,
+        made_by: str,
+        impact_areas: list[str] | None = None,
+        related_task_id: int | None = None,
+        related_agent_id: int | None = None,
+        reversible: bool = False,
+    ) -> DecisionRecord:
+        existing = db.scalar(
+            select(DecisionRecord)
+            .where(
+                DecisionRecord.project_id == project.id,
+                DecisionRecord.decision_type == decision_type,
+                DecisionRecord.title == title,
+                DecisionRecord.decision == decision,
+            )
+            .order_by(DecisionRecord.id.desc())
+        )
+        if existing is not None:
+            return existing
+        record = DecisionRecord(
+            project_id=project.id,
+            decision_type=decision_type,
+            title=title,
+            decision=decision,
+            reason=reason,
+            made_by=made_by,
+            impact_area_json=list(impact_areas or []),
+            related_task_id=related_task_id,
+            related_agent_id=related_agent_id,
+            reversible=reversible,
+        )
+        db.add(record)
+        db.flush()
+        self.events.publish(
+            db,
+            project.id,
+            "decision_record_created",
+            {"project_id": project.id, "decision_record_id": record.id, "decision_type": decision_type, "title": title},
+        )
+        return record
+
+    def create_change_request(self, db: Session, project: Project, request_text: str) -> ChangeRequest:
+        normalized = " ".join(str(request_text or "").strip().split())
+        if not normalized:
+            raise ValueError("Change request text cannot be empty.")
+        existing = db.scalar(
+            select(ChangeRequest)
+            .where(
+                ChangeRequest.project_id == project.id,
+                ChangeRequest.request_text == normalized,
+                ChangeRequest.status != "rejected",
+            )
+            .order_by(ChangeRequest.updated_at.desc(), ChangeRequest.id.desc())
+        )
+        if existing is not None:
+            return existing
+        record = ChangeRequest(
+            project_id=project.id,
+            request_text=normalized,
+            classification="needs_triage",
+            impact_estimate="unknown",
+            status="new",
+        )
+        db.add(record)
+        db.flush()
+        self.events.publish(
+            db,
+            project.id,
+            "change_request_updated",
+            {
+                "project_id": project.id,
+                "change_request_id": record.id,
+                "status": record.status,
+                "classification": record.classification,
+                "action": "created",
+            },
+        )
+        self._record_manager_message(
+            db,
+            project,
+            role="system",
+            message_type="system_notice",
+            content_markdown=(
+                f"Change request logged: **{normalized}**\n\n"
+                "Ask the Manager to classify scope, estimate impact, and decide whether it belongs in the current milestone."
+            ),
+            metadata_json={"change_request_id": record.id, "response_mode": "system_notice"},
+        )
+        return record
+
+    def _sync_swarm_budget(self, db: Session, project: Project) -> SwarmBudget:
+        preferences = self._ensure_swarm_preferences(db, project)
+        settings = self._project_settings(db, project)
+        budget = project.swarm_budget
+        if budget is None:
+            budget = SwarmBudget(project_id=project.id)
+            db.add(budget)
+            db.flush()
+            project.swarm_budget = budget
+        active_agents = [
+            agent
+            for agent in db.scalars(select(Agent).where(Agent.project_id == project.id).order_by(Agent.id.asc()))
+            if agent.kind == "worker" and agent.status not in {"done", "stopped"}
+        ]
+        budget.max_agents = preferences.max_agents
+        budget.require_approval_above_agent_count = preferences.require_approval_above_agent_count
+        budget.current_active_agents = len(active_agents)
+        budget.dynamic_spawning_paused = not preferences.allow_dynamic_spawning
+        budget.prefer_local_models = settings.provider in {"ollama", "claude_code"} or settings.runner_mode == "dry_run"
+        premium_roles: list[str] = []
+        for role_name, model in {
+            "manager": settings.manager_model,
+            "worker": settings.default_worker_model,
+        }.items():
+            label = (model or "").lower()
+            if any(token in label for token in ("gpt", "claude", "sonnet", "opus")):
+                premium_roles.append(role_name)
+        budget.premium_models_only_for = premium_roles
+        ratio = (budget.current_active_agents / max(1, budget.max_agents)) if budget.max_agents else 0
+        if budget.current_active_agents >= max(1, budget.max_agents):
+            budget.current_intensity = "extreme"
+        elif ratio >= 0.75:
+            budget.current_intensity = "high"
+        elif ratio >= 0.4:
+            budget.current_intensity = "medium"
+        else:
+            budget.current_intensity = "low"
+        db.flush()
+        return budget
+
+    def _sync_agent_contracts(self, db: Session, project: Project) -> list[AgentContract]:
+        plan = self._current_swarm_plan_record(db, project.id)
+        specs = self._swarm_specs_for_plan(db, plan.id) if plan is not None else []
+        agents = list(db.scalars(select(Agent).where(Agent.project_id == project.id).order_by(Agent.id.asc())))
+        agent_lookup = {agent.name: agent for agent in agents}
+        existing = {entry.agent_name: entry for entry in db.scalars(select(AgentContract).where(AgentContract.project_id == project.id))}
+        active_names: set[str] = set()
+        sources: list[dict[str, Any]] = []
+        if specs:
+            for spec in specs:
+                sources.append(
+                    {
+                        "agent_name": spec.name,
+                        "agent_id": agent_lookup.get(spec.name).id if agent_lookup.get(spec.name) else None,
+                        "archetype": spec.archetype,
+                        "mission": spec.mission,
+                        "allowed_paths_json": list(spec.allowed_paths_json or []),
+                        "forbidden_paths_json": list(spec.forbidden_paths_json or []),
+                        "allowed_tools_json": list(spec.toolset_json or []),
+                        "expected_output": f"Complete the {spec.name} mission and report changed files, validations, blockers, and recommended next steps.",
+                        "validation_required_json": list(plan.validation_strategy_json or []),
+                        "stop_conditions_json": [spec.retire_when],
+                        "escalation_conditions_json": ["Path conflict prevents safe progress.", "Required approval blocks execution."],
+                        "completion_report_schema_json": {
+                            "summary": "string",
+                            "files_changed": ["string"],
+                            "tests_run": ["string"],
+                            "blockers": ["string"],
+                        },
+                        "status": "active" if spec.status in {"spawned", "planned"} else spec.status,
+                    }
+                )
+        else:
+            for agent in agents:
+                if agent.kind != "worker":
+                    continue
+                sources.append(
+                    {
+                        "agent_name": agent.name,
+                        "agent_id": agent.id,
+                        "archetype": agent.archetype or "feature",
+                        "mission": agent.mission or agent.role,
+                        "allowed_paths_json": list(agent.locked_paths_json or []),
+                        "forbidden_paths_json": [],
+                        "allowed_tools_json": [],
+                        "expected_output": f"Complete the current mission for {agent.name} and report status cleanly.",
+                        "validation_required_json": [],
+                        "stop_conditions_json": [agent.retire_when or "Mission is complete."],
+                        "escalation_conditions_json": ["Task is blocked.", "Approval is required."],
+                        "completion_report_schema_json": {"summary": "string", "blockers": ["string"]},
+                        "status": "active" if agent.status not in {"done", "stopped"} else "retired",
+                    }
+                )
+        for payload in sources:
+            active_names.add(str(payload["agent_name"]))
+            contract = existing.get(str(payload["agent_name"]))
+            if contract is None:
+                contract = AgentContract(project_id=project.id, agent_name=str(payload["agent_name"]), archetype=str(payload["archetype"]), mission=str(payload["mission"]), expected_output=str(payload["expected_output"]))
+                db.add(contract)
+                existing[contract.agent_name] = contract
+            contract.agent_id = payload["agent_id"]
+            contract.archetype = str(payload["archetype"])
+            contract.mission = str(payload["mission"])
+            contract.allowed_paths_json = list(payload["allowed_paths_json"])
+            contract.forbidden_paths_json = list(payload["forbidden_paths_json"])
+            contract.allowed_tools_json = list(payload["allowed_tools_json"])
+            contract.expected_output = str(payload["expected_output"])
+            contract.validation_required_json = list(payload["validation_required_json"])
+            contract.stop_conditions_json = list(payload["stop_conditions_json"])
+            contract.escalation_conditions_json = list(payload["escalation_conditions_json"])
+            contract.completion_report_schema_json = dict(payload["completion_report_schema_json"])
+            contract.status = str(payload["status"])
+        for name, contract in existing.items():
+            if name not in active_names and contract.status not in {"completed", "retired"}:
+                contract.status = "retired"
+        db.flush()
+        return list(db.scalars(select(AgentContract).where(AgentContract.project_id == project.id).order_by(AgentContract.updated_at.desc(), AgentContract.id.asc())))
+
+    def _sync_path_locks(self, db: Session, project: Project) -> list[PathLock]:
+        reservations = self.list_reservations(db, project.id)
+        tasks = list(db.scalars(select(Task).where(Task.project_id == project.id).order_by(Task.id.asc())))
+        existing = {
+            (entry.path_pattern, entry.owner_agent_id, entry.owner_task_id, entry.status): entry
+            for entry in db.scalars(select(PathLock).where(PathLock.project_id == project.id))
+        }
+        active_keys: set[tuple[str, int | None, int | None, str]] = set()
+        for reservation in reservations:
+            key = (reservation.path, reservation.agent_id, reservation.task_id, "active")
+            active_keys.add(key)
+            lock = existing.get(key)
+            if lock is None:
+                lock = PathLock(
+                    project_id=project.id,
+                    path_pattern=reservation.path,
+                    owner_agent_id=reservation.agent_id,
+                    owner_task_id=reservation.task_id,
+                    reason="Reserved for active task execution.",
+                    status="active",
+                )
+                db.add(lock)
+        for task in tasks:
+            if task.status != "waiting_on_paths":
+                continue
+            for path_pattern in task.allowed_paths_json or []:
+                key = (path_pattern, None, task.id, "waiting")
+                active_keys.add(key)
+                if existing.get(key) is None:
+                    db.add(
+                        PathLock(
+                            project_id=project.id,
+                            path_pattern=path_pattern,
+                            owner_agent_id=None,
+                            owner_task_id=task.id,
+                            reason=task.waiting_reason or "Waiting for path ownership to clear.",
+                            status="waiting",
+                        )
+                    )
+        for key, lock in existing.items():
+            if key not in active_keys and lock.status != "released":
+                lock.status = "released"
+                lock.released_at = utc_now()
+        db.flush()
+        return list(db.scalars(select(PathLock).where(PathLock.project_id == project.id).order_by(PathLock.status.asc(), PathLock.created_at.desc())))
+
+    def _sync_project_confidence(self, db: Session, project: Project) -> list[ProjectConfidence]:
+        understanding = self._ensure_project_understanding(db, project)
+        default_categories = [
+            "architecture",
+            "UI requirements",
+            "testing",
+            "deployment",
+            "security",
+            "integrations",
+            "documentation",
+            "data/storage",
+            "performance",
+            "user goals",
+        ]
+        existing = {entry.category: entry for entry in db.scalars(select(ProjectConfidence).where(ProjectConfidence.project_id == project.id))}
+        confidence_map = self._normalize_confidence_map(dict(understanding.confidence_by_category_json or {}))
+        unknowns_map = dict(understanding.unknowns_json or {})
+        for category in default_categories:
+            entry = existing.get(category)
+            if entry is None:
+                entry = ProjectConfidence(project_id=project.id, category=category, reason="Confidence has not been assessed yet.")
+                db.add(entry)
+                existing[category] = entry
+            raw_score = confidence_map.get(category) or confidence_map.get(category.lower()) or 0.0
+            score = int(round(float(raw_score) * 100)) if raw_score <= 1 else int(raw_score)
+            unknowns = unknowns_map.get(category) or unknowns_map.get(category.lower()) or []
+            if isinstance(unknowns, str):
+                unknowns = [unknowns]
+            entry.confidence_score = max(0, min(100, score))
+            entry.unknowns_json = [str(item) for item in unknowns if str(item).strip()]
+            if entry.unknowns_json:
+                entry.reason = f"Confidence is limited by unresolved items in {category}."
+            elif entry.confidence_score >= 75:
+                entry.reason = f"{category} looks reasonably well understood."
+            elif entry.confidence_score >= 40:
+                entry.reason = f"{category} is partially understood but still needs clarification."
+            else:
+                entry.reason = f"{category} is still underspecified."
+        db.flush()
+        return list(db.scalars(select(ProjectConfidence).where(ProjectConfidence.project_id == project.id).order_by(ProjectConfidence.confidence_score.asc(), ProjectConfidence.category.asc())))
+
+    def _ensure_stuck_signals(self, db: Session, project: Project) -> list[AgentStuckSignal]:
+        agents = list(db.scalars(select(Agent).where(Agent.project_id == project.id).order_by(Agent.id.asc())))
+        existing = {
+            (entry.agent_id, entry.signal_type): entry
+            for entry in db.scalars(select(AgentStuckSignal).where(AgentStuckSignal.project_id == project.id, AgentStuckSignal.resolved_at.is_(None)))
+        }
+        active_keys: set[tuple[int, str]] = set()
+        now = utc_now()
+        for agent in agents:
+            signal_type: str | None = None
+            message: str | None = None
+            severity = "medium"
+            last_update = agent.last_update
+            if last_update.tzinfo is None:
+                last_update = last_update.replace(tzinfo=timezone.utc)
+            if agent.status in {"blocked", "error"}:
+                signal_type = "repeated_error"
+                message = agent.last_report_summary or agent.current_action or f"{agent.name} is blocked."
+                severity = "high"
+            elif agent.status in {"working", "starting"} and (now - last_update) > timedelta(minutes=20):
+                signal_type = "no_output_for_threshold"
+                message = f"No meaningful update from {agent.name} in more than 20 minutes."
+            elif agent.failure_count >= 3:
+                signal_type = "task_timeout"
+                message = f"{agent.name} has failed or timed out repeatedly."
+                severity = "high"
+            if signal_type is None or message is None:
+                continue
+            key = (agent.id, signal_type)
+            active_keys.add(key)
+            signal = existing.get(key)
+            if signal is None:
+                signal = AgentStuckSignal(project_id=project.id, agent_id=agent.id, signal_type=signal_type, message=message, severity=severity)
+                db.add(signal)
+            else:
+                signal.message = message
+                signal.severity = severity
+        for key, signal in existing.items():
+            if key not in active_keys:
+                signal.resolved_at = now
+        db.flush()
+        return list(
+            db.scalars(
+                select(AgentStuckSignal)
+                .where(AgentStuckSignal.project_id == project.id, AgentStuckSignal.resolved_at.is_(None))
+                .order_by(AgentStuckSignal.detected_at.desc())
+            )
+        )
+
+    def _ensure_recovery_plans(
+        self,
+        db: Session,
+        project: Project,
+        *,
+        current_action: dict[str, Any],
+        stuck_signals: list[AgentStuckSignal],
+        tasks: list[Task],
+    ) -> list[RecoveryPlan]:
+        triggers: list[tuple[str, str, list[str]]] = []
+        blocked_tasks = [task for task in tasks if task.status == "blocked"]
+        if current_action["type"] in {"blocker", "error", "degraded"}:
+            triggers.append(
+                (
+                    current_action["type"],
+                    str(current_action["message"]),
+                    ["Retry same agent", "Spawn Debug Agent", "Simplify scope", "Ask user / ask Manager"],
+                )
+            )
+        if blocked_tasks:
+            triggers.append(
+                (
+                    "blocked_task",
+                    f"{len(blocked_tasks)} task(s) are blocked.",
+                    ["Retry same agent", "Split task", "Simplify scope", "Ask user / ask Manager"],
+                )
+            )
+        if stuck_signals:
+            triggers.append(
+                (
+                    "stuck_agents",
+                    f"{len(stuck_signals)} agent(s) may be stuck.",
+                    ["Retry same agent", "Spawn Debug Agent", "Split task", "Ask user / ask Manager"],
+                )
+            )
+        existing = {
+            (entry.trigger_type, entry.trigger_summary): entry
+            for entry in db.scalars(select(RecoveryPlan).where(RecoveryPlan.project_id == project.id, RecoveryPlan.resolved_at.is_(None)))
+        }
+        active_keys: set[tuple[str, str]] = set()
+        for trigger_type, summary, actions in triggers:
+            key = (trigger_type, summary)
+            active_keys.add(key)
+            entry = existing.get(key)
+            if entry is None:
+                entry = RecoveryPlan(
+                    project_id=project.id,
+                    trigger_type=trigger_type,
+                    trigger_summary=summary,
+                    suggested_actions_json=actions,
+                    status="proposed",
+                )
+                db.add(entry)
+        for key, entry in existing.items():
+            if key not in active_keys:
+                entry.resolved_at = utc_now()
+                if entry.status == "proposed":
+                    entry.status = "completed"
+        db.flush()
+        return list(
+            db.scalars(
+                select(RecoveryPlan)
+                .where(RecoveryPlan.project_id == project.id)
+                .order_by(RecoveryPlan.created_at.desc(), RecoveryPlan.id.desc())
+            )
+        )
+
+    def _sync_review_gates(
+        self,
+        db: Session,
+        project: Project,
+        *,
+        tasks: list[Task],
+        overview: dict[str, Any],
+        testing_depth: str,
+    ) -> list[ReviewGate]:
+        task_status_counts = Counter(task.status for task in tasks)
+        requirements = {
+            "code_review": {
+                "title": "Code review gate",
+                "required": True,
+                "checks": ["No tasks remain in review.", "No unresolved blockers remain."],
+                "status": "passed" if task_status_counts.get("needs_review", 0) == 0 else "pending",
+                "summary": "Review tasks are clear." if task_status_counts.get("needs_review", 0) == 0 else "Tasks still require review.",
+            },
+            "test": {
+                "title": "Validation gate",
+                "required": testing_depth != "minimal",
+                "checks": ["Validation recipe is defined.", "Critical tests or smoke checks are accounted for."],
+                "status": "passed" if overview["checklist"][4]["status"] == "complete" else ("failed" if task_status_counts.get("blocked", 0) else "pending"),
+                "summary": overview["checklist"][4]["detail"],
+            },
+            "security": {
+                "title": "Security gate",
+                "required": testing_depth in {"extensive", "release_grade"},
+                "checks": ["Security-sensitive areas reviewed when required."],
+                "status": "passed" if overview["checklist"][3]["status"] == "complete" else "pending",
+                "summary": overview["checklist"][3]["detail"],
+            },
+            "docs": {
+                "title": "Documentation gate",
+                "required": True,
+                "checks": ["README, handoff notes, and run instructions are ready enough."],
+                "status": "passed" if overview["checklist"][5]["status"] == "complete" else "pending",
+                "summary": overview["checklist"][5]["detail"],
+            },
+            "handoff": {
+                "title": "Handoff gate",
+                "required": True,
+                "checks": ["Overall readiness is acceptable for handoff."],
+                "status": "passed" if overview["handoff_progress"] >= 90 else "pending",
+                "summary": f"Handoff progress is {overview['handoff_progress']}%.",
+            },
+        }
+        existing = {entry.gate_type: entry for entry in db.scalars(select(ReviewGate).where(ReviewGate.project_id == project.id))}
+        for gate_type, payload in requirements.items():
+            gate = existing.get(gate_type)
+            if gate is None:
+                gate = ReviewGate(project_id=project.id, gate_type=gate_type, title=payload["title"])
+                db.add(gate)
+                existing[gate_type] = gate
+            gate.title = payload["title"]
+            gate.required = bool(payload["required"])
+            gate.required_checks_json = list(payload["checks"])
+            gate.status = str(payload["status"])
+            gate.result_summary = str(payload["summary"])
+        db.flush()
+        return list(db.scalars(select(ReviewGate).where(ReviewGate.project_id == project.id).order_by(ReviewGate.required.desc(), ReviewGate.gate_type.asc())))
+
+    def _ensure_model_policy(self, db: Session, project: Project) -> ModelPolicy:
+        settings = self._project_settings(db, project)
+        policy = db.scalar(select(ModelPolicy).where(ModelPolicy.project_id == project.id).order_by(ModelPolicy.id.asc()))
+        if policy is None:
+            policy = ModelPolicy(project_id=project.id, policy_name="balanced")
+            db.add(policy)
+            db.flush()
+        provider = settings.provider
+        policy.policy_name = (
+            "local_first"
+            if provider in {"ollama", "claude_code"} or settings.runner_mode == "dry_run"
+            else "custom"
+            if settings.manager_model or settings.default_worker_model
+            else "balanced"
+        )
+        fallback = default_label(provider)
+        worker_default = settings.default_worker_model or fallback
+        policy.manager_model = settings.manager_model or resolve_manager_settings(project, settings).effective_model_label
+        policy.coding_model = settings.per_role_model_overrides_json.get("feature") or worker_default
+        policy.docs_model = settings.per_role_model_overrides_json.get("docs") or worker_default
+        policy.review_model = settings.per_role_model_overrides_json.get("reviewer") or worker_default
+        policy.test_model = settings.per_role_model_overrides_json.get("test") or worker_default
+        policy.research_model = settings.per_role_model_overrides_json.get("research") or worker_default
+        policy.security_model = settings.per_role_model_overrides_json.get("security") or worker_default
+        policy.fallback_model = fallback
+        policy.notes = "Mirrors current Project Settings so widgets can summarize role-to-model routing honestly."
+        db.flush()
+        return policy
+
+    def _ensure_tool_routing_policies(self, db: Session, project: Project) -> list[ToolRoutingPolicy]:
+        settings = self._project_settings(db, project)
+        profile = self._app_profile(db)
+        tool_catalog = catalog_with_permissions(
+            provider=settings.provider,
+            connected_accounts=dict(profile.connected_accounts_json or {}),
+            permission_overrides=dict(profile.tool_permission_overrides_json or {}),
+        )
+        availability_by_tool = {item["id"]: item for item in tool_catalog}
+        archetypes = self._archetype_lookup(db)
+        existing = {
+            entry.agent_archetype: entry for entry in db.scalars(select(ToolRoutingPolicy).where(ToolRoutingPolicy.project_id == project.id))
+        }
+        for archetype_name in ["manager", "planner", "research", "frontend", "backend", "feature", "test", "reviewer", "security", "docs", "ops"]:
+            entry = existing.get(archetype_name)
+            if entry is None:
+                entry = ToolRoutingPolicy(project_id=project.id, agent_archetype=archetype_name)
+                db.add(entry)
+                existing[archetype_name] = entry
+            defaults = list((archetypes.get(archetype_name).default_tools_json if archetypes.get(archetype_name) else []) or [])
+            allowed: list[str] = []
+            approval: list[str] = []
+            blocked: list[str] = []
+            for tool_id in defaults:
+                tool = availability_by_tool.get(tool_id)
+                if tool is None:
+                    blocked.append(tool_id)
+                    continue
+                if tool["availability"] in {"coming_soon", "unsupported_on_device"}:
+                    blocked.append(tool_id)
+                    continue
+                allowed.append(tool_id)
+                if tool["permission_policy"] in {"ask_every_time", "ask_once_per_project"}:
+                    approval.append(tool_id)
+            entry.allowed_tools_json = allowed
+            entry.requires_approval_tools_json = approval
+            entry.blocked_tools_json = blocked
+            entry.notes = "Derived from agent archetype defaults and current Skills & Tools availability."
+        db.flush()
+        return list(
+            db.scalars(
+                select(ToolRoutingPolicy)
+                .where(ToolRoutingPolicy.project_id == project.id)
+                .order_by(ToolRoutingPolicy.agent_archetype.asc())
+            )
+        )
+
+    def _ensure_sandbox_profiles(self, db: Session, project: Project) -> list[SandboxProfile]:
+        defaults = [
+            ("strict", "Tightest filesystem and command posture.", "blocked", "read_only", "ask_every_time", "blocked", "blocked", False),
+            ("balanced", "Good default for normal local builds.", "limited", "workspace_write", "on_request", "limited", "blocked", True),
+            ("build_friendly", "Looser workspace writes for active implementation.", "limited", "workspace_write", "on_request", "limited", "blocked", False),
+            ("deployment", "Allows deployment-oriented behavior with approvals.", "limited", "workspace_write", "on_request", "limited", "approval_required", False),
+            ("research", "Network-friendly profile for research and planning work.", "limited", "read_only", "on_request", "limited", "blocked", False),
+            ("local_only", "No network and local writes only.", "blocked", "workspace_write", "on_request", "blocked", "blocked", False),
+        ]
+        existing = {entry.name: entry for entry in db.scalars(select(SandboxProfile).where(SandboxProfile.project_id.is_(None)))}
+        for name, description, network, file_write, command_approval, external_tool, deployment, is_default in defaults:
+            entry = existing.get(name)
+            if entry is None:
+                entry = SandboxProfile(name=name, description=description, network_policy=network, file_write_policy=file_write, command_approval_policy=command_approval, external_tool_policy=external_tool, deployment_policy=deployment, is_default=is_default)
+                db.add(entry)
+                existing[name] = entry
+            else:
+                entry.description = description
+                entry.network_policy = network
+                entry.file_write_policy = file_write
+                entry.command_approval_policy = command_approval
+                entry.external_tool_policy = external_tool
+                entry.deployment_policy = deployment
+                entry.is_default = is_default
+        db.flush()
+        return list(db.scalars(select(SandboxProfile).where(SandboxProfile.project_id.is_(None)).order_by(SandboxProfile.id.asc())))
+
+    def _ensure_manager_assumptions(self, db: Session, project: Project) -> list[ManagerAssumption]:
+        understanding = self._ensure_project_understanding(db, project)
+        existing = {
+            entry.assumption: entry
+            for entry in db.scalars(
+                select(ManagerAssumption).where(ManagerAssumption.project_id == project.id).order_by(ManagerAssumption.id.asc())
+            )
+        }
+        assumptions = [str(item).strip() for item in (understanding.assumptions_json or []) if str(item).strip()]
+        for assumption in assumptions:
+            entry = existing.get(assumption)
+            if entry is None:
+                entry = ManagerAssumption(
+                    project_id=project.id,
+                    assumption=assumption,
+                    reason="Captured from the Manager's current project understanding.",
+                    impact_area_json=[],
+                    confidence=60,
+                    status="active",
+                )
+                db.add(entry)
+        auto_questions = db.scalars(
+            select(ManagerQuestion).where(ManagerQuestion.project_id == project.id, ManagerQuestion.status == "auto_decided").order_by(ManagerQuestion.id.asc())
+        )
+        for question in auto_questions:
+            assumption = f"{question.question} -> {question.selected_text or question.selected_option_id or 'Auto-decided'}"
+            if assumption not in existing:
+                db.add(
+                    ManagerAssumption(
+                        project_id=project.id,
+                        assumption=assumption,
+                        reason="Auto-decided by the Manager based on project context and configured thresholds.",
+                        impact_area_json=[],
+                        confidence=55,
+                        status="active",
+                    )
+                )
+        db.flush()
+        return list(
+            db.scalars(
+                select(ManagerAssumption)
+                .where(ManagerAssumption.project_id == project.id)
+                .order_by(ManagerAssumption.created_at.desc(), ManagerAssumption.id.desc())
+            )
+        )
+
+    def _scan_repo_intelligence(self, db: Session, project: Project) -> RepoIntelligenceSummary:
+        summary = project.repo_intelligence
+        if summary is None:
+            summary = RepoIntelligenceSummary(project_id=project.id)
+            db.add(summary)
+            db.flush()
+            project.repo_intelligence = summary
+        root = Path(project.workspace_path)
+        if not root.exists() or not root.is_dir():
+            summary.languages_json = []
+            summary.frameworks_json = []
+            summary.package_managers_json = []
+            summary.entry_points_json = []
+            summary.build_commands_json = []
+            summary.test_commands_json = []
+            summary.important_folders_json = []
+            summary.risky_files_json = []
+            summary.docs_found_json = []
+            summary.ci_config_json = []
+            summary.deployment_config_json = []
+            db.flush()
+            return summary
+        file_paths = [path for path in root.rglob("*") if path.is_file()][:1200]
+        extensions = Counter(path.suffix.lower() for path in file_paths)
+        language_map = {
+            ".py": "Python",
+            ".ts": "TypeScript",
+            ".tsx": "TypeScript",
+            ".js": "JavaScript",
+            ".jsx": "JavaScript",
+            ".go": "Go",
+            ".rs": "Rust",
+            ".java": "Java",
+            ".cs": "C#",
+            ".rb": "Ruby",
+        }
+        languages = sorted({language for ext, language in language_map.items() if extensions.get(ext)})
+        frameworks: set[str] = set()
+        package_managers: set[str] = set()
+        build_commands: list[str] = []
+        test_commands: list[str] = []
+        entry_points: list[str] = []
+        package_json = root / "package.json"
+        if package_json.exists():
+            try:
+                package_data = json.loads(package_json.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                package_data = {}
+            deps = {
+                **dict(package_data.get("dependencies") or {}),
+                **dict(package_data.get("devDependencies") or {}),
+            }
+            if "react" in deps:
+                frameworks.add("React")
+            if "vite" in deps:
+                frameworks.add("Vite")
+            if "next" in deps:
+                frameworks.add("Next.js")
+            if "fastify" in deps:
+                frameworks.add("Fastify")
+            if "express" in deps:
+                frameworks.add("Express")
+            scripts = dict(package_data.get("scripts") or {})
+            if scripts.get("build"):
+                build_commands.append(f"npm run build ({scripts['build']})")
+            if scripts.get("test"):
+                test_commands.append(f"npm run test ({scripts['test']})")
+            if (root / "package-lock.json").exists():
+                package_managers.add("npm")
+            if (root / "pnpm-lock.yaml").exists():
+                package_managers.add("pnpm")
+            if (root / "yarn.lock").exists():
+                package_managers.add("yarn")
+        pyproject = root / "pyproject.toml"
+        if pyproject.exists():
+            package_managers.add("pip")
+            try:
+                pyproject_text = pyproject.read_text(encoding="utf-8").lower()
+            except OSError:
+                pyproject_text = ""
+            if "fastapi" in pyproject_text:
+                frameworks.add("FastAPI")
+            if "django" in pyproject_text:
+                frameworks.add("Django")
+            if "flask" in pyproject_text:
+                frameworks.add("Flask")
+        requirements = root / "requirements.txt"
+        if requirements.exists():
+            package_managers.add("pip")
+            try:
+                requirements_text = requirements.read_text(encoding="utf-8").lower()
+            except OSError:
+                requirements_text = ""
+            if "fastapi" in requirements_text:
+                frameworks.add("FastAPI")
+        for candidate in ["main.py", "app.py", "manage.py", "src/main.ts", "src/main.tsx", "src/index.tsx", "src/index.ts", "server.py"]:
+            if (root / candidate).exists():
+                entry_points.append(candidate)
+        important_folders = [folder.name for folder in root.iterdir() if folder.is_dir() and folder.name in {"src", "app", "apps", "server", "client", "docs", "tests", "scripts"}]
+        risky_files = [str(path.relative_to(root)) for path in file_paths if path.name.lower().startswith(".env") or "secret" in path.name.lower()][:12]
+        docs_found = [str(path.relative_to(root)) for path in file_paths if path.suffix.lower() == ".md" and ("readme" in path.name.lower() or "docs" in path.parts)]
+        ci_config = [str(path.relative_to(root)) for path in file_paths if ".github" in path.parts or path.name.lower() in {"azure-pipelines.yml", "azure-pipelines.yaml", ".gitlab-ci.yml"}]
+        deployment_config = [
+            str(path.relative_to(root))
+            for path in file_paths
+            if path.name.lower() in {"dockerfile", "docker-compose.yml", "docker-compose.yaml", "vercel.json", "fly.toml", "render.yaml", "netlify.toml"}
+        ]
+        summary.languages_json = languages
+        summary.frameworks_json = sorted(frameworks)
+        summary.package_managers_json = sorted(package_managers)
+        summary.entry_points_json = entry_points
+        summary.build_commands_json = build_commands
+        summary.test_commands_json = test_commands
+        summary.important_folders_json = important_folders
+        summary.risky_files_json = risky_files
+        summary.docs_found_json = docs_found[:20]
+        summary.ci_config_json = ci_config[:20]
+        summary.deployment_config_json = deployment_config[:20]
+        db.flush()
+        return summary
+
+    def _ensure_validation_recipe(self, db: Session, project: Project) -> ValidationRecipe:
+        recipe = db.scalar(select(ValidationRecipe).where(ValidationRecipe.project_id == project.id).order_by(ValidationRecipe.id.asc()))
+        if recipe is None:
+            recipe = ValidationRecipe(project_id=project.id, name="Default validation recipe", status="draft")
+            db.add(recipe)
+            db.flush()
+        repo = self._scan_repo_intelligence(db, project)
+        preferences = self._ensure_swarm_preferences(db, project)
+        steps: list[dict[str, Any]] = []
+        for command in repo.build_commands_json[:1]:
+            steps.append({"title": "Build the project", "command": command, "type": "build", "requires_approval": True, "status": "pending"})
+        for command in repo.test_commands_json[:1]:
+            steps.append({"title": "Run automated tests", "command": command, "type": "test", "requires_approval": True, "status": "pending"})
+        if preferences.testing_depth != "minimal":
+            steps.append({"title": "Run smoke validation", "command": None, "type": "smoke", "requires_approval": False, "status": "pending"})
+        steps.append({"title": "Review docs and handoff notes", "command": None, "type": "docs", "requires_approval": False, "status": "pending"})
+        if not steps:
+            steps.append({"title": "Manual validation still needs to be defined.", "command": None, "type": "manual", "requires_approval": False, "status": "pending"})
+        recipe.steps_json = steps
+        recipe.status = "active"
+        db.flush()
+        return recipe
+
+    def _ensure_handoff_quality(self, db: Session, project: Project) -> HandoffQualityPreference:
+        preference = project.handoff_quality_preference
+        if preference is None:
+            preference = HandoffQualityPreference(project_id=project.id)
+            db.add(preference)
+            db.flush()
+            project.handoff_quality_preference = preference
+        db.flush()
+        return preference
+
+    def _project_health(
+        self,
+        project: Project,
+        *,
+        current_action: dict[str, Any],
+        overview: dict[str, Any],
+        stuck_signals: list[AgentStuckSignal],
+        review_gates: list[ReviewGate],
+        pending_approvals: list[dict[str, Any]],
+        blocked_agents: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        reasons: list[str] = []
+        risks: list[str] = []
+        score = 80
+        if current_action["type"] in {"blocker", "error"}:
+            reasons.append(str(current_action["message"]))
+            risks.append("A blocker or error needs attention.")
+            score -= 35
+        if blocked_agents:
+            reasons.append(f"{len(blocked_agents)} agent(s) are blocked.")
+            risks.append("Blocked agents slow the swarm down and tend to create follow-on chaos.")
+            score -= 15
+        if pending_approvals:
+            reasons.append(f"{len(pending_approvals)} approval request(s) are still open.")
+            score -= 10
+        if stuck_signals:
+            reasons.append(f"{len(stuck_signals)} stuck-signal(s) detected.")
+            risks.append("At least one agent is stalled or repeatedly failing.")
+            score -= 15
+        failed_gates = [gate for gate in review_gates if gate.status == "failed"]
+        pending_gates = [gate for gate in review_gates if gate.required and gate.status == "pending"]
+        if failed_gates:
+            reasons.append(f"{len(failed_gates)} review gate(s) failed.")
+            risks.append("Required quality gates are not passing.")
+            score -= 20
+        elif pending_gates:
+            reasons.append(f"{len(pending_gates)} required gate(s) are still pending.")
+            score -= 8
+        readiness = str(overview["readiness_label"]).lower()
+        if readiness == "good" and score >= 75 and not reasons:
+            state = "healthy"
+        elif "handoff" in project.status or overview["handoff_progress"] >= 95:
+            state = "ready_for_handoff"
+        elif current_action["type"] in {"blocker", "error"}:
+            state = "blocked"
+        elif stuck_signals or failed_gates:
+            state = "unstable"
+        elif reasons:
+            state = "needs_review"
+        else:
+            state = "unknown"
+        return {
+            "state": state,
+            "score": max(0, min(100, score)),
+            "reasons": reasons or ["No major health warnings are recorded right now."],
+            "top_risks": risks or ["No acute risks recorded right now."],
+            "next_action": current_action["title"] if current_action["type"] != "no_action" else "Keep the current plan moving.",
+        }
+
+    def _sync_decision_records(self, db: Session, project: Project) -> list[DecisionRecord]:
+        approvals = db.scalars(
+            select(ApprovalRequest)
+            .where(ApprovalRequest.project_id == project.id, ApprovalRequest.status != "pending")
+            .order_by(ApprovalRequest.created_at.desc(), ApprovalRequest.id.desc())
+        )
+        for approval in approvals:
+            self._record_decision(
+                db,
+                project,
+                decision_type=f"{approval.request_type}_approval",
+                title=approval.title,
+                decision=approval.status,
+                reason=approval.reason_short,
+                made_by="user",
+                impact_areas=["approvals", approval.request_type],
+                related_task_id=approval.task_id,
+                related_agent_id=approval.requesting_agent_id,
+                reversible=approval.status != "allowed_for_project",
+            )
+        questions = db.scalars(
+            select(ManagerQuestion)
+            .where(ManagerQuestion.project_id == project.id, ManagerQuestion.status != "pending")
+            .order_by(ManagerQuestion.created_at.desc(), ManagerQuestion.id.desc())
+        )
+        for question in questions:
+            self._record_decision(
+                db,
+                project,
+                decision_type="manager_question",
+                title=question.question[:220],
+                decision=question.selected_text or question.selected_option_id or question.status,
+                reason=question.manager_recommendation or "Resolved through the Manager queue.",
+                made_by="auto_manager" if question.status == "auto_decided" else "user",
+                impact_areas=["requirements"],
+                related_task_id=question.related_task_id,
+                related_agent_id=question.related_agent_id,
+                reversible=question.status != "auto_decided",
+            )
+        swarm_plan = self._current_swarm_plan_record(db, project.id)
+        if swarm_plan is not None:
+            self._record_decision(
+                db,
+                project,
+                decision_type="swarm_strategy",
+                title=f"Swarm strategy: {swarm_plan.mode}",
+                decision=swarm_plan.status,
+                reason=swarm_plan.strategy_summary,
+                made_by="user" if swarm_plan.approved_by_user else "manager",
+                impact_areas=["swarm"],
+                reversible=True,
+            )
+        return list(
+            db.scalars(
+                select(DecisionRecord)
+                .where(DecisionRecord.project_id == project.id)
+                .order_by(DecisionRecord.created_at.desc(), DecisionRecord.id.desc())
+            )
+        )
+
+    def _ensure_widget_support_records(
+        self,
+        db: Session,
+        project: Project,
+        *,
+        tasks: list[Task] | None = None,
+        degraded_notices: list[str] | None = None,
+        current_action: dict[str, Any] | None = None,
+        overview: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        tasks = tasks or list(db.scalars(select(Task).where(Task.project_id == project.id).order_by(Task.priority.asc(), Task.id.asc())))
+        degraded_notices = degraded_notices or []
+        current_action = current_action or self._derive_current_action(db, project, degraded_notices)
+        overview = overview or self._project_overview(db, project, tasks, current_action)
+        budget = self._sync_swarm_budget(db, project)
+        contracts = self._sync_agent_contracts(db, project)
+        path_locks = self._sync_path_locks(db, project)
+        confidence = self._sync_project_confidence(db, project)
+        stuck_signals = self._ensure_stuck_signals(db, project)
+        recovery_plans = self._ensure_recovery_plans(db, project, current_action=current_action, stuck_signals=stuck_signals, tasks=tasks)
+        review_gates = self._sync_review_gates(db, project, tasks=tasks, overview=overview, testing_depth=self._ensure_swarm_preferences(db, project).testing_depth)
+        model_policy = self._ensure_model_policy(db, project)
+        tool_routing = self._ensure_tool_routing_policies(db, project)
+        sandbox_profiles = self._ensure_sandbox_profiles(db, project)
+        assumptions = self._ensure_manager_assumptions(db, project)
+        repo = self._scan_repo_intelligence(db, project)
+        validation_recipe = self._ensure_validation_recipe(db, project)
+        handoff_quality = self._ensure_handoff_quality(db, project)
+        decisions = self._sync_decision_records(db, project)
+        blocked_agents = [agent for agent in self._sorted_workspace_agents(db, project.id) if agent["display_status"] in {"blocked", "error"}]
+        pending_approvals = self.list_pending_approvals(db, project)
+        health = self._project_health(
+            project,
+            current_action=current_action,
+            overview=overview,
+            stuck_signals=stuck_signals,
+            review_gates=review_gates,
+            pending_approvals=pending_approvals,
+            blocked_agents=blocked_agents,
+        )
+        return {
+            "budget": budget,
+            "contracts": contracts,
+            "path_locks": path_locks,
+            "confidence": confidence,
+            "stuck_signals": stuck_signals,
+            "recovery_plans": recovery_plans,
+            "review_gates": review_gates,
+            "model_policy": model_policy,
+            "tool_routing": tool_routing,
+            "sandbox_profiles": sandbox_profiles,
+            "assumptions": assumptions,
+            "repo": repo,
+            "validation_recipe": validation_recipe,
+            "handoff_quality": handoff_quality,
+            "decisions": decisions,
+            "health": health,
+            "blocked_agents": blocked_agents,
+            "pending_approvals": pending_approvals,
+        }
+
+    def list_widget_catalog(self, db: Session, scope: str | None = None) -> list[dict[str, Any]]:
+        catalog = self._ensure_widget_definitions(db)
+        return [
+            self._serialize_widget_definition(definition)
+            for definition in catalog
+            if scope is None or definition.scope == scope
+        ]
+
+    def list_dashboard_widget_instances(self, db: Session) -> list[dict[str, Any]]:
+        profile = self._app_profile(db)
+        return [self._serialize_widget_instance(item) for item in self._dashboard_widget_instances(db, profile)]
+
+    def list_project_widget_instances(self, db: Session, project: Project) -> list[dict[str, Any]]:
+        settings = self._project_settings(db, project)
+        return [self._serialize_widget_instance(item) for item in self._project_widget_instances(db, project, settings)]
+
+    def _widget_instance_or_error(self, db: Session, instance_id: int) -> WidgetInstance:
+        instance = db.get(WidgetInstance, instance_id)
+        if instance is None:
+            raise ValueError("Widget instance not found")
+        return instance
+
+    def _widget_definition_or_error(self, db: Session, widget_type: str) -> WidgetDefinition:
+        self._ensure_widget_definitions(db)
+        definition = db.scalar(select(WidgetDefinition).where(WidgetDefinition.widget_type == widget_type))
+        if definition is None:
+            raise ValueError("Unknown widget type")
+        return definition
+
+    def _publish_widget_instance_change(self, db: Session, *, project_id: int | None, event_type: str, payload: dict[str, Any]) -> None:
+        if project_id is None:
+            self.events.publish_app(db, event_type, payload)
+            return
+        self.events.publish(db, project_id, event_type, payload)
+
+    def create_widget_instance(
+        self,
+        db: Session,
+        *,
+        scope: str,
+        project: Project | None,
+        widget_type: str,
+        area: str | None = None,
+        size: str | None = None,
+        order_index: int | None = None,
+        collapsed: bool = False,
+        enabled: bool = True,
+        config_json: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        definition = self._widget_definition_or_error(db, widget_type)
+        if definition.scope != scope:
+            raise ValueError("Widget scope does not match the requested placement.")
+        if scope == "project" and project is None:
+            raise ValueError("Project widgets require a project context.")
+        project_id = project.id if project is not None else None
+        existing = db.scalar(
+            select(WidgetInstance).where(
+                WidgetInstance.scope == scope,
+                WidgetInstance.project_id == project_id,
+                WidgetInstance.widget_type == widget_type,
+            )
+        )
+        if existing is not None:
+            if not existing.enabled:
+                existing.enabled = True
+                existing.collapsed = False
+                existing.updated_at = utc_now()
+                self._publish_widget_instance_change(
+                    db,
+                    project_id=project_id,
+                    event_type="widget_instances_updated",
+                    payload={"scope": scope, "project_id": project_id, "widget_instance_id": existing.id, "widget_type": widget_type, "action": "enabled"},
+                )
+            return self._serialize_widget_instance(existing)
+        target_area = area or definition.default_area
+        if order_index is None:
+            siblings = [item for item in self._widget_instances_query(db, scope=scope, project_id=project_id) if item.area == target_area]
+            order_index = len(siblings)
+        instance = WidgetInstance(
+            scope=scope,
+            project_id=project_id,
+            widget_type=widget_type,
+            area=target_area,
+            order_index=order_index,
+            size=size or definition.default_size,
+            collapsed=collapsed,
+            enabled=enabled,
+            config_json=dict(config_json or {}),
+        )
+        db.add(instance)
+        db.flush()
+        self._normalize_widget_order(db, scope=scope, project_id=project_id)
+        if scope == "dashboard":
+            self._mirror_dashboard_widget_legacy(self._app_profile(db), self._widget_instances_query(db, scope="dashboard", project_id=None))
+        elif project is not None:
+            self._mirror_project_widget_legacy(self._ensure_project_settings(db, project), self._widget_instances_query(db, scope="project", project_id=project.id))
+        self._publish_widget_instance_change(
+            db,
+            project_id=project_id,
+            event_type="widget_instances_updated",
+            payload={"scope": scope, "project_id": project_id, "widget_instance_id": instance.id, "widget_type": widget_type, "action": "created"},
+        )
+        return self._serialize_widget_instance(instance)
+
+    def update_widget_instance(self, db: Session, instance_id: int, payload: dict[str, Any]) -> dict[str, Any]:
+        instance = self._widget_instance_or_error(db, instance_id)
+        original_area = instance.area
+        if payload.get("area"):
+            instance.area = str(payload["area"])
+        if payload.get("size"):
+            instance.size = str(payload["size"])
+        if "order_index" in payload and payload["order_index"] is not None:
+            instance.order_index = int(payload["order_index"])
+        if "collapsed" in payload and payload["collapsed"] is not None:
+            instance.collapsed = bool(payload["collapsed"])
+        if "enabled" in payload and payload["enabled"] is not None:
+            instance.enabled = bool(payload["enabled"])
+        if payload.get("config_json") is not None:
+            instance.config_json = dict(payload["config_json"] or {})
+        db.flush()
+        self._normalize_widget_order(db, scope=instance.scope, project_id=instance.project_id)
+        if instance.scope == "dashboard":
+            self._mirror_dashboard_widget_legacy(self._app_profile(db), self._widget_instances_query(db, scope="dashboard", project_id=None))
+        elif instance.project_id is not None:
+            project = db.get(Project, instance.project_id)
+            if project is not None:
+                self._mirror_project_widget_legacy(self._ensure_project_settings(db, project), self._widget_instances_query(db, scope="project", project_id=project.id))
+        self._publish_widget_instance_change(
+            db,
+            project_id=instance.project_id,
+            event_type="widget_instances_updated",
+            payload={
+                "scope": instance.scope,
+                "project_id": instance.project_id,
+                "widget_instance_id": instance.id,
+                "widget_type": instance.widget_type,
+                "action": "updated",
+                "area_changed": original_area != instance.area,
+            },
+        )
+        return self._serialize_widget_instance(instance)
+
+    def delete_widget_instance(self, db: Session, instance_id: int) -> None:
+        instance = self._widget_instance_or_error(db, instance_id)
+        scope = instance.scope
+        project_id = instance.project_id
+        widget_type = instance.widget_type
+        db.delete(instance)
+        db.flush()
+        self._normalize_widget_order(db, scope=scope, project_id=project_id)
+        if scope == "dashboard":
+            self._mirror_dashboard_widget_legacy(self._app_profile(db), self._widget_instances_query(db, scope="dashboard", project_id=None))
+        elif project_id is not None:
+            project = db.get(Project, project_id)
+            if project is not None:
+                self._mirror_project_widget_legacy(self._ensure_project_settings(db, project), self._widget_instances_query(db, scope="project", project_id=project_id))
+        self._publish_widget_instance_change(
+            db,
+            project_id=project_id,
+            event_type="widget_instances_updated",
+            payload={"scope": scope, "project_id": project_id, "widget_type": widget_type, "action": "deleted"},
+        )
+
+    def add_dashboard_widget(self, db: Session, widget_type: str, area: str | None = None, size: str | None = None) -> dict[str, Any]:
+        return self.create_widget_instance(db, scope="dashboard", project=None, widget_type=widget_type, area=area, size=size)
+
+    def add_project_widget(self, db: Session, project: Project, widget_type: str, area: str | None = None, size: str | None = None) -> dict[str, Any]:
+        return self.create_widget_instance(db, scope="project", project=project, widget_type=widget_type, area=area, size=size)
+
+    async def _dashboard_widget_data_for_instance(
+        self,
+        db: Session,
+        instance: WidgetInstance,
+        *,
+        projects: list[Project],
+        profile: AppProfile,
+        system_status: dict[str, Any],
+        active_builds: list[dict[str, Any]],
+        attention_items: list[dict[str, Any]],
+        blocked_agents: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        recent_handoffs = self.list_handoffs(db)[:5]
+        if instance.widget_type == "Needs Attention":
+            if not attention_items:
+                return self._serialize_widget_data(instance, status="empty", empty_state="No attention needed. Everything is moving.")
+            return self._serialize_widget_data(instance, status="warning", data_json={"items": attention_items[:6]})
+        if instance.widget_type == "Active Builds":
+            if not active_builds:
+                return self._serialize_widget_data(instance, status="empty", empty_state="No active builds. Start a project or resume one from Recent Projects.")
+            return self._serialize_widget_data(instance, status="ready", data_json={"items": active_builds[:6]})
+        if instance.widget_type == "Recent Handoffs":
+            if not recent_handoffs:
+                return self._serialize_widget_data(instance, status="empty", empty_state="No handoffs yet. Completed work will appear here.")
+            return self._serialize_widget_data(instance, status="ready", data_json={"items": recent_handoffs[:5]})
+        if instance.widget_type == "Runner & Provider Status":
+            provider_rows = [
+                {
+                    "label": row["label"],
+                    "provider": row["provider"],
+                    "status": row["login_status"],
+                    "models": list(row.get("available_models") or []),
+                    "authenticated": bool(row.get("authenticated")),
+                }
+                for row in system_status.get("provider_statuses", [])
+            ]
+            return self._serialize_widget_data(
+                instance,
+                status="ready",
+                data_json={
+                    "selected_provider": system_status.get("selected_provider_label"),
+                    "effective_runner_mode": system_status.get("effective_runner_mode"),
+                    "cli_detected": system_status.get("cli_detected"),
+                    "app_server_handshake_status": system_status.get("app_server_handshake_status"),
+                    "providers": provider_rows,
+                },
+            )
+        if instance.widget_type == "Connected Accounts":
+            rows = [{"name": key, **dict(value or {})} for key, value in dict(profile.connected_accounts_json or {}).items()]
+            if system_status.get("authenticated"):
+                rows.insert(0, {"name": "codex", "status": "connected"})
+            if not rows:
+                return self._serialize_widget_data(instance, status="empty", empty_state="No connected accounts are configured yet.")
+            return self._serialize_widget_data(instance, status="ready", data_json={"items": rows})
+        if instance.widget_type == "Model Defaults":
+            return self._serialize_widget_data(
+                instance,
+                status="ready",
+                data_json={
+                    "manager_model": profile.manager_model,
+                    "default_worker_model": profile.default_worker_model,
+                    "manager_reasoning_effort": profile.manager_reasoning_effort,
+                    "default_worker_reasoning_effort": profile.default_worker_reasoning_effort,
+                },
+            )
+        if instance.widget_type == "Diagnostics Summary":
+            startup_summary = dict(system_status.get("startup_summary") or {})
+            notes = list(system_status.get("notes") or [])
+            return self._serialize_widget_data(
+                instance,
+                status="warning" if startup_summary.get("overall_status") in {"degraded", "error"} else "ready",
+                data_json={
+                    "startup_summary": startup_summary,
+                    "notes": notes[:5],
+                    "runtime_directory": system_status.get("runtime_directory"),
+                },
+            )
+        if instance.widget_type == "Swarm Budget Overview":
+            items = []
+            warnings: list[str] = []
+            for project in projects[:8]:
+                support = self._ensure_widget_support_records(db, project)
+                budget = support["budget"]
+                items.append(
+                    {
+                        "project_id": project.id,
+                        "project_name": project.name,
+                        "project_slug": self._effective_project_slug(project),
+                        "active_agents": budget.current_active_agents,
+                        "max_agents": budget.max_agents,
+                        "intensity": budget.current_intensity,
+                        "dynamic_spawning_paused": budget.dynamic_spawning_paused,
+                        "approval_threshold": budget.require_approval_above_agent_count,
+                    }
+                )
+                if budget.current_intensity in {"high", "extreme"}:
+                    warnings.append(f"{project.name} is running at {budget.current_intensity} swarm intensity.")
+            if not items:
+                return self._serialize_widget_data(instance, status="empty", empty_state="No active swarm budgets exist yet.")
+            return self._serialize_widget_data(instance, status="warning" if warnings else "ready", data_json={"items": items}, warnings_json=warnings[:5])
+        if instance.widget_type == "Blocked Agents":
+            if not blocked_agents:
+                return self._serialize_widget_data(instance, status="empty", empty_state="No agents are currently blocked.")
+            return self._serialize_widget_data(instance, status="warning", data_json={"items": blocked_agents[:8]})
+        if instance.widget_type == "Recent Decisions":
+            decisions = list(
+                db.scalars(
+                    select(DecisionRecord)
+                    .order_by(DecisionRecord.created_at.desc(), DecisionRecord.id.desc())
+                )
+            )[:10]
+            if not decisions:
+                return self._serialize_widget_data(instance, status="empty", empty_state="No decisions have been recorded yet.")
+            return self._serialize_widget_data(
+                instance,
+                status="ready",
+                data_json={"items": [
+                    {
+                        "project_id": item.project_id,
+                        "title": item.title,
+                        "decision": item.decision,
+                        "reason": item.reason,
+                        "made_by": item.made_by,
+                        "created_at": item.created_at,
+                    }
+                    for item in decisions
+                ]},
+            )
+        if instance.widget_type == "Project Health Overview":
+            items = []
+            for project in projects[:8]:
+                tasks = list(db.scalars(select(Task).where(Task.project_id == project.id).order_by(Task.priority.asc(), Task.id.asc())))
+                degraded = await self._workspace_degraded_notices(project, self._project_settings(db, project))
+                current_action = self._derive_current_action(db, project, degraded)
+                overview = self._project_overview(db, project, tasks, current_action)
+                support = self._ensure_widget_support_records(db, project, tasks=tasks, degraded_notices=degraded, current_action=current_action, overview=overview)
+                items.append(
+                    {
+                        "project_id": project.id,
+                        "project_name": project.name,
+                        "project_slug": self._effective_project_slug(project),
+                        **support["health"],
+                    }
+                )
+            if not items:
+                return self._serialize_widget_data(instance, status="empty", empty_state="No project health data exists yet.")
+            return self._serialize_widget_data(instance, status="ready", data_json={"items": items})
+        if instance.widget_type == "Recent Change Requests":
+            items = list(
+                db.scalars(
+                    select(ChangeRequest).order_by(ChangeRequest.updated_at.desc(), ChangeRequest.id.desc())
+                )
+            )[:10]
+            if not items:
+                return self._serialize_widget_data(instance, status="empty", empty_state="No change requests have been logged yet.")
+            return self._serialize_widget_data(
+                instance,
+                status="ready",
+                data_json={"items": [
+                    {
+                        "project_id": item.project_id,
+                        "request_text": item.request_text,
+                        "classification": item.classification,
+                        "impact_estimate": item.impact_estimate,
+                        "status": item.status,
+                        "updated_at": item.updated_at,
+                    }
+                    for item in items
+                ]},
+            )
+        return self._serialize_widget_data(instance, status="empty", empty_state=WIDGET_EMPTY_STATE)
+
+    async def _project_widget_data_for_instance(
+        self,
+        db: Session,
+        instance: WidgetInstance,
+        *,
+        project: Project,
+        tasks: list[Task],
+        current_action: dict[str, Any],
+        overview: dict[str, Any],
+        degraded_notices: list[str],
+    ) -> dict[str, Any]:
+        support = self._ensure_widget_support_records(
+            db,
+            project,
+            tasks=tasks,
+            degraded_notices=degraded_notices,
+            current_action=current_action,
+            overview=overview,
+        )
+        swarm_plan = self._serialize_swarm_plan(db, project, self._current_swarm_plan_record(db, project.id))
+        if instance.widget_type == "Swarm Strategy":
+            if swarm_plan is None:
+                return self._serialize_widget_data(instance, status="empty", empty_state="No swarm plan exists yet. Ask the Manager to generate one.")
+            warnings = [swarm_plan["usage_warning"]] if swarm_plan.get("usage_warning") else []
+            return self._serialize_widget_data(instance, status="warning" if warnings else "ready", data_json=swarm_plan, warnings_json=warnings)
+        if instance.widget_type == "Swarm Budget":
+            budget: SwarmBudget = support["budget"]
+            warnings = []
+            if budget.current_intensity in {"high", "extreme"}:
+                warnings.append(f"Swarm intensity is {budget.current_intensity}. More agents are not free speed; they are coordination debt in nicer clothing.")
+            if budget.premium_models_only_for:
+                warnings.append(f"Premium model roles configured: {', '.join(budget.premium_models_only_for)}")
+            return self._serialize_widget_data(
+                instance,
+                status="warning" if warnings else "ready",
+                data_json={
+                    "active_agents": budget.current_active_agents,
+                    "max_agents": budget.max_agents,
+                    "approval_threshold": budget.require_approval_above_agent_count,
+                    "intensity": budget.current_intensity,
+                    "dynamic_spawning_paused": budget.dynamic_spawning_paused,
+                    "prefer_local_models": budget.prefer_local_models,
+                    "premium_models_only_for": list(budget.premium_models_only_for or []),
+                },
+                warnings_json=warnings,
+            )
+        if instance.widget_type == "Agent Contracts":
+            contracts: list[AgentContract] = support["contracts"]
+            if not contracts:
+                return self._serialize_widget_data(instance, status="empty", empty_state="No active agent contracts exist yet.")
+            return self._serialize_widget_data(
+                instance,
+                status="ready",
+                data_json={
+                    "items": [
+                        {
+                            "id": entry.id,
+                            "agent_name": entry.agent_name,
+                            "archetype": entry.archetype,
+                            "mission": entry.mission,
+                            "allowed_paths": list(entry.allowed_paths_json or []),
+                            "forbidden_paths": list(entry.forbidden_paths_json or []),
+                            "allowed_tools": list(entry.allowed_tools_json or []),
+                            "status": entry.status,
+                            "expected_output": entry.expected_output,
+                        }
+                        for entry in contracts[:12]
+                    ]
+                },
+            )
+        if instance.widget_type == "Path Ownership Map":
+            path_locks: list[PathLock] = support["path_locks"]
+            if not path_locks:
+                return self._serialize_widget_data(instance, status="empty", empty_state="No path ownership data exists yet.")
+            waiting = [entry for entry in path_locks if entry.status == "waiting"]
+            warnings = [f"{len(waiting)} task(s) are waiting on path ownership."] if waiting else []
+            return self._serialize_widget_data(
+                instance,
+                status="warning" if warnings else "ready",
+                data_json={
+                    "locks": [
+                        {
+                            "path_pattern": entry.path_pattern,
+                            "owner_agent_id": entry.owner_agent_id,
+                            "owner_task_id": entry.owner_task_id,
+                            "reason": entry.reason,
+                            "status": entry.status,
+                        }
+                        for entry in path_locks[:20]
+                    ]
+                },
+                warnings_json=warnings,
+            )
+        if instance.widget_type == "Decision Ledger":
+            decisions: list[DecisionRecord] = support["decisions"]
+            if not decisions:
+                return self._serialize_widget_data(instance, status="empty", empty_state="No decisions have been recorded yet.")
+            return self._serialize_widget_data(
+                instance,
+                status="ready",
+                data_json={"items": [
+                    {
+                        "id": item.id,
+                        "title": item.title,
+                        "decision": item.decision,
+                        "reason": item.reason,
+                        "made_by": item.made_by,
+                        "decision_type": item.decision_type,
+                        "impact_areas": list(item.impact_area_json or []),
+                        "created_at": item.created_at,
+                    }
+                    for item in decisions[:12]
+                ]},
+            )
+        if instance.widget_type == "Confidence Tracker":
+            confidence: list[ProjectConfidence] = support["confidence"]
+            return self._serialize_widget_data(
+                instance,
+                status="ready",
+                data_json={
+                    "items": [
+                        {
+                            "category": entry.category,
+                            "confidence_score": entry.confidence_score,
+                            "reason": entry.reason,
+                            "unknowns": list(entry.unknowns_json or []),
+                        }
+                        for entry in confidence
+                    ],
+                    "lowest_confidence": [entry.category for entry in confidence[:3]],
+                },
+            )
+        if instance.widget_type == "Failure Recovery":
+            plans: list[RecoveryPlan] = support["recovery_plans"]
+            open_plans = [entry for entry in plans if entry.resolved_at is None]
+            if not open_plans:
+                return self._serialize_widget_data(instance, status="empty", empty_state="No recovery proposals are active right now.")
+            return self._serialize_widget_data(
+                instance,
+                status="warning",
+                data_json={"items": [
+                    {
+                        "id": entry.id,
+                        "trigger_type": entry.trigger_type,
+                        "trigger_summary": entry.trigger_summary,
+                        "suggested_actions": list(entry.suggested_actions_json or []),
+                        "selected_action": entry.selected_action,
+                        "status": entry.status,
+                    }
+                    for entry in open_plans[:8]
+                ]},
+            )
+        if instance.widget_type == "Agent Stuck Detection":
+            signals: list[AgentStuckSignal] = support["stuck_signals"]
+            if not signals:
+                return self._serialize_widget_data(instance, status="empty", empty_state="No agents appear stuck right now.")
+            return self._serialize_widget_data(
+                instance,
+                status="warning",
+                data_json={"items": [
+                    {
+                        "agent_id": entry.agent_id,
+                        "signal_type": entry.signal_type,
+                        "message": entry.message,
+                        "severity": entry.severity,
+                        "detected_at": entry.detected_at,
+                    }
+                    for entry in signals[:10]
+                ]},
+            )
+        if instance.widget_type == "Merge / Review Gates":
+            gates: list[ReviewGate] = support["review_gates"]
+            return self._serialize_widget_data(
+                instance,
+                status="warning" if any(entry.status == "failed" for entry in gates) else "ready",
+                data_json={"items": [
+                    {
+                        "gate_type": entry.gate_type,
+                        "title": entry.title,
+                        "status": entry.status,
+                        "required": entry.required,
+                        "required_checks": list(entry.required_checks_json or []),
+                        "result_summary": entry.result_summary,
+                    }
+                    for entry in gates
+                ]},
+            )
+        if instance.widget_type == "Project Health Score":
+            return self._serialize_widget_data(instance, status="warning" if support["health"]["state"] in {"blocked", "unstable", "needs_review"} else "ready", data_json=support["health"])
+        if instance.widget_type == "Model Assignment Policy":
+            policy: ModelPolicy = support["model_policy"]
+            return self._serialize_widget_data(
+                instance,
+                status="ready",
+                data_json={
+                    "policy_name": policy.policy_name,
+                    "manager_model": policy.manager_model,
+                    "coding_model": policy.coding_model,
+                    "docs_model": policy.docs_model,
+                    "review_model": policy.review_model,
+                    "test_model": policy.test_model,
+                    "research_model": policy.research_model,
+                    "security_model": policy.security_model,
+                    "fallback_model": policy.fallback_model,
+                    "notes": policy.notes,
+                },
+            )
+        if instance.widget_type == "Tool Routing Policy":
+            policies: list[ToolRoutingPolicy] = support["tool_routing"]
+            return self._serialize_widget_data(
+                instance,
+                status="ready",
+                data_json={"items": [
+                    {
+                        "agent_archetype": entry.agent_archetype,
+                        "allowed_tools": list(entry.allowed_tools_json or []),
+                        "requires_approval": list(entry.requires_approval_tools_json or []),
+                        "blocked_tools": list(entry.blocked_tools_json or []),
+                        "notes": entry.notes,
+                    }
+                    for entry in policies
+                ]},
+            )
+        if instance.widget_type == "Sandbox Profiles":
+            profiles: list[SandboxProfile] = support["sandbox_profiles"]
+            settings = self._project_settings(db, project)
+            current_profile_name = "balanced" if settings.sandbox_mode == "workspace-write" else "strict"
+            current_profile = next((entry for entry in profiles if entry.name == current_profile_name), profiles[0] if profiles else None)
+            if current_profile is None:
+                return self._serialize_widget_data(instance, status="empty", empty_state="No sandbox profiles are available.")
+            return self._serialize_widget_data(
+                instance,
+                status="ready",
+                data_json={
+                    "current_profile": {
+                        "name": current_profile.name,
+                        "description": current_profile.description,
+                        "network_policy": current_profile.network_policy,
+                        "file_write_policy": current_profile.file_write_policy,
+                        "command_approval_policy": current_profile.command_approval_policy,
+                        "external_tool_policy": current_profile.external_tool_policy,
+                        "deployment_policy": current_profile.deployment_policy,
+                    },
+                    "profiles": [
+                        {
+                            "name": entry.name,
+                            "description": entry.description,
+                            "network_policy": entry.network_policy,
+                            "file_write_policy": entry.file_write_policy,
+                            "command_approval_policy": entry.command_approval_policy,
+                            "external_tool_policy": entry.external_tool_policy,
+                            "deployment_policy": entry.deployment_policy,
+                            "is_default": entry.is_default,
+                        }
+                        for entry in profiles
+                    ],
+                },
+            )
+        if instance.widget_type == "Manager Assumptions":
+            assumptions: list[ManagerAssumption] = support["assumptions"]
+            if not assumptions:
+                return self._serialize_widget_data(instance, status="empty", empty_state="No active Manager assumptions are recorded right now.")
+            return self._serialize_widget_data(
+                instance,
+                status="ready",
+                data_json={"items": [
+                    {
+                        "assumption": entry.assumption,
+                        "reason": entry.reason,
+                        "confidence": entry.confidence,
+                        "status": entry.status,
+                        "created_at": entry.created_at,
+                    }
+                    for entry in assumptions[:12]
+                ]},
+            )
+        if instance.widget_type == "Repo Intelligence":
+            repo: RepoIntelligenceSummary = support["repo"]
+            if not repo.languages_json and not repo.frameworks_json and not repo.important_folders_json:
+                return self._serialize_widget_data(instance, status="empty", empty_state="Repository intelligence is not available yet. Re-index after the workspace exists.")
+            return self._serialize_widget_data(
+                instance,
+                status="ready",
+                data_json={
+                    "languages": list(repo.languages_json or []),
+                    "frameworks": list(repo.frameworks_json or []),
+                    "package_managers": list(repo.package_managers_json or []),
+                    "entry_points": list(repo.entry_points_json or []),
+                    "build_commands": list(repo.build_commands_json or []),
+                    "test_commands": list(repo.test_commands_json or []),
+                    "important_folders": list(repo.important_folders_json or []),
+                    "docs_found": list(repo.docs_found_json or []),
+                    "ci_config": list(repo.ci_config_json or []),
+                    "deployment_config": list(repo.deployment_config_json or []),
+                    "risky_files": list(repo.risky_files_json or []),
+                    "last_indexed_at": repo.last_indexed_at,
+                },
+            )
+        if instance.widget_type == "Validation Recipe":
+            recipe: ValidationRecipe = support["validation_recipe"]
+            return self._serialize_widget_data(
+                instance,
+                status="ready",
+                data_json={
+                    "name": recipe.name,
+                    "steps": list(recipe.steps_json or []),
+                    "status": recipe.status,
+                    "last_run_at": recipe.last_run_at,
+                    "last_result": recipe.last_result,
+                    "can_run": False,
+                },
+            )
+        if instance.widget_type == "Handoff Quality":
+            handoff_quality: HandoffQualityPreference = support["handoff_quality"]
+            return self._serialize_widget_data(
+                instance,
+                status="ready",
+                data_json={
+                    "quality_level": handoff_quality.quality_level,
+                    "include_run_commands": handoff_quality.include_run_commands,
+                    "include_known_limitations": handoff_quality.include_known_limitations,
+                    "include_artifacts": handoff_quality.include_artifacts,
+                    "include_tests": handoff_quality.include_tests,
+                    "include_next_steps": handoff_quality.include_next_steps,
+                    "handoff_progress": overview["handoff_progress"],
+                    "readiness_label": overview["readiness_label"],
+                },
+            )
+        if instance.widget_type == "Change Request Mode":
+            change_requests = list(
+                db.scalars(
+                    select(ChangeRequest)
+                    .where(ChangeRequest.project_id == project.id)
+                    .order_by(ChangeRequest.updated_at.desc(), ChangeRequest.id.desc())
+                )
+            )
+            if not change_requests:
+                return self._serialize_widget_data(instance, status="empty", empty_state="No change requests have been logged for this project yet.")
+            return self._serialize_widget_data(
+                instance,
+                status="ready",
+                data_json={"items": [
+                    {
+                        "id": item.id,
+                        "request_text": item.request_text,
+                        "classification": item.classification,
+                        "impact_estimate": item.impact_estimate,
+                        "status": item.status,
+                        "updated_at": item.updated_at,
+                    }
+                    for item in change_requests[:10]
+                ]},
+            )
+        if instance.widget_type == "Handoff Progress":
+            return self._serialize_widget_data(instance, status="ready", data_json=overview)
+        if instance.widget_type == "What Changed Timeline":
+            items = self._activity_log(db, project)[:10]
+            if not items:
+                return self._serialize_widget_data(instance, status="empty", empty_state="No project timeline entries exist yet.")
+            return self._serialize_widget_data(instance, status="ready", data_json={"items": items})
+        if instance.widget_type == "Agent Report Inbox":
+            messages = [message for message in self.list_manager_messages(db, project) if message["role"] == "agent"][:10]
+            if not messages:
+                return self._serialize_widget_data(instance, status="empty", empty_state="No agent reports have been routed to the Manager yet.")
+            return self._serialize_widget_data(instance, status="ready", data_json={"items": messages})
+        if instance.widget_type == "Parallelism Safety Meter":
+            path_locks: list[PathLock] = support["path_locks"]
+            active_locks = [entry for entry in path_locks if entry.status == "active"]
+            waiting_locks = [entry for entry in path_locks if entry.status == "waiting"]
+            risk = swarm_plan["path_conflict_risk"] if swarm_plan else "low"
+            score = max(0, 100 - (len(waiting_locks) * 15) - (30 if risk == "high" else 15 if risk == "medium" else 0))
+            return self._serialize_widget_data(
+                instance,
+                status="warning" if waiting_locks or risk == "high" else "ready",
+                data_json={
+                    "score": score,
+                    "active_locks": len(active_locks),
+                    "waiting_locks": len(waiting_locks),
+                    "path_conflict_risk": risk,
+                    "coordination_risk": swarm_plan["coordination_risk"] if swarm_plan else "low",
+                },
+            )
+        if instance.widget_type == "Human Attention Queue":
+            pending_questions = self.list_pending_questions(db, project)
+            pending_approvals = self.list_pending_approvals(db, project)
+            items = []
+            if current_action["type"] != "no_action":
+                items.append({"kind": current_action["type"], "title": current_action["title"], "message": current_action["message"]})
+            items.extend({"kind": "manager_question", "title": item["question"], "message": item.get("selected_text") or ""} for item in pending_questions[:5])
+            items.extend({"kind": approval["request_type"], "title": approval["title"], "message": approval["reason_short"]} for approval in pending_approvals[:5])
+            if not items:
+                return self._serialize_widget_data(instance, status="empty", empty_state="No human attention is needed right now.")
+            return self._serialize_widget_data(instance, status="warning", data_json={"items": items[:10]})
+        if instance.widget_type == "Live Project Map":
+            return self._serialize_widget_data(instance, status="coming_soon", empty_state="Live Project Map is still experimental and not ready to pretend otherwise.")
+        return self._serialize_widget_data(instance, status="empty", empty_state=WIDGET_EMPTY_STATE)
+
+    async def get_widget_instance_data(self, db: Session, instance_id: int) -> dict[str, Any]:
+        instance = self._widget_instance_or_error(db, instance_id)
+        if instance.scope == "dashboard":
+            profile = self._app_profile(db)
+            projects = self._ordered_projects(db, include_archived=False)
+            active_builds = await self._dashboard_active_builds(db, projects)
+            attention_items = await self._dashboard_attention_items(db, projects)
+            blocked_agents = []
+            for project in projects:
+                for agent_payload in self._sorted_workspace_agents(db, project.id):
+                    if agent_payload["display_status"] in {"blocked", "error"}:
+                        blocked_agents.append(agent_payload)
+            system_status = await self.get_system_status(db)
+            return await self._dashboard_widget_data_for_instance(
+                db,
+                instance,
+                projects=projects,
+                profile=profile,
+                system_status=system_status,
+                active_builds=active_builds,
+                attention_items=attention_items,
+                blocked_agents=blocked_agents,
+            )
+        if instance.project_id is None:
+            raise ValueError("Project widget instance is missing its project context.")
+        project = db.get(Project, instance.project_id)
+        if project is None:
+            raise ValueError("Project not found")
+        settings = self._project_settings(db, project)
+        tasks = list(db.scalars(select(Task).where(Task.project_id == project.id).order_by(Task.priority.asc(), Task.id.asc())))
+        degraded_notices = await self._workspace_degraded_notices(project, settings)
+        current_action = self._derive_current_action(db, project, degraded_notices)
+        overview = self._project_overview(db, project, tasks, current_action)
+        return await self._project_widget_data_for_instance(
+            db,
+            instance,
+            project=project,
+            tasks=tasks,
+            current_action=current_action,
+            overview=overview,
+            degraded_notices=degraded_notices,
+        )
+
+    async def get_dashboard_widget_summary(self, db: Session) -> dict[str, Any]:
+        profile = self._app_profile(db)
+        instances = [item for item in self._dashboard_widget_instances(db, profile) if item.enabled]
+        projects = self._ordered_projects(db, include_archived=False)
+        active_builds = await self._dashboard_active_builds(db, projects)
+        attention_items = await self._dashboard_attention_items(db, projects)
+        blocked_agents = []
+        for project in projects:
+            for agent_payload in self._sorted_workspace_agents(db, project.id):
+                if agent_payload["display_status"] in {"blocked", "error"}:
+                    blocked_agents.append(agent_payload)
+        system_status = await self.get_system_status(db)
+        data = [
+            await self._dashboard_widget_data_for_instance(
+                db,
+                instance,
+                projects=projects,
+                profile=profile,
+                system_status=system_status,
+                active_builds=active_builds,
+                attention_items=attention_items,
+                blocked_agents=blocked_agents,
+            )
+            for instance in instances
+        ]
+        return {
+            "scope": "dashboard",
+            "project_id": None,
+            "instances": [self._serialize_widget_instance(item) for item in instances],
+            "data": data,
+            "catalog": self._widget_catalog_for_scope(db, "dashboard"),
+        }
+
+    async def get_project_widget_summary(self, db: Session, project: Project) -> dict[str, Any]:
+        settings = self._project_settings(db, project)
+        instances = [item for item in self._project_widget_instances(db, project, settings) if item.enabled]
+        tasks = list(db.scalars(select(Task).where(Task.project_id == project.id).order_by(Task.priority.asc(), Task.id.asc())))
+        degraded_notices = await self._workspace_degraded_notices(project, settings)
+        current_action = self._derive_current_action(db, project, degraded_notices)
+        overview = self._project_overview(db, project, tasks, current_action)
+        data = [
+            await self._project_widget_data_for_instance(
+                db,
+                instance,
+                project=project,
+                tasks=tasks,
+                current_action=current_action,
+                overview=overview,
+                degraded_notices=degraded_notices,
+            )
+            for instance in instances
+        ]
+        return {
+            "scope": "project",
+            "project_id": project.id,
+            "instances": [self._serialize_widget_instance(item) for item in instances],
+            "data": data,
+            "catalog": self._widget_catalog_for_scope(db, "project"),
+        }
+
+    def _project_display_status(self, project: Project) -> str:
+        if project.archived_at:
+            return "archived"
+        if project.status in {"handoff_ready"}:
+            return "ready_for_handoff"
+        if project.status in {"blocked"}:
+            return "blocked"
+        if project.status in {"interview_in_progress", "interview_complete"}:
+            return "interviewing"
+        if project.status in {"draft", "docs_ready", "plan_ready", "pending_approval"}:
+            return "planning"
+        if project.status in {"paused"}:
+            return "paused"
+        if project.status in {"building"}:
+            return "building"
+        return project.status or "planning"
+
+    @staticmethod
+    def _status_label(status: str | None) -> str:
+        if not status:
+            return "Planning"
+        return status.replace("_", " ").title()
+
+    def _project_latest_activity(self, db: Session, project: Project) -> str | None:
+        latest_message = db.scalar(
+            select(ManagerMessage)
+            .where(ManagerMessage.project_id == project.id)
+            .order_by(ManagerMessage.created_at.desc())
+        )
+        if latest_message and latest_message.content_markdown:
+            return latest_message.content_markdown.strip().splitlines()[0][:180]
+        latest_task = db.scalar(select(Task).where(Task.project_id == project.id).order_by(Task.updated_at.desc(), Task.id.desc()))
+        if latest_task:
+            return latest_task.title
+        return project.idea.strip().splitlines()[0][:180] if project.idea else None
+
+    def _project_card_data(self, db: Session, project: Project) -> dict[str, Any]:
+        latest_task = db.scalar(select(Task).where(Task.project_id == project.id).order_by(Task.updated_at.desc(), Task.id.desc()))
+        latest_milestone = latest_task.milestone if latest_task and latest_task.milestone else project.latest_milestone
+        latest_activity = self._project_latest_activity(db, project)
+        handoff_status = "ready" if project.status == "handoff_ready" or project.final_report_json else "not_ready"
+        docs_path = project.docs_path or str(self._project_docs_dir(project))
+        return {
+            "id": project.id,
+            "name": project.name,
+            "slug": self._effective_project_slug(project),
+            "idea": project.idea,
+            "workspace_path": project.workspace_path,
+            "status": project.status,
+            "runner_mode": project.runner_mode,
+            "manager_mode": project.manager_mode,
+            "created_by": project.created_by,
+            "docs_path": docs_path,
+            "final_report_json": project.final_report_json,
+            "pinned": project.pinned,
+            "archived_at": project.archived_at,
+            "last_opened_at": project.last_opened_at,
+            "latest_milestone": latest_milestone,
+            "latest_activity": latest_activity,
+            "handoff_status": handoff_status,
+            "display_status": self._project_display_status(project),
+            "created_at": project.created_at,
+            "updated_at": project.updated_at,
+        }
+
+    def _serialize_project_card(self, db: Session, project: Project) -> dict[str, Any]:
+        return self._project_card_data(db, project)
+
+    def _ordered_projects(self, db: Session, *, include_archived: bool) -> list[Project]:
+        projects = list(
+            db.scalars(
+                select(Project).order_by(
+                    Project.pinned.desc(),
+                    Project.last_opened_at.desc().nullslast(),
+                    Project.updated_at.desc(),
+                    Project.id.desc(),
+                )
+            )
+        )
+        if not include_archived:
+            projects = [project for project in projects if not project.archived_at]
+        return projects
+
+    def _sidebar_projects(self, projects: list[Project]) -> list[Project]:
+        active_projects = [project for project in projects if not project.archived_at]
+        return active_projects[:3]
+
+    def _redact_payload(self, value: Any) -> Any:
+        if isinstance(value, dict):
+            redacted: dict[str, Any] = {}
+            for key, nested in value.items():
+                lowered = key.lower()
+                if any(token in lowered for token in {"token", "secret", "password", "api_key", "authorization"}):
+                    redacted[key] = "[redacted]"
+                else:
+                    redacted[key] = self._redact_payload(nested)
+            return redacted
+        if isinstance(value, list):
+            return [self._redact_payload(item) for item in value]
+        return value
+
+    def _publish_workspace_state(self, db: Session, project_id: int) -> None:
+        self.events.publish(db, project_id, "project_action_updated", {"project_id": project_id})
+        self.events.publish(db, project_id, "manager_queue_updated", {"project_id": project_id})
+
+    def _approval_signature(self, approval: ApprovalRequest) -> str:
+        payload = approval.request_payload_json or {}
+        command = str(payload.get("command") or approval.title).strip().lower()
+        cwd = (approval.cwd or "").strip().lower()
+        return f"{approval.request_type}:{command}:{cwd}"
+
+    def _record_manager_message(
+        self,
+        db: Session,
+        project: Project,
+        *,
+        role: str,
+        message_type: str,
+        content_markdown: str,
+        related_agent_id: int | None = None,
+        related_task_id: int | None = None,
+        actions_json: list[dict[str, Any]] | None = None,
+        resolved_at: datetime | None = None,
+        metadata_json: dict[str, Any] | None = None,
+    ) -> ManagerMessage:
+        message = ManagerMessage(
+            project_id=project.id,
+            role=role,
+            message_type=message_type,
+            content_markdown=content_markdown,
+            related_agent_id=related_agent_id,
+            related_task_id=related_task_id,
+            actions_json=actions_json,
+            resolved_at=resolved_at,
+            metadata_json=metadata_json,
+        )
+        db.add(message)
+        db.flush()
+        self.events.publish(
+            db,
+            project.id,
+            "manager_message_created",
+            {
+                "message_id": message.id,
+                "role": role,
+                "message_type": message_type,
+                "related_agent_id": related_agent_id,
+                "related_task_id": related_task_id,
+            },
+        )
+        return message
+
+    def _serialize_manager_message(self, message: ManagerMessage) -> dict[str, Any]:
+        return {
+            "id": message.id,
+            "project_id": message.project_id,
+            "role": message.role,
+            "message_type": message.message_type,
+            "content_markdown": message.content_markdown,
+            "created_at": message.created_at,
+            "related_agent_id": message.related_agent_id,
+            "related_task_id": message.related_task_id,
+            "actions_json": message.actions_json,
+            "resolved_at": message.resolved_at,
+            "metadata_json": message.metadata_json,
+        }
+
+    def _serialize_question(self, question: ManagerQuestion) -> dict[str, Any]:
+        return {
+            "id": question.id,
+            "project_id": question.project_id,
+            "question": question.question,
+            "options_json": list(question.options_json or []),
+            "impact": question.impact,
+            "status": question.status,
+            "selected_option_id": question.selected_option_id,
+            "selected_text": question.selected_text,
+            "manager_recommendation": question.manager_recommendation,
+            "auto_decide_at": question.auto_decide_at,
+            "created_at": question.created_at,
+            "resolved_at": question.resolved_at,
+            "related_task_id": question.related_task_id,
+            "related_agent_id": question.related_agent_id,
+            "metadata_json": question.metadata_json,
+        }
+
+    def _serialize_approval(self, approval: ApprovalRequest) -> dict[str, Any]:
+        return {
+            "id": approval.id,
+            "project_id": approval.project_id,
+            "request_type": approval.request_type,
+            "requesting_agent_id": approval.requesting_agent_id,
+            "task_id": approval.task_id,
+            "title": approval.title,
+            "reason_short": approval.reason_short,
+            "risk_level": approval.risk_level,
+            "status": approval.status,
+            "cwd": approval.cwd,
+            "request_payload_json": self._redact_payload(approval.request_payload_json or {}),
+            "runner_ref": approval.runner_ref,
+            "resolved_by": approval.resolved_by,
+            "created_at": approval.created_at,
+            "resolved_at": approval.resolved_at,
+        }
+
+    def _display_status(self, agent: Agent, needs_approval: bool) -> str:
+        if needs_approval:
+            return "blocked"
+        if agent.status == "error":
+            return "error"
+        if agent.status in {"done", "stopped"}:
+            return "retired"
+        if agent.status == "blocked":
+            return "blocked"
+        if agent.status == "needs_review":
+            return "reviewing"
+        action = (agent.current_action or "").lower()
+        if agent.status == "starting":
+            return "thinking"
+        if agent.status == "working":
+            if any(token in action for token in {"test", "run", "validate"}):
+                return "running"
+            if any(token in action for token in {"review", "handoff"}):
+                return "reviewing"
+            if any(token in action for token in {"monitor", "watch"}):
+                return "monitoring"
+            if any(token in action for token in {"code", "implement", "build", "patch"}):
+                return "coding"
+            return "active"
+        if agent.status == "waiting":
+            return "waiting"
+        return "idle"
+
+    def _serialize_agent(self, db: Session, agent: Agent) -> dict[str, Any]:
+        pending_approval = db.scalar(
+            select(ApprovalRequest)
+            .where(
+                ApprovalRequest.project_id == agent.project_id,
+                ApprovalRequest.requesting_agent_id == agent.id,
+                ApprovalRequest.status == "pending",
+            )
+            .order_by(ApprovalRequest.created_at.asc())
+        )
+        current_task = db.get(Task, agent.current_task_id) if agent.current_task_id else None
+        display_status = self._display_status(agent, pending_approval is not None)
+        return {
+            "id": agent.id,
+            "project_id": agent.project_id,
+            "name": agent.name,
+            "role": agent.role,
+            "kind": agent.kind,
+            "status": agent.status,
+            "current_task_id": agent.current_task_id,
+            "swarm_plan_id": agent.swarm_plan_id,
+            "workspace_path": agent.workspace_path,
+            "archetype": agent.archetype,
+            "mission": agent.mission,
+            "retire_when": agent.retire_when,
+            "session_ref": agent.session_ref,
+            "locked_paths_json": agent.locked_paths_json,
+            "failure_count": agent.failure_count,
+            "last_report_summary": agent.last_report_summary,
+            "active_model": agent.active_model,
+            "active_reasoning_effort": agent.active_reasoning_effort,
+            "active_runner_type": agent.active_runner_type,
+            "current_action": agent.current_action,
+            "current_task_title": current_task.title if current_task else None,
+            "display_status": display_status,
+            "runner_mode": agent.active_runner_type or "idle",
+            "needs_approval": pending_approval is not None,
+            "last_update": agent.last_update,
+        }
+
+    def _record_swarm_event(
+        self,
+        db: Session,
+        project: Project,
+        *,
+        event_type: str,
+        message: str,
+        swarm_plan_id: int | None = None,
+        agent_id: int | None = None,
+        metadata_json: dict[str, Any] | None = None,
+    ) -> SwarmEvent:
+        event = SwarmEvent(
+            project_id=project.id,
+            swarm_plan_id=swarm_plan_id,
+            event_type=event_type,
+            message=message,
+            agent_id=agent_id,
+            metadata_json=dict(metadata_json or {}),
+        )
+        db.add(event)
+        db.flush()
+        self.events.publish(
+            db,
+            project.id,
+            event_type,
+            {
+                "swarm_event_id": event.id,
+                "swarm_plan_id": swarm_plan_id,
+                "agent_id": agent_id,
+                **dict(metadata_json or {}),
+            },
+        )
+        self._publish_workspace_state(db, project.id)
+        return event
+
+    def _current_swarm_plan_record(self, db: Session, project_id: int) -> SwarmPlan | None:
+        return db.scalar(
+            select(SwarmPlan)
+            .where(SwarmPlan.project_id == project_id, SwarmPlan.status != "superseded")
+            .order_by(SwarmPlan.updated_at.desc(), SwarmPlan.id.desc())
+        )
+
+    def _swarm_specs_for_plan(self, db: Session, swarm_plan_id: int) -> list[SwarmAgentSpec]:
+        return list(
+            db.scalars(
+                select(SwarmAgentSpec)
+                .where(SwarmAgentSpec.swarm_plan_id == swarm_plan_id)
+                .order_by(SwarmAgentSpec.priority.asc(), SwarmAgentSpec.id.asc())
+            )
+        )
+
+    def _swarm_approval_required(self, plan: SwarmPlan, preferences: SwarmPreferences) -> bool:
+        return plan.recommended_agent_count > preferences.require_approval_above_agent_count
+
+    def _serialize_swarm_spec(self, spec: SwarmAgentSpec) -> dict[str, Any]:
+        return {
+            "id": spec.id,
+            "swarm_plan_id": spec.swarm_plan_id,
+            "project_id": spec.project_id,
+            "archetype": spec.archetype,
+            "name": spec.name,
+            "mission": spec.mission,
+            "model_policy": spec.model_policy,
+            "toolset_json": list(spec.toolset_json or []),
+            "allowed_paths_json": list(spec.allowed_paths_json or []),
+            "forbidden_paths_json": list(spec.forbidden_paths_json or []),
+            "spawn_phase": spec.spawn_phase,
+            "retire_when": spec.retire_when,
+            "priority": spec.priority,
+            "status": spec.status,
+        }
+
+    def _swarm_usage_warning(self, plan: SwarmPlan, preferences: SwarmPreferences) -> str | None:
+        if plan.recommended_agent_count >= max(preferences.require_approval_above_agent_count, 10):
+            return "Large swarm: expect higher coordination overhead and more provider/runtime intensity."
+        if plan.coordination_risk == "high" or plan.path_conflict_risk == "high":
+            return "Coordination risk is high enough that path ownership and review gates matter."
+        return None
+
+    def _serialize_swarm_plan(self, db: Session, project: Project, plan: SwarmPlan | None) -> dict[str, Any] | None:
+        if plan is None:
+            return None
+        preferences = self._swarm_preferences(project)
+        specs = self._swarm_specs_for_plan(db, plan.id)
+        active_agent_count = db.scalar(
+            select(func.count(Agent.id)).where(
+                Agent.project_id == project.id,
+                Agent.kind == "worker",
+                Agent.swarm_plan_id == plan.id,
+                ~Agent.status.in_(["done", "stopped"]),
+            )
+        ) or 0
+        return {
+            "id": plan.id,
+            "project_id": plan.project_id,
+            "milestone_id": plan.milestone_id,
+            "mode": plan.mode,
+            "goal": plan.goal,
+            "recommended_agent_count": plan.recommended_agent_count,
+            "max_agent_count": plan.max_agent_count,
+            "coordination_risk": plan.coordination_risk,
+            "path_conflict_risk": plan.path_conflict_risk,
+            "expected_bottlenecks_json": list(plan.expected_bottlenecks_json or []),
+            "validation_strategy_json": list(plan.validation_strategy_json or []),
+            "strategy_summary": plan.strategy_summary,
+            "approved_by_user": plan.approved_by_user,
+            "status": plan.status,
+            "created_at": plan.created_at,
+            "updated_at": plan.updated_at,
+            "approval_required": self._swarm_approval_required(plan, preferences),
+            "usage_warning": self._swarm_usage_warning(plan, preferences),
+            "active_agent_count": active_agent_count,
+            "current_bottleneck": next(iter(plan.expected_bottlenecks_json or []), None),
+            "dynamic_spawning_enabled": preferences.allow_dynamic_spawning,
+            "dynamic_retirement_enabled": preferences.allow_dynamic_retirement,
+            "specs": [self._serialize_swarm_spec(spec) for spec in specs],
+        }
+
+    def _serialize_swarm_event(self, event: SwarmEvent) -> dict[str, Any]:
+        return {
+            "id": event.id,
+            "project_id": event.project_id,
+            "swarm_plan_id": event.swarm_plan_id,
+            "event_type": event.event_type,
+            "message": event.message,
+            "agent_id": event.agent_id,
+            "created_at": event.created_at,
+            "metadata_json": dict(event.metadata_json or {}),
+        }
+
+    def get_swarm_preferences(self, db: Session, project: Project) -> dict[str, Any]:
+        return self._serialize_swarm_preferences(self._ensure_swarm_preferences(db, project))
+
+    def update_swarm_preferences(self, db: Session, project: Project, payload: SwarmPreferencesUpdate) -> dict[str, Any]:
+        preferences = self._ensure_swarm_preferences(db, project)
+        preferences.optimization_mode = payload.optimization_mode
+        preferences.swarm_aggressiveness = payload.swarm_aggressiveness
+        preferences.max_agents = max(1, int(payload.max_agents))
+        preferences.require_approval_above_agent_count = max(1, int(payload.require_approval_above_agent_count))
+        preferences.allow_dynamic_spawning = payload.allow_dynamic_spawning
+        preferences.allow_dynamic_retirement = payload.allow_dynamic_retirement
+        preferences.docs_depth = payload.docs_depth
+        preferences.testing_depth = payload.testing_depth
+        db.flush()
+        serialized = self._serialize_swarm_preferences(preferences)
+        self.events.publish(
+            db,
+            project.id,
+            "swarm.preferences.updated",
+            {
+                **serialized,
+                "created_at": preferences.created_at.isoformat(),
+                "updated_at": preferences.updated_at.isoformat(),
+            },
+        )
+        self._publish_workspace_state(db, project.id)
+        return serialized
+
+    def list_agent_archetypes(self, db: Session) -> list[dict[str, Any]]:
+        return [
+            {
+                "id": entry.id,
+                "name": entry.name,
+                "purpose": entry.purpose,
+                "default_guidelines": entry.default_guidelines,
+                "default_tools_json": list(entry.default_tools_json or []),
+                "default_permissions_json": dict(entry.default_permissions_json or {}),
+                "spawn_triggers_json": list(entry.spawn_triggers_json or []),
+                "retirement_triggers_json": list(entry.retirement_triggers_json or []),
+                "risk_profile": entry.risk_profile,
+            }
+            for entry in self._ensure_agent_archetypes(db)
+        ]
+
+    def get_swarm_plan(self, db: Session, project: Project) -> dict[str, Any] | None:
+        return self._serialize_swarm_plan(db, project, self._current_swarm_plan_record(db, project.id))
+
+    def list_swarm_events(self, db: Session, project: Project) -> list[dict[str, Any]]:
+        events = list(
+            db.scalars(
+                select(SwarmEvent)
+                .where(SwarmEvent.project_id == project.id)
+                .order_by(SwarmEvent.created_at.desc(), SwarmEvent.id.desc())
+            )
+        )
+        return [self._serialize_swarm_event(event) for event in events]
+
+    def _sorted_workspace_agents(self, db: Session, project_id: int) -> list[dict[str, Any]]:
+        agent_payloads = [self._serialize_agent(db, agent) for agent in db.scalars(select(Agent).where(Agent.project_id == project_id, Agent.kind == "worker"))]
+        return sorted(
+            agent_payloads,
+            key=lambda item: (
+                DISPLAY_STATUS_PRIORITY.get(str(item["display_status"]), 99),
+                str(item["name"]).lower(),
+            ),
+        )
+
+    def _serialize_queue_item(
+        self,
+        *,
+        item_id: str,
+        item_type: str,
+        title: str,
+        status: str,
+        created_at: datetime,
+        related_task_id: int | None = None,
+        related_agent_id: int | None = None,
+    ) -> dict[str, Any]:
+        return {
+            "id": item_id,
+            "type": item_type,
+            "title": title,
+            "status": status,
+            "related_task_id": related_task_id,
+            "related_agent_id": related_agent_id,
+            "created_at": created_at,
+        }
+
+    def _record_question_resolution_message(self, db: Session, project: Project, question: ManagerQuestion) -> None:
+        decision_mode = "auto-decided" if question.status == "auto_decided" else "answered"
+        self._record_manager_message(
+            db,
+            project,
+            role="system",
+            message_type="system_notice",
+            content_markdown=f"Manager question {decision_mode}: **{question.selected_text or 'No answer'}**",
+            related_agent_id=question.related_agent_id,
+            related_task_id=question.related_task_id,
+            resolved_at=question.resolved_at,
+            metadata_json={"source": "manager_question", "question_id": question.id, "status": question.status},
+        )
+
+    def _record_approval_resolution_message(self, db: Session, project: Project, approval: ApprovalRequest) -> None:
+        if approval.status == "denied":
+            message_type = "blocker_report"
+            content = f"Approval denied for **{approval.title}**. The manager will plan a safer workaround."
+        else:
+            message_type = "milestone_report"
+            content = f"Approval recorded for **{approval.title}**. The manager can continue with the next safe step."
+        self._record_manager_message(
+            db,
+            project,
+            role="manager",
+            message_type=message_type,
+            content_markdown=content,
+            related_agent_id=approval.requesting_agent_id,
+            related_task_id=approval.task_id,
+            resolved_at=approval.resolved_at,
+            metadata_json={"source": "approval", "approval_id": approval.id, "status": approval.status},
+        )
+
+    def _create_question(
+        self,
+        db: Session,
+        project: Project,
+        *,
+        question: str,
+        options_json: list[dict[str, Any]],
+        impact: str,
+        manager_recommendation: str | None = None,
+        auto_decide_at: datetime | None = None,
+        related_task_id: int | None = None,
+        related_agent_id: int | None = None,
+        metadata_json: dict[str, Any] | None = None,
+    ) -> ManagerQuestion:
+        record = ManagerQuestion(
+            project_id=project.id,
+            question=question,
+            options_json=options_json,
+            impact=impact,
+            status="pending",
+            manager_recommendation=manager_recommendation,
+            auto_decide_at=auto_decide_at,
+            related_task_id=related_task_id,
+            related_agent_id=related_agent_id,
+            metadata_json=metadata_json,
+        )
+        db.add(record)
+        db.flush()
+        self.events.publish(db, project.id, "question_created", {"question_id": record.id, "impact": record.impact})
+        self._publish_workspace_state(db, project.id)
+        return record
+
+    def _create_approval(
+        self,
+        db: Session,
+        project: Project,
+        *,
+        request_type: str,
+        title: str,
+        reason_short: str,
+        risk_level: str,
+        cwd: str | None,
+        request_payload_json: dict[str, Any],
+        requesting_agent_id: int | None = None,
+        task_id: int | None = None,
+        runner_ref: str | None = None,
+    ) -> ApprovalRequest:
+        approval = ApprovalRequest(
+            project_id=project.id,
+            request_type=request_type,
+            requesting_agent_id=requesting_agent_id,
+            task_id=task_id,
+            title=title,
+            reason_short=reason_short,
+            risk_level=risk_level,
+            status="pending",
+            cwd=cwd,
+            request_payload_json=self._redact_payload(request_payload_json),
+            runner_ref=runner_ref,
+        )
+        db.add(approval)
+        db.flush()
+        self.events.publish(db, project.id, "approval_created", {"approval_id": approval.id, "request_type": approval.request_type})
+        self._publish_workspace_state(db, project.id)
+        return approval
+
+    def _ensure_dry_run_workspace_seed(self, db: Session, project: Project) -> None:
+        settings = self._ensure_project_settings(db, project)
+        if settings.runner_mode != "dry_run":
+            return
+        seeded = (
+            db.scalar(select(func.count(ManagerMessage.id)).where(ManagerMessage.project_id == project.id))
+            or db.scalar(select(func.count(ManagerQuestion.id)).where(ManagerQuestion.project_id == project.id))
+            or db.scalar(select(func.count(ApprovalRequest.id)).where(ApprovalRequest.project_id == project.id))
+        )
+        if seeded:
+            return
+        workers = self.initialize_build_roster(db, project)
+        lead_agent = next(
+            (worker for worker in workers if worker.archetype in {"feature", "frontend", "backend", "integration"}),
+            workers[0] if workers else None,
+        )
+        demo_task = db.scalar(select(Task).where(Task.project_id == project.id).order_by(Task.id.asc()))
+        if demo_task is None:
+            demo_task = Task(
+                project_id=project.id,
+                assigned_agent_id=lead_agent.id if lead_agent else None,
+                title="Simulated vertical slice",
+                goal="Demonstrate the manager-led workspace loop in dry-run mode.",
+                scope="Create a safe simulated build task that exercises question and approval handling.",
+                agent_role=lead_agent.role if lead_agent else "Primary implementation",
+                milestone="Dry-run workspace demo",
+                allowed_paths_json=["src", "docs"],
+                forbidden_paths_json=[],
+                validation_steps_json=["Review the manager question", "Approve the simulated command if it looks safe"],
+                success_criteria_json=["The workspace loop is visible without real execution."],
+                estimated_complexity="small",
+                dependencies_json=[],
+                status="assigned",
+                priority=10,
+            )
+            db.add(demo_task)
+            db.flush()
+        for worker in workers:
+            if lead_agent and worker.id == lead_agent.id:
+                continue
+            if worker.archetype in {"research", "planner", "architect"}:
+                worker.status = "waiting"
+                worker.current_action = "Preparing the next swarm decision."
+            elif worker.archetype == "docs":
+                worker.status = "waiting"
+                worker.current_action = "Queued for the documentation pass after the core flow stabilizes."
+            elif worker.archetype in {"reviewer", "security", "test"}:
+                worker.status = "idle"
+                worker.current_action = "Waiting for implementation output before review or validation."
+            else:
+                worker.status = "idle"
+                worker.current_action = "Standing by for a distinct slice of work."
+        if lead_agent:
+            lead_agent.status = "starting"
+            lead_agent.current_task_id = demo_task.id
+            lead_agent.current_action = "Preparing a simulated dry-run step"
+            lead_agent.last_report_summary = "Dry-run workspace demo seeded."
+            self.events.publish(db, project.id, "agent_updated", {"agent_id": lead_agent.id, "status": lead_agent.status})
+        if project.status == "draft":
+            project.status = "building"
+        self._record_manager_message(
+            db,
+            project,
+            role="manager",
+            message_type="normal_update",
+            content_markdown="Dry-run demo active. This workspace is simulating the manager and worker loop locally. No real provider execution has started yet.",
+            related_agent_id=lead_agent.id if lead_agent else None,
+            related_task_id=demo_task.id,
+            metadata_json={"response_mode": "dry_run", "simulated": True},
+        )
+        self._create_question(
+            db,
+            project,
+            question="Which slice should the manager validate first?",
+            options_json=[
+                {"id": "ui", "label": "UI shell", "description": "Prioritize the interface scaffolding and project shell."},
+                {"id": "workflow", "label": "Workflow loop", "description": "Focus on approvals, questions, and the manager loop first."},
+                {"id": "docs", "label": "Docs and handoff", "description": "Make the handoff and documentation surface airtight first."},
+            ],
+            impact="low",
+            manager_recommendation="Workflow loop",
+            auto_decide_at=utc_now() + timedelta(minutes=5),
+            related_task_id=demo_task.id,
+            related_agent_id=lead_agent.id if lead_agent else None,
+            metadata_json={"simulated": True},
+        )
+
+    def _advance_dry_run_after_question(self, db: Session, project: Project, question: ManagerQuestion) -> None:
+        settings = self._ensure_project_settings(db, project)
+        if settings.runner_mode != "dry_run":
+            return
+        existing_pending = db.scalar(
+            select(ApprovalRequest)
+            .where(ApprovalRequest.project_id == project.id, ApprovalRequest.status == "pending")
+            .order_by(ApprovalRequest.id.asc())
+        )
+        if existing_pending:
+            return
+        if db.scalar(select(func.count(ApprovalRequest.id)).where(ApprovalRequest.project_id == project.id)) and question.status != "auto_decided":
+            return
+        agent = db.get(Agent, question.related_agent_id) if question.related_agent_id else None
+        task = db.get(Task, question.related_task_id) if question.related_task_id else None
+        if agent:
+            agent.status = "blocked"
+            agent.current_action = "Waiting for a simulated command approval"
+            self.events.publish(db, project.id, "agent_updated", {"agent_id": agent.id, "status": agent.status})
+        self._record_manager_message(
+            db,
+            project,
+            role="manager",
+            message_type="normal_update",
+            content_markdown=f"Thanks. The manager is proceeding with **{question.selected_text or 'the chosen option'}** and needs one simulated approval to continue.",
+            related_agent_id=agent.id if agent else None,
+            related_task_id=task.id if task else None,
+            metadata_json={"response_mode": "dry_run", "simulated": True},
+        )
+        approval = self._create_approval(
+            db,
+            project,
+            request_type="command",
+            title="Install the local validation package",
+            reason_short="The validation agent wants to run a simulated dependency install so the workspace loop can demonstrate approval handling without changing your global environment.",
+            risk_level="medium",
+            cwd=task and project.workspace_path or project.workspace_path,
+            request_payload_json={
+                "command": "python -m pip install simulated-package",
+                "sandbox_mode": settings.sandbox_mode,
+                "approval_policy": settings.approval_policy,
+                "simulated": True,
+            },
+            requesting_agent_id=agent.id if agent else None,
+            task_id=task.id if task else None,
+        )
+        self._record_manager_message(
+            db,
+            project,
+            role="manager",
+            message_type="command_approval",
+            content_markdown=f"Approval requested: **{approval.title}**",
+            related_agent_id=approval.requesting_agent_id,
+            related_task_id=approval.task_id,
+            metadata_json={"approval_id": approval.id, "simulated": True},
+        )
+
+    def _advance_dry_run_after_approval(self, db: Session, project: Project, approval: ApprovalRequest) -> None:
+        settings = self._project_settings(db, project)
+        if settings.runner_mode != "dry_run":
+            return
+        agent = db.get(Agent, approval.requesting_agent_id) if approval.requesting_agent_id else None
+        task = db.get(Task, approval.task_id) if approval.task_id else None
+        if agent:
+            if approval.status in {"approved_once", "allowed_for_project"}:
+                agent.status = "working"
+                agent.current_action = "Simulating the approved command"
+                agent.last_report_summary = "Approval recorded. Dry-run is continuing with a simulated step."
+            else:
+                agent.status = "thinking"
+                agent.current_action = "Planning a workaround after the denial"
+                agent.last_report_summary = "Approval denied. Dry-run is simulating a safer workaround."
+            self.events.publish(db, project.id, "agent_updated", {"agent_id": agent.id, "status": agent.status})
+        if task:
+            task.status = "working" if approval.status in {"approved_once", "allowed_for_project"} else "blocked"
+            task.waiting_reason = None if task.status == "working" else "Simulated approval denial requires a safer path."
+            self.events.publish(db, project.id, "task_updated", {"task_id": task.id, "status": task.status})
+
+    def _resolve_question(self, db: Session, question: ManagerQuestion, *, option_id: str, selected_text: str, status: str) -> ManagerQuestion:
+        project = db.get(Project, question.project_id)
+        if not project:
+            raise ValueError("Project not found")
+        question.status = status
+        question.selected_option_id = option_id
+        question.selected_text = selected_text
+        question.resolved_at = utc_now()
+        self._record_question_resolution_message(db, project, question)
+        self.events.publish(db, project.id, "question_resolved", {"question_id": question.id, "status": question.status})
+        self._advance_dry_run_after_question(db, project, question)
+        self._publish_workspace_state(db, project.id)
+        return question
+
+    def _auto_decide_due_questions(self, db: Session, project: Project) -> None:
+        pending_questions = list(
+            db.scalars(
+                select(ManagerQuestion)
+                .where(ManagerQuestion.project_id == project.id, ManagerQuestion.status == "pending")
+                .order_by(ManagerQuestion.created_at.asc())
+            )
+        )
+        for question in pending_questions:
+            auto_decide_at = question.auto_decide_at
+            if auto_decide_at is not None and auto_decide_at.tzinfo is None:
+                auto_decide_at = auto_decide_at.replace(tzinfo=timezone.utc)
+            if question.impact == "high" or auto_decide_at is None or auto_decide_at > utc_now():
+                continue
+            option = next(
+                (
+                    item
+                    for item in (question.options_json or [])
+                    if item.get("label") == question.manager_recommendation or item.get("id") == question.manager_recommendation
+                ),
+                None,
+            )
+            if option is None and question.options_json:
+                option = question.options_json[0]
+            if option is None:
+                continue
+            self._resolve_question(
+                db,
+                question,
+                option_id=str(option.get("id") or "auto"),
+                selected_text=str(option.get("label") or question.manager_recommendation or "Manager default"),
+                status="auto_decided",
+            )
+
+    async def _workspace_degraded_notices(self, project: Project, settings: ProjectSettings) -> list[str]:
+        notices: list[str] = []
+        resolved = resolve_manager_settings(project, settings)
+        effective_mode = await self.runners.effective_mode(resolved)
+        if effective_mode == "unavailable":
+            notices.append(f"Runner degraded: {provider_label(settings.provider)} is not currently available in {settings.runner_mode} mode.")
+        return notices
+
+    def _derive_current_action(self, db: Session, project: Project, degraded_notices: list[str]) -> dict[str, Any]:
+        self._auto_decide_due_questions(db, project)
+        pending_approval = db.scalar(
+            select(ApprovalRequest)
+            .where(ApprovalRequest.project_id == project.id, ApprovalRequest.status == "pending")
+            .order_by(ApprovalRequest.created_at.asc())
+        )
+        if pending_approval:
+            request_label = "tool approval" if pending_approval.request_type != "command" else "command approval"
+            return {
+                "id": f"approval-{pending_approval.id}",
+                "project_id": project.id,
+                "type": "tool_approval" if pending_approval.request_type != "command" else "command_approval",
+                "severity": "warning",
+                "title": f"Action needed: approve {request_label}.",
+                "message": pending_approval.reason_short,
+                "requesting_agent_id": pending_approval.requesting_agent_id,
+                "related_task_id": pending_approval.task_id,
+                "command_id": pending_approval.id if pending_approval.request_type == "command" else None,
+                "tool_request_id": pending_approval.id if pending_approval.request_type != "command" else None,
+                "question_id": None,
+                "created_at": pending_approval.created_at,
+                "expires_at": None,
+                "auto_decide_at": None,
+                "resolved_at": None,
+                "actions_json": [{"id": "approve_once", "label": "Approve once"}, {"id": "deny", "label": "Deny"}],
+            }
+        pending_question = db.scalar(
+            select(ManagerQuestion)
+            .where(ManagerQuestion.project_id == project.id, ManagerQuestion.status == "pending")
+            .order_by(ManagerQuestion.created_at.asc())
+        )
+        if pending_question:
+            return {
+                "id": f"question-{pending_question.id}",
+                "project_id": project.id,
+                "type": "manager_question",
+                "severity": "warning" if pending_question.impact == "high" else "info",
+                "title": "Manager question: choose an option.",
+                "message": pending_question.question,
+                "requesting_agent_id": pending_question.related_agent_id,
+                "related_task_id": pending_question.related_task_id,
+                "command_id": None,
+                "tool_request_id": None,
+                "question_id": pending_question.id,
+                "created_at": pending_question.created_at,
+                "expires_at": pending_question.auto_decide_at,
+                "auto_decide_at": pending_question.auto_decide_at,
+                "resolved_at": None,
+                "actions_json": list(pending_question.options_json or []),
+            }
+        if project.status == "paused":
+            return {
+                "id": f"paused-{project.id}",
+                "project_id": project.id,
+                "type": "paused",
+                "severity": "warning",
+                "title": "Project paused.",
+                "message": "New work assignment is paused until you resume the project.",
+                "requesting_agent_id": None,
+                "related_task_id": None,
+                "command_id": None,
+                "tool_request_id": None,
+                "question_id": None,
+                "created_at": project.updated_at,
+                "expires_at": None,
+                "auto_decide_at": None,
+                "resolved_at": None,
+                "actions_json": [],
+            }
+        blocked_task = db.scalar(
+            select(Task)
+            .where(Task.project_id == project.id, Task.status.in_(["blocked", "waiting_on_paths"]))
+            .order_by(Task.priority.asc(), Task.id.asc())
+        )
+        if blocked_task:
+            return {
+                "id": f"task-{blocked_task.id}",
+                "project_id": project.id,
+                "type": "blocker",
+                "severity": "danger",
+                "title": "Blocked",
+                "message": blocked_task.waiting_reason or f"{blocked_task.title} is blocked.",
+                "requesting_agent_id": None,
+                "related_task_id": blocked_task.id,
+                "command_id": None,
+                "tool_request_id": None,
+                "question_id": None,
+                "created_at": blocked_task.updated_at,
+                "expires_at": None,
+                "auto_decide_at": None,
+                "resolved_at": None,
+                "actions_json": [],
+            }
+        if degraded_notices:
+            return {
+                "id": f"degraded-{project.id}",
+                "project_id": project.id,
+                "type": "degraded",
+                "severity": "warning",
+                "title": degraded_notices[0],
+                "message": "Mission Control can still continue in degraded mode.",
+                "requesting_agent_id": None,
+                "related_task_id": None,
+                "command_id": None,
+                "tool_request_id": None,
+                "question_id": None,
+                "created_at": utc_now(),
+                "expires_at": None,
+                "auto_decide_at": None,
+                "resolved_at": None,
+                "actions_json": [],
+            }
+        if project.status == "handoff_ready":
+            return {
+                "id": f"handoff-{project.id}",
+                "project_id": project.id,
+                "type": "handoff_ready",
+                "severity": "success",
+                "title": "Ready for handoff.",
+                "message": "The manager considers this project ready for the final handoff.",
+                "requesting_agent_id": None,
+                "related_task_id": None,
+                "command_id": None,
+                "tool_request_id": None,
+                "question_id": None,
+                "created_at": project.updated_at,
+                "expires_at": None,
+                "auto_decide_at": None,
+                "resolved_at": None,
+                "actions_json": [],
+            }
+        working_agents = db.scalar(select(func.count(Agent.id)).where(Agent.project_id == project.id, Agent.kind == "worker", Agent.status.in_(["working", "starting"]))) or 0
+        return {
+            "id": f"no-action-{project.id}",
+            "project_id": project.id,
+            "type": "no_action",
+            "severity": "info",
+            "title": f"No action needed. {working_agents} agents are working." if working_agents else "No action needed.",
+            "message": "The manager is monitoring the workspace and will ask if anything needs a decision.",
+            "requesting_agent_id": None,
+            "related_task_id": None,
+            "command_id": None,
+            "tool_request_id": None,
+            "question_id": None,
+            "created_at": project.updated_at,
+            "expires_at": None,
+            "auto_decide_at": None,
+            "resolved_at": None,
+            "actions_json": [],
+        }
+
+    def _derive_action_history(self, db: Session, project: Project) -> list[dict[str, Any]]:
+        history: list[dict[str, Any]] = []
+        recent_questions = list(
+            db.scalars(
+                select(ManagerQuestion)
+                .where(ManagerQuestion.project_id == project.id, ManagerQuestion.status != "pending")
+                .order_by(ManagerQuestion.resolved_at.desc(), ManagerQuestion.id.desc())
+            )
+        )[:5]
+        for question in recent_questions:
+            history.append(
+                {
+                    "id": f"resolved-question-{question.id}",
+                    "project_id": project.id,
+                    "type": "manager_question",
+                    "severity": "info",
+                    "title": "Manager question resolved",
+                    "message": question.selected_text or question.question,
+                    "requesting_agent_id": question.related_agent_id,
+                    "related_task_id": question.related_task_id,
+                    "command_id": None,
+                    "tool_request_id": None,
+                    "question_id": question.id,
+                    "created_at": question.created_at,
+                    "expires_at": question.auto_decide_at,
+                    "auto_decide_at": question.auto_decide_at,
+                    "resolved_at": question.resolved_at,
+                    "actions_json": list(question.options_json or []),
+                }
+            )
+        recent_approvals = list(
+            db.scalars(
+                select(ApprovalRequest)
+                .where(ApprovalRequest.project_id == project.id, ApprovalRequest.status != "pending")
+                .order_by(ApprovalRequest.resolved_at.desc(), ApprovalRequest.id.desc())
+            )
+        )[:5]
+        for approval in recent_approvals:
+            history.append(
+                {
+                    "id": f"resolved-approval-{approval.id}",
+                    "project_id": project.id,
+                    "type": "tool_approval" if approval.request_type != "command" else "command_approval",
+                    "severity": "danger" if approval.status == "denied" else "success",
+                    "title": approval.title,
+                    "message": approval.reason_short,
+                    "requesting_agent_id": approval.requesting_agent_id,
+                    "related_task_id": approval.task_id,
+                    "command_id": approval.id if approval.request_type == "command" else None,
+                    "tool_request_id": approval.id if approval.request_type != "command" else None,
+                    "question_id": None,
+                    "created_at": approval.created_at,
+                    "expires_at": None,
+                    "auto_decide_at": None,
+                    "resolved_at": approval.resolved_at,
+                    "actions_json": [],
+                }
+            )
+        history.sort(key=lambda item: item["resolved_at"] or item["created_at"], reverse=True)
+        return history[:8]
+
+    def _manager_queue(self, db: Session, project: Project) -> dict[str, Any]:
+        pending_questions = list(
+            db.scalars(
+                select(ManagerQuestion)
+                .where(ManagerQuestion.project_id == project.id, ManagerQuestion.status == "pending")
+                .order_by(ManagerQuestion.created_at.asc())
+            )
+        )
+        pending_approvals = list(
+            db.scalars(
+                select(ApprovalRequest)
+                .where(ApprovalRequest.project_id == project.id, ApprovalRequest.status == "pending")
+                .order_by(ApprovalRequest.created_at.asc())
+            )
+        )
+        next_up_tasks = list(
+            db.scalars(
+                select(Task)
+                .where(Task.project_id == project.id, Task.status.in_(["backlog", "assigned", "working"]))
+                .order_by(Task.priority.asc(), Task.id.asc())
+            )
+        )[:4]
+        deferred_tasks = list(
+            db.scalars(
+                select(Task)
+                .where(Task.project_id == project.id, Task.status.in_(["blocked", "waiting_on_paths"]))
+                .order_by(Task.updated_at.desc(), Task.id.desc())
+            )
+        )[:4]
+        resolved_questions = list(
+            db.scalars(
+                select(ManagerQuestion)
+                .where(ManagerQuestion.project_id == project.id, ManagerQuestion.status != "pending")
+                .order_by(ManagerQuestion.resolved_at.desc(), ManagerQuestion.id.desc())
+            )
+        )[:3]
+        resolved_approvals = list(
+            db.scalars(
+                select(ApprovalRequest)
+                .where(ApprovalRequest.project_id == project.id, ApprovalRequest.status != "pending")
+                .order_by(ApprovalRequest.resolved_at.desc(), ApprovalRequest.id.desc())
+            )
+        )[:3]
+        swarm_plan = self._current_swarm_plan_record(db, project.id)
+        swarm_specs = self._swarm_specs_for_plan(db, swarm_plan.id) if swarm_plan else []
+        recent_swarm_events = (
+            list(
+                db.scalars(
+                    select(SwarmEvent)
+                    .where(
+                        SwarmEvent.project_id == project.id,
+                        SwarmEvent.event_type.in_(
+                            [
+                                "swarm_plan_approved",
+                                "agent_retired",
+                                "agent_reassigned",
+                                "swarm_scaled_up",
+                                "swarm_scaled_down",
+                                "strategy_changed",
+                            ]
+                        ),
+                    )
+                    .order_by(SwarmEvent.created_at.desc(), SwarmEvent.id.desc())
+                )
+            )[:3]
+            if swarm_plan
+            else []
+        )
+        swarm_next = [
+            self._serialize_queue_item(
+                item_id=f"swarm-spec-{spec.id}",
+                item_type="swarm",
+                title=f"Spawn {spec.name}",
+                status=spec.status,
+                created_at=swarm_plan.created_at if swarm_plan else utc_now(),
+            )
+            for spec in swarm_specs
+            if spec.status == "planned"
+        ][:2]
+        if swarm_plan and swarm_plan.expected_bottlenecks_json:
+            swarm_next.append(
+                self._serialize_queue_item(
+                    item_id=f"swarm-bottleneck-{swarm_plan.id}",
+                    item_type="swarm",
+                    title=f"Watch bottleneck: {swarm_plan.expected_bottlenecks_json[0]}",
+                    status=swarm_plan.coordination_risk,
+                    created_at=swarm_plan.updated_at,
+                )
+            )
+        swarm_deferred = [
+            self._serialize_queue_item(
+                item_id=f"swarm-spec-{spec.id}",
+                item_type="swarm",
+                title=(
+                    f"Retire {spec.name} when {spec.retire_when}"
+                    if spec.status == "retire_pending"
+                    else f"Spawn {spec.name} after {spec.spawn_phase.replace('_', ' ')}"
+                ),
+                status=spec.status,
+                created_at=swarm_plan.created_at if swarm_plan else utc_now(),
+            )
+            for spec in swarm_specs
+            if spec.status in {"deferred", "retire_pending"}
+        ][:3]
+        return {
+            "next_up": [
+                self._serialize_queue_item(
+                    item_id=f"task-{task.id}",
+                    item_type="task",
+                    title=task.title,
+                    status=task.status,
+                    created_at=task.created_at,
+                    related_task_id=task.id,
+                    related_agent_id=task.assigned_agent_id,
+                )
+                for task in next_up_tasks
+            ]
+            + swarm_next,
+            "waiting_on_user": [
+                *[
+                    self._serialize_queue_item(
+                        item_id=f"question-{question.id}",
+                        item_type="question",
+                        title=question.question,
+                        status=question.status,
+                        created_at=question.created_at,
+                        related_task_id=question.related_task_id,
+                        related_agent_id=question.related_agent_id,
+                    )
+                    for question in pending_questions
+                ],
+                *[
+                    self._serialize_queue_item(
+                        item_id=f"approval-{approval.id}",
+                        item_type=approval.request_type,
+                        title=approval.title,
+                        status=approval.status,
+                        created_at=approval.created_at,
+                        related_task_id=approval.task_id,
+                        related_agent_id=approval.requesting_agent_id,
+                    )
+                    for approval in pending_approvals
+                ],
+            ],
+            "recently_decided": [
+                *[
+                    self._serialize_queue_item(
+                        item_id=f"question-{question.id}",
+                        item_type="question",
+                        title=question.selected_text or question.question,
+                        status=question.status,
+                        created_at=question.resolved_at or question.created_at,
+                        related_task_id=question.related_task_id,
+                        related_agent_id=question.related_agent_id,
+                    )
+                    for question in resolved_questions
+                ],
+                *[
+                    self._serialize_queue_item(
+                        item_id=f"approval-{approval.id}",
+                        item_type=approval.request_type,
+                        title=approval.title,
+                        status=approval.status,
+                        created_at=approval.resolved_at or approval.created_at,
+                        related_task_id=approval.task_id,
+                        related_agent_id=approval.requesting_agent_id,
+                    )
+                    for approval in resolved_approvals
+                ],
+                *[
+                    self._serialize_queue_item(
+                        item_id=f"swarm-event-{event.id}",
+                        item_type="swarm",
+                        title=event.message,
+                        status=event.event_type,
+                        created_at=event.created_at,
+                        related_agent_id=event.agent_id,
+                    )
+                    for event in recent_swarm_events
+                ],
+            ][:6],
+            "deferred": [
+                self._serialize_queue_item(
+                    item_id=f"task-{task.id}",
+                    item_type="task",
+                    title=task.title,
+                    status=task.status,
+                    created_at=task.updated_at,
+                    related_task_id=task.id,
+                    related_agent_id=task.assigned_agent_id,
+                )
+                for task in deferred_tasks
+            ]
+            + swarm_deferred,
+        }
+
+    def _task_summary(self, db: Session, project: Project) -> dict[str, Any]:
+        tasks = list(db.scalars(select(Task).where(Task.project_id == project.id)))
+        by_status: dict[str, int] = {}
+        for task in tasks:
+            by_status[task.status] = by_status.get(task.status, 0) + 1
+        return {"total": len(tasks), "by_status": by_status}
+
+    def _milestone_summary(self, db: Session, project: Project) -> dict[str, Any]:
+        tasks = list(db.scalars(select(Task).where(Task.project_id == project.id).order_by(Task.priority.asc(), Task.id.asc())))
+        milestones: dict[str, dict[str, int | str]] = {}
+        for task in tasks:
+            key = task.milestone or "Unassigned milestone"
+            milestone = milestones.setdefault(key, {"title": key, "total": 0, "done": 0})
+            milestone["total"] = int(milestone["total"]) + 1
+            if task.status == "done":
+                milestone["done"] = int(milestone["done"]) + 1
+        return {"items": list(milestones.values())}
+
+    def _workflow_summary(self, db: Session, project: Project, tasks: list[Task]) -> dict[str, Any]:
+        latest_session = self._latest_session(db, project.id)
+        latest_plan = self._latest_plan(db, project.id)
+        current_phase = "intake"
+        if project.final_report_json or project.status == "handoff_ready":
+            current_phase = "handoff"
+        elif any(task.status == "needs_review" for task in tasks):
+            current_phase = "validation"
+        elif tasks or project.status in {"building", "blocked", "paused"}:
+            current_phase = "build"
+        elif latest_plan or project.status in {"plan_ready", "pending_approval"}:
+            current_phase = "plan_review"
+        elif latest_session or project.status in {"interview_in_progress", "interview_complete"}:
+            current_phase = "interview"
+
+        if project.status == "paused" and current_phase not in {"handoff", "validation"}:
+            current_phase = "build"
+
+        steps: list[dict[str, Any]] = []
+        current_index = next((index for index, (phase_id, _) in enumerate(WORKFLOW_PHASES) if phase_id == current_phase), 0)
+        for index, (phase_id, label) in enumerate(WORKFLOW_PHASES):
+            state = "upcoming"
+            if index < current_index:
+                state = "complete"
+            elif index == current_index:
+                state = "current"
+            steps.append({"id": phase_id, "label": label, "state": state, "ordinal": index + 1})
+        current_label = next((label for phase_id, label in WORKFLOW_PHASES if phase_id == current_phase), "Intake")
+        return {"current_phase": current_phase, "current_label": current_label, "steps": steps}
+
+    def _tasks_for_category(self, tasks: list[Task], category_id: str) -> list[Task]:
+        keyword_sets = {
+            "frontend": ["frontend", "ui", "react", "component", "layout", "dashboard", "css", "screen", "view"],
+            "backend": ["backend", "api", "service", "server", "database", "middleware", "route", "schema", "fastapi"],
+            "auth_security": ["auth", "security", "token", "permission", "sandbox", "approval", "credential", "oauth", "login"],
+            "testing": ["test", "testing", "validate", "validation", "qa", "review", "smoke", "check"],
+            "documentation": ["doc", "docs", "readme", "handoff", "guide", "instruction", "changelog", "note"],
+        }
+        if category_id == "architecture":
+            return [task for task in tasks if (task.milestone or "").lower().startswith("milestone")]
+        keywords = keyword_sets.get(category_id, [])
+        matched: list[Task] = []
+        for task in tasks:
+            haystack = " ".join(
+                filter(
+                    None,
+                    [
+                        task.title,
+                        task.goal,
+                        task.scope,
+                        task.agent_role or "",
+                        task.milestone or "",
+                    ],
+                )
+            ).lower()
+            if any(keyword in haystack for keyword in keywords):
+                matched.append(task)
+        return matched
+
+    @staticmethod
+    def _overview_status(tasks: list[Task]) -> str:
+        if not tasks:
+            return "planned"
+        statuses = {task.status for task in tasks}
+        if statuses == {"done"}:
+            return "complete"
+        if "blocked" in statuses:
+            return "blocked"
+        return "in_progress"
+
+    def _project_overview(self, db: Session, project: Project, tasks: list[Task], current_action: dict[str, Any]) -> dict[str, Any]:
+        latest_plan = self._latest_plan(db, project.id)
+        checklist: list[dict[str, Any]] = []
+        for category_id, label in OVERVIEW_SECTIONS:
+            category_tasks = self._tasks_for_category(tasks, category_id)
+            if category_id == "architecture" and latest_plan and not category_tasks:
+                status = "complete"
+                detail = "Plan approved and architecture direction captured."
+            else:
+                status = self._overview_status(category_tasks)
+                if not category_tasks:
+                    detail = "Not explicitly tracked yet."
+                elif status == "complete":
+                    detail = f"{len(category_tasks)} tracked task{'s' if len(category_tasks) != 1 else ''} complete."
+                elif status == "blocked":
+                    detail = f"{len(category_tasks)} tracked task{'s' if len(category_tasks) != 1 else ''} blocked or waiting."
+                else:
+                    done_count = len([task for task in category_tasks if task.status == "done"])
+                    detail = f"{done_count} of {len(category_tasks)} tracked task{'s' if len(category_tasks) != 1 else ''} complete."
+            checklist.append({"id": category_id, "label": label, "status": status, "detail": detail})
+
+        score = 0.0
+        for item in checklist:
+            if item["status"] == "complete":
+                score += 1.0
+            elif item["status"] == "in_progress":
+                score += 0.5
+        handoff_progress = int(round((score / max(len(checklist), 1)) * 100))
+
+        readiness_label = "Not Ready"
+        readiness_tone = "neutral"
+        if current_action["type"] in {"blocker", "error"}:
+            readiness_label = "Blocked"
+            readiness_tone = "danger"
+        elif current_action["type"] in {"command_approval", "tool_approval", "manager_question", "paused"}:
+            readiness_label = "Needs Review"
+            readiness_tone = "warning"
+        elif project.final_report_json or project.status == "handoff_ready":
+            readiness_label = "Ready"
+            readiness_tone = "good"
+        elif handoff_progress >= 70:
+            readiness_label = "Good"
+            readiness_tone = "good"
+        elif handoff_progress >= 35:
+            readiness_label = "In Progress"
+            readiness_tone = "warning"
+
+        return {
+            "handoff_progress": handoff_progress,
+            "readiness_label": readiness_label,
+            "readiness_tone": readiness_tone,
+            "checklist": checklist,
+        }
+
+    def _serialize_activity_log_entry(self, db: Session, project: Project, event: ProjectEvent) -> dict[str, Any]:
+        payload = dict(event.payload_json or {})
+        agent_id = payload.get("agent_id")
+        task_id = payload.get("task_id")
+        severity = "info"
+        summary = event.event_type.replace(".", " ").replace("_", " ").title()
+        detail: str | None = None
+
+        agent = db.get(Agent, agent_id) if isinstance(agent_id, int) else None
+        task = db.get(Task, task_id) if isinstance(task_id, int) else None
+
+        if event.event_type == "approval_created":
+            severity = "warning"
+            approval = db.get(ApprovalRequest, payload.get("approval_id")) if isinstance(payload.get("approval_id"), int) else None
+            summary = f"Approval requested: {approval.title if approval else 'pending request'}"
+            detail = approval.reason_short if approval else None
+            if approval and approval.requesting_agent_id and not agent:
+                agent = db.get(Agent, approval.requesting_agent_id)
+            if approval and approval.task_id and not task:
+                task = db.get(Task, approval.task_id)
+        elif event.event_type == "approval_resolved":
+            approval = db.get(ApprovalRequest, payload.get("approval_id")) if isinstance(payload.get("approval_id"), int) else None
+            severity = "success" if payload.get("status") in {"approved_once", "allowed_for_project"} else "danger"
+            status_label = str(payload.get("status") or "resolved").replace("_", " ")
+            summary = f"Approval {status_label}"
+            detail = approval.title if approval else None
+            if approval and approval.requesting_agent_id and not agent:
+                agent = db.get(Agent, approval.requesting_agent_id)
+            if approval and approval.task_id and not task:
+                task = db.get(Task, approval.task_id)
+        elif event.event_type == "question_created":
+            question = db.get(ManagerQuestion, payload.get("question_id")) if isinstance(payload.get("question_id"), int) else None
+            severity = "warning" if payload.get("impact") == "high" else "info"
+            summary = "Manager question queued"
+            detail = question.question if question else None
+            if question and question.related_agent_id and not agent:
+                agent = db.get(Agent, question.related_agent_id)
+            if question and question.related_task_id and not task:
+                task = db.get(Task, question.related_task_id)
+        elif event.event_type == "question_resolved":
+            question = db.get(ManagerQuestion, payload.get("question_id")) if isinstance(payload.get("question_id"), int) else None
+            severity = "success"
+            summary = "Manager question resolved"
+            detail = question.selected_text if question and question.selected_text else question.question if question else None
+            if question and question.related_agent_id and not agent:
+                agent = db.get(Agent, question.related_agent_id)
+            if question and question.related_task_id and not task:
+                task = db.get(Task, question.related_task_id)
+        elif event.event_type == "agent_updated":
+            severity = "danger" if payload.get("status") == "blocked" else "info"
+            summary = f"{agent.name if agent else 'Agent'} status updated"
+            next_status = payload.get("status") or (agent.status if agent else "updated")
+            detail = str(next_status).replace("_", " ").title()
+        elif event.event_type == "task_updated":
+            severity = "danger" if payload.get("status") == "blocked" else "info"
+            summary = f"Task updated: {task.title if task else 'Task'}"
+            detail = str(payload.get("status") or task.status if task else "updated").replace("_", " ").title()
+        elif event.event_type == "manager_queue_updated":
+            summary = "Manager queue updated"
+            detail = "Routing priorities changed."
+        elif event.event_type == "manager_message_created":
+            message = db.get(ManagerMessage, payload.get("message_id")) if isinstance(payload.get("message_id"), int) else None
+            summary = f"Manager {str(payload.get('message_type') or 'message').replace('_', ' ')}"
+            detail = message.content_markdown.splitlines()[0][:180] if message and message.content_markdown else None
+            if message and message.related_agent_id and not agent:
+                agent = db.get(Agent, message.related_agent_id)
+            if message and message.related_task_id and not task:
+                task = db.get(Task, message.related_task_id)
+        elif event.event_type == "worker.report.received":
+            severity = "danger" if payload.get("status") in {"blocked", "error"} else "success"
+            summary = f"{agent.name if agent else 'Worker'} reported {str(payload.get('status') or 'status').replace('_', ' ')}"
+            detail = str(payload.get("summary") or "")[:180] or None
+        elif event.event_type == "project.handoff_ready":
+            severity = "success"
+            summary = "Project ready for handoff"
+            detail = "Validation and documentation are in a handoff-ready state."
+        elif event.event_type == "project.paused":
+            severity = "warning"
+            summary = "Project paused"
+            detail = "New task assignment is paused until the project is resumed."
+        elif event.event_type == "project.resumed":
+            severity = "success"
+            summary = "Project resumed"
+            detail = "The manager can assign new work again."
+        elif event.event_type == "agent.started":
+            agent_label = payload.get("agent_name") or (agent.name if agent else "Agent")
+            summary = f"{agent_label} started work"
+            detail = str(payload.get("task_title") or (task.title if task else "Task assigned"))
+
+        return {
+            "id": event.id,
+            "event_type": event.event_type,
+            "created_at": event.created_at,
+            "summary": summary,
+            "detail": detail,
+            "severity": severity,
+            "agent_id": agent.id if agent else None,
+            "agent_name": agent.name if agent else None,
+            "task_id": task.id if task else None,
+        }
+
+    def _activity_log(self, db: Session, project: Project) -> list[dict[str, Any]]:
+        events = list(
+            db.scalars(
+                select(ProjectEvent)
+                .where(ProjectEvent.project_id == project.id)
+                .order_by(ProjectEvent.id.desc())
+            )
+        )[:12]
+        return [self._serialize_activity_log_entry(db, project, event) for event in events]
 
     @staticmethod
     def _runner_settings_payload(resolved: ResolvedRunSettings) -> RunnerSettings:
@@ -234,7 +4712,7 @@ class MissionControlService:
 
     def _render_docs(self, project: Project, plan: ManagerPlan | None = None, questions: list[InterviewQuestion] | None = None) -> dict[str, str]:
         now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
-        answers = [question.selected_text for question in questions or [] if question.selected_text]
+        answers = [self._question_answer_text(question) for question in questions or [] if self._question_answer_text(question)]
         answer_preview = ", ".join(answers[:6]) or "Interview still pending."
         summary = plan.refined_summary if plan else project.idea
         scope = plan.mvp_scope if plan else ["Keep the first version local, usable, and tightly scoped."]
@@ -242,7 +4720,7 @@ class MissionControlService:
         risks = plan.risks if plan else ["Local tooling assumptions may change.", "Scope can drift if the first slice stays vague."]
         definitions = plan.definition_of_done if plan else ["The main workflow works locally.", "Known limitations are documented."]
         return {
-            "PROJECT_BRIEF.md": f"# {project.name}\n\n## Idea\n{project.idea}\n\n## Refined summary\n{summary}\n\n## Generated\n{now}\n",
+            "PROJECT_BRIEF.md": f"# {project.name}\n\n## Idea\n{project.idea}\n\n## Created by\n{project.created_by or display_name_or_default(None)}\n\n## Refined summary\n{summary}\n\n## Generated\n{now}\n",
             "PRODUCT_VISION.md": "# Product Vision\n\n" + "\n".join(f"- {line}" for line in scope) + "\n",
             "USER_GOALS.md": f"# User Goals\n\n- Interview signals: {answer_preview}\n- Land a usable vertical slice quickly.\n- Keep the workflow trustworthy.\n",
             "MVP_SCOPE.md": "# MVP Scope\n\n" + "\n".join(f"- {line}" for line in scope) + "\n",
@@ -262,20 +4740,246 @@ class MissionControlService:
             files=files,
         )
 
-    def _deterministic_interview_payload(self, question_count: int) -> dict[str, Any]:
-        templates = select_questions(question_count)
+    def _interview_remaining_budget(self, session: InterviewSession) -> int:
+        return max(session.question_budget - session.questions_asked, 0)
+
+    def _interview_source_for_mode(self, mode_used: str) -> str:
+        return "manager_ai" if mode_used != "deterministic" else "fallback_generated"
+
+    def _used_interview_categories(self, session: InterviewSession) -> set[str]:
         return {
-            "questions": [
-                {
-                    "question": template.question,
-                    "options": template.options,
-                }
-                for template in templates
-            ]
+            str(question.category).strip()
+            for question in session.questions
+            if question.category and (question.status == "pending" or question.selected_option_id or question.selected_option)
         }
 
-    def _deterministic_plan(self, project: Project, questions: list[InterviewQuestion], action_bias: str | None = None, note: str | None = None) -> ManagerPlan:
-        content_markdown, summary_json = build_plan_markdown(project, questions, action_bias=action_bias, note=note)
+    def _pending_interview_categories(self, session: InterviewSession) -> set[str]:
+        return {
+            str(question.category).strip()
+            for question in self._pending_interview_questions(session)
+            if question.category
+        }
+
+    def _default_interview_turn(self, project: Project, session: InterviewSession) -> InterviewTurnPayload:
+        remaining_budget = self._interview_remaining_budget(session)
+        understanding = self._default_understanding_payload(project, question_budget=session.question_budget)
+        if session.question_budget == 0:
+            understanding.summary = f"The manager will proceed with assumptions for {project.name} because the interview budget is zero."
+            return InterviewTurnPayload(
+                understanding=understanding,
+                next_questions=[],
+                more_questions_needed=False,
+                stop_reason="Manager assumptions mode requested.",
+            )
+
+        asked_categories = self._used_interview_categories(session)
+        pending_categories = self._pending_interview_categories(session)
+        questions = select_fallback_questions(remaining_budget, asked_categories=asked_categories, pending_categories=pending_categories)
+        understanding.summary = f"The deterministic interview fallback is collecting core project decisions for {project.name}."
+        understanding.unknowns = {
+            "priority": ["The manager fallback is covering generic requirement gaps until enough project signal exists."]
+        }
+        return InterviewTurnPayload(
+            understanding=understanding,
+            next_questions=[InterviewTurnQuestion(**question) for question in questions],
+            more_questions_needed=remaining_budget > len(questions) and bool(questions),
+            stop_reason=None if questions else "The fallback interview exhausted its generic category bank.",
+        )
+
+    def _normalize_interview_questions(self, session: InterviewSession, questions: list[InterviewTurnQuestion], *, allow_repeated_categories: bool = False) -> list[InterviewTurnQuestion]:
+        normalized: list[InterviewTurnQuestion] = []
+        seen_texts = {
+            re.sub(r"\s+", " ", question.question.strip().lower())
+            for question in session.questions
+            if question.question and (question.status in {"pending", "answered"} or question.selected_option_id or question.selected_option)
+        }
+        used_categories = self._used_interview_categories(session)
+        unused_categories_exist = len(INTERVIEW_CATEGORY_SET.difference(used_categories)) > 0
+
+        for question in questions:
+            question_text = re.sub(r"\s+", " ", question.question.strip())
+            category = question.category.strip()
+            if not question_text or category not in INTERVIEW_CATEGORY_SET:
+                continue
+            normalized_text = question_text.lower()
+            if normalized_text in seen_texts:
+                continue
+            if question.impact not in {"low", "medium", "high"}:
+                continue
+            if len(question.options) < 2 or len(question.options) > 10:
+                continue
+            option_ids: set[str] = set()
+            valid_options: list[dict[str, str]] = []
+            for option in question.options:
+                option_id = str(option.get("id") or "").strip()
+                label = str(option.get("label") or "").strip()
+                description = str(option.get("description") or "").strip()
+                if not option_id or not label or option_id in option_ids:
+                    continue
+                option_ids.add(option_id)
+                valid_options.append({"id": option_id, "label": label, "description": description})
+            if len(valid_options) < 2:
+                continue
+            if not allow_repeated_categories and category in used_categories and unused_categories_exist:
+                continue
+            normalized.append(
+                InterviewTurnQuestion(
+                    question=question_text,
+                    why=question.why.strip() or "The manager needs this answer to reduce planning uncertainty.",
+                    category=category,
+                    impact=question.impact,
+                    options=valid_options,
+                    allow_custom_answer=bool(question.allow_custom_answer),
+                    affects=[item.strip() for item in question.affects if item and item.strip()],
+                )
+            )
+            seen_texts.add(normalized_text)
+            used_categories.add(category)
+            if len(normalized) >= max(1, min(5, self._interview_remaining_budget(session))):
+                break
+        return normalized
+
+    def _record_interview_questions(
+        self,
+        db: Session,
+        session: InterviewSession,
+        questions: list[InterviewTurnQuestion],
+        *,
+        question_source: str,
+    ) -> int:
+        next_index = (max((question.index for question in session.questions), default=-1) + 1)
+        created = 0
+        for offset, template in enumerate(questions):
+            db.add(
+                InterviewQuestion(
+                    session_id=session.id,
+                    project_id=session.project_id,
+                    index=next_index + offset,
+                    question=template.question,
+                    why=template.why,
+                    category=template.category,
+                    impact=template.impact,
+                    options_json=template.options,
+                    allow_custom_answer=template.allow_custom_answer,
+                    affects_json=template.affects,
+                    status="pending",
+                    question_source=question_source,
+                )
+            )
+            created += 1
+        session.questions_asked += created
+        session.question_count = session.question_budget
+        db.flush()
+        return created
+
+    def _complete_interview_session(
+        self,
+        db: Session,
+        session: InterviewSession,
+        project: Project,
+        *,
+        stop_reason: str,
+        stopped_early: bool,
+    ) -> InterviewSession:
+        session.status = "completed"
+        session.stop_reason = stop_reason
+        session.stopped_early = stopped_early
+        project.status = "interview_complete"
+        self.events.publish(
+            db,
+            project.id,
+            "interview.finished",
+            {
+                "session_id": session.id,
+                "stop_reason": stop_reason,
+                "stopped_early": stopped_early,
+                "questions_asked": session.questions_asked,
+                "question_budget": session.question_budget,
+            },
+        )
+        if stopped_early:
+            self.events.publish(db, project.id, "interview.stopped_early", {"session_id": session.id, "stop_reason": stop_reason})
+        return session
+
+    def _apply_interview_turn(
+        self,
+        db: Session,
+        project: Project,
+        session: InterviewSession,
+        turn: InterviewTurnPayload,
+        *,
+        question_source: str,
+    ) -> InterviewSession:
+        understanding = self._update_project_understanding(db, project, turn.understanding)
+        self._mirror_session_understanding(session, understanding)
+        normalized_questions = self._normalize_interview_questions(session, turn.next_questions)
+        created_count = self._record_interview_questions(db, session, normalized_questions, question_source=question_source) if normalized_questions else 0
+        self._refresh_interview_session_state(session, project=project)
+        self.events.publish(
+            db,
+            project.id,
+            "interview.batch_generated",
+            {
+                "session_id": session.id,
+                "question_source": question_source,
+                "created_count": created_count,
+                "questions_asked": session.questions_asked,
+                "question_budget": session.question_budget,
+            },
+        )
+        if question_source == "fallback_generated":
+            self.events.publish(
+                db,
+                project.id,
+                "interview.fallback_used",
+                {"session_id": session.id, "questions_created": created_count, "reason": "deterministic generation path used"},
+            )
+
+        remaining_budget = self._interview_remaining_budget(session)
+        if session.question_budget == 0:
+            return self._complete_interview_session(
+                db,
+                session,
+                project,
+                stop_reason=turn.stop_reason or "Manager assumptions mode requested.",
+                stopped_early=False,
+            )
+        if created_count == 0 and (not turn.more_questions_needed or remaining_budget > 0):
+            return self._complete_interview_session(
+                db,
+                session,
+                project,
+                stop_reason=turn.stop_reason or "The manager could not identify additional useful interview questions.",
+                stopped_early=remaining_budget > 0,
+            )
+        if remaining_budget <= 0 and not self._pending_interview_questions(session):
+            return self._complete_interview_session(
+                db,
+                session,
+                project,
+                stop_reason=turn.stop_reason or "Question budget reached.",
+                stopped_early=False,
+            )
+        if not turn.more_questions_needed and not self._pending_interview_questions(session):
+            return self._complete_interview_session(
+                db,
+                session,
+                project,
+                stop_reason=turn.stop_reason or "The manager has enough information to plan the project.",
+                stopped_early=remaining_budget > 0,
+            )
+        session.stop_reason = turn.stop_reason
+        return session
+
+    def _deterministic_plan(
+        self,
+        project: Project,
+        questions: list[InterviewQuestion],
+        understanding: ProjectUnderstanding | None,
+        action_bias: str | None = None,
+        note: str | None = None,
+    ) -> ManagerPlan:
+        content_markdown, summary_json = build_plan_markdown(project, questions, understanding=understanding, action_bias=action_bias, note=note)
         return ManagerPlan(
             refined_summary=summary_json["refined_summary"],
             mvp_scope=summary_json["mvp_scope"],
@@ -290,7 +4994,423 @@ class MissionControlService:
             summary_json=summary_json,
         )
 
-    def _deterministic_task_decomposition(self, project: Project, plan: Plan | None) -> ManagerTaskDecomposition:
+    def _default_swarm_paths_for_archetype(self, archetype: str, buckets: dict[str, list[str]]) -> tuple[list[str], list[str]]:
+        if archetype == "docs" or archetype == "release_handoff":
+            return buckets["docs"], buckets["frontend"] + buckets["backend"]
+        if archetype == "frontend" or archetype == "ui_polish":
+            return buckets["frontend"] or ["src"], buckets["backend"]
+        if archetype == "backend":
+            return buckets["backend"] or ["server"], buckets["frontend"]
+        if archetype == "test":
+            return buckets["tests"] + buckets["backend"], []
+        if archetype == "security":
+            return buckets["backend"] + buckets["data"], []
+        if archetype == "research" or archetype == "planner" or archetype == "architect":
+            return buckets["docs"] + buckets["subsystems"][:2], []
+        if archetype == "ops":
+            return buckets["ops"] + buckets["docs"], buckets["frontend"]
+        if archetype == "data":
+            return buckets["data"] or buckets["backend"], []
+        if archetype == "integration":
+            return buckets["frontend"] + buckets["backend"], buckets["docs"]
+        return (buckets["frontend"] + buckets["backend"]) or buckets["subsystems"], buckets["docs"]
+
+    def _sanitize_swarm_plan_payload(
+        self,
+        project: Project,
+        preferences: SwarmPreferences,
+        manifest: dict[str, Any],
+        payload: ManagerSwarmPlanPayload,
+        fallback_payload: ManagerSwarmPlanPayload,
+    ) -> ManagerSwarmPlanPayload:
+        buckets = self._repo_path_buckets(manifest)
+        valid_archetypes = {item["name"] for item in AGENT_ARCHETYPE_CATALOG}
+        mode = payload.mode if payload.mode in {
+            "fastest_build",
+            "balanced",
+            "high_quality",
+            "documentation_heavy",
+            "research_planning",
+            "massive_codebase",
+            "manager_decides",
+        } else fallback_payload.mode
+        coordination_risk = payload.coordination_risk if payload.coordination_risk in SWARM_RISK_LEVELS else fallback_payload.coordination_risk
+        path_conflict_risk = payload.path_conflict_risk if payload.path_conflict_risk in SWARM_RISK_LEVELS else fallback_payload.path_conflict_risk
+        capacity = self._swarm_capacity_limit(preferences)
+        seen_names: set[str] = set()
+        specs: list[ManagerSwarmSpecPayload] = []
+        raw_specs = payload.specs or fallback_payload.specs
+        for index, spec in enumerate(raw_specs, start=1):
+            archetype = spec.archetype if spec.archetype in valid_archetypes else "feature"
+            name = spec.name.strip() if spec.name.strip() else f"{self._titleize_path_label(archetype)} Agent"
+            unique_name = name
+            suffix = 2
+            while unique_name.lower() in seen_names:
+                unique_name = f"{name} {suffix}"
+                suffix += 1
+            seen_names.add(unique_name.lower())
+            allowed_paths = self._normalize_string_list(spec.allowed_paths) or self._default_swarm_paths_for_archetype(archetype, buckets)[0]
+            forbidden_paths = self._normalize_string_list(spec.forbidden_paths) or self._default_swarm_paths_for_archetype(archetype, buckets)[1]
+            specs.append(
+                self._make_swarm_spec(
+                    archetype=archetype,
+                    name=unique_name,
+                    mission=spec.mission.strip() if spec.mission.strip() else f"Own the {archetype} slice for {project.name}.",
+                    model_policy=spec.model_policy.strip() if spec.model_policy.strip() else "Prefer the default worker model.",
+                    allowed_paths=allowed_paths,
+                    forbidden_paths=forbidden_paths,
+                    spawn_phase=spec.spawn_phase.strip() if spec.spawn_phase.strip() else "build_start",
+                    retire_when=spec.retire_when.strip() if spec.retire_when.strip() else "Retire when the assigned slice is complete.",
+                    priority=max(1, min(100, int(spec.priority or index * 10))),
+                    toolset=self._normalize_string_list(spec.toolset),
+                )
+            )
+            if len(specs) >= capacity:
+                break
+        if not specs:
+            specs = fallback_payload.specs[:capacity]
+        recommended = max(1, min(capacity, payload.recommended_agent_count if payload.recommended_agent_count else len(specs)))
+        return ManagerSwarmPlanPayload(
+            mode=mode,
+            goal=payload.goal.strip() if payload.goal.strip() else fallback_payload.goal,
+            recommended_agent_count=recommended,
+            coordination_risk=coordination_risk,
+            path_conflict_risk=path_conflict_risk,
+            expected_bottlenecks=self._normalize_string_list(payload.expected_bottlenecks) or fallback_payload.expected_bottlenecks,
+            strategy_summary=payload.strategy_summary.strip() if payload.strategy_summary.strip() else fallback_payload.strategy_summary,
+            validation_strategy=self._normalize_string_list(payload.validation_strategy) or fallback_payload.validation_strategy,
+            specs=sorted(specs[:capacity], key=lambda item: item.priority),
+        )
+
+    def _persist_swarm_plan_payload(
+        self,
+        db: Session,
+        project: Project,
+        preferences: SwarmPreferences,
+        payload: ManagerSwarmPlanPayload,
+        *,
+        milestone_id: int | None = None,
+        approved_by_user: bool = False,
+        status: str = "pending_approval",
+    ) -> SwarmPlan:
+        current = self._current_swarm_plan_record(db, project.id)
+        if current is not None:
+            current.status = "superseded"
+        plan = SwarmPlan(
+            project_id=project.id,
+            milestone_id=milestone_id,
+            mode=payload.mode,
+            goal=payload.goal,
+            recommended_agent_count=min(self._swarm_capacity_limit(preferences), payload.recommended_agent_count),
+            max_agent_count=preferences.max_agents,
+            coordination_risk=payload.coordination_risk,
+            path_conflict_risk=payload.path_conflict_risk,
+            expected_bottlenecks_json=list(payload.expected_bottlenecks),
+            validation_strategy_json=list(payload.validation_strategy),
+            strategy_summary=payload.strategy_summary,
+            approved_by_user=approved_by_user,
+            status=status,
+        )
+        db.add(plan)
+        db.flush()
+        self._record_swarm_event(
+            db,
+            project,
+            event_type="swarm_plan_created",
+            message=f"Swarm plan created in {payload.mode} mode with {plan.recommended_agent_count} recommended worker agents.",
+            swarm_plan_id=plan.id,
+            metadata_json={"mode": payload.mode, "recommended_agent_count": plan.recommended_agent_count},
+        )
+        for spec in payload.specs[: preferences.max_agents]:
+            spec_status = "deferred" if "after_" in spec.spawn_phase else "planned"
+            record = SwarmAgentSpec(
+                swarm_plan_id=plan.id,
+                project_id=project.id,
+                archetype=spec.archetype,
+                name=spec.name,
+                mission=spec.mission,
+                model_policy=spec.model_policy,
+                toolset_json=list(spec.toolset),
+                allowed_paths_json=list(spec.allowed_paths),
+                forbidden_paths_json=list(spec.forbidden_paths),
+                spawn_phase=spec.spawn_phase,
+                retire_when=spec.retire_when,
+                priority=spec.priority,
+                status=spec_status,
+            )
+            db.add(record)
+            db.flush()
+            self._record_swarm_event(
+                db,
+                project,
+                event_type="agent_spec_created",
+                message=f"{record.name} planned as a {record.archetype} specialist.",
+                swarm_plan_id=plan.id,
+                metadata_json={"spec_id": record.id, "archetype": record.archetype, "spawn_phase": record.spawn_phase},
+            )
+        db.flush()
+        return plan
+
+    async def create_swarm_plan(
+        self,
+        db: Session,
+        project: Project,
+        *,
+        goal: str | None = None,
+        milestone_id: int | None = None,
+        revision_note: str | None = None,
+        scale_hint: str | None = None,
+    ) -> dict[str, Any]:
+        preferences = self._ensure_swarm_preferences(db, project)
+        self._ensure_agent_archetypes(db)
+        latest_plan = self._latest_plan(db, project.id)
+        understanding = self._project_understanding(project)
+        manifest = self._workspace_manifest_summary(project)
+        fallback_payload = self._deterministic_swarm_plan(
+            project,
+            preferences,
+            manifest,
+            understanding,
+            latest_plan,
+            goal_override=goal,
+            scale_hint=scale_hint,
+        )
+        context = await self._swarm_context_payload(db, project, preferences)
+        if revision_note:
+            context["revision_note"] = revision_note
+        if scale_hint:
+            context["scale_hint"] = scale_hint
+        payload, manager_mode_used = await self._resolve_manager_model(
+            db,
+            project,
+            action_name="swarm.plan",
+            objective="Design an adaptive swarm plan that fits the project instead of copying a fixed worker roster.",
+            response_schema=MANAGER_SWARM_PLAN_SCHEMA,
+            payload=context,
+            model_schema=ManagerSwarmPlanPayload,
+            fallback_factory=lambda: fallback_payload,
+            prompt_override=manager_swarm_prompt(
+                project,
+                payload=context,
+                response_schema=MANAGER_SWARM_PLAN_SCHEMA,
+                user_name=self._preferred_user_name(db, project),
+            ),
+        )
+        sanitized = self._sanitize_swarm_plan_payload(project, preferences, manifest, payload, fallback_payload)
+        approval_required = sanitized.recommended_agent_count > preferences.require_approval_above_agent_count
+        plan = self._persist_swarm_plan_payload(
+            db,
+            project,
+            preferences,
+            sanitized,
+            milestone_id=milestone_id,
+            approved_by_user=False,
+            status="pending_approval" if approval_required else "approved",
+        )
+        if not approval_required:
+            plan.approved_by_user = True
+        self._record_swarm_event(
+            db,
+            project,
+            event_type="strategy_changed" if revision_note or scale_hint else "swarm_plan_created",
+            message=sanitized.strategy_summary,
+            swarm_plan_id=plan.id,
+            metadata_json={"manager_mode_used": manager_mode_used, "revision_note": revision_note, "scale_hint": scale_hint},
+        )
+        return self._serialize_swarm_plan(db, project, plan) or {}
+
+    def approve_swarm_plan(self, db: Session, project: Project, swarm_plan_id: int) -> dict[str, Any]:
+        plan = db.get(SwarmPlan, swarm_plan_id)
+        if not plan or plan.project_id != project.id:
+            raise ValueError("Swarm plan not found in this project")
+        plan.approved_by_user = True
+        plan.status = "approved"
+        self._record_swarm_event(
+            db,
+            project,
+            event_type="swarm_plan_approved",
+            message=f"Swarm plan approved with {plan.recommended_agent_count} worker agent slots.",
+            swarm_plan_id=plan.id,
+        )
+        return self._serialize_swarm_plan(db, project, plan) or {}
+
+    async def revise_swarm_plan(self, db: Session, project: Project, swarm_plan_id: int, note: str | None = None) -> dict[str, Any]:
+        plan = db.get(SwarmPlan, swarm_plan_id)
+        if not plan or plan.project_id != project.id:
+            raise ValueError("Swarm plan not found in this project")
+        return await self.create_swarm_plan(
+            db,
+            project,
+            goal=plan.goal,
+            milestone_id=plan.milestone_id,
+            revision_note=note or "Revise the swarm strategy based on current project state.",
+        )
+
+    def _sync_agents_to_swarm_plan(self, db: Session, project: Project, plan: SwarmPlan, *, activate_deferred: bool = False) -> tuple[int, int]:
+        preferences = self._swarm_preferences(project)
+        project_root_name = Path(project.workspace_path).name or f"project-{project.id}"
+        worktree_base = WORKTREE_ROOT / f"{project.id}-{project_root_name}"
+        worktree_base.mkdir(parents=True, exist_ok=True)
+        existing_agents = {
+            agent.name: agent
+            for agent in db.scalars(select(Agent).where(Agent.project_id == project.id, Agent.kind == "worker").order_by(Agent.id.asc()))
+        }
+        specs = self._swarm_specs_for_plan(db, plan.id)
+        target_specs = [
+            spec
+            for spec in specs
+            if spec.status == "planned" or (activate_deferred and spec.status == "deferred")
+        ]
+        spawned = 0
+        retired = 0
+        target_names = {spec.name for spec in target_specs}
+        for index, spec in enumerate(target_specs, start=1):
+            agent = existing_agents.get(spec.name)
+            if agent is None:
+                workspace = worktree_base / f"agent-{index}-{self._slugify(spec.name)[:32]}"
+                workspace.mkdir(parents=True, exist_ok=True)
+                agent = Agent(
+                    project_id=project.id,
+                    name=spec.name,
+                    role=f"{self._titleize_path_label(spec.archetype)} specialist",
+                    kind="worker",
+                    status="idle",
+                    workspace_path=str(workspace),
+                    swarm_plan_id=plan.id,
+                    archetype=spec.archetype,
+                    mission=spec.mission,
+                    retire_when=spec.retire_when,
+                    locked_paths_json=[],
+                    failure_count=0,
+                )
+                db.add(agent)
+                db.flush()
+                spawned += 1
+                spec.status = "spawned"
+                self._record_swarm_event(
+                    db,
+                    project,
+                    event_type="agent_spawned",
+                    message=f"{agent.name} spawned for {spec.archetype} work.",
+                    swarm_plan_id=plan.id,
+                    agent_id=agent.id,
+                    metadata_json={"spec_id": spec.id},
+                )
+            else:
+                agent.swarm_plan_id = plan.id
+                agent.archetype = spec.archetype
+                agent.mission = spec.mission
+                agent.retire_when = spec.retire_when
+                spec.status = "spawned"
+        if preferences.allow_dynamic_retirement:
+            for agent_name, agent in existing_agents.items():
+                if agent_name in target_names or agent.kind != "worker":
+                    continue
+                if agent.status in {"idle", "waiting", "done", "stopped"} or project.runner_mode == "dry_run":
+                    agent.status = "done"
+                    agent.current_task_id = None
+                    agent.current_action = "Retired by the latest swarm strategy."
+                    retired += 1
+                    self._record_swarm_event(
+                        db,
+                        project,
+                        event_type="agent_retired",
+                        message=f"{agent.name} retired from the current swarm strategy.",
+                        swarm_plan_id=plan.id,
+                        agent_id=agent.id,
+                    )
+                else:
+                    agent.current_action = "Retire after the current task completes."
+        db.flush()
+        return spawned, retired
+
+    def spawn_swarm_agents(self, db: Session, project: Project) -> dict[str, Any]:
+        preferences = self._ensure_swarm_preferences(db, project)
+        plan = self._current_swarm_plan_record(db, project.id)
+        if plan is None:
+            raise ValueError("Swarm plan not found")
+        if self._swarm_approval_required(plan, preferences) and not plan.approved_by_user:
+            raise ValueError("Swarm plan requires user approval before spawning this many agents.")
+        if not plan.approved_by_user:
+            plan.approved_by_user = True
+            plan.status = "approved"
+        spawned, retired = self._sync_agents_to_swarm_plan(db, project, plan, activate_deferred=project.runner_mode == "dry_run")
+        plan.status = "active"
+        message = f"Swarm sync complete: {spawned} agent(s) spawned, {retired} retired."
+        return {
+            "ok": True,
+            "message": message,
+            "swarm_plan": self._serialize_swarm_plan(db, project, plan),
+            "agents_spawned": spawned,
+            "agents_retired": retired,
+        }
+
+    async def scale_swarm(self, db: Session, project: Project, *, direction: str, reason: str | None = None, count: int = 1) -> dict[str, Any]:
+        scale_hint = "up" if direction == "up" else "down"
+        plan_payload = await self.create_swarm_plan(
+            db,
+            project,
+            goal=f"Scale the swarm {scale_hint} for {project.name}.",
+            revision_note=reason or f"Scale {scale_hint} by {count}.",
+            scale_hint=scale_hint,
+        )
+        plan = self._current_swarm_plan_record(db, project.id)
+        if plan is None:
+            raise ValueError("Swarm plan not found")
+        preferences = self._ensure_swarm_preferences(db, project)
+        if direction == "down" or not self._swarm_approval_required(plan, preferences):
+            plan.approved_by_user = True
+            plan.status = "approved"
+            sync = self.spawn_swarm_agents(db, project)
+        else:
+            sync = {
+                "ok": True,
+                "message": "Swarm scale-up created a revised plan that still needs approval before spawning more agents.",
+                "swarm_plan": plan_payload,
+                "agents_spawned": 0,
+                "agents_retired": 0,
+            }
+        self._record_swarm_event(
+            db,
+            project,
+            event_type="swarm_scaled_up" if direction == "up" else "swarm_scaled_down",
+            message=sync["message"],
+            swarm_plan_id=plan.id,
+            metadata_json={"direction": direction, "count": count, "reason": reason},
+        )
+        return sync
+
+    def _deterministic_task_decomposition(self, db: Session, project: Project, plan: Plan | None) -> ManagerTaskDecomposition:
+        swarm_plan = self._current_swarm_plan_record(db, project.id)
+        if swarm_plan is not None:
+            specs = self._swarm_specs_for_plan(db, swarm_plan.id)
+            if specs:
+                tasks = [
+                    ManagerTaskItem(
+                        title=spec.name,
+                        goal=spec.mission,
+                        scope=f"Execute the {spec.archetype} mission with explicit path ownership.",
+                        agent_role=spec.name,
+                        milestone=spec.spawn_phase.replace("_", " ").title(),
+                        priority=spec.priority,
+                        allowed_paths=spec.allowed_paths_json or ["src"],
+                        forbidden_paths=spec.forbidden_paths_json or [],
+                        validation_steps=list(swarm_plan.validation_strategy_json or ["Record what was tested or reviewed."]),
+                        success_criteria=[spec.retire_when or "Assigned mission is complete."],
+                        estimated_complexity="medium",
+                        dependencies=[],
+                        status="backlog" if spec.status in {"planned", "spawned"} else "assigned",
+                    )
+                    for spec in specs[: max(3, min(8, swarm_plan.recommended_agent_count))]
+                ]
+                return ManagerTaskDecomposition(
+                    summary_markdown=f"Generated swarm-aligned tasks for {swarm_plan.mode} mode with explicit agent ownership.",
+                    milestones=[
+                        "Milestone 1 - Path ownership and first useful slice",
+                        "Milestone 2 - Validation, review, and handoff readiness",
+                    ],
+                    tasks=tasks,
+                )
         items = []
         for payload in build_initial_tasks(project):
             items.append(
@@ -454,6 +5574,7 @@ class MissionControlService:
         payload: dict[str, Any],
         model_schema: type[TManagerModel],
         fallback_factory: Callable[[], TManagerModel],
+        prompt_override: str | None = None,
     ) -> tuple[TManagerModel, str]:
         manager_agent = self._manager_agent(db, project.id)
         settings_record = self._project_settings(db, project)
@@ -474,7 +5595,7 @@ class MissionControlService:
         if try_live_provider:
             try:
                 runner = await self.runners.get_runner_for_settings(resolved_settings)
-                prompt = manager_action_prompt(
+                prompt = prompt_override or manager_action_prompt(
                     project,
                     docs_path,
                     action=action_name,
@@ -482,6 +5603,7 @@ class MissionControlService:
                     response_schema=response_schema,
                     payload=payload,
                     plan_markdown=latest_plan.content_markdown if latest_plan else None,
+                    user_name=self._preferred_user_name(db, project),
                 )
                 manager_agent.status = "working"
                 self._cache_agent_run_profile(manager_agent, resolved_settings, runner_type=runner.runner_type, action=action_name)
@@ -547,13 +5669,44 @@ class MissionControlService:
         self.events.publish(db, project.id, "manager.mode.deterministic", {"action": action_name})
         return fallback_factory(), "deterministic"
 
-    async def get_system_status(self, db: Session, project: Project | None = None) -> dict[str, Any]:
+    async def get_system_status(
+        self,
+        db: Session,
+        project: Project | None = None,
+        *,
+        provider_override: str | None = None,
+        provider_endpoint_override: str | None = None,
+        adapter_command_override: str | None = None,
+        adapter_args_override: list[str] | None = None,
+    ) -> dict[str, Any]:
         from system_status import detect_system_status
+        from startup import startup_service
+        from runtime_paths import diagnostics_root
 
         project_settings = self._project_settings(db, project) if project else None
-        selected_provider = project_settings.provider if project_settings else "codex"
-        adapter_command = project_settings.adapter_command if project_settings else None
-        status = detect_system_status(selected_provider=selected_provider, adapter_command=adapter_command)
+        app_profile = self._app_profile(db)
+        selected_provider = provider_override or (project_settings.provider if project_settings else app_profile.selected_provider or "codex")
+        adapter_command = (
+            adapter_command_override
+            if adapter_command_override is not None
+            else (project_settings.adapter_command if project_settings else app_profile.adapter_command)
+        )
+        adapter_args = (
+            list(adapter_args_override)
+            if adapter_args_override is not None
+            else (list(project_settings.adapter_args_json) if project_settings else list(app_profile.adapter_args_json or []))
+        )
+        provider_endpoint = (
+            provider_endpoint_override
+            if provider_endpoint_override is not None
+            else app_profile.provider_endpoint
+        )
+        status = detect_system_status(
+            selected_provider=selected_provider,
+            adapter_command=adapter_command,
+            ollama_endpoint=provider_endpoint,
+            adapter_args=adapter_args,
+        )
         status["current_auth_job"] = auth_service.job_payload(auth_service.current_job())
         if normalize_provider(selected_provider) == "codex":
             status["app_server_handshake_status"] = "available" if await self.runners.app_server_available() else "unavailable"
@@ -587,9 +5740,10 @@ class MissionControlService:
             resolved = resolve_manager_settings(project, settings)
             status["effective_runner_mode"] = await self.runners.effective_mode(resolved)
         else:
-            status["effective_runner_mode"] = "app_server" if await self.runners.app_server_available() else (
-                "cli" if await self.runners.codex_cli_available() else "unavailable"
-            )
+            status["effective_runner_mode"] = app_profile.default_runner_mode or DEFAULT_RUNNER_MODE
+        status["app_state_summary"] = app_profile
+        status["startup_summary"] = startup_service.get_status(db)
+        status["diagnostics_directory"] = str(diagnostics_root())
         return status
 
     def auth_state(self) -> dict[str, Any]:
@@ -610,23 +5764,360 @@ class MissionControlService:
             "notes": [
                 "ChatGPT sign-in is the recommended path and keeps usage tied to your local Codex session.",
                 "API key login is optional and can use API billing depending on your account.",
-                "Claude Code and external adapters are configured per project and keep their own local auth flows.",
+                "Other providers use their own local auth or environment-based setup outside Mission Control.",
             ],
         }
 
+    def get_app_profile(self, db: Session) -> AppProfile:
+        return self._app_profile(db)
+
+    def update_app_profile(self, db: Session, payload: AppProfileUpdate) -> AppProfile:
+        return update_app_profile(db, payload)
+
+    def list_projects(self, db: Session, *, include_archived: bool = False) -> list[dict[str, Any]]:
+        return [self._serialize_project_card(db, project) for project in self._ordered_projects(db, include_archived=include_archived)]
+
+    async def _dashboard_attention_items(self, db: Session, projects: list[Project]) -> list[dict[str, Any]]:
+        items: list[dict[str, Any]] = []
+        for project in projects:
+            if project.archived_at:
+                continue
+            settings = self._project_settings(db, project)
+            degraded_notices = await self._workspace_degraded_notices(project, settings)
+            action = self._derive_current_action(db, project, degraded_notices)
+            if action["type"] == "no_action":
+                continue
+            items.append(
+                {
+                    "id": f"{project.id}:{action['id']}",
+                    "project_id": project.id,
+                    "project_name": project.name,
+                    "project_slug": self._effective_project_slug(project),
+                    "kind": action["type"],
+                    "summary": action["title"],
+                    "detail": action["message"],
+                    "severity": action["severity"],
+                    "target": self._project_route(project),
+                    "created_at": action["created_at"],
+                    "_priority": ATTENTION_PRIORITY.get(str(action["type"]), 99),
+                }
+            )
+        items.sort(
+            key=lambda item: (
+                int(item["_priority"]),
+                -float(item["created_at"].timestamp() if hasattr(item["created_at"], "timestamp") else 0),
+            )
+        )
+        return [{key: value for key, value in item.items() if key != "_priority"} for item in items[:6]]
+
+    def _dashboard_stage(self, project: Project, agent: dict[str, Any] | None, pending_action: dict[str, Any] | None) -> str:
+        display_status = self._project_display_status(project)
+        if pending_action and pending_action["type"] in {"command_approval", "tool_approval", "manager_question"}:
+            return "Waiting on user"
+        if display_status == "blocked":
+            return "Blocked"
+        if display_status == "interviewing":
+            return "Interviewing"
+        if display_status == "planning":
+            return "Planning"
+        if display_status == "paused":
+            return "Paused"
+        if display_status == "ready_for_handoff":
+            return "Preparing handoff"
+        if agent:
+            agent_status = str(agent.get("display_status") or "")
+            if agent_status in {"running", "coding", "active"}:
+                return "Building"
+            if agent_status in {"reviewing", "monitoring"}:
+                return "Testing"
+            if agent_status in {"thinking"}:
+                return "Planning"
+            if agent_status in {"waiting"}:
+                return "Waiting"
+            if agent_status in {"blocked", "error"}:
+                return "Blocked"
+        return self._status_label(display_status)
+
+    async def _dashboard_active_builds(self, db: Session, projects: list[Project]) -> list[dict[str, Any]]:
+        builds: list[dict[str, Any]] = []
+        for project in projects:
+            if project.archived_at:
+                continue
+            agents = self._sorted_workspace_agents(db, project.id)
+            active_agent = next(
+                (
+                    agent
+                    for agent in agents
+                    if str(agent.get("display_status")) in {"blocked", "error", "running", "coding", "active", "thinking", "reviewing", "monitoring", "waiting"}
+                ),
+                None,
+            )
+            pending_action: dict[str, Any] | None = None
+            if project.status not in {"handoff_ready"}:
+                settings = self._project_settings(db, project)
+                degraded_notices = await self._workspace_degraded_notices(project, settings)
+                pending_action = self._derive_current_action(db, project, degraded_notices)
+            stage = self._dashboard_stage(project, active_agent, pending_action)
+            if stage not in {"Planning", "Interviewing", "Building", "Testing", "Waiting", "Waiting on user", "Blocked", "Paused", "Preparing handoff"}:
+                continue
+            task_id = active_agent.get("current_task_id") if active_agent else None
+            task_title = (
+                (str(active_agent.get("current_task_title")) if active_agent and active_agent.get("current_task_title") else None)
+                or project.latest_milestone
+                or project.latest_activity
+                or "Manager is routing the next step."
+            )
+            builds.append(
+                {
+                    "project_id": project.id,
+                    "project_name": project.name,
+                    "project_slug": self._effective_project_slug(project),
+                    "task_id": task_id,
+                    "task_title": task_title,
+                    "stage": stage,
+                    "agent_name": active_agent.get("name") if active_agent else None,
+                    "runner_type": active_agent.get("runner_mode") if active_agent else None,
+                    "updated_at": project.updated_at,
+                    "_priority": {
+                        "Blocked": 0,
+                        "Waiting on user": 1,
+                        "Building": 2,
+                        "Testing": 3,
+                        "Planning": 4,
+                        "Interviewing": 4,
+                        "Waiting": 5,
+                        "Paused": 6,
+                        "Preparing handoff": 7,
+                    }.get(stage, 99),
+                }
+            )
+        builds.sort(
+            key=lambda item: (
+                int(item["_priority"]),
+                -float(item["updated_at"].timestamp() if hasattr(item["updated_at"], "timestamp") else 0),
+            )
+        )
+        return [{key: value for key, value in item.items() if key != "_priority"} for item in builds[:6]]
+
+    async def get_dashboard_summary(self, db: Session) -> dict[str, Any]:
+        profile = self._app_profile(db)
+        projects = self._ordered_projects(db, include_archived=True)
+        sidebar_projects = self._sidebar_projects(projects)
+        recent_projects = [project for project in projects if not project.archived_at][:3]
+        active_builds = await self._dashboard_active_builds(db, projects)
+        attention_items = await self._dashboard_attention_items(db, projects)
+        widget_summary = await self.get_dashboard_widget_summary(db)
+        blocked_agents = []
+        for project in projects:
+            for agent_payload in self._sorted_workspace_agents(db, project.id):
+                if agent_payload["display_status"] in {"blocked", "error"}:
+                    blocked_agents.append(agent_payload)
+        archive_count = max(0, len([project for project in projects if not project.archived_at]) - len(sidebar_projects)) + len(
+            [project for project in projects if project.archived_at]
+        )
+        system_status = await self.get_system_status(db)
+        return {
+            "sidebar_projects": [self._serialize_project_card(db, project) for project in sidebar_projects],
+            "recent_projects": [self._serialize_project_card(db, project) for project in recent_projects],
+            "archive_count": archive_count,
+            "active_builds": active_builds,
+            "attention_items": attention_items,
+            "blocked_agents": blocked_agents[:5],
+            "recent_handoffs": self.list_handoffs(db)[:3],
+            "runner_status": {
+                "selected_provider": system_status["selected_provider"],
+                "selected_provider_label": system_status["selected_provider_label"],
+                "effective_runner_mode": system_status["effective_runner_mode"],
+                "cli_detected": system_status["cli_detected"],
+                "authenticated": system_status["authenticated"],
+                "app_server_handshake_status": system_status["app_server_handshake_status"],
+            },
+            "connected_accounts": dict(profile.connected_accounts_json or {}),
+            "model_defaults": {
+                "manager_model": profile.manager_model,
+                "default_worker_model": profile.default_worker_model,
+                "manager_reasoning_effort": profile.manager_reasoning_effort,
+                "default_worker_reasoning_effort": profile.default_worker_reasoning_effort,
+            },
+            "widgets": [item["widget_type"] for item in widget_summary["instances"]],
+            "available_widgets": [item["widget_type"] for item in widget_summary["catalog"]],
+            "widget_instances": widget_summary["instances"],
+            "widget_data": widget_summary["data"],
+            "widget_catalog": widget_summary["catalog"],
+        }
+
+    def archive_project(self, db: Session, project: Project) -> Project:
+        project.archived_at = utc_now()
+        project.pinned = False
+        self.events.publish(db, project.id, "project.archived", {"project_id": project.id})
+        return project
+
+    def unarchive_project(self, db: Session, project: Project) -> Project:
+        project.archived_at = None
+        self.events.publish(db, project.id, "project.unarchived", {"project_id": project.id})
+        return project
+
+    def pin_project(self, db: Session, project: Project) -> Project:
+        project.pinned = True
+        return project
+
+    def unpin_project(self, db: Session, project: Project) -> Project:
+        project.pinned = False
+        return project
+
+    def pause_project(self, db: Session, project: Project) -> Project:
+        if project.status == "paused":
+            return project
+        project.status = "paused"
+        for agent in db.scalars(select(Agent).where(Agent.project_id == project.id, Agent.kind == "worker")):
+            if agent.status in {"idle", "waiting", "done", "stopped"}:
+                agent.current_action = "Paused by user."
+        self._record_manager_message(
+            db,
+            project,
+            role="system",
+            message_type="system_notice",
+            content_markdown="Project paused. The manager will stop assigning new work until you resume the workspace.",
+            metadata_json={"project_state": "paused"},
+        )
+        self.events.publish(db, project.id, "project.paused", {"project_id": project.id})
+        self._publish_workspace_state(db, project.id)
+        return project
+
+    def resume_project(self, db: Session, project: Project) -> Project:
+        if project.status != "paused":
+            return project
+        has_open_tasks = db.scalar(
+            select(func.count(Task.id)).where(Task.project_id == project.id, Task.status != "done")
+        ) or 0
+        project.status = "building" if has_open_tasks else "draft"
+        for agent in db.scalars(select(Agent).where(Agent.project_id == project.id, Agent.kind == "worker")):
+            if agent.status in {"idle", "waiting", "done", "stopped"}:
+                agent.current_action = "Awaiting reassignment."
+        self._record_manager_message(
+            db,
+            project,
+            role="system",
+            message_type="system_notice",
+            content_markdown="Project resumed. The manager can start routing work again.",
+            metadata_json={"project_state": "resumed"},
+        )
+        self.events.publish(db, project.id, "project.resumed", {"project_id": project.id})
+        self._publish_workspace_state(db, project.id)
+        return project
+
+    def list_handoffs(self, db: Session) -> list[dict[str, Any]]:
+        handoffs: list[dict[str, Any]] = []
+        projects = self._ordered_projects(db, include_archived=True)
+        for project in projects:
+            if not project.final_report_json:
+                continue
+            report = project.final_report_json or {}
+            card = self._project_card_data(db, project)
+            tests = report.get("tests_builds_run") or report.get("tests_run") or []
+            run_instructions = report.get("how_to_run") or []
+            known_limitations = report.get("known_limitations") or []
+            handoffs.append(
+                {
+                    "project_id": project.id,
+                    "project_name": project.name,
+                    "project_slug": str(card["slug"]),
+                    "created_at": project.updated_at,
+                    "status": str(card["handoff_status"]),
+                    "summary": str(report.get("summary_markdown") or report.get("summary") or "Handoff ready."),
+                    "artifacts_path": str(card["docs_path"]),
+                    "tests_count": len(tests if isinstance(tests, list) else []),
+                    "run_instructions": [str(item) for item in run_instructions] if isinstance(run_instructions, list) else [],
+                    "known_limitations": [str(item) for item in known_limitations] if isinstance(known_limitations, list) else [],
+                }
+            )
+        return sorted(handoffs, key=lambda item: item["created_at"], reverse=True)
+
+    def get_project_handoff_summary(self, db: Session, project: Project) -> dict[str, Any]:
+        report = project.final_report_json or {}
+        tests = report.get("tests_builds_run") or report.get("tests_run") or []
+        card = self._project_card_data(db, project)
+        return {
+            "project_id": project.id,
+            "project_name": project.name,
+            "project_slug": str(card["slug"]),
+            "created_at": project.updated_at,
+            "status": str(card["handoff_status"]),
+            "summary": str(report.get("summary_markdown") or report.get("summary") or "No handoff is recorded yet."),
+            "artifacts_path": str(card["docs_path"]),
+            "tests_count": len(tests if isinstance(tests, list) else []),
+            "run_instructions": [str(item) for item in report.get("how_to_run", [])] if isinstance(report.get("how_to_run"), list) else [],
+            "known_limitations": [str(item) for item in report.get("known_limitations", [])] if isinstance(report.get("known_limitations"), list) else [],
+        }
+
+    def get_tool_catalog(self, db: Session) -> list[dict[str, Any]]:
+        profile = self._app_profile(db)
+        return catalog_with_permissions(
+            provider=normalize_provider(profile.selected_provider),
+            connected_accounts=dict(profile.connected_accounts_json or {}),
+            permission_overrides=dict(profile.tool_permission_overrides_json or {}),
+        )
+
+    def update_tool_permission(self, db: Session, tool_id: str, permission_policy: str) -> dict[str, Any]:
+        if tool_id not in {item["id"] for item in TOOL_CATALOG}:
+            raise ValueError("Unknown tool")
+        profile = self._app_profile(db)
+        overrides = dict(profile.tool_permission_overrides_json or {})
+        overrides[tool_id] = permission_policy
+        profile.tool_permission_overrides_json = overrides
+        profile.last_opened_at = utc_now()
+        db.flush()
+        return {"tool_id": tool_id, "permission_policy": permission_policy}
+
+    async def list_skills(self, db: Session) -> list[dict[str, Any]]:
+        status = await self.get_system_status(db)
+        return [
+            {
+                "name": skill,
+                "source": "local_codex",
+                "available": True,
+                "summary": "Available through the local Codex skill configuration.",
+            }
+            for skill in status["local_skills"]
+        ]
+
+    def recent_diagnostic_reports(self) -> list[dict[str, Any]]:
+        return list_diagnostic_reports()
+
     def create_project(self, db: Session, *, name: str, idea: str, workspace_path: str, provider: str, runner_mode: str, manager_mode: str) -> Project:
+        profile = self._app_profile(db)
+        selected_provider = normalize_provider(provider or profile.selected_provider)
         project = Project(
             name=name,
+            slug=self._slugify(name),
             idea=idea,
             workspace_path=workspace_path,
             status="draft",
-            runner_mode=runner_mode or DEFAULT_RUNNER_MODE,
+            runner_mode=runner_mode or profile.default_runner_mode or DEFAULT_RUNNER_MODE,
             manager_mode=manager_mode or DEFAULT_MANAGER_MODE,
+            created_by=display_name_or_default(profile.display_name),
+            pinned=False,
+            last_opened_at=utc_now(),
+            latest_activity=idea.strip().splitlines()[0][:180] if idea.strip() else None,
+            handoff_status="not_ready",
         )
         db.add(project)
         db.flush()
         settings = self._project_settings(db, project)
-        settings.provider = normalize_provider(provider)
+        settings.provider = selected_provider
+        settings.manager_model = profile.manager_model
+        settings.default_worker_model = profile.default_worker_model
+        settings.manager_reasoning_effort = profile.manager_reasoning_effort
+        settings.default_worker_reasoning_effort = profile.default_worker_reasoning_effort
+        settings.runner_mode = runner_mode or profile.default_runner_mode or DEFAULT_RUNNER_MODE
+        settings.sandbox_mode = profile.sandbox_mode
+        settings.approval_policy = profile.approval_policy
+        settings.adapter_command = profile.adapter_command
+        settings.adapter_args_json = list(profile.adapter_args_json or [])
+        settings.workspace_widgets_json = []
+        settings.approval_overrides_json = {}
+        self._ensure_swarm_preferences(db, project)
+        self._ensure_agent_archetypes(db)
         manager_agent = Agent(
             project_id=project.id,
             name="Manager AI",
@@ -634,6 +6125,9 @@ class MissionControlService:
             kind="manager",
             status="idle",
             workspace_path=workspace_path,
+            archetype="manager",
+            mission="Coordinate the adaptive swarm and act as the single user-facing manager.",
+            retire_when="Retire only when the project is archived or deleted.",
             failure_count=0,
             locked_paths_json=[],
         )
@@ -643,7 +6137,7 @@ class MissionControlService:
         return project
 
     def update_settings(self, db: Session, project: Project, payload: ProjectSettingsUpdate) -> ProjectSettings:
-        settings = get_or_create_project_settings(db, project)
+        settings = self._ensure_project_settings(db, project)
         settings.provider = normalize_provider(payload.provider)
         settings.manager_model = payload.manager_model.strip() if payload.manager_model and payload.manager_model.strip() else None
         settings.default_worker_model = payload.default_worker_model.strip() if payload.default_worker_model and payload.default_worker_model.strip() else None
@@ -664,6 +6158,8 @@ class MissionControlService:
         settings.runner_mode = payload.runner_mode
         settings.sandbox_mode = payload.sandbox_mode
         settings.approval_policy = payload.approval_policy
+        settings.workspace_widgets_json = [item.strip() for item in payload.workspace_widgets_json if item and item.strip()]
+        settings.approval_overrides_json = dict(payload.approval_overrides_json or {})
         project.runner_mode = payload.runner_mode
         self.events.publish(
             db,
@@ -678,6 +6174,292 @@ class MissionControlService:
             },
         )
         db.flush()
+        return settings
+
+    def open_project(self, db: Session, project: Project) -> Project:
+        profile = self._app_profile(db)
+        project.last_opened_at = utc_now()
+        self._ensure_project_slug(project)
+        profile.last_opened_at = utc_now()
+        self._ensure_project_workspace(project)
+        self._ensure_dry_run_workspace_seed(db, project)
+        return project
+
+    def update_project(self, db: Session, project: Project, *, name: str | None = None, idea: str | None = None) -> Project:
+        changed = False
+        if name is not None:
+            cleaned_name = name.strip()
+            if cleaned_name and cleaned_name != project.name:
+                project.name = cleaned_name
+                project.slug = self._slugify(cleaned_name)
+                changed = True
+        if idea is not None:
+            cleaned_idea = idea.strip()
+            if cleaned_idea and cleaned_idea != project.idea:
+                project.idea = cleaned_idea
+                changed = True
+        if changed:
+            project.latest_activity = self._project_latest_activity(db, project) or (project.idea.strip().splitlines()[0][:180] if project.idea.strip() else None)
+            project.updated_at = utc_now()
+            self.events.publish(
+                db,
+                project.id,
+                "project.updated",
+                {
+                    "project_id": project.id,
+                    "name": project.name,
+                    "slug": project.slug,
+                },
+            )
+        return project
+
+    def list_manager_messages(self, db: Session, project: Project) -> list[dict[str, Any]]:
+        messages = list(
+            db.scalars(
+                select(ManagerMessage)
+                .where(ManagerMessage.project_id == project.id)
+                .order_by(ManagerMessage.created_at.asc(), ManagerMessage.id.asc())
+            )
+        )
+        return [self._serialize_manager_message(message) for message in messages]
+
+    def list_pending_questions(self, db: Session, project: Project) -> list[dict[str, Any]]:
+        self._auto_decide_due_questions(db, project)
+        questions = list(
+            db.scalars(
+                select(ManagerQuestion)
+                .where(ManagerQuestion.project_id == project.id, ManagerQuestion.status == "pending")
+                .order_by(ManagerQuestion.created_at.asc())
+            )
+        )
+        return [self._serialize_question(question) for question in questions]
+
+    def list_pending_approvals(self, db: Session, project: Project) -> list[dict[str, Any]]:
+        approvals = list(
+            db.scalars(
+                select(ApprovalRequest)
+                .where(ApprovalRequest.project_id == project.id, ApprovalRequest.status == "pending")
+                .order_by(ApprovalRequest.created_at.asc())
+            )
+        )
+        return [self._serialize_approval(approval) for approval in approvals]
+
+    def get_manager_queue(self, db: Session, project: Project) -> dict[str, Any]:
+        self._auto_decide_due_questions(db, project)
+        return self._manager_queue(db, project)
+
+    async def get_project_action(self, db: Session, project: Project) -> dict[str, Any]:
+        settings = self._project_settings(db, project)
+        degraded_notices = await self._workspace_degraded_notices(project, settings)
+        return self._derive_current_action(db, project, degraded_notices)
+
+    async def list_project_actions(self, db: Session, project: Project) -> list[dict[str, Any]]:
+        settings = self._project_settings(db, project)
+        degraded_notices = await self._workspace_degraded_notices(project, settings)
+        current = self._derive_current_action(db, project, degraded_notices)
+        history = self._derive_action_history(db, project)
+        return [current, *history]
+
+    def resolve_project_action(
+        self,
+        db: Session,
+        project: Project,
+        action_id: str,
+        *,
+        decision: str,
+        option_id: str | None = None,
+        selected_text: str | None = None,
+    ) -> dict[str, Any]:
+        if action_id.startswith("question-"):
+            question_id = int(action_id.split("-", 1)[1])
+            if decision == "dismiss":
+                question = db.get(ManagerQuestion, question_id)
+                if not question or question.project_id != project.id:
+                    raise ValueError("Question not found in this project")
+                question.status = "cancelled"
+                question.resolved_at = utc_now()
+                self._record_manager_message(
+                    db,
+                    project,
+                    role="system",
+                    message_type="system_notice",
+                    content_markdown="A manager question was dismissed by the user.",
+                    related_agent_id=question.related_agent_id,
+                    related_task_id=question.related_task_id,
+                )
+                self._publish_workspace_state(db, project.id)
+                return self._serialize_question(question)
+            if decision != "choose_option":
+                raise ValueError("Questions can only be resolved with choose_option or dismiss.")
+            question = self.answer_question(
+                db,
+                question_id,
+                option_id=option_id or "",
+                selected_text=selected_text or option_id or "",
+                project_id=project.id,
+            )
+            return self._serialize_question(question)
+        if action_id.startswith("approval-"):
+            approval_id = int(action_id.split("-", 1)[1])
+            if decision == "approve_once":
+                return self._serialize_approval(self.approve_once(db, approval_id, project_id=project.id))
+            if decision == "deny":
+                return self._serialize_approval(self.deny_approval(db, approval_id, project_id=project.id))
+            if decision == "allow_for_project":
+                return self._serialize_approval(self.allow_approval_for_project(db, approval_id, project_id=project.id))
+            raise ValueError("Approvals can only be approved, denied, or allowed for a project.")
+        raise ValueError("Action not found")
+
+    async def get_project_workspace(self, db: Session, project: Project) -> dict[str, Any]:
+        settings = self._project_settings(db, project)
+        swarm_preferences = self._ensure_swarm_preferences(db, project)
+        self._auto_decide_due_questions(db, project)
+        tasks = list(db.scalars(select(Task).where(Task.project_id == project.id).order_by(Task.priority.asc(), Task.id.asc())))
+        degraded_notices = await self._workspace_degraded_notices(project, settings)
+        current_action = self._derive_current_action(db, project, degraded_notices)
+        queue = self._manager_queue(db, project)
+        reservations = self.list_reservations(db, project.id)
+        swarm_plan = self._current_swarm_plan_record(db, project.id)
+        widget_summary = await self.get_project_widget_summary(db, project)
+        return {
+            "project": self._serialize_project_card(db, project),
+            "current_action": current_action,
+            "action_history": self._derive_action_history(db, project),
+            "manager_messages": self.list_manager_messages(db, project),
+            "pending_question": next(iter(self.list_pending_questions(db, project)), None),
+            "pending_approvals": self.list_pending_approvals(db, project),
+            "agents": self._sorted_workspace_agents(db, project.id),
+            "manager_queue": queue,
+            "widgets": [item["widget_type"] for item in widget_summary["instances"]],
+            "available_widgets": [item["widget_type"] for item in widget_summary["catalog"]],
+            "widget_instances": widget_summary["instances"],
+            "widget_data": widget_summary["data"],
+            "widget_catalog": widget_summary["catalog"],
+            "reservations": reservations,
+            "task_summary": self._task_summary(db, project),
+            "milestone_summary": self._milestone_summary(db, project),
+            "workflow": self._workflow_summary(db, project, tasks),
+            "overview": self._project_overview(db, project, tasks, current_action),
+            "tasks": tasks,
+            "activity_log": self._activity_log(db, project),
+            "degraded_notices": degraded_notices,
+            "swarm_preferences": self._serialize_swarm_preferences(swarm_preferences),
+            "swarm_plan": self._serialize_swarm_plan(db, project, swarm_plan),
+            "swarm_events": self.list_swarm_events(db, project)[:8],
+        }
+
+    def answer_question(self, db: Session, question_id: int, *, option_id: str, selected_text: str, project_id: int | None = None) -> ManagerQuestion:
+        question = db.get(ManagerQuestion, question_id)
+        if not question:
+            raise ValueError("Question not found")
+        if project_id is not None and question.project_id != project_id:
+            raise ValueError("Question not found in this project")
+        if question.status != "pending":
+            return question
+        return self._resolve_question(db, question, option_id=option_id, selected_text=selected_text, status="answered")
+
+    def auto_decide_question(self, db: Session, question_id: int) -> ManagerQuestion:
+        question = db.get(ManagerQuestion, question_id)
+        if not question:
+            raise ValueError("Question not found")
+        if question.status != "pending":
+            return question
+        if question.impact == "high":
+            raise ValueError("High-impact questions cannot auto-decide.")
+        option = next(
+            (
+                item
+                for item in (question.options_json or [])
+                if item.get("label") == question.manager_recommendation or item.get("id") == question.manager_recommendation
+            ),
+            None,
+        )
+        if option is None and question.options_json:
+            option = question.options_json[0]
+        if option is None:
+            raise ValueError("Question has no selectable options.")
+        return self._resolve_question(
+            db,
+            question,
+            option_id=str(option.get("id") or "auto"),
+            selected_text=str(option.get("label") or question.manager_recommendation or "Manager default"),
+            status="auto_decided",
+        )
+
+    def _resolve_approval(self, db: Session, approval: ApprovalRequest, *, status: str) -> ApprovalRequest:
+        if approval.status != "pending":
+            return approval
+        approval.status = status
+        approval.resolved_at = utc_now()
+        approval.resolved_by = "user"
+        project = db.get(Project, approval.project_id)
+        if not project:
+            raise ValueError("Project not found")
+        if status == "allowed_for_project":
+            settings = self._ensure_project_settings(db, project)
+            overrides = dict(settings.approval_overrides_json or {})
+            overrides[self._approval_signature(approval)] = {
+                "status": status,
+                "title": approval.title,
+                "request_type": approval.request_type,
+                "cwd": approval.cwd,
+            }
+            settings.approval_overrides_json = overrides
+        self._record_approval_resolution_message(db, project, approval)
+        self.events.publish(db, project.id, "approval_resolved", {"approval_id": approval.id, "status": approval.status})
+        self._advance_dry_run_after_approval(db, project, approval)
+        self._publish_workspace_state(db, project.id)
+        return approval
+
+    def approve_once(self, db: Session, approval_id: int, *, project_id: int | None = None) -> ApprovalRequest:
+        approval = db.get(ApprovalRequest, approval_id)
+        if not approval:
+            raise ValueError("Approval not found")
+        if project_id is not None and approval.project_id != project_id:
+            raise ValueError("Approval not found in this project")
+        return self._resolve_approval(db, approval, status="approved_once")
+
+    def deny_approval(self, db: Session, approval_id: int, *, project_id: int | None = None) -> ApprovalRequest:
+        approval = db.get(ApprovalRequest, approval_id)
+        if not approval:
+            raise ValueError("Approval not found")
+        if project_id is not None and approval.project_id != project_id:
+            raise ValueError("Approval not found in this project")
+        return self._resolve_approval(db, approval, status="denied")
+
+    def allow_approval_for_project(self, db: Session, approval_id: int, *, project_id: int | None = None) -> ApprovalRequest:
+        approval = db.get(ApprovalRequest, approval_id)
+        if not approval:
+            raise ValueError("Approval not found")
+        if project_id is not None and approval.project_id != project_id:
+            raise ValueError("Approval not found in this project")
+        return self._resolve_approval(db, approval, status="allowed_for_project")
+
+    def update_workspace_widgets(self, db: Session, project: Project, widgets: list[str]) -> ProjectSettings:
+        settings = self._ensure_project_settings(db, project)
+        requested = [item for item in widgets if item in PROJECT_WIDGET_TYPES]
+        instances = {item.widget_type: item for item in self._project_widget_instances(db, project, settings)}
+        for order_index, widget_type in enumerate(requested):
+            instance = instances.get(widget_type)
+            if instance is None:
+                self.create_widget_instance(
+                    db,
+                    scope="project",
+                    project=project,
+                    widget_type=widget_type,
+                    order_index=order_index,
+                )
+                instances = {item.widget_type: item for item in self._widget_instances_query(db, scope="project", project_id=project.id)}
+                instance = instances[widget_type]
+            instance.enabled = True
+            instance.order_index = order_index
+            instance.area = instance.area or str(WIDGET_CATALOG_BY_TYPE[widget_type]["default_area"])
+        for widget_type, instance in instances.items():
+            if widget_type not in requested:
+                instance.enabled = False
+        self._normalize_widget_order(db, scope="project", project_id=project.id)
+        self._mirror_project_widget_legacy(settings, self._widget_instances_query(db, scope="project", project_id=project.id))
+        self.events.publish(db, project.id, "widget_instances_updated", {"project_id": project.id, "widgets_updated": True})
         return settings
 
     async def generate_project_docs(self, db: Session, project: Project) -> dict[str, Any]:
@@ -709,7 +6491,7 @@ class MissionControlService:
             payload={
                 "project_name": project.name,
                 "project_idea": project.idea,
-                "interview_answers": [question.selected_text for question in questions if question.selected_text],
+                "interview_answers": [self._question_answer_text(question) for question in questions if self._question_answer_text(question)],
             },
             model_schema=ManagerDocUpdate,
             fallback_factory=lambda: self._deterministic_doc_update(project, questions, deterministic_plan),
@@ -744,61 +6526,223 @@ class MissionControlService:
             "manager_mode_used": manager_mode_used,
         }
 
-    async def start_interview(self, db: Session, project: Project, question_count: int) -> InterviewSession:
+    async def _resolve_interview_turn(
+        self,
+        db: Session,
+        project: Project,
+        session: InterviewSession,
+        *,
+        action_name: str,
+        objective: str,
+    ) -> tuple[InterviewTurnPayload, str]:
+        prompt_payload = await self._interview_context_payload(db, project, session)
+        prompt_payload.update(
+            {
+                "question_budget": session.question_budget,
+                "questions_asked": session.questions_asked,
+                "questions_remaining": self._interview_remaining_budget(session),
+                "batch_target": 0 if session.question_budget == 0 else min(5, max(self._interview_remaining_budget(session), 3)),
+                "pending_categories": sorted(self._pending_interview_categories(session)),
+                "used_categories": sorted(self._used_interview_categories(session)),
+            }
+        )
+        prompt_override = manager_interview_prompt(
+            project,
+            action=action_name,
+            objective=objective,
+            payload=prompt_payload,
+            response_schema=MANAGER_INTERVIEW_SCHEMA,
+            user_name=self._preferred_user_name(db, project),
+        )
+        turn, mode_used = await self._resolve_manager_model(
+            db,
+            project,
+            action_name=action_name,
+            objective=objective,
+            response_schema=MANAGER_INTERVIEW_SCHEMA,
+            payload=prompt_payload,
+            model_schema=InterviewTurnPayload,
+            fallback_factory=lambda: self._default_interview_turn(project, session),
+            prompt_override=prompt_override,
+        )
+        return turn, self._interview_source_for_mode(mode_used)
+
+    def _supersede_interview_sessions(self, db: Session, project: Project) -> None:
         previous_sessions = list(db.scalars(select(InterviewSession).where(InterviewSession.project_id == project.id)))
         for previous in previous_sessions:
             previous.status = "superseded"
+            previous.stop_reason = previous.stop_reason or "Superseded by a newer interview session."
+            for question in previous.questions:
+                if question.status == "pending":
+                    question.status = "superseded"
+        db.flush()
 
-        payload, _ = await self._resolve_manager_model(
-            db,
-            project,
-            action_name="interview.generate",
-            objective="Generate concise multiple-choice interview questions for project refinement.",
-            response_schema={"questions": [{"question": "string", "options": [{"id": "string", "label": "string", "description": "string"}]}]},
-            payload={"question_count": question_count, "idea": project.idea},
-            model_schema=InterviewGeneration,
-            fallback_factory=lambda: InterviewGeneration(questions=self._deterministic_interview_payload(question_count)["questions"]),
+    async def start_interview(self, db: Session, project: Project, question_budget: int | None, legacy_question_count: int | None = None) -> InterviewSession:
+        budget = self._normalize_interview_budget(question_budget, legacy_question_count)
+        self._supersede_interview_sessions(db, project)
+
+        session = InterviewSession(
+            project_id=project.id,
+            question_count=budget,
+            question_budget=budget,
+            questions_asked=0,
+            current_index=0,
+            status="in_progress",
+            manager_mode=project.manager_mode or DEFAULT_MANAGER_MODE,
+            stopped_early=False,
+            stop_reason=None,
+            confidence_json={},
+            known_facts_json={},
+            unknowns_json={},
         )
-        generated_questions = payload.questions or self._deterministic_interview_payload(question_count)["questions"]
-
-        session = InterviewSession(project_id=project.id, question_count=question_count, current_index=0, status="in_progress")
         db.add(session)
         db.flush()
-        for index, template in enumerate(generated_questions):
-            db.add(
-                InterviewQuestion(
-                    session_id=session.id,
-                    index=index,
-                    question=template["question"],
-                    options_json=template["options"],
-                )
-            )
-        project.status = "interview_in_progress"
-        self.events.publish(db, project.id, "interview.started", {"session_id": session.id, "question_count": question_count})
-        return session
 
-    def answer_interview(self, db: Session, session: InterviewSession, question_id: int, option_id: str, selected_text: str) -> InterviewSession:
+        project.status = "interview_in_progress"
+        self.events.publish(
+            db,
+            project.id,
+            "interview.started",
+            {"session_id": session.id, "question_budget": budget, "manager_mode": session.manager_mode},
+        )
+        turn, question_source = await self._resolve_interview_turn(
+            db,
+            project,
+            session,
+            action_name="interview.strategy",
+            objective="Analyze the project and generate the first adaptive interview batch only if more information is still needed.",
+        )
+        return self._apply_interview_turn(db, project, session, turn, question_source=question_source)
+
+    async def generate_next_interview(self, db: Session, project: Project) -> InterviewSession:
+        session = self._latest_session(db, project.id)
+        if not session:
+            raise ValueError("Interview session required before generating the next batch")
+        if session.status in {"completed", "superseded"}:
+            return session
+        if self._pending_interview_questions(session):
+            return self._refresh_interview_session_state(session, project=project)
+        if self._interview_remaining_budget(session) <= 0:
+            return self._complete_interview_session(
+                db,
+                session,
+                project,
+                stop_reason=session.stop_reason or "Question budget reached.",
+                stopped_early=False,
+            )
+        turn, question_source = await self._resolve_interview_turn(
+            db,
+            project,
+            session,
+            action_name="interview.next_batch",
+            objective="Update the project understanding from prior answers and decide whether another small question batch is still necessary.",
+        )
+        return self._apply_interview_turn(db, project, session, turn, question_source=question_source)
+
+    def answer_interview(
+        self,
+        db: Session,
+        session: InterviewSession,
+        question_id: int,
+        option_id: str,
+        selected_text: str,
+        *,
+        custom_answer: str | None = None,
+        project_id: int | None = None,
+    ) -> InterviewSession:
         question = db.get(InterviewQuestion, question_id)
         if not question or question.session_id != session.id:
             raise ValueError("Question not found")
+        canonical_project_id = question.project_id or session.project_id
+        if project_id is not None and canonical_project_id != project_id:
+            raise ValueError("Question not found in this project")
+        if question.status == "answered":
+            raise ValueError("Question was already answered")
+
+        option_map = {
+            str(option.get("id")): str(option.get("label"))
+            for option in question.options_json
+            if isinstance(option, dict) and option.get("id") and option.get("label")
+        }
+        normalized_selected_text = (selected_text or option_map.get(option_id) or "").strip()
+        if not normalized_selected_text:
+            raise ValueError("Selected text is required")
+
+        project = db.get(Project, session.project_id)
+        if not project:
+            raise ValueError("Project not found")
+        understanding = self._ensure_project_understanding(db, project)
+
+        question.project_id = canonical_project_id
         question.selected_option = option_id
-        question.selected_text = selected_text
-        question.rationale = f"Selected during interview flow: {selected_text}"
-        answered = len([item for item in session.questions if item.selected_option])
-        session.current_index = min(answered, session.question_count - 1)
-        if answered >= session.question_count:
-            session.status = "completed"
-            project = db.get(Project, session.project_id)
-            if project:
-                project.status = "interview_complete"
-        self.events.publish(db, session.project_id, "interview.answered", {"session_id": session.id, "question_id": question_id, "option_id": option_id})
+        question.selected_option_id = option_id
+        question.selected_text = normalized_selected_text
+        question.custom_answer = custom_answer.strip() if custom_answer and custom_answer.strip() else None
+        question.status = "answered"
+        question.answered_at = utc_now()
+        question.rationale = f"Answered during adaptive interview: {self._question_answer_text(question) or normalized_selected_text}"
+
+        self._append_local_answer_to_understanding(understanding, question)
+        self._mirror_session_understanding(session, understanding)
+        self._refresh_interview_session_state(session, project=project)
+        db.flush()
+
+        if not self._pending_interview_questions(session) and session.stop_reason and self._interview_remaining_budget(session) > 0:
+            self._complete_interview_session(
+                db,
+                session,
+                project,
+                stop_reason=session.stop_reason,
+                stopped_early=True,
+            )
+
+        if self._interview_remaining_budget(session) <= 0 and not self._pending_interview_questions(session):
+            self._complete_interview_session(
+                db,
+                session,
+                project,
+                stop_reason=session.stop_reason or "Question budget reached.",
+                stopped_early=False,
+            )
+
+        self.events.publish(
+            db,
+            session.project_id,
+            "interview.answered",
+            {
+                "session_id": session.id,
+                "question_id": question_id,
+                "option_id": option_id,
+                "category": question.category,
+                "custom_answer": question.custom_answer,
+            },
+        )
         return session
+
+    def finish_interview(self, db: Session, project: Project) -> InterviewSession:
+        session = self._latest_session(db, project.id)
+        if not session:
+            raise ValueError("Interview session not found")
+        if session.status == "completed":
+            return session
+        return self._complete_interview_session(
+            db,
+            session,
+            project,
+            stop_reason=session.stop_reason or "Interview finished with the current project understanding.",
+            stopped_early=self._interview_remaining_budget(session) > 0,
+        )
+
+    def get_project_understanding(self, project: Project) -> dict[str, Any]:
+        understanding = self._project_understanding(project)
+        return self._serialize_understanding_record(project, understanding)
 
     async def generate_plan(self, db: Session, project: Project, action_bias: str | None = None, note: str | None = None) -> Plan:
         latest_session = self._latest_session(db, project.id)
         if not latest_session:
             raise ValueError("Interview session required before plan generation")
         questions = list(sorted(latest_session.questions, key=lambda item: item.index))
+        understanding = self._project_understanding(project)
         manager_plan, _ = await self._resolve_manager_model(
             db,
             project,
@@ -808,12 +6752,18 @@ class MissionControlService:
             payload={
                 "project_name": project.name,
                 "project_idea": project.idea,
-                "answers": [question.selected_text for question in questions if question.selected_text],
+                "answers": [self._question_answer_text(question) for question in questions if self._question_answer_text(question)],
+                "understanding_summary": self._build_interview_summary(project, understanding),
+                "known_facts": dict(understanding.known_facts_json or {}),
+                "unknowns": dict(understanding.unknowns_json or {}),
+                "assumptions": list(understanding.assumptions_json or []),
+                "constraints": list(understanding.constraints_json or []),
+                "confidence_by_category": dict(understanding.confidence_by_category_json or {}),
                 "action_bias": action_bias,
                 "note": note,
             },
             model_schema=ManagerPlan,
-            fallback_factory=lambda: self._deterministic_plan(project, questions, action_bias=action_bias, note=note),
+            fallback_factory=lambda: self._deterministic_plan(project, questions, understanding, action_bias=action_bias, note=note),
         )
         next_version = (db.scalar(select(func.max(Plan.version)).where(Plan.project_id == project.id)) or 0) + 1
         for old_plan in db.scalars(select(Plan).where(Plan.project_id == project.id)):
@@ -834,33 +6784,31 @@ class MissionControlService:
         existing_workers = list(db.scalars(select(Agent).where(Agent.project_id == project.id, Agent.kind == "worker")))
         if existing_workers:
             return existing_workers
-
-        project_root_name = Path(project.workspace_path).name or f"project-{project.id}"
-        worktree_base = WORKTREE_ROOT / f"{project.id}-{project_root_name}"
-        worktree_base.mkdir(parents=True, exist_ok=True)
-        roles = [
-            ("Builder Agent A", "Primary implementation"),
-            ("Builder Agent B", "Secondary implementation"),
-            ("Validation Agent", "Validation, docs, and handoff"),
-        ]
-        created: list[Agent] = []
-        for index, (name, role) in enumerate(roles, start=1):
-            workspace = worktree_base / f"agent-{index}"
-            workspace.mkdir(parents=True, exist_ok=True)
-            agent = Agent(
-                project_id=project.id,
-                name=name,
-                role=role,
-                kind="worker",
-                status="idle",
-                workspace_path=str(workspace),
-                locked_paths_json=[],
-                failure_count=0,
+        preferences = self._ensure_swarm_preferences(db, project)
+        current_plan = self._current_swarm_plan_record(db, project.id)
+        if current_plan is None:
+            payload = self._deterministic_swarm_plan(
+                project,
+                preferences,
+                self._workspace_manifest_summary(project),
+                self._project_understanding(project),
+                self._latest_plan(db, project.id),
             )
-            db.add(agent)
-            created.append(agent)
-        db.flush()
-        return created
+            approval_required = payload.recommended_agent_count > preferences.require_approval_above_agent_count
+            current_plan = self._persist_swarm_plan_payload(
+                db,
+                project,
+                preferences,
+                payload,
+                approved_by_user=not approval_required,
+                status="pending_approval" if approval_required else "approved",
+            )
+            if not approval_required:
+                current_plan.approved_by_user = True
+        if self._swarm_approval_required(current_plan, preferences) and not current_plan.approved_by_user and project.runner_mode != "dry_run":
+            return []
+        self._sync_agents_to_swarm_plan(db, project, current_plan, activate_deferred=project.runner_mode == "dry_run")
+        return list(db.scalars(select(Agent).where(Agent.project_id == project.id, Agent.kind == "worker").order_by(Agent.id.asc())))
 
     async def generate_tasks(self, db: Session, project: Project) -> tuple[list[Task], str]:
         latest_plan = self._latest_plan(db, project.id)
@@ -875,7 +6823,7 @@ class MissionControlService:
                 "plan_markdown": latest_plan.content_markdown if latest_plan else "",
             },
             model_schema=ManagerTaskDecomposition,
-            fallback_factory=lambda: self._deterministic_task_decomposition(project, latest_plan),
+            fallback_factory=lambda: self._deterministic_task_decomposition(db, project, latest_plan),
         )
         tasks = self._upsert_tasks_from_decomposition(db, project, decomposition)
         self.events.publish(db, project.id, "tasks.generated", {"count": len(tasks), "manager_mode_used": manager_mode_used})
@@ -922,10 +6870,31 @@ class MissionControlService:
 
         latest_plan.status = "approved"
         project.status = "building"
-        self.initialize_build_roster(db, project)
+        if self._current_swarm_plan_record(db, project.id) is None:
+            await self.create_swarm_plan(
+                db,
+                project,
+                goal=f"Prepare the worker swarm for the approved build plan for {project.name}.",
+                milestone_id=latest_plan.id,
+            )
+        current_swarm_plan = self._current_swarm_plan_record(db, project.id)
+        preferences = self._ensure_swarm_preferences(db, project)
+        if current_swarm_plan is not None and not self._swarm_approval_required(current_swarm_plan, preferences):
+            self.initialize_build_roster(db, project)
         await self.generate_tasks(db, project)
         self.events.publish(db, project.id, "plan.approved", {"plan_id": latest_plan.id, "action": action})
-        await self.start_idle_agents(db, project)
+        try:
+            self.spawn_swarm_agents(db, project)
+            await self.start_idle_agents(db, project)
+        except ValueError:
+            self._record_manager_message(
+                db,
+                project,
+                role="manager",
+                message_type="system_notice",
+                content_markdown="Build plan approved, but the current swarm strategy still needs explicit approval before Mission Control spawns the full worker set.",
+                metadata_json={"source": "swarm_plan", "needs_approval": True},
+            )
         return latest_plan
 
     def _agent_matches_task(self, agent: Agent, task: Task) -> bool:
@@ -935,9 +6904,18 @@ class MissionControlService:
             return True
         agent_name = agent.name.lower()
         agent_role = agent.role.lower()
+        agent_archetype = (agent.archetype or "").lower()
         task_role = task.agent_role.lower()
+        if task_role in agent_name or task_role in agent_role or task_role in agent_archetype:
+            return True
         if "validation" in task_role:
-            return "validation" in agent_role
+            return "validation" in agent_role or agent_archetype in {"test", "reviewer", "release_handoff"}
+        if "docs" in task_role or "handoff" in task_role:
+            return agent_archetype in {"docs", "release_handoff", "reviewer"} or "docs" in agent_role
+        if "security" in task_role:
+            return agent_archetype == "security"
+        if "review" in task_role:
+            return agent_archetype == "reviewer" or "review" in agent_role
         if "secondary" in task_role:
             return "secondary" in agent_role or "agent b" in agent_name
         if "primary" in task_role:
@@ -1044,6 +7022,8 @@ class MissionControlService:
         return None
 
     async def start_idle_agents(self, db: Session, project: Project) -> None:
+        if project.status == "paused":
+            return
         workers = list(db.scalars(select(Agent).where(Agent.project_id == project.id, Agent.kind == "worker").order_by(Agent.id.asc())))
         tasks = list(db.scalars(select(Task).where(Task.project_id == project.id).order_by(Task.priority.asc(), Task.id.asc())))
         is_git_workspace = self._is_git_workspace(project)
@@ -1362,11 +7342,19 @@ class MissionControlService:
             return str(path), ""
         return str(path), path.read_text(encoding="utf-8", errors="ignore")
 
-    async def manager_message(self, db: Session, project: Project, message: str) -> str:
+    async def manager_message(self, db: Session, project: Project, message: str) -> dict[str, Any]:
         manager_agent = self._manager_agent(db, project.id)
         settings_record = self._project_settings(db, project)
         resolved_settings = resolve_manager_settings(project, settings_record)
         latest_plan = self._latest_plan(db, project.id)
+        user_record = self._record_manager_message(
+            db,
+            project,
+            role="user",
+            message_type="user_message",
+            content_markdown=message,
+            metadata_json={"source": "workspace_chat"},
+        )
         if project.manager_mode == "deterministic" or resolved_settings.runner_mode == "dry_run":
             reply = f"Manager summary: project is **{project.status}**. Open tasks: {db.scalar(select(func.count(Task.id)).where(Task.project_id == project.id, Task.status.in_(list(TASK_OPEN_STATUSES))))}."
             manager_agent.active_model = resolved_settings.effective_model_label
@@ -1374,8 +7362,16 @@ class MissionControlService:
             manager_agent.active_runner_type = resolved_settings.runner_mode
             manager_agent.current_action = "message"
             self.events.publish(db, project.id, "manager.mode.deterministic", {"action": "message"})
+            manager_record = self._record_manager_message(
+                db,
+                project,
+                role="manager",
+                message_type="normal_update",
+                content_markdown=reply,
+                metadata_json={"response_mode": "deterministic" if project.manager_mode == "deterministic" else "dry_run", "source_message_id": user_record.id},
+            )
             self.events.publish(db, project.id, "manager.message", {"message": message, "reply": reply})
-            return reply
+            return {"reply": reply, "message": self._serialize_manager_message(manager_record)}
         try:
             runner = await self.runners.get_runner_for_settings(resolved_settings)
             manager_agent.status = "working"
@@ -1389,7 +7385,12 @@ class MissionControlService:
                     plan_markdown=latest_plan.content_markdown if latest_plan else None,
                     settings=self._runner_settings_payload(resolved_settings),
                 ),
-                manager_message_prompt(project, project.docs_path or str(self._project_docs_dir(project)), message),
+                manager_message_prompt(
+                    project,
+                    project.docs_path or str(self._project_docs_dir(project)),
+                    message,
+                    user_name=self._preferred_user_name(db, project),
+                ),
             )
             manager_agent.status = "idle"
             manager_agent.current_action = None
@@ -1423,8 +7424,22 @@ class MissionControlService:
                             "effective_settings": resolved_run_settings_payload(resolved_settings),
                         },
                     )
+                manager_record = self._record_manager_message(
+                    db,
+                    project,
+                    role="manager",
+                    message_type="normal_update",
+                    content_markdown=reply,
+                    metadata_json={
+                        "response_mode": "provider",
+                        "provider": resolved_settings.provider,
+                        "runner": handle.runner_type,
+                        "logs_path": handle.logs_path,
+                        "source_message_id": user_record.id,
+                    },
+                )
                 self.events.publish(db, project.id, "manager.message", {"message": message, "reply": reply, "logs_path": handle.logs_path})
-                return reply
+                return {"reply": reply, "message": self._serialize_manager_message(manager_record)}
         except Exception as exc:  # noqa: BLE001
             self.events.publish(db, project.id, "manager.mode.fallback", {"action": "message", "error": str(exc)})
         manager_agent.status = "idle"
@@ -1434,8 +7449,48 @@ class MissionControlService:
         manager_agent.current_action = "message"
         reply = f"Manager fallback: project is **{project.status}**. Ask for next tasks or start idle agents to continue the build."
         self.events.publish(db, project.id, "manager.mode.deterministic", {"action": "message"})
+        manager_record = self._record_manager_message(
+            db,
+            project,
+            role="manager",
+            message_type="system_notice",
+            content_markdown=reply,
+            metadata_json={"response_mode": "fallback", "source_message_id": user_record.id},
+        )
         self.events.publish(db, project.id, "manager.message", {"message": message, "reply": reply})
-        return reply
+        return {"reply": reply, "message": self._serialize_manager_message(manager_record)}
+
+    async def manager_generate_update(self, db: Session, project: Project) -> dict[str, Any]:
+        queue = self._manager_queue(db, project)
+        working_agents = len([agent for agent in self._sorted_workspace_agents(db, project.id) if agent["display_status"] in {"active", "running", "coding", "thinking"}])
+        update = (
+            f"Workspace update: **{working_agents}** active agents, "
+            f"**{len(queue['waiting_on_user'])}** items waiting on the user, "
+            f"and **{len(queue['deferred'])}** deferred items."
+        )
+        message = self._record_manager_message(
+            db,
+            project,
+            role="manager",
+            message_type="normal_update",
+            content_markdown=update,
+            metadata_json={"response_mode": "deterministic"},
+        )
+        return self._serialize_manager_message(message)
+
+    async def manager_ask_next(self, db: Session, project: Project) -> dict[str, Any]:
+        decision = await self.manager_next_step(db, project)
+        message = self._record_manager_message(
+            db,
+            project,
+            role="manager",
+            message_type="normal_update",
+            content_markdown=decision.summary_markdown,
+            related_agent_id=decision.assign_to_agent_id,
+            related_task_id=decision.task_id,
+            metadata_json={"response_mode": "deterministic", "decision_type": decision.decision_type},
+        )
+        return self._serialize_manager_message(message)
 
     async def manager_next_step(self, db: Session, project: Project) -> ManagerWorkerDecision:
         workers = list(db.scalars(select(Agent).where(Agent.project_id == project.id, Agent.kind == "worker").order_by(Agent.id.asc())))

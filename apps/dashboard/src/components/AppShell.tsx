@@ -34,7 +34,7 @@ export function AppShell({
             <NavLink to={`/projects/${projectId}/interview`}>Interview</NavLink>
             <NavLink to={`/projects/${projectId}/plan`}>Plan</NavLink>
             <NavLink to={`/projects/${projectId}/settings`}>Settings</NavLink>
-            <NavLink to={`/projects/${projectId}/build`}>Build</NavLink>
+            <NavLink to={`/projects/${projectId}`}>Workspace</NavLink>
             <NavLink to={`/projects/${projectId}/handoff`}>Handoff</NavLink>
           </nav>
         ) : null}

@@ -1,376 +1,194 @@
-import { useEffect, useMemo, useState } from "react";
-import { useParams } from "react-router-dom";
+import { useEffect, useState } from "react";
 
 import { api } from "../api/client";
-import { AppShell } from "../components/AppShell";
+import { HomeShell } from "../components/HomeShell";
 import { LoadingBlock } from "../components/LoadingBlock";
 import { SectionCard } from "../components/SectionCard";
-import type { Agent, ApprovalPolicy, CodexStatus, Project, ProjectSettings, ProviderId, ReasoningEffort, RunnerMode, SandboxMode } from "../types";
+import { useHomeState } from "../state/useHomeState";
+import type { AppProfile, ThemeMode, StartupBehavior } from "../types";
 
-const FALLBACK_WORKER_ROLES = [
-  "Primary implementation",
-  "Secondary implementation",
-  "Validation, docs, and handoff",
-];
-
-const REASONING_OPTIONS: Array<{ value: ReasoningEffort | ""; label: string }> = [
-  { value: "", label: "Use provider default" },
-  { value: "minimal", label: "minimal" },
-  { value: "low", label: "low" },
-  { value: "medium", label: "medium" },
-  { value: "high", label: "high" },
-];
-
-const PROVIDER_OPTIONS: Array<{ value: ProviderId; label: string }> = [
-  { value: "codex", label: "Codex" },
-  { value: "claude_code", label: "Claude Code" },
-  { value: "external_adapter", label: "External adapter" },
-];
+const THEME_OPTIONS: ThemeMode[] = ["system", "dark", "light"];
+const STARTUP_BEHAVIOR_OPTIONS: StartupBehavior[] = ["dashboard", "last_project", "restore_previous_page"];
 
 export function SettingsPage() {
-  const { projectId } = useParams();
-  const numericProjectId = Number(projectId);
-  const [project, setProject] = useState<Project | null>(null);
-  const [agents, setAgents] = useState<Agent[]>([]);
-  const [status, setStatus] = useState<CodexStatus | null>(null);
-  const [settings, setSettings] = useState<ProjectSettings | null>(null);
-  const [loading, setLoading] = useState(true);
+  const { summary, systemStatus, profile, loading, error, reload, toggleProjectPin } = useHomeState();
+  const [draft, setDraft] = useState<AppProfile | null>(null);
   const [saving, setSaving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
 
+  const effectiveProfile = draft ?? profile;
+
   useEffect(() => {
-    async function load() {
-      try {
-        const [loadedProject, loadedAgents, loadedSettings, loadedStatus] = await Promise.all([
-          api.getProject(numericProjectId),
-          api.getAgents(numericProjectId),
-          api.getSettings(numericProjectId),
-          api.getSystemStatus(numericProjectId),
-        ]);
-        setProject(loadedProject);
-        setAgents(loadedAgents);
-        setSettings(loadedSettings);
-        setStatus(loadedStatus);
-      } catch (loadError) {
-        setError(loadError instanceof Error ? loadError.message : "Failed to load settings.");
-      } finally {
-        setLoading(false);
-      }
+    if (profile && !draft) {
+      setDraft(profile);
     }
+  }, [draft, profile]);
 
-    void load();
-  }, [numericProjectId]);
-
-  const roleOptions = useMemo(() => {
-    const activeWorkerRoles = agents.filter((agent) => agent.kind === "worker").map((agent) => agent.role);
-    const savedRoles = Object.keys(settings?.per_role_model_overrides_json ?? {}).concat(
-      Object.keys(settings?.per_role_reasoning_overrides_json ?? {}),
-    );
-    return Array.from(new Set([...FALLBACK_WORKER_ROLES, ...activeWorkerRoles, ...savedRoles]));
-  }, [agents, settings]);
-
-  const selectedProviderStatus = useMemo(
-    () => status?.provider_statuses.find((entry) => entry.provider === settings?.provider) ?? null,
-    [settings?.provider, status?.provider_statuses],
-  );
-
-  const modelSuggestions = selectedProviderStatus?.available_models ?? status?.available_models ?? [];
-
-  async function saveSettings() {
-    if (!settings) {
+  async function save() {
+    if (!effectiveProfile) {
       return;
     }
     setSaving(true);
-    setError(null);
     setNotice(null);
     try {
-      const saved = await api.updateSettings(numericProjectId, settings);
-      setSettings(saved);
-      setStatus(await api.getSystemStatus(numericProjectId));
-      setNotice("Settings saved.");
-    } catch (saveError) {
-      setError(saveError instanceof Error ? saveError.message : "Failed to save settings.");
+      await api.updateProfile({
+        display_name: effectiveProfile.display_name ?? "Operator",
+        preferred_provider_choice: effectiveProfile.preferred_provider_choice,
+        preferred_start_mode: effectiveProfile.preferred_start_mode,
+        onboarding_completed: effectiveProfile.onboarding_completed,
+        theme: effectiveProfile.theme,
+        startup_behavior: effectiveProfile.startup_behavior,
+        notification_preferences_json: effectiveProfile.notification_preferences_json,
+        dashboard_widgets_json: effectiveProfile.dashboard_widgets_json,
+        dashboard_widget_preferences_json: effectiveProfile.dashboard_widget_preferences_json,
+      });
+      setNotice("App settings saved.");
+      await reload();
     } finally {
       setSaving(false);
     }
   }
 
-  function updateRoleModel(role: string, value: string) {
-    if (!settings) {
+  function setNotificationPreference(key: string, checked: boolean) {
+    if (!effectiveProfile) {
       return;
     }
-    const next = { ...settings.per_role_model_overrides_json };
-    if (value.trim()) {
-      next[role] = value;
-    } else {
-      delete next[role];
-    }
-    setSettings({ ...settings, per_role_model_overrides_json: next });
-  }
-
-  function updateRoleReasoning(role: string, value: ReasoningEffort | "") {
-    if (!settings) {
-      return;
-    }
-    const next = { ...settings.per_role_reasoning_overrides_json };
-    if (value) {
-      next[role] = value;
-    } else {
-      delete next[role];
-    }
-    setSettings({ ...settings, per_role_reasoning_overrides_json: next });
-  }
-
-  function updateField<Key extends keyof ProjectSettings>(key: Key, value: ProjectSettings[Key]) {
-    if (!settings) {
-      return;
-    }
-    setSettings({ ...settings, [key]: value });
+    setDraft({
+      ...effectiveProfile,
+      notification_preferences_json: {
+        ...effectiveProfile.notification_preferences_json,
+        [key]: checked,
+      },
+    });
   }
 
   return (
-    <AppShell
-      projectId={numericProjectId}
-      title="Project Settings"
-      subtitle="Choose the live provider, model defaults, and runner behavior without rewriting your global CLI config."
-      rightRail={
-        project ? (
-          <div className="header-stack">
-            <span className="header-chip">Manager: {project.manager_mode}</span>
-            <span className="header-chip">Runner: {settings?.runner_mode ?? project.runner_mode}</span>
-          </div>
-        ) : null
-      }
+    <HomeShell
+      title="Settings"
+      subtitle="General app preferences stay here. Project-specific provider and runner controls live under Models & Runners."
+      summary={summary}
+      systemStatus={systemStatus}
+      profile={profile}
+      onProjectPinToggle={toggleProjectPin}
     >
-      {loading || !settings ? (
-        <LoadingBlock label="Loading settings..." />
+      {loading || !effectiveProfile ? (
+        <LoadingBlock label="Loading app settings..." />
       ) : (
         <div className="intake-grid">
-          <SectionCard title="Provider and model controls" subtitle="Leave model or reasoning blank to use the current provider default from the selected local CLI session.">
+          <SectionCard title="Operator profile" subtitle="Mission Control uses this name in project authorship and manager responses.">
             <div className="stack-form">
-              <div className="form-row">
-                <label>
-                  Live provider
-                  <select value={settings.provider} onChange={(event) => updateField("provider", event.target.value as ProviderId)}>
-                    {PROVIDER_OPTIONS.map((option) => (
-                      <option key={option.value} value={option.value}>
-                        {option.label}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <label>
-                  Manager mode
-                  <input value={project?.manager_mode ?? "auto"} disabled />
-                </label>
-              </div>
-              <div className="form-row">
-                <label>
-                  Manager model
-                  <input
-                    list="model-suggestions"
-                    value={settings.manager_model ?? ""}
-                    onChange={(event) => updateField("manager_model", event.target.value || null)}
-                    placeholder="Use Codex default"
-                  />
-                </label>
-                <label>
-                  Default worker model
-                  <input
-                    list="model-suggestions"
-                    value={settings.default_worker_model ?? ""}
-                    onChange={(event) => updateField("default_worker_model", event.target.value || null)}
-                    placeholder="Use Codex default"
-                  />
-                </label>
-              </div>
-              <div className="form-row">
-                <label>
-                  Manager reasoning effort
-                  <select
-                    value={settings.manager_reasoning_effort ?? ""}
-                    onChange={(event) => updateField("manager_reasoning_effort", (event.target.value || null) as ReasoningEffort | null)}
-                  >
-                    {REASONING_OPTIONS.map((option) => (
-                      <option key={option.label} value={option.value}>
-                        {option.label}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <label>
-                  Worker reasoning effort
-                  <select
-                    value={settings.default_worker_reasoning_effort ?? ""}
-                    onChange={(event) => updateField("default_worker_reasoning_effort", (event.target.value || null) as ReasoningEffort | null)}
-                  >
-                    {REASONING_OPTIONS.map((option) => (
-                      <option key={option.label} value={option.value}>
-                        {option.label}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-              </div>
-              {settings.provider === "external_adapter" ? (
-                <div className="form-row">
-                  <label>
-                    Adapter command
-                    <input
-                      value={settings.adapter_command ?? ""}
-                      onChange={(event) => updateField("adapter_command", event.target.value || null)}
-                      placeholder="python, node, llm-runner, etc."
-                    />
-                  </label>
-                  <label>
-                    Adapter args
-                    <input
-                      value={settings.adapter_args_json.join(" ")}
-                      onChange={(event) =>
-                        updateField(
-                          "adapter_args_json",
-                          event.target.value
-                            .split(" ")
-                            .map((item) => item.trim())
-                            .filter(Boolean),
-                        )
-                      }
-                      placeholder="--json --project mission-control"
-                    />
-                  </label>
-                </div>
-              ) : null}
-              <datalist id="model-suggestions">
-                {modelSuggestions.map((model) => (
-                  <option key={model} value={model} />
-                ))}
-              </datalist>
-              {selectedProviderStatus ? (
-                <p className="section-footnote">
-                  {selectedProviderStatus.label}: {selectedProviderStatus.login_status}
-                </p>
-              ) : null}
-            </div>
-          </SectionCard>
-
-          <SectionCard title="Run controls" subtitle="These apply to both manager turns and worker tasks unless a role override changes the model or reasoning.">
-            <div className="stack-form">
-              <div className="form-row">
-                <label>
-                  Runner mode
-                  <select value={settings.runner_mode} onChange={(event) => updateField("runner_mode", event.target.value as RunnerMode)}>
-                    <option value="auto">auto</option>
-                    <option value="cli">cli</option>
-                    <option value="app_server" disabled={settings.provider !== "codex"}>
-                      app_server {settings.provider !== "codex" ? "(Codex only)" : ""}
-                    </option>
-                    <option value="dry_run">dry_run</option>
-                  </select>
-                </label>
-                <label>
-                  Sandbox mode
-                  <select value={settings.sandbox_mode} onChange={(event) => updateField("sandbox_mode", event.target.value as SandboxMode)}>
-                    <option value="workspace-write">workspace-write</option>
-                    <option value="read-only">read-only</option>
-                  </select>
-                </label>
-              </div>
               <label>
-                Approval policy
-                <select value={settings.approval_policy} onChange={(event) => updateField("approval_policy", event.target.value as ApprovalPolicy)}>
-                  <option value="on-request">on-request</option>
-                  <option value="untrusted">untrusted</option>
-                  <option value="never">never (risky)</option>
-                </select>
+                Display name
+                <input
+                  maxLength={50}
+                  value={effectiveProfile.display_name ?? ""}
+                  onChange={(event) => setDraft({ ...effectiveProfile, display_name: event.target.value.slice(0, 50) })}
+                  placeholder="Enter your name"
+                />
               </label>
-              <div className="button-row">
-                <button onClick={() => void saveSettings()} disabled={saving}>
-                  {saving ? "Saving..." : "Save settings"}
-                </button>
-                {notice ? <span className="header-chip">{notice}</span> : null}
-              </div>
-              {error ? <p className="error-text">{error}</p> : null}
             </div>
           </SectionCard>
 
-          <SectionCard title="Role overrides" subtitle="Overrides are keyed by worker role. Blank values fall back to the default worker settings for the selected provider.">
-            <div className="settings-table">
-              <div className="settings-table__header">
-                <span>Role</span>
-                <span>Model override</span>
-                <span>Reasoning override</span>
-                <span>Action</span>
-              </div>
-              {roleOptions.map((role) => (
-                <div key={role} className="settings-table__row">
-                  <strong>{role}</strong>
-                  <input
-                    list="model-suggestions"
-                    value={settings.per_role_model_overrides_json[role] ?? ""}
-                    onChange={(event) => updateRoleModel(role, event.target.value)}
-                    placeholder="Use worker default"
-                  />
+          <SectionCard title="Appearance and startup" subtitle="Choose how Mission Control opens after the startup coordinator completes.">
+            <div className="stack-form">
+              <div className="form-row">
+                <label>
+                  Theme
                   <select
-                    value={settings.per_role_reasoning_overrides_json[role] ?? ""}
-                    onChange={(event) => updateRoleReasoning(role, event.target.value as ReasoningEffort | "")}
+                    value={effectiveProfile.theme}
+                    onChange={(event) => setDraft({ ...effectiveProfile, theme: event.target.value as ThemeMode })}
                   >
-                    {REASONING_OPTIONS.map((option) => (
-                      <option key={option.label} value={option.value}>
-                        {option.label}
+                    {THEME_OPTIONS.map((theme) => (
+                      <option key={theme} value={theme}>
+                        {theme}
                       </option>
                     ))}
                   </select>
-                  <button
-                    className="button-ghost"
-                    onClick={() => {
-                      updateRoleModel(role, "");
-                      updateRoleReasoning(role, "");
-                    }}
+                </label>
+                <label>
+                  Startup behavior
+                  <select
+                    value={effectiveProfile.startup_behavior}
+                    onChange={(event) => setDraft({ ...effectiveProfile, startup_behavior: event.target.value as StartupBehavior })}
                   >
-                    Clear override
-                  </button>
-                </div>
-              ))}
+                    {STARTUP_BEHAVIOR_OPTIONS.map((behavior) => (
+                      <option key={behavior} value={behavior}>
+                        {behavior.replace(/_/g, " ")}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              </div>
+              <p className="section-footnote">Startup routing still passes through `/startup`. This setting controls where Mission Control should land once startup is healthy.</p>
             </div>
           </SectionCard>
 
-          <SectionCard title="Local provider status" subtitle="Mission Control manages built-in login for Codex. Claude Code and external adapters keep their own local auth flows.">
-            {status ? (
-              <div className="status-grid">
-                <div className="metric-card">
-                  <span>Selected provider</span>
-                  <strong>{status.selected_provider_label}</strong>
-                </div>
-                <div className="metric-card">
-                  <span>CLI</span>
-                  <strong>{status.cli_detected ? status.cli_version ?? "Detected" : "Unavailable"}</strong>
-                </div>
-                <div className="metric-card">
-                  <span>Auth</span>
-                  <strong>{selectedProviderStatus?.auth_status_detectable ? (status.authenticated ? status.auth_mode ?? "Connected" : "Not signed in") : "Managed outside Mission Control"}</strong>
-                </div>
-                <div className="metric-card">
-                  <span>Backend port</span>
-                  <strong>{status.backend_port}</strong>
-                </div>
-                <div className="status-list">
-                  <h3>Provider capabilities</h3>
-                  <ul>
-                    {status.provider_statuses.map((provider) => (
-                      <li key={provider.provider}>
-                        {provider.label}: {provider.cli_detected ? "CLI detected" : "CLI missing"}; model override {provider.supports_model_override ? "yes" : "no"}; app-server {provider.supports_app_server ? "yes" : "no"}
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-              </div>
-            ) : (
-              <p>System status is not available.</p>
-            )}
+          <SectionCard title="Notifications" subtitle="Keep alerts practical and local.">
+            <div className="stack-form">
+              <label className="checkbox-row">
+                <input
+                  type="checkbox"
+                  checked={Boolean(effectiveProfile.notification_preferences_json.desktop_toasts)}
+                  onChange={(event) => setNotificationPreference("desktop_toasts", event.target.checked)}
+                />
+                Show desktop notifications when action is required
+              </label>
+              <label className="checkbox-row">
+                <input
+                  type="checkbox"
+                  checked={Boolean(effectiveProfile.notification_preferences_json.sound)}
+                  onChange={(event) => setNotificationPreference("sound", event.target.checked)}
+                />
+                Play a sound for action-required events
+              </label>
+              <label className="checkbox-row">
+                <input
+                  type="checkbox"
+                  checked={Boolean(effectiveProfile.notification_preferences_json.action_required_only ?? true)}
+                  onChange={(event) => setNotificationPreference("action_required_only", event.target.checked)}
+                />
+                Notify only when the manager or a tool needs the user
+              </label>
+            </div>
           </SectionCard>
+
+          <SectionCard title="Widget preferences" subtitle="Dashboard widgets are intentionally lightweight and stored locally with the app profile.">
+            <div className="stack-form">
+              <p className="section-footnote">
+                Current dashboard widgets: {effectiveProfile.dashboard_widgets_json.length ? effectiveProfile.dashboard_widgets_json.join(", ") : "None selected yet."}
+              </p>
+            </div>
+          </SectionCard>
+
+          <SectionCard title="Privacy and runtime" subtitle="Mission Control stays local-first and does not require API keys for the Codex login flow.">
+            <div className="status-list">
+              <ul>
+                <li>Runtime directory: {systemStatus?.runtime_directory ?? "Unknown"}</li>
+                <li>Diagnostics directory: {systemStatus?.diagnostics_directory ?? "Unknown"}</li>
+                <li>Selected provider: {systemStatus?.selected_provider_label ?? "Unknown"}</li>
+                <li>Codex or ChatGPT session usage is preserved where supported.</li>
+              </ul>
+            </div>
+          </SectionCard>
+
+          <SectionCard title="Reset setup" subtitle="This pass keeps reset behavior safe and explicit.">
+            <div className="stack-form">
+              <p className="section-footnote">Rerunning first-time setup is not one-click yet. Use the diagnostics page first, then make an intentional reset only when you want to rebuild the app state.</p>
+              <button type="button" className="button-ghost" disabled>
+                Safe reset flow coming soon
+              </button>
+            </div>
+          </SectionCard>
+
+          <div className="button-row">
+            <button type="button" onClick={() => void save()} disabled={saving}>
+              {saving ? "Saving..." : "Save app settings"}
+            </button>
+            {notice ? <span className="header-chip">{notice}</span> : null}
+            {error ? <span className="error-text">{error}</span> : null}
+          </div>
         </div>
       )}
-    </AppShell>
+    </HomeShell>
   );
 }

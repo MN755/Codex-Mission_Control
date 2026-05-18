@@ -3,7 +3,56 @@ from __future__ import annotations
 from conftest import sample_workspace, wait_for
 
 
+def test_system_status_supports_provider_preview_overrides(client, monkeypatch) -> None:
+    def fake_detect_ollama_status(endpoint: str | None = None) -> dict:
+        return {
+            "provider": "ollama",
+            "label": "Ollama",
+            "cli_detected": True,
+            "cli_version": endpoint or "http://localhost:11434",
+            "login_status": f"Ollama endpoint reachable at {endpoint or 'http://localhost:11434'}.",
+            "auth_mode": "local",
+            "authenticated": True,
+            "auth_status_detectable": True,
+            "supports_model_override": True,
+            "supports_reasoning_effort": True,
+            "supports_app_server": False,
+            "supports_builtin_auth": False,
+            "available_models": ["llama3.2:latest", "qwen2.5-coder:7b"],
+            "notes": [],
+            "reachable": True,
+            "summary": "Reachable",
+        }
+
+    monkeypatch.setattr("system_status.detect_ollama_status", fake_detect_ollama_status)
+
+    status = client.get(
+        "/api/system/status",
+        params={"provider": "ollama", "provider_endpoint": "http://localhost:11434"},
+    ).json()
+
+    assert status["selected_provider"] == "ollama"
+    assert status["selected_provider_label"] == "Ollama"
+    assert "llama3.2:latest" in status["available_models"]
+
+
 def test_dry_run_project_flow(client) -> None:
+    profile_response = client.get("/api/profile")
+    assert profile_response.status_code == 200
+    assert profile_response.json()["onboarding_completed"] is False
+
+    saved_profile = client.put(
+        "/api/profile",
+        json={
+            "display_name": "Morgan",
+            "preferred_provider_choice": "codex",
+            "preferred_start_mode": "guided_walkthrough",
+            "onboarding_completed": True,
+        },
+    )
+    assert saved_profile.status_code == 200
+    assert saved_profile.json()["display_name"] == "Morgan"
+
     create_response = client.post(
         "/api/projects",
         json={
@@ -16,6 +65,7 @@ def test_dry_run_project_flow(client) -> None:
     )
     project = create_response.json()
     project_id = project["id"]
+    assert project["created_by"] == "Morgan"
 
     settings_response = client.get(f"/api/settings?project_id={project_id}")
     assert settings_response.status_code == 200
@@ -60,17 +110,21 @@ def test_dry_run_project_flow(client) -> None:
     assert "PROJECT_BRIEF.md" in docs_response.json()["files"]
     assert docs_response.json()["manager_mode_used"] == "deterministic"
 
-    session = client.post(f"/api/projects/{project_id}/interview/start", json={"question_count": 6}).json()
-    for question in session["questions"]:
-        option = question["options"][0]
-        session = client.post(
-            f"/api/projects/{project_id}/interview/answer",
-            json={
-                "question_id": question["id"],
-                "option_id": option["id"],
-                "selected_text": option["label"],
-            },
-        ).json()
+    session = client.post(f"/api/projects/{project_id}/interview/start", json={"question_budget": 6}).json()
+    while session["status"] != "completed":
+        pending_questions = [question for question in session["questions"] if question["status"] == "pending"]
+        for question in pending_questions:
+            option = question["options"][0]
+            session = client.post(
+                f"/api/interview/questions/{question['id']}/answer",
+                json={
+                    "project_id": project_id,
+                    "option_id": option["id"],
+                    "selected_text": option["label"],
+                },
+            ).json()
+        if session["status"] != "completed" and session["questions_remaining"] > 0:
+            session = client.post(f"/api/projects/{project_id}/interview/generate-next").json()
 
     plan_response = client.post(f"/api/projects/{project_id}/plan/generate", json={"force_rebuild": True})
     assert plan_response.status_code == 200

@@ -2,22 +2,36 @@ from __future__ import annotations
 
 from collections import Counter
 
-from models import InterviewQuestion, Project
+from models import InterviewQuestion, Project, ProjectUnderstanding
 
 
-def summarize_answers(questions: list[InterviewQuestion]) -> dict:
-    answer_map = {str(question.index): (question.selected_option or "unanswered") for question in questions}
-    labels = [question.selected_text for question in questions if question.selected_text]
-    counts = Counter(question.selected_option for question in questions if question.selected_option)
+def _answer_text(question: InterviewQuestion) -> str:
+    if question.custom_answer:
+        return question.custom_answer
+    return question.selected_text or ""
+
+
+def summarize_answers(questions: list[InterviewQuestion], understanding: ProjectUnderstanding | None = None) -> dict:
+    answer_map = {str(question.index): (question.selected_option_id or question.selected_option or "unanswered") for question in questions}
+    labels = [_answer_text(question) for question in questions if _answer_text(question)]
+    counts = Counter(question.selected_option_id or question.selected_option for question in questions if question.selected_option_id or question.selected_option)
+    known_facts = dict(understanding.known_facts_json or {}) if understanding else {}
     return {
         "answer_map": answer_map,
         "selected_labels": labels,
         "top_preferences": counts.most_common(5),
+        "known_facts": known_facts,
     }
 
 
-def build_plan_markdown(project: Project, questions: list[InterviewQuestion], action_bias: str | None = None, note: str | None = None) -> tuple[str, dict]:
-    summary = summarize_answers(questions)
+def build_plan_markdown(
+    project: Project,
+    questions: list[InterviewQuestion],
+    understanding: ProjectUnderstanding | None = None,
+    action_bias: str | None = None,
+    note: str | None = None,
+) -> tuple[str, dict]:
+    summary = summarize_answers(questions, understanding)
     bias_line = {
         "simplify": "Bias toward a smaller, more controllable MVP.",
         "ambitious": "Bias toward a broader first cut while keeping the core slice runnable.",
@@ -28,6 +42,9 @@ def build_plan_markdown(project: Project, questions: list[InterviewQuestion], ac
     }.get(action_bias or "", "Bias toward a fast, trustworthy vertical slice.")
 
     label_preview = ", ".join(summary["selected_labels"][:6]) or "Answers still favor general discovery."
+    refined_summary = understanding.summary if understanding and understanding.summary.strip() else f"Build a local-first MVP for {project.idea}"
+    constraints = list(understanding.constraints_json or []) if understanding else []
+    assumptions = list(understanding.assumptions_json or []) if understanding else []
     note_block = f"\nUser note:\n{note}\n" if note else ""
     milestones = [
         "Milestone 1: ship a runnable vertical slice with a trustworthy core workflow.",
@@ -54,6 +71,7 @@ def build_plan_markdown(project: Project, questions: list[InterviewQuestion], ac
 
 ## Refined Project Summary
 - Build a local-first MVP for: {project.idea}
+- Manager understanding: {refined_summary}
 - Interview signals: {label_preview}
 - Planning bias: {bias_line}
 
@@ -94,6 +112,11 @@ def build_plan_markdown(project: Project, questions: list[InterviewQuestion], ac
 - {risks[1]}
 - {risks[2]}
 
+## Constraints and Assumptions
+""" + ("\n".join(f"- Constraint: {line}" for line in constraints) + "\n" if constraints else "- No explicit project constraints were captured.\n") + (
+        "\n".join(f"- Assumption: {line}" for line in assumptions) + "\n" if assumptions else "- No extra planning assumptions were captured.\n"
+    ) + f"""
+
 ## Definition of Done
 - {definition_of_done[0]}
 - {definition_of_done[1]}
@@ -101,7 +124,7 @@ def build_plan_markdown(project: Project, questions: list[InterviewQuestion], ac
 - {definition_of_done[3]}
 """
     summary_json = {
-        "refined_summary": f"Build a local-first MVP for {project.idea}",
+        "refined_summary": refined_summary,
         "mvp_scope": [
             "Deliver one usable, end-to-end workflow.",
             "Keep dependencies and setup local-friendly.",
@@ -138,5 +161,7 @@ def build_plan_markdown(project: Project, questions: list[InterviewQuestion], ac
             {"column": "Blocked", "items": []},
         ],
         "answer_summary": summary,
+        "constraints": constraints,
+        "assumptions": assumptions,
     }
     return content, summary_json

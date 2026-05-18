@@ -1,15 +1,6 @@
 import type { Agent, Task } from "../types";
+import { providerDefaultLabel } from "../lib/providers";
 import { StatusPill } from "./StatusPill";
-
-function defaultLabel(activeRunnerType: string | null) {
-  if (activeRunnerType?.includes("claude")) {
-    return "Claude Code default";
-  }
-  if (activeRunnerType?.includes("adapter")) {
-    return "Adapter default";
-  }
-  return "Codex default";
-}
 
 export function AgentSidebar({
   agents,
@@ -58,11 +49,11 @@ export function AgentSidebar({
                 </div>
                 <div>
                   <dt>Model</dt>
-                  <dd>{agent.active_model ?? defaultLabel(agent.active_runner_type)}</dd>
+                  <dd>{agent.active_model ?? providerDefaultLabel(agent.active_runner_type)}</dd>
                 </div>
                 <div>
                   <dt>Reasoning</dt>
-                  <dd>{agent.active_reasoning_effort ?? defaultLabel(agent.active_runner_type)}</dd>
+                  <dd>{agent.active_reasoning_effort ?? providerDefaultLabel(agent.active_runner_type)}</dd>
                 </div>
                 <div>
                   <dt>Milestone</dt>
