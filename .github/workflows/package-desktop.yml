@@ -8,6 +8,9 @@ on:
       - codex/desktop-packaging
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   build:
     strategy:

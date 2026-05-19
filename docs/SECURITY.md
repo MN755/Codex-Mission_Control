@@ -31,6 +31,17 @@ Diagnostics do not intentionally include:
 - cookie values
 - full environment dumps with sensitive names
 
+The same rule now applies to chat-native bridge output:
+
+- status summaries
+- approval requests
+- manager questions
+- event digests
+- handoff summaries
+- diagnostic summaries
+
+Bridge messages are redacted at the final formatter envelope before they are returned from the API.
+
 ## Authentication model
 
 ### Codex
@@ -118,6 +129,15 @@ What it will not auto-approve:
 - direct credential access
 - deployment actions denied by policy
 - high-risk actions requiring explicit user approval
+
+## Headless bridge safety
+
+Headless plugin mode is localhost-first and token-guarded.
+
+- bridge-only endpoints require the local daemon token
+- `/api/health` stays open for safe local health probing
+- chat-native summaries never expose daemon tokens, provider keys, or raw logs by default
+- approval payloads are structured for user review, not for direct shell execution from the bridge
 
 ## Widget boundary security
 

@@ -20,6 +20,7 @@ from models import (
     utc_now,
 )
 from project_settings import get_or_create_project_settings
+from security.path_validation import PathValidationError, resolve_local_path, resolve_relative_to_root
 
 
 IGNORED_DIR_NAMES = {
@@ -134,8 +135,18 @@ PROJECT_IMPORT_WIDGETS = [
 
 
 class ImportedCodebaseService:
+    def _project_root(self, project: Project) -> Path:
+        raw_path = project.source_path or project.workspace_path
+        try:
+            return resolve_local_path(raw_path, must_exist=True, must_be_dir=True)
+        except PathValidationError as exc:
+            raise ValueError(str(exc)) from exc
+
     def configure_imported_project(self, db: Session, project: Project, *, folder_path: str, import_mode: str) -> None:
-        source_path = str(Path(folder_path).expanduser().resolve())
+        try:
+            source_path = str(resolve_local_path(folder_path, must_exist=True, must_be_dir=True))
+        except PathValidationError as exc:
+            raise ValueError(str(exc)) from exc
         project.source_type = "existing_folder"
         project.source_path = source_path
         project.import_mode = import_mode
@@ -199,13 +210,14 @@ class ImportedCodebaseService:
         return understanding
 
     def initial_scan(self, db: Session, project: Project) -> tuple[CodebaseMap, CodebaseUnderstanding, AgentInstructionsStatus, ImportedCodebaseSafety]:
-        shallow_payload = self._build_scan_payload(Path(project.source_path or project.workspace_path), depth="shallow")
+        root = self._project_root(project)
+        shallow_payload = self._build_scan_payload(root, depth="shallow")
         final_depth = "standard" if shallow_payload["codebase_size"] in {"small", "medium"} else "shallow"
-        payload = shallow_payload if final_depth == "shallow" else self._build_scan_payload(Path(project.source_path or project.workspace_path), depth="standard")
+        payload = shallow_payload if final_depth == "shallow" else self._build_scan_payload(root, depth="standard")
         return self._apply_scan_results(db, project, payload)
 
     def scan_codebase(self, db: Session, project: Project, *, depth: str = "standard") -> tuple[CodebaseMap, CodebaseUnderstanding, AgentInstructionsStatus, ImportedCodebaseSafety]:
-        payload = self._build_scan_payload(Path(project.source_path or project.workspace_path), depth=depth)
+        payload = self._build_scan_payload(self._project_root(project), depth=depth)
         return self._apply_scan_results(db, project, payload)
 
     def targeted_scan(
@@ -217,7 +229,7 @@ class ImportedCodebaseService:
         request_text: str | None = None,
         scan_reason: str | None = None,
     ) -> tuple[CodebaseMap, CodebaseUnderstanding, AgentInstructionsStatus, ImportedCodebaseSafety]:
-        root = Path(project.source_path or project.workspace_path)
+        root = self._project_root(project)
         payload = self._build_scan_payload(root, depth="targeted", target_paths=target_paths)
         if request_text:
             payload["risk_flags_json"] = sorted(set(payload["risk_flags_json"] + [f"Targeted scan requested for: {request_text.strip()}"]))
@@ -815,7 +827,7 @@ class ImportedCodebaseService:
             *list(codebase_map.build_commands_json or [])[:2],
             *list(codebase_map.test_commands_json or [])[:2],
         ]
-        recommended_path = str(Path(project.source_path or project.workspace_path) / "AGENTS.md")
+        recommended_path = str(self._project_root(project) / "AGENTS.md")
         summary = "Proposal only. Nothing is written until the user approves it."
         proposal_markdown = "\n".join(
             [
@@ -914,15 +926,14 @@ class ImportedCodebaseService:
     def _resolve_target_roots(self, root: Path, target_paths: list[str] | None) -> list[str]:
         if not target_paths:
             return []
+        resolved_root = resolve_local_path(root, must_exist=True, must_be_dir=True)
         resolved: list[str] = []
         for target in target_paths:
-            candidate = (root / target).resolve()
             try:
-                candidate.relative_to(root.resolve())
-            except ValueError:
+                candidate = resolve_relative_to_root(resolved_root, target, must_exist=True)
+            except PathValidationError:
                 continue
-            if candidate.exists():
-                resolved.append(str(candidate.relative_to(root)).replace("\\", "/"))
+            resolved.append(str(candidate.relative_to(resolved_root)).replace("\\", "/"))
         return sorted(set(resolved))
 
     def _indexed_areas(self, top_level_dirs: list[str], codebase_size: str, depth: str, target_roots: list[str]) -> list[str]:

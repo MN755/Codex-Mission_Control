@@ -60,7 +60,7 @@ DeploymentPolicy = Literal["ask", "deny"]
 DestructiveActionPolicy = Literal["deny", "critical_approval"]
 ApprovalAuditDecision = Literal["approved", "denied", "allowed_for_project", "expired", "auto_approved", "blocked"]
 ApprovalAuditActor = Literal["user", "manager", "policy", "system"]
-OrchestrationSource = Literal["codex_plugin", "dashboard", "cli", "desktop"]
+OrchestrationSource = Literal["codex_plugin", "dashboard", "cli", "desktop", "test"]
 OrchestrationStatus = Literal["initializing", "planning", "waiting_for_user", "running", "paused", "completed", "failed"]
 AttachMode = Literal["auto", "new_project", "existing_codebase"]
 AttachPolicy = Literal["reuse_existing", "create_new", "ask"]
@@ -70,6 +70,7 @@ PendingDecisionType = Literal[
     "tool_approval",
     "write_permission",
     "swarm_approval",
+    "subagent_burst_approval",
     "snapshot_approval",
     "recovery_decision",
     "handoff_review",
@@ -88,6 +89,7 @@ BridgeMessageType = Literal[
     "failed",
     "recovery_options",
     "swarm_update",
+    "subagent_burst_recommendation",
     "diagnostic_summary",
     "event_digest",
     "safe_mode_update",
@@ -164,6 +166,11 @@ RecoveryStatus = Literal["proposed", "accepted", "rejected", "completed"]
 AgentLoadLevel = Literal["idle", "light", "normal", "heavy", "blocked"]
 ProjectHealthState = Literal["healthy", "needs_review", "blocked", "ready_for_handoff", "unstable", "unknown"]
 SwarmIntensity = Literal["low", "medium", "high", "extreme"]
+SubagentDefaultMode = Literal["read_only", "limited_write", "disabled"]
+SubagentSpawnMethod = Literal["codex_chat_bridge", "codex_cli", "manual_prompt"]
+SubagentTaskType = Literal["codebase_exploration", "review", "planning", "handoff_audit", "failure_diagnosis"]
+SubagentBatchStatus = Literal["proposed", "approved", "running", "completed", "failed", "cancelled"]
+SubagentEstimatedIntensity = Literal["low", "medium", "high"]
 
 
 class ProjectCreate(BaseModel):
@@ -858,8 +865,12 @@ class OrchestrationSessionRead(BaseModel):
 
 class OrchestrationAttachRead(BaseModel):
     project: ProjectRead
+    project_id: int | None = None
+    project_name: str | None = None
+    source_type: ProjectSourceType | None = None
     orchestration: OrchestrationSessionRead | None = None
     attach_outcome: str
+    next_action: str | None = None
     reused_existing_project: bool = False
     reused_existing_orchestration: bool = False
     user_action_required: bool = False
@@ -937,6 +948,27 @@ class PendingDecisionAnswerResultRead(BaseModel):
     next_status_summary: BridgeMessageRead | None = None
 
 
+class HeadlessHappyPathDemoRequest(BaseModel):
+    workspace_path: str
+    project_name: str | None = None
+    user_request: str = Field(default="Use Mission Control for this repo and fix the failing tests.", min_length=1)
+    mode: AttachMode = "existing_codebase"
+    read_only_first: bool = True
+    attach_policy: AttachPolicy = "reuse_existing"
+
+
+class HeadlessHappyPathDemoRead(BaseModel):
+    attach: OrchestrationAttachRead
+    orchestration: OrchestrationSessionRead
+    initial_status_summary: BridgeMessageRead
+    pending_decision: PendingDecisionRead
+    decision_bridge_message: BridgeMessageRead
+    answer_result: PendingDecisionAnswerResultRead
+    event_digest: BridgeMessageRead
+    handoff_summary: BridgeMessageRead
+    dry_run: bool = True
+
+
 class SafeModeStatusRead(BaseModel):
     project_id: int
     enabled: bool
@@ -947,6 +979,138 @@ class SafeModeStatusRead(BaseModel):
     dynamic_spawning_paused: bool
     require_read_only_scan_for_imported_codebases: bool
     bridge_message: BridgeMessageRead
+
+
+class SubagentPolicyRead(BaseModel):
+    id: int = 1
+    enabled: bool = True
+    default_mode: SubagentDefaultMode = "read_only"
+    max_subagents_per_burst: int = 6
+    max_runtime_seconds: int = 600
+    allow_file_edits: bool = False
+    allow_commands: bool = False
+    require_user_approval_above_count: int = 3
+    allowed_task_types_json: list[SubagentTaskType | str] = Field(default_factory=list)
+    default_spawn_method: SubagentSpawnMethod = "codex_chat_bridge"
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class SubagentPolicyUpdate(BaseModel):
+    enabled: bool | None = None
+    default_mode: SubagentDefaultMode | None = None
+    max_subagents_per_burst: int | None = Field(default=None, ge=1, le=12)
+    max_runtime_seconds: int | None = Field(default=None, ge=60, le=3600)
+    allow_file_edits: bool | None = None
+    allow_commands: bool | None = None
+    require_user_approval_above_count: int | None = Field(default=None, ge=1, le=12)
+    allowed_task_types_json: list[SubagentTaskType | str] | None = None
+    default_spawn_method: SubagentSpawnMethod | None = None
+
+
+class SubagentSpecRead(BaseModel):
+    id: int
+    batch_id: int
+    name: str
+    display_name: str
+    custom_agent_name: str | None = None
+    mission: str
+    sandbox_mode: str
+    allowed_paths_json: list[str] = Field(default_factory=list)
+    forbidden_paths_json: list[str] = Field(default_factory=list)
+    expected_output: str
+    timeout_seconds: int
+    status: str
+    result_summary: str | None = None
+    evidence_json: list[str] = Field(default_factory=list)
+    risks_found_json: list[str] = Field(default_factory=list)
+    recommendations_json: list[str] = Field(default_factory=list)
+    confidence: str | None = None
+    created_at: datetime
+    completed_at: datetime | None = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class SubagentBatchRead(BaseModel):
+    id: int
+    project_id: int
+    orchestration_id: int | None = None
+    purpose: str
+    task_type: SubagentTaskType | str
+    status: SubagentBatchStatus | str
+    spawn_method: SubagentSpawnMethod | str
+    risk_level: RiskLevel | str
+    estimated_intensity: SubagentEstimatedIntensity | str
+    reason: str
+    summary: str | None = None
+    created_at: datetime
+    approved_at: datetime | None = None
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
+    specs: list[SubagentSpecRead] = Field(default_factory=list)
+    bridge_message: BridgeMessageRead | None = None
+    spawn_instructions_markdown: str | None = None
+    manual_prompt_text: str | None = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class SubagentBurstRecommendRequest(BaseModel):
+    purpose: str = Field(min_length=1)
+    task_type: SubagentTaskType
+    template_name: str | None = None
+    codebase_size: CodebaseSize | str | None = None
+    task_complexity: TaskComplexity = "medium"
+    user_priority: Literal["low", "normal", "high", "urgent"] = "normal"
+    current_phase: str | None = None
+    expected_parallelism: int | None = Field(default=None, ge=1, le=12)
+    risk_level: RiskLevel = "low"
+    bounded_scope: bool = True
+    requires_file_edits: bool = False
+    requires_commands: bool = False
+    allowed_paths_json: list[str] = Field(default_factory=list)
+    forbidden_paths_json: list[str] = Field(default_factory=list)
+    spawn_method: SubagentSpawnMethod = "codex_chat_bridge"
+
+
+class SubagentBurstRecommendationRead(BaseModel):
+    recommended: bool
+    suggested_burst_template: str | None = None
+    number_of_subagents: int = 0
+    reason: str
+    risks: list[str] = Field(default_factory=list)
+    pending_decision_required: bool = False
+    batch: SubagentBatchRead | None = None
+    policy: SubagentPolicyRead
+
+
+class SubagentResultItem(BaseModel):
+    subagent_name: str = Field(min_length=1)
+    summary: str = Field(min_length=1)
+    evidence: list[str] = Field(default_factory=list)
+    risks_found: list[str] = Field(default_factory=list)
+    recommendations: list[str] = Field(default_factory=list)
+    confidence: Literal["low", "medium", "high"] | str = "medium"
+
+
+class SubagentBatchResultsIngestRequest(BaseModel):
+    results: list[SubagentResultItem] = Field(default_factory=list)
+
+
+class CustomCodexAgentsGenerateRequest(BaseModel):
+    overwrite_existing: bool = False
+    template_names: list[str] = Field(default_factory=list)
+
+
+class CustomCodexAgentsGenerateRead(BaseModel):
+    agents_dir: str
+    generated_files: list[str] = Field(default_factory=list)
+    skipped_existing_files: list[str] = Field(default_factory=list)
+    backup_files: list[str] = Field(default_factory=list)
+    generated_count: int = 0
 
 
 class ResumeWorkspaceRequest(BaseModel):
@@ -2414,3 +2578,97 @@ class PluginHealthSummaryRead(BaseModel):
 
 
 PluginHealthRead = PluginHealthSummaryRead
+
+HeadlessSetupStatus = Literal["ready", "degraded", "failed"]
+RunnerAuthStatus = Literal["authenticated", "unauthenticated", "unknown", "not_required"]
+AttachPolicyRead = AttachPolicy
+
+
+class RunnerProbeRead(BaseModel):
+    runner_id: str
+    label: str
+    available: bool
+    configured: bool
+    auth_status: RunnerAuthStatus
+    install_status: str
+    command_path: str | None = None
+    version: str | None = None
+    safe_default: bool = False
+    requires_user_action: bool = False
+    recommended_fix: str | None = None
+    billing_warning: str | None = None
+    models: list[str] = Field(default_factory=list)
+    details_json: dict[str, Any] = Field(default_factory=dict)
+    checked_at: datetime
+
+
+class RunnersStatusRead(BaseModel):
+    status: HeadlessSetupStatus
+    runners: list[RunnerProbeRead] = Field(default_factory=list)
+    enabled_runners: list[str] = Field(default_factory=list)
+    safe_defaults: list[str] = Field(default_factory=list)
+    checked_at: datetime
+
+
+class HeadlessConfigRead(BaseModel):
+    config_path: str
+    install_id: str
+    install_path: str
+    runtime_path: str
+    headless_only: bool = True
+    dashboard_enabled: bool = False
+    daemon_host: str
+    daemon_port: int
+    mcp_transport: str
+    mcp_port: int | None = None
+    enabled_runners: list[str] = Field(default_factory=list)
+    runner_configs: dict[str, Any] = Field(default_factory=dict)
+    default_runner_policy: dict[str, Any] = Field(default_factory=dict)
+    default_model_policy: dict[str, Any] = Field(default_factory=dict)
+    safe_mode_defaults: dict[str, Any] = Field(default_factory=dict)
+    plugin_paths: list[str] = Field(default_factory=list)
+    skills_paths: list[str] = Field(default_factory=list)
+    created_at: datetime
+    updated_at: datetime
+    redaction_status: BridgeRedactionStatus = "clean"
+
+
+class HeadlessAutowireRequest(BaseModel):
+    workspace_path: str | None = None
+    install_path: str | None = None
+    runtime_path: str | None = None
+    daemon_host: str | None = None
+    daemon_port: int | None = None
+    mcp_transport: str | None = None
+    mcp_port: int | None = None
+    headless_only: bool = True
+    dry_run: bool = False
+
+
+class HeadlessRepairRequest(BaseModel):
+    install_path: str | None = None
+    runtime_path: str | None = None
+    daemon_host: str | None = None
+    daemon_port: int | None = None
+    mcp_transport: str | None = None
+    mcp_port: int | None = None
+    headless_only: bool = True
+    preserve_config: bool = True
+
+
+class InstallReportRead(BaseModel):
+    status: HeadlessSetupStatus
+    install_path: str
+    runtime_path: str
+    daemon_status: str
+    mcp_status: str
+    configured_runners: list[str] = Field(default_factory=list)
+    unavailable_runners: list[str] = Field(default_factory=list)
+    user_actions_required: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    next_codex_prompt: str
+    redaction_status: BridgeRedactionStatus = "clean"
+    created_at: datetime
+    codex_chat_markdown: str
+    headless_config: HeadlessConfigRead | None = None
+    plugin_health: PluginHealthSummaryRead | None = None

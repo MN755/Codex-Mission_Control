@@ -66,6 +66,7 @@ class Project(Base):
     decision_records: Mapped[list["DecisionRecord"]] = relationship(back_populates="project")
     project_confidence: Mapped[list["ProjectConfidence"]] = relationship(back_populates="project")
     recovery_plans: Mapped[list["RecoveryPlan"]] = relationship(back_populates="project")
+    subagent_batches: Mapped[list["SubagentBatch"]] = relationship(back_populates="project")
     stuck_signals: Mapped[list["AgentStuckSignal"]] = relationship(back_populates="project")
     review_gates: Mapped[list["ReviewGate"]] = relationship(back_populates="project")
     model_policies: Mapped[list["ModelPolicy"]] = relationship(back_populates="project")
@@ -536,6 +537,73 @@ class RecoveryPlan(Base):
     resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     project: Mapped[Project] = relationship(back_populates="recovery_plans")
+
+
+class SubagentPolicy(Base):
+    __tablename__ = "subagent_policies"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    default_mode: Mapped[str] = mapped_column(String(20), default="read_only", nullable=False)
+    max_subagents_per_burst: Mapped[int] = mapped_column(Integer, default=6, nullable=False)
+    max_runtime_seconds: Mapped[int] = mapped_column(Integer, default=600, nullable=False)
+    allow_file_edits: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    allow_commands: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    require_user_approval_above_count: Mapped[int] = mapped_column(Integer, default=3, nullable=False)
+    allowed_task_types_json: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    default_spawn_method: Mapped[str] = mapped_column(String(30), default="codex_chat_bridge", nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
+
+
+class SubagentBatch(Base):
+    __tablename__ = "subagent_batches"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), nullable=False, index=True)
+    orchestration_id: Mapped[int | None] = mapped_column(ForeignKey("orchestration_sessions.id"), nullable=True, index=True)
+    purpose: Mapped[str] = mapped_column(Text, nullable=False)
+    task_type: Mapped[str] = mapped_column(String(60), nullable=False)
+    status: Mapped[str] = mapped_column(String(20), default="proposed", nullable=False)
+    spawn_method: Mapped[str] = mapped_column(String(30), default="codex_chat_bridge", nullable=False)
+    risk_level: Mapped[str] = mapped_column(String(20), default="low", nullable=False)
+    estimated_intensity: Mapped[str] = mapped_column(String(20), default="medium", nullable=False)
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    project: Mapped[Project] = relationship(back_populates="subagent_batches")
+    orchestration: Mapped["OrchestrationSession | None"] = relationship(back_populates="subagent_batches")
+    specs: Mapped[list["SubagentSpec"]] = relationship(back_populates="batch")
+
+
+class SubagentSpec(Base):
+    __tablename__ = "subagent_specs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    batch_id: Mapped[int] = mapped_column(ForeignKey("subagent_batches.id"), nullable=False, index=True)
+    name: Mapped[str] = mapped_column(String(120), nullable=False)
+    display_name: Mapped[str] = mapped_column(String(160), nullable=False)
+    custom_agent_name: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    mission: Mapped[str] = mapped_column(Text, nullable=False)
+    sandbox_mode: Mapped[str] = mapped_column(String(30), default="read-only", nullable=False)
+    allowed_paths_json: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    forbidden_paths_json: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    expected_output: Mapped[str] = mapped_column(Text, nullable=False)
+    timeout_seconds: Mapped[int] = mapped_column(Integer, default=240, nullable=False)
+    status: Mapped[str] = mapped_column(String(20), default="proposed", nullable=False)
+    result_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    evidence_json: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    risks_found_json: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    recommendations_json: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    confidence: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    batch: Mapped[SubagentBatch] = relationship(back_populates="specs")
 
 
 class AgentStuckSignal(Base):
@@ -1245,6 +1313,7 @@ class OrchestrationSession(Base):
     project: Mapped[Project] = relationship(back_populates="orchestration_sessions")
     events: Mapped[list["OrchestrationEvent"]] = relationship(back_populates="orchestration")
     decisions: Mapped[list["PendingDecision"]] = relationship(back_populates="orchestration")
+    subagent_batches: Mapped[list["SubagentBatch"]] = relationship(back_populates="orchestration")
 
 
 class OrchestrationEvent(Base):

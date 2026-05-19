@@ -4,20 +4,41 @@
   <img src="apps/desktop/assets/mission-control-logo.png" alt="Codex Mission Control logo" width="420" />
 </p>
 
-Codex Mission Control is a local-first desktop app for running a manager-led coding workflow across multiple agent providers. It helps one user supervise planning, task routing, worker execution, diagnostics, and final handoff from a single interface.
+Codex Mission Control is a headless orchestration platform for Codex. It lets one Codex chat attach to a folder, invoke a Mission Control Manager AI, and coordinate background worker agents through Codex CLI, Ollama, Claude CLI, APIs, and other configured runners.
 
-Mission Control can also be packaged for Codex desktop plugin usage, where Codex chat acts as the bridge surface and Mission Control Manager remains the orchestration authority.
+Mission Control daemon owns orchestration. The Codex chat agent is the bridge. It is not the Manager AI.
 
-## Background orchestration + Codex plugin mode
+## Headless-First Workflow
 
-Mission Control can now run as a localhost-only background daemon and expose a thin MCP bridge for Codex desktop.
+Primary flow:
+
+1. Install or autowire Mission Control from Codex chat.
+2. Attach the current workspace.
+3. Mission Control scans or imports the project if needed.
+4. The user asks Codex chat to use Mission Control.
+5. Mission Control Manager plans, spawns, and coordinates background agents.
+6. Approvals and manager questions relay back through Codex chat.
+7. The user receives a chat-native handoff.
+
+## Standalone UI Status
+
+The standalone dashboard and app UI are optional and currently secondary.
+
+- they may remain in the repo
+- they may later move into a separate app or package
+- they are not required for normal Mission Control use
+- they should be treated as a future observability surface, not the primary product
+
+## Background Orchestration + Codex Plugin Mode
+
+Mission Control can run as a localhost-only background daemon and expose a thin MCP bridge for Codex desktop.
 
 That split matters:
 
 - Codex chat is the bridge to the user
 - Mission Control Manager stays inside Mission Control
 - worker runners stay behind Mission Control approvals
-- the dashboard remains useful, but optional
+- the standalone dashboard remains optional
 
 Bridge flow:
 
@@ -28,31 +49,53 @@ Bridge flow:
 5. Codex sends the user’s answer back through the bridge
 6. Mission Control returns status updates and final handoff
 
+Chat-native bridge routes now include:
+
+- `GET /api/orchestrations/{id}/status-summary`
+- `GET /api/projects/{id}/status-summary`
+- `GET /api/orchestrations/{id}/event-digest`
+- `GET /api/projects/{id}/event-digest`
+- `GET /api/orchestrations/{id}/handoff-summary`
+- `GET /api/projects/{id}/handoff-summary`
+- `GET /api/headless/diagnostic-summary`
+
 Daemon and plugin docs:
 
 - [Codex Plugin Mode](docs/CODEX_PLUGIN_MODE.md)
 - [MCP Security](docs/MCP_SECURITY.md)
 - [Codex Plugin Install](docs/CODEX_PLUGIN_INSTALL.md)
+- [Chat-Native UX](docs/CHAT_NATIVE_UX.md)
+- [Bridge Messages](docs/BRIDGE_MESSAGES.md)
+- [Headless Happy Path](docs/HEADLESS_HAPPY_PATH.md)
+- [Diagnostic Summaries](docs/DIAGNOSTIC_SUMMARIES.md)
+- [Headless Install](docs/HEADLESS_INSTALL.md)
+- [Autowire Providers](docs/AUTOWIRE_PROVIDERS.md)
+- [Headless Health](docs/HEADLESS_HEALTH.md)
+- [No-UI Setup](docs/NO_UI_SETUP.md)
 - [Bridge Runtime](docs/BRIDGE_RUNTIME.md)
 - [Pending Decisions](docs/PENDING_DECISIONS.md)
 - [Plugin Health Doctor](docs/PLUGIN_HEALTH_DOCTOR.md)
 - [Chat-Native Handoffs](docs/CHAT_NATIVE_HANDOFFS.md)
+- [Headless UX](docs/HEADLESS_UX.md)
+- [Headless Architecture](docs/HEADLESS_ARCHITECTURE.md)
+- [Codex Chat UX Spec](docs/CODEX_CHAT_UX_SPEC.md)
+- [Docs Index](docs/README.md)
 
 ## What it does
 
-- Guides first-time users through setup, provider selection, and startup defaults
-- Routes every launch through a real startup coordinator with health checks and retries
-- Opens into a persistent home shell after startup instead of dropping straight into a single project page
-- Builds project docs, interviews the user, creates a plan, and decomposes work into tasks
-- Routes every project through a manager-centered workspace keyed by project ID
-- Builds adaptive swarm plans instead of relying on one fixed worker roster
+- Runs a headless Mission Control daemon for Codex-native orchestration
+- Exposes skills, prompts, MCP tools, and resources as the primary interface
+- Lets a Codex chat attach workspaces and relay approvals, questions, status, and handoffs
 - Coordinates manager and worker agents while preventing overlapping writable paths
+- Guides first-time users through setup, provider selection, and startup defaults
+- Builds project docs, interviews the user, creates a plan, and decomposes work into tasks
+- Builds adaptive swarm plans instead of relying on one fixed worker roster
 - Applies deterministic risk assessment, approval policy, and redacted audit logging before dangerous actions proceed
-- Streams live orchestration events into the workspace shell over SSE
+- Streams live orchestration events into bridge-safe summaries
 - Produces a final handoff with run instructions, tests, limitations, and follow-up work
-- Packages Codex-facing skills, prompts, and MCP wiring for plugin-based Mission Control usage
+- Keeps the standalone dashboard available only as an optional observability layer
 
-## Startup model
+## Optional app startup model
 
 Mission Control has two startup modes:
 
@@ -70,7 +113,9 @@ Startup always routes through `/startup`, where the app checks:
 
 If an optional provider check fails, Mission Control can continue in degraded mode. If required checks fail, the startup coordinator retries targeted checks up to three times, then generates a diagnostic report and routes to the startup error screen.
 
-## First-time setup wizard
+## Optional first-time setup wizard
+
+Headless bootstrap from Codex chat is the preferred path. The setup wizard below applies only to the optional standalone app flow.
 
 The first-time wizard walks through:
 
@@ -106,7 +151,7 @@ Recommended default:
 
 Other providers are supported when their local CLI, endpoint, or adapter is available. Model availability depends on the selected provider and the current local session.
 
-## Launching the app
+## Running The Optional Standalone App
 
 ### Windows
 
@@ -134,7 +179,7 @@ Create a desktop shortcut:
 
 All launcher entrypoints route the app through `/startup`, not directly to the dashboard.
 
-## Development setup
+## Development Setup
 
 ### Requirements
 
@@ -160,7 +205,13 @@ python -m uvicorn main:app --app-dir src --reload
 ./scripts/start-mission-control-daemon.sh
 ```
 
-### Frontend
+### Headless bootstrap from the repo
+
+```powershell
+.\scripts\install-mission-control-plugin.ps1 -HeadlessOnly
+```
+
+### Frontend (optional)
 
 ```powershell
 cd apps/dashboard
@@ -215,7 +266,7 @@ If you need to rerun setup in development:
 
 There is no automatic destructive reset in the normal user flow by default.
 
-## Project workflow
+## Optional Standalone App Workflow
 
 1. Start in the dashboard
 2. Create a project from a general idea

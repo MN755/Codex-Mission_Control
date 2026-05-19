@@ -24,6 +24,7 @@ from models import (
     ProjectEvent,
     utc_now,
 )
+from security.path_validation import PathValidationError, resolve_local_path
 
 
 ACTIVE_ORCHESTRATION_STATUSES = {"initializing", "planning", "waiting_for_user", "running", "paused"}
@@ -114,7 +115,10 @@ class OrchestrationCoordinator:
         }
 
     def _normalize_workspace(self, workspace_path: str) -> Path:
-        return Path(workspace_path).expanduser().resolve()
+        try:
+            return resolve_local_path(workspace_path)
+        except PathValidationError as exc:
+            raise ValueError(str(exc)) from exc
 
     def _workspace_projects(self, db: Session, workspace: Path) -> list[Project]:
         workspace_str = workspace.as_posix()
@@ -234,6 +238,53 @@ class OrchestrationCoordinator:
         )
         return existing
 
+    def _attach_next_action(
+        self,
+        *,
+        orchestration: dict[str, Any] | None,
+        user_action_required: bool,
+        pending_decision_id: int | None,
+    ) -> str:
+        if user_action_required and pending_decision_id is not None:
+            return "answer_pending_decision"
+        if orchestration is not None:
+            return "resume_orchestration" if orchestration.get("status") == "paused" else "get_status_summary"
+        return "start_orchestration"
+
+    def _build_attach_response(
+        self,
+        db: Session,
+        *,
+        project: Project,
+        orchestration: OrchestrationSession | None,
+        attach_outcome: str,
+        reused_existing_project: bool,
+        reused_existing_orchestration: bool,
+        user_action_required: bool,
+        pending_decision_id: int | None,
+        message: str,
+    ) -> dict[str, Any]:
+        project_card = service._serialize_project_card(db, project)
+        orchestration_payload = self._serialize_session(orchestration) if orchestration is not None else None
+        return {
+            "project": project_card,
+            "project_id": project.id,
+            "project_name": project.name,
+            "source_type": project.source_type,
+            "orchestration": orchestration_payload,
+            "attach_outcome": attach_outcome,
+            "next_action": self._attach_next_action(
+                orchestration=orchestration_payload,
+                user_action_required=user_action_required,
+                pending_decision_id=pending_decision_id,
+            ),
+            "reused_existing_project": reused_existing_project,
+            "reused_existing_orchestration": reused_existing_orchestration,
+            "user_action_required": user_action_required,
+            "pending_decision_id": pending_decision_id,
+            "message": message,
+        }
+
     def attach_workspace(
         self,
         db: Session,
@@ -259,16 +310,17 @@ class OrchestrationCoordinator:
             if project is None:
                 raise ValueError("Active orchestration references a missing project.")
             self.sync_pending_decisions(db, active)
-            return {
-                "project": service._serialize_project_card(db, project),
-                "orchestration": self._serialize_session(active),
-                "attach_outcome": "reused_existing_orchestration",
-                "reused_existing_project": True,
-                "reused_existing_orchestration": True,
-                "user_action_required": active.status == "waiting_for_user",
-                "pending_decision_id": self._latest_pending_decision_id(db, active.id),
-                "message": "Mission Control is already orchestrating this workspace. Reusing the active orchestration session.",
-            }
+            return self._build_attach_response(
+                db,
+                project=project,
+                orchestration=active,
+                attach_outcome="reused_existing_orchestration",
+                reused_existing_project=True,
+                reused_existing_orchestration=True,
+                user_action_required=active.status == "waiting_for_user",
+                pending_decision_id=self._latest_pending_decision_id(db, active.id),
+                message="Mission Control is already orchestrating this workspace. Reusing the active orchestration session.",
+            )
 
         matches = self._workspace_projects(db, workspace)
         preferred_name = project_name.strip() if project_name and project_name.strip() else workspace.name
@@ -294,27 +346,29 @@ class OrchestrationCoordinator:
                 db.flush()
                 decision = self._ensure_attach_decision(db, session, matches)
                 self._record_event(db, session, "workspace_attach_ambiguous", {"candidate_project_ids": [project.id for project in matches]})
-                return {
-                    "project": service._serialize_project_card(db, chosen),
-                    "orchestration": self._serialize_session(session),
-                    "attach_outcome": "needs_project_selection",
-                    "reused_existing_project": True,
-                    "reused_existing_orchestration": False,
-                    "user_action_required": True,
-                    "pending_decision_id": decision.id,
-                    "message": "Mission Control found multiple existing projects for this workspace and needs a selection before continuing.",
-                }
+                return self._build_attach_response(
+                    db,
+                    project=chosen,
+                    orchestration=session,
+                    attach_outcome="needs_project_selection",
+                    reused_existing_project=True,
+                    reused_existing_orchestration=False,
+                    user_action_required=True,
+                    pending_decision_id=decision.id,
+                    message="Mission Control found multiple existing projects for this workspace and needs a selection before continuing.",
+                )
             project = matches[0]
-            return {
-                "project": service._serialize_project_card(db, project),
-                "orchestration": None,
-                "attach_outcome": "reused_existing_project",
-                "reused_existing_project": True,
-                "reused_existing_orchestration": False,
-                "user_action_required": False,
-                "pending_decision_id": None,
-                "message": "Mission Control reused the existing project for this workspace.",
-            }
+            return self._build_attach_response(
+                db,
+                project=project,
+                orchestration=None,
+                attach_outcome="reused_existing_project",
+                reused_existing_project=True,
+                reused_existing_orchestration=False,
+                user_action_required=False,
+                pending_decision_id=None,
+                message="Mission Control reused the existing project for this workspace.",
+            )
 
         if matches and attach_policy == "create_new":
             raise ValueError("Cannot create a new project for a workspace that is already linked to existing Mission Control projects.")
@@ -347,16 +401,17 @@ class OrchestrationCoordinator:
             service.open_project(db, project)
             attach_outcome = "created_new_project"
             message = "Mission Control created a new project for this workspace."
-        return {
-            "project": service._serialize_project_card(db, project),
-            "orchestration": None,
-            "attach_outcome": attach_outcome,
-            "reused_existing_project": False,
-            "reused_existing_orchestration": False,
-            "user_action_required": False,
-            "pending_decision_id": None,
-            "message": message,
-        }
+        return self._build_attach_response(
+            db,
+            project=project,
+            orchestration=None,
+            attach_outcome=attach_outcome,
+            reused_existing_project=False,
+            reused_existing_orchestration=False,
+            user_action_required=False,
+            pending_decision_id=None,
+            message=message,
+        )
 
     def _latest_pending_decision_id(self, db: Session, orchestration_id: int) -> int | None:
         decision = db.scalar(

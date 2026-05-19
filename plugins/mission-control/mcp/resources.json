@@ -1,7 +1,7 @@
 {
-  "catalog_version": "0.2.0",
+  "catalog_version": "0.3.0",
   "kind": "mission-control-resource-catalog",
-  "implementation_status": "partial_with_safe_stubs",
+  "implementation_status": "implemented_with_safe_summaries",
   "safety_defaults": {
     "summary_only": true,
     "runs_commands": false,
@@ -134,9 +134,8 @@
       "support_status": "implemented",
       "source_hint": {
         "rest_endpoints": [
-          "/api/projects/{project_id}/questions/pending",
-          "/api/projects/{project_id}/approvals/pending",
-          "/api/orchestrations/{orchestration_id}/pending-decisions"
+          "/api/orchestrations/{orchestration_id}/pending-decisions",
+          "/api/projects/{project_id}/pending-decisions"
         ]
       },
       "default_fields": [
@@ -307,17 +306,17 @@
     {
       "uri_template": "mission-control://projects/{project_id}/agent-contracts",
       "title": "Agent contracts",
-      "summary": "Safe summary of agent contract expectations and boundaries when the backend exposes them to the bridge.",
-      "support_status": "stubbed",
+      "summary": "Read-only summary of per-agent mission contracts, allowed paths, tool boundaries, and validation expectations.",
+      "support_status": "implemented",
       "source_hint": {
-        "rest_endpoints": [],
-        "notes": "The current backend tracks agent contracts internally but does not yet expose a dedicated read endpoint for the MCP bridge."
+        "rest_endpoints": [
+          "/api/projects/{project_id}/agent-contracts"
+        ]
       },
       "default_fields": [
         "project_id",
-        "support_status",
-        "summary",
-        "todo"
+        "contract_count",
+        "contracts"
       ],
       "redaction": {
         "omit_fields": [
@@ -325,7 +324,7 @@
           "secret_paths",
           "raw_log"
         ],
-        "notes": "Return a safe stub until a dedicated endpoint is exposed."
+        "notes": "Expose agent boundaries and expectations without leaking internal prompt bodies."
       }
     },
     {
@@ -351,6 +350,55 @@
           "secret_paths"
         ],
         "notes": "Summarize coverage and missing areas without dumping raw evidence artifacts."
+      }
+    },
+    {
+      "uri_template": "mission-control://projects/{project_id}/decision-ledger",
+      "title": "Decision ledger",
+      "summary": "Read-only ledger of important user and manager decisions that shaped the orchestration.",
+      "support_status": "implemented",
+      "source_hint": {
+        "rest_endpoints": [
+          "/api/projects/{project_id}/decision-ledger"
+        ]
+      },
+      "default_fields": [
+        "project_id",
+        "decision_count",
+        "recent_decisions"
+      ],
+      "redaction": {
+        "omit_fields": [
+          "secret_inputs",
+          "raw_command",
+          "raw_log"
+        ],
+        "notes": "Return concise decision summaries, not raw execution payloads."
+      }
+    },
+    {
+      "uri_template": "mission-control://projects/{project_id}/path-locks",
+      "title": "Path locks",
+      "summary": "Read-only summary of active and waiting path ownership constraints used to keep worker edits safe.",
+      "support_status": "implemented",
+      "source_hint": {
+        "rest_endpoints": [
+          "/api/projects/{project_id}/path-locks"
+        ]
+      },
+      "default_fields": [
+        "project_id",
+        "lock_count",
+        "active_lock_count",
+        "waiting_lock_count",
+        "locks"
+      ],
+      "redaction": {
+        "omit_fields": [
+          "raw_log",
+          "secret_paths_outside_workspace"
+        ],
+        "notes": "Expose coordination-safe lock summaries only."
       }
     }
   ]

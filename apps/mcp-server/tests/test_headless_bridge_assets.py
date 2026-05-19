@@ -57,6 +57,11 @@ EXPECTED_DOCS = [
     ROOT / "docs" / "MISSION_CONTROL_SKILLS.md",
     ROOT / "docs" / "MCP_RESOURCES_PROMPTS.md",
     ROOT / "docs" / "CODEX_CHAT_WORKFLOWS.md",
+    ROOT / "docs" / "MCP_RUNTIME.md",
+    ROOT / "docs" / "MCP_TOOLS.md",
+    ROOT / "docs" / "MCP_RESOURCES.md",
+    ROOT / "docs" / "MCP_PROMPTS.md",
+    ROOT / "docs" / "PENDING_DECISIONS.md",
 ]
 
 

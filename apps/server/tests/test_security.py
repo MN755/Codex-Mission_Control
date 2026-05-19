@@ -1,10 +1,15 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from conftest import sample_workspace
 from db import SessionLocal
+from diagnostics import open_folder
 from manager import service
 from models import ApprovalRequest, Project
+from runtime_paths import diagnostics_root
 from security import redact_text, redact_value, risk_classifier, security_service
+from security.path_validation import PathValidationError, resolve_local_path, resolve_relative_to_root
 
 
 def create_project(client, name: str, workspace_name: str) -> dict:
@@ -85,6 +90,37 @@ def test_redaction_masks_common_secret_patterns() -> None:
     )
     assert "abcdefghijklmnopqrstuvwxyz1234567890" not in str(redacted_value)
     assert redacted_value["nested"]["safe"] == "keep me"
+
+
+def test_path_validation_rejects_non_local_and_parent_escape_inputs() -> None:
+    try:
+        resolve_local_path("https://example.com/repo")
+    except PathValidationError as exc:
+        assert "local filesystem" in str(exc).lower()
+    else:
+        raise AssertionError("Expected non-local URL to be rejected.")
+
+    root = Path(sample_workspace("path-validation-root"))
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "src").mkdir(exist_ok=True)
+    safe_child = resolve_relative_to_root(root, "src", must_exist=True)
+    assert safe_child == (root / "src").resolve()
+
+    try:
+        resolve_relative_to_root(root, "../escape")
+    except PathValidationError as exc:
+        assert "inside the selected root" in str(exc).lower()
+    else:
+        raise AssertionError("Expected parent escape path to be rejected.")
+
+
+def test_open_folder_restricts_to_allowed_roots() -> None:
+    report_root = diagnostics_root()
+    outside = Path(sample_workspace("outside-diagnostics"))
+    outside.mkdir(parents=True, exist_ok=True)
+    blocked = open_folder(outside, allowed_roots=[report_root])
+    assert blocked["ok"] is False
+    assert "outside the allowed locations" in blocked["message"].lower()
 
 
 def test_security_policy_defaults_and_project_override(client) -> None:

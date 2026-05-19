@@ -161,6 +161,9 @@ class MissionControlDaemonClient:
     def plugin_health(self) -> dict[str, Any]:
         return self._request("GET", "/api/orchestrations/plugin-health", requires_token=False)
 
+    def plugin_health_summary(self) -> dict[str, Any]:
+        return self.plugin_health()
+
     def attach_workspace(
         self,
         *,
@@ -172,7 +175,7 @@ class MissionControlDaemonClient:
     ) -> dict[str, Any]:
         return self._request(
             "POST",
-            "/api/orchestrations/attach-workspace",
+            "/api/headless/attach-workspace",
             json_body={
                 "workspace_path": workspace_path,
                 "project_name": project_name,
@@ -204,10 +207,20 @@ class MissionControlDaemonClient:
             raise RuntimeError("Mission Control status requires an orchestration_id or a project with an active orchestration.")
         return self._request("GET", f"/api/orchestrations/{resolved_id}/status")
 
+    def get_status_summary(self, *, orchestration_id: int | None = None, project_id: int | None = None) -> dict[str, Any]:
+        resolved_id = self._maybe_orchestration_id(orchestration_id=orchestration_id, project_id=project_id)
+        if resolved_id is not None:
+            return self._request("GET", f"/api/orchestrations/{resolved_id}/status-summary")
+        if project_id is None:
+            raise RuntimeError("Mission Control status summary requires an orchestration_id or project_id.")
+        return self._request("GET", f"/api/projects/{project_id}/status-summary")
+
     def get_pending_decisions(self, *, orchestration_id: int | None = None, project_id: int | None = None) -> list[dict[str, Any]]:
         resolved_id = self._maybe_orchestration_id(orchestration_id=orchestration_id, project_id=project_id)
         if resolved_id is None:
-            return []
+            if project_id is None:
+                return []
+            return self._request("GET", f"/api/projects/{project_id}/pending-decisions")
         return self._request("GET", f"/api/orchestrations/{resolved_id}/pending-decisions")
 
     def answer_decision(self, *, decision_id: int, option_id: str, selected_text: str, free_text: str | None = None) -> dict[str, Any]:
@@ -229,11 +242,36 @@ class MissionControlDaemonClient:
             raise RuntimeError("Mission Control handoff lookup requires an orchestration_id or a project with an active orchestration.")
         return self._request("GET", f"/api/orchestrations/{resolved_id}/handoff")
 
+    def get_event_digest(
+        self,
+        *,
+        orchestration_id: int | None = None,
+        project_id: int | None = None,
+        window: str = "last_15_minutes",
+    ) -> dict[str, Any]:
+        resolved_id = self._maybe_orchestration_id(orchestration_id=orchestration_id, project_id=project_id)
+        if resolved_id is not None:
+            return self._request("GET", f"/api/orchestrations/{resolved_id}/event-digest", params={"window": window})
+        if project_id is None:
+            raise RuntimeError("Event digest requires an orchestration_id or project_id.")
+        return self._request("GET", f"/api/projects/{project_id}/event-digest", params={"window": window})
+
+    def get_handoff_summary(self, *, orchestration_id: int | None = None, project_id: int | None = None) -> dict[str, Any]:
+        resolved_id = self._maybe_orchestration_id(orchestration_id=orchestration_id, project_id=project_id)
+        if resolved_id is not None:
+            return self._request("GET", f"/api/orchestrations/{resolved_id}/handoff-summary")
+        if project_id is None:
+            raise RuntimeError("Handoff summary requires an orchestration_id or project_id.")
+        return self._request("GET", f"/api/projects/{project_id}/handoff-summary")
+
     def get_orchestration_events(self, orchestration_id: int) -> list[dict[str, Any]]:
         return self._request("GET", f"/api/orchestrations/{orchestration_id}/events")
 
     def get_agents(self, project_id: int) -> list[dict[str, Any]]:
         return self._request("GET", f"/api/projects/{project_id}/agents")
+
+    def get_agent_contracts(self, project_id: int) -> list[dict[str, Any]]:
+        return self._request("GET", f"/api/projects/{project_id}/agent-contracts")
 
     def get_pending_questions(self, project_id: int) -> list[dict[str, Any]]:
         return self._request("GET", f"/api/projects/{project_id}/questions/pending")
@@ -243,6 +281,12 @@ class MissionControlDaemonClient:
 
     def get_project_handoff(self, project_id: int) -> dict[str, Any]:
         return self._request("GET", f"/api/projects/{project_id}/handoff", requires_token=False)
+
+    def get_decision_ledger(self, project_id: int) -> list[dict[str, Any]]:
+        return self._request("GET", f"/api/projects/{project_id}/decision-ledger")
+
+    def get_path_locks(self, project_id: int) -> list[dict[str, Any]]:
+        return self._request("GET", f"/api/projects/{project_id}/path-locks")
 
     def get_codebase_map(self, project_id: int) -> dict[str, Any]:
         return self._request("GET", f"/api/projects/{project_id}/codebase-map", requires_token=False)
@@ -314,6 +358,63 @@ class MissionControlDaemonClient:
     def send_manager_message(self, project_id: int, message: str) -> dict[str, Any]:
         return self._request("POST", f"/api/projects/{project_id}/manager/messages", json_body={"message": message})
 
+    def get_safe_mode(self, project_id: int) -> dict[str, Any]:
+        return self._request("GET", f"/api/projects/{project_id}/safe-mode")
+
+    def enable_safe_mode(self, project_id: int) -> dict[str, Any]:
+        return self._request("POST", f"/api/projects/{project_id}/safe-mode", json_body={})
+
+    def list_snapshots(self, project_id: int) -> list[dict[str, Any]]:
+        return self._request("GET", f"/api/projects/{project_id}/snapshots")
+
+    def create_snapshot(
+        self,
+        project_id: int,
+        *,
+        label: str,
+        description: str,
+        created_before_task_id: int | None = None,
+        created_before_agent_id: int | None = None,
+    ) -> dict[str, Any]:
+        return self._request(
+            "POST",
+            f"/api/projects/{project_id}/snapshots",
+            json_body={
+                "label": label,
+                "description": description,
+                "created_before_task_id": created_before_task_id,
+                "created_before_agent_id": created_before_agent_id,
+            },
+        )
+
+    def get_snapshot_restore_plan(self, project_id: int, snapshot_id: int) -> dict[str, Any]:
+        return self._request("GET", f"/api/projects/{project_id}/snapshots/{snapshot_id}/restore-plan")
+
+    def list_recovery_plans(self, project_id: int) -> list[dict[str, Any]]:
+        return self._request("GET", f"/api/projects/{project_id}/recovery-plans")
+
+    def create_recovery_plan(
+        self,
+        project_id: int,
+        *,
+        trigger_type: str,
+        trigger_summary: str,
+        related_agent_id: int | None = None,
+        related_task_id: int | None = None,
+        suggested_actions_json: list[str] | None = None,
+    ) -> dict[str, Any]:
+        return self._request(
+            "POST",
+            f"/api/projects/{project_id}/recovery-plans",
+            json_body={
+                "trigger_type": trigger_type,
+                "trigger_summary": trigger_summary,
+                "related_agent_id": related_agent_id,
+                "related_task_id": related_task_id,
+                "suggested_actions_json": suggested_actions_json or [],
+            },
+        )
+
     def get_diagnostics(self, *, project_id: int | None = None, orchestration_id: int | None = None) -> dict[str, Any]:
         plugin_health = self.plugin_health()
         reports = self._request("GET", "/api/diagnostics/reports")
@@ -337,6 +438,32 @@ class MissionControlDaemonClient:
             "manager_status": status.get("manager_status") if status else None,
         }
 
+    def import_existing_codebase(
+        self,
+        *,
+        workspace_path: str,
+        project_name: str | None = None,
+        attach_policy: str = "reuse_existing",
+        read_only_first: bool = True,
+    ) -> dict[str, Any]:
+        attached = self.attach_workspace(
+            workspace_path=workspace_path,
+            project_name=project_name,
+            mode="existing_codebase",
+            read_only_first=read_only_first,
+            attach_policy=attach_policy,
+        )
+        project = attached.get("project") or {}
+        project_id = project.get("id")
+        codebase_map = self.get_codebase_map(int(project_id)) if project_id is not None else None
+        understanding = self.get_codebase_understanding(int(project_id)) if project_id is not None else None
+        return {
+            "attach": attached,
+            "project_id": project_id,
+            "codebase_map": codebase_map,
+            "codebase_understanding": understanding,
+        }
+
     def request_recovery_options(
         self, *, project_id: int | None = None, orchestration_id: int | None = None, user_context: str | None = None
     ) -> dict[str, Any]:
@@ -356,6 +483,32 @@ class MissionControlDaemonClient:
             "manager_message_id": response.get("id"),
             "content_markdown": response.get("content_markdown", ""),
         }
+
+    def request_recovery_plan(
+        self,
+        *,
+        project_id: int | None = None,
+        orchestration_id: int | None = None,
+        trigger_type: str = "bridge_request",
+        trigger_summary: str,
+        related_agent_id: int | None = None,
+        related_task_id: int | None = None,
+        suggested_actions_json: list[str] | None = None,
+    ) -> dict[str, Any]:
+        resolved_project_id = project_id
+        if resolved_project_id is None and orchestration_id is not None:
+            session = self.get_orchestration(orchestration_id)
+            resolved_project_id = int(session["project_id"])
+        if resolved_project_id is None:
+            raise RuntimeError("Recovery plan requests require a project_id or orchestration_id.")
+        return self.create_recovery_plan(
+            resolved_project_id,
+            trigger_type=trigger_type,
+            trigger_summary=trigger_summary,
+            related_agent_id=related_agent_id,
+            related_task_id=related_task_id,
+            suggested_actions_json=suggested_actions_json,
+        )
 
     def _summarize_status(self, status: dict[str, Any]) -> dict[str, Any]:
         agents = []
@@ -441,6 +594,25 @@ class MissionControlDaemonClient:
             ],
         }
 
+    def _summarize_agent_contracts(self, project_id: int, contracts: list[dict[str, Any]]) -> dict[str, Any]:
+        return {
+            "project_id": project_id,
+            "contract_count": len(contracts),
+            "contracts": [
+                {
+                    "id": contract.get("id"),
+                    "agent_name": contract.get("agent_name"),
+                    "archetype": contract.get("archetype"),
+                    "status": contract.get("status"),
+                    "mission": self._safe_short(contract.get("mission")),
+                    "allowed_paths": (contract.get("allowed_paths_json") or [])[:8],
+                    "allowed_tools": (contract.get("allowed_tools_json") or [])[:8],
+                    "validation_required": (contract.get("validation_required_json") or [])[:8],
+                }
+                for contract in contracts[:12]
+            ],
+        }
+
     def _summarize_pending_decisions(self, project_id: int, decisions: list[dict[str, Any]]) -> dict[str, Any]:
         return {
             "project_id": project_id,
@@ -457,6 +629,46 @@ class MissionControlDaemonClient:
                     "status": decision.get("status"),
                 }
                 for decision in decisions[:12]
+            ],
+        }
+
+    def _summarize_decision_ledger(self, project_id: int, decisions: list[dict[str, Any]]) -> dict[str, Any]:
+        return {
+            "project_id": project_id,
+            "decision_count": len(decisions),
+            "recent_decisions": [
+                {
+                    "id": decision.get("id"),
+                    "decision_type": decision.get("decision_type"),
+                    "title": decision.get("title"),
+                    "decision": self._safe_short(decision.get("decision")),
+                    "reason": self._safe_short(decision.get("reason")),
+                    "made_by": decision.get("made_by"),
+                    "reversible": decision.get("reversible", False),
+                    "created_at": decision.get("created_at"),
+                }
+                for decision in decisions[:15]
+            ],
+        }
+
+    def _summarize_path_locks(self, project_id: int, locks: list[dict[str, Any]]) -> dict[str, Any]:
+        active = [entry for entry in locks if entry.get("status") == "active"]
+        waiting = [entry for entry in locks if entry.get("status") == "waiting"]
+        return {
+            "project_id": project_id,
+            "lock_count": len(locks),
+            "active_lock_count": len(active),
+            "waiting_lock_count": len(waiting),
+            "locks": [
+                {
+                    "id": entry.get("id"),
+                    "path_pattern": entry.get("path_pattern"),
+                    "owner_agent_id": entry.get("owner_agent_id"),
+                    "owner_task_id": entry.get("owner_task_id"),
+                    "status": entry.get("status"),
+                    "reason": self._safe_short(entry.get("reason")),
+                }
+                for entry in locks[:20]
             ],
         }
 
@@ -576,6 +788,42 @@ class MissionControlDaemonClient:
             "todo": "Expose a read-only agent-contract summary endpoint for Codex chat."
         }
 
+    def _summarize_snapshots(self, project_id: int, snapshots: list[dict[str, Any]]) -> dict[str, Any]:
+        return {
+            "project_id": project_id,
+            "snapshot_count": len(snapshots),
+            "snapshots": [
+                {
+                    "id": snapshot.get("id"),
+                    "snapshot_type": snapshot.get("snapshot_type"),
+                    "label": snapshot.get("label"),
+                    "description": self._safe_short(snapshot.get("description")),
+                    "status": snapshot.get("status"),
+                    "git_ref": snapshot.get("git_ref"),
+                    "created_at": snapshot.get("created_at"),
+                }
+                for snapshot in snapshots[:12]
+            ],
+        }
+
+    def _summarize_recovery_plans(self, project_id: int, plans: list[dict[str, Any]]) -> dict[str, Any]:
+        return {
+            "project_id": project_id,
+            "recovery_plan_count": len(plans),
+            "plans": [
+                {
+                    "id": plan.get("id"),
+                    "trigger_type": plan.get("trigger_type"),
+                    "trigger_summary": self._safe_short(plan.get("trigger_summary")),
+                    "status": plan.get("status"),
+                    "selected_action": plan.get("selected_action"),
+                    "suggested_actions": (plan.get("suggested_actions_json") or [])[:8],
+                    "created_at": plan.get("created_at"),
+                }
+                for plan in plans[:12]
+            ],
+        }
+
     def _summarize_validation(self, project_id: int, areas: list[dict[str, Any]]) -> dict[str, Any]:
         coverage_counts: dict[str, int] = {}
         for area in areas:
@@ -635,7 +883,11 @@ class MissionControlDaemonClient:
             if kind == "risk-register":
                 return self._summarize_risks(project_id, self.get_risks(project_id))
             if kind == "agent-contracts":
-                return self._stub_agent_contracts(project_id)
+                return self._summarize_agent_contracts(project_id, self.get_agent_contracts(project_id))
             if kind == "validation-summary":
                 return self._summarize_validation(project_id, self.get_validation_summary(project_id))
+            if kind == "decision-ledger":
+                return self._summarize_decision_ledger(project_id, self.get_decision_ledger(project_id))
+            if kind == "path-locks":
+                return self._summarize_path_locks(project_id, self.get_path_locks(project_id))
         raise RuntimeError("Unsupported Mission Control resource URI.")

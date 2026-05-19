@@ -12,6 +12,8 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from bridge_messages import bridge_runtime_service
+from bootstrap.runner_autowire import autowire_headless, get_headless_config, get_headless_health, repair_headless
+from bootstrap.runner_probe import summarize_runner_status
 from capabilities import capability_service
 from codex_auth import auth_service
 from config import frontend_dist_root
@@ -23,17 +25,33 @@ from imported_codebase import import_service
 from intelligence import reputation_service, scope_creep_service
 from manager import service
 from plugin_health import mission_control_plugin_health
-from models import Agent, AgentRun, InterviewSession, OrchestrationSession, PathReservation, PendingDecision, Plan, Project, Task
+from models import (
+    Agent,
+    AgentRun,
+    InterviewSession,
+    OrchestrationSession,
+    PathReservation,
+    PendingDecision,
+    Plan,
+    Project,
+    ProjectSnapshot,
+    RecoveryPlan,
+    SubagentBatch,
+    Task,
+)
 from orchestration import coordinator
 from playbooks import playbook_service
 from preferences import preference_service
 from risk import risk_service
+from runtime_paths import diagnostics_root
 from security import security_service
+from security.path_validation import PathValidationError, resolve_local_path
 from schemas import (
     ApprovalRequestRead,
     ApprovalAuditLogRead,
     ApprovalResolveRequest,
     AgentActionResponse,
+    AgentContractRead,
     AgentExecutionTraceRead,
     AgentLoadRebalanceRead,
     AgentLoadSnapshotRead,
@@ -67,6 +85,7 @@ from schemas import (
     DiagnosticReportListItemRead,
     DaemonStatusRead,
     DashboardSummaryRead,
+    DecisionRecordRead,
     DocGenerationResponse,
     EvidenceBasedHandoffRead,
     EventDigestWindow,
@@ -74,6 +93,11 @@ from schemas import (
     HandoffEvidenceCreate,
     HandoffEvidenceRead,
     HandoffListItemRead,
+    HeadlessAutowireRequest,
+    HeadlessConfigRead,
+    HeadlessHappyPathDemoRead,
+    HeadlessHappyPathDemoRequest,
+    HeadlessRepairRequest,
     ImportFolderRequest,
     ImportFolderResponse,
     ImportInterviewChoiceRequest,
@@ -87,6 +111,7 @@ from schemas import (
     InterviewQuestionRead,
     InterviewSessionRead,
     InterviewStartRequest,
+    InstallReportRead,
     LogRead,
     ManagerWorkerDecision,
     ManagerMessageCreate,
@@ -105,6 +130,7 @@ from schemas import (
     OrchestrationHandoffRead,
     OrchestrationSessionRead,
     OrchestrationStatusRead,
+    PathLockRead,
     PlanApproveRequest,
     PlanRead,
     PluginHealthSummaryRead,
@@ -148,7 +174,16 @@ from schemas import (
     StartupRetryRequest,
     StartupStatusRead,
     SystemStatusRead,
+    RunnersStatusRead,
     SafeModeStatusRead,
+    SubagentBatchRead,
+    SubagentBatchResultsIngestRequest,
+    SubagentBurstRecommendationRead,
+    SubagentBurstRecommendRequest,
+    SubagentPolicyRead,
+    SubagentPolicyUpdate,
+    CustomCodexAgentsGenerateRead,
+    CustomCodexAgentsGenerateRequest,
     SecurityPolicyRead,
     SecurityPolicyUpdate,
     SkillRead,
@@ -189,6 +224,7 @@ from schemas import (
     BridgeMessageRead,
 )
 from startup import startup_service
+from subagent_planner import subagent_planner_service
 from task_board import can_assign_task
 from simulation import simulation_service
 from validation_coverage import validation_coverage_service
@@ -247,6 +283,27 @@ def _get_pending_decision_or_404(db: Session, decision_id: int) -> PendingDecisi
     if not decision:
         raise HTTPException(status_code=404, detail="Pending decision not found")
     return decision
+
+
+def _get_snapshot_or_404(db: Session, snapshot_id: int) -> ProjectSnapshot:
+    snapshot = db.get(ProjectSnapshot, snapshot_id)
+    if not snapshot:
+        raise HTTPException(status_code=404, detail="Project snapshot not found")
+    return snapshot
+
+
+def _get_recovery_plan_or_404(db: Session, plan_id: int) -> RecoveryPlan:
+    plan = db.get(RecoveryPlan, plan_id)
+    if not plan:
+        raise HTTPException(status_code=404, detail="Recovery plan not found")
+    return plan
+
+
+def _get_subagent_batch_or_404(db: Session, batch_id: int) -> SubagentBatch:
+    batch = db.get(SubagentBatch, batch_id)
+    if not batch:
+        raise HTTPException(status_code=404, detail="Subagent batch not found")
+    return batch
 
 
 def _require_bridge_token(request: Request) -> None:
@@ -337,6 +394,18 @@ def _frontend_file_for_path(requested_path: str) -> Path | None:
     return index_path if index_path.exists() else None
 
 
+def _attach_workspace_via_bridge(db: Session, payload: OrchestrationAttachRequest) -> dict[str, Any]:
+    return bridge_runtime_service.attach_workspace(
+        db,
+        workspace_path=payload.workspace_path,
+        project_name=payload.project_name,
+        mode=payload.mode,
+        read_only_first=payload.read_only_first,
+        attach_policy=payload.attach_policy,
+        source="codex_plugin",
+    )
+
+
 @app.get("/api/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
@@ -350,6 +419,55 @@ async def get_plugin_health() -> PluginHealthSummaryRead:
 @app.post("/api/plugin/health/check", response_model=PluginHealthSummaryRead)
 async def check_plugin_health() -> PluginHealthSummaryRead:
     return PluginHealthSummaryRead(**(await mission_control_plugin_health()))
+
+
+@app.get("/api/headless/health", response_model=PluginHealthSummaryRead)
+async def get_headless_runtime_health() -> PluginHealthSummaryRead:
+    return PluginHealthSummaryRead(**(await get_headless_health()))
+
+
+@app.get("/api/headless/config", response_model=HeadlessConfigRead)
+def get_headless_runtime_config() -> HeadlessConfigRead:
+    return HeadlessConfigRead(**get_headless_config())
+
+
+@app.post("/api/headless/autowire", response_model=InstallReportRead)
+async def autowire_headless_runtime(payload: HeadlessAutowireRequest | None = None) -> InstallReportRead:
+    payload = payload or HeadlessAutowireRequest()
+    report = await autowire_headless(
+        workspace_path=payload.workspace_path,
+        install_path=payload.install_path,
+        runtime_path=payload.runtime_path,
+        daemon_host=payload.daemon_host,
+        daemon_port=payload.daemon_port,
+        mcp_transport=payload.mcp_transport,
+        mcp_port=payload.mcp_port,
+        headless_only=payload.headless_only,
+        dry_run=payload.dry_run,
+    )
+    return InstallReportRead(**report)
+
+
+@app.post("/api/headless/repair", response_model=InstallReportRead)
+async def repair_headless_runtime(payload: HeadlessRepairRequest | None = None) -> InstallReportRead:
+    payload = payload or HeadlessRepairRequest()
+    report = await repair_headless(
+        workspace_path=None,
+        install_path=payload.install_path,
+        runtime_path=payload.runtime_path,
+        daemon_host=payload.daemon_host,
+        daemon_port=payload.daemon_port,
+        mcp_transport=payload.mcp_transport,
+        mcp_port=payload.mcp_port,
+        headless_only=payload.headless_only,
+        preserve_config=payload.preserve_config,
+    )
+    return InstallReportRead(**report)
+
+
+@app.get("/api/runners/status", response_model=RunnersStatusRead)
+def get_runners_status() -> RunnersStatusRead:
+    return RunnersStatusRead(**summarize_runner_status())
 
 
 @app.get("/api/daemon/status", response_model=DaemonStatusRead)
@@ -439,7 +557,7 @@ def open_diagnostics_folder(db: Session = Depends(get_db)) -> OpenPathResponse:
         from pathlib import Path
 
         target = str(Path(report["path"]).parent)
-    return OpenPathResponse(**open_folder(target))
+    return OpenPathResponse(**open_folder(target, allowed_roots=[diagnostics_root()]))
 
 
 @app.get("/api/system/codex-status", response_model=CodexStatusRead)
@@ -943,15 +1061,21 @@ def attach_workspace(
     _: None = Depends(_require_bridge_token),
 ) -> OrchestrationAttachRead:
     try:
-        attached = coordinator.attach_workspace(
-            db,
-            workspace_path=payload.workspace_path,
-            project_name=payload.project_name,
-            mode=payload.mode,
-            read_only_first=payload.read_only_first,
-            attach_policy=payload.attach_policy,
-            source="codex_plugin",
-        )
+        attached = _attach_workspace_via_bridge(db, payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return OrchestrationAttachRead(**attached)
+
+
+@app.post("/api/headless/attach-workspace", response_model=OrchestrationAttachRead)
+def attach_headless_workspace(
+    payload: OrchestrationAttachRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> OrchestrationAttachRead:
+    try:
+        attached = _attach_workspace_via_bridge(db, payload)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return OrchestrationAttachRead(**attached)
@@ -966,7 +1090,7 @@ async def create_orchestration(
 ) -> OrchestrationSessionRead:
     project = _get_project_or_404(db, payload.project_id)
     try:
-        session = coordinator.start_orchestration(
+        session = bridge_runtime_service.start_orchestration(
             db,
             project=project,
             source=payload.source,
@@ -975,7 +1099,7 @@ async def create_orchestration(
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    return OrchestrationSessionRead(**coordinator._serialize_session(session))
+    return OrchestrationSessionRead(**session)
 
 
 @app.get("/api/orchestrations/plugin-health", response_model=PluginHealthSummaryRead)
@@ -984,6 +1108,36 @@ async def get_bridge_plugin_health(
     _: None = Depends(_require_bridge_token),
 ) -> PluginHealthSummaryRead:
     return PluginHealthSummaryRead(**(await mission_control_plugin_health()))
+
+
+@app.get("/api/headless/diagnostic-summary", response_model=BridgeMessageRead)
+async def get_headless_diagnostic_summary(
+    request: Request,
+    _: None = Depends(_require_bridge_token),
+) -> BridgeMessageRead:
+    return BridgeMessageRead(**(await bridge_runtime_service.get_diagnostic_summary()))
+
+
+@app.post("/api/headless/happy-path-demo", response_model=HeadlessHappyPathDemoRead)
+async def run_headless_happy_path_demo(
+    payload: HeadlessHappyPathDemoRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> HeadlessHappyPathDemoRead:
+    try:
+        demo = await bridge_runtime_service.happy_path_demo(
+            db,
+            workspace_path=payload.workspace_path,
+            project_name=payload.project_name,
+            user_request=payload.user_request,
+            mode=payload.mode,
+            read_only_first=payload.read_only_first,
+            attach_policy=payload.attach_policy,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return HeadlessHappyPathDemoRead(**demo)
 
 
 @app.get("/api/orchestrations/{orchestration_id}", response_model=OrchestrationSessionRead)
@@ -1197,6 +1351,40 @@ def get_project_handoff_summary(
     return BridgeMessageRead(**bridge_runtime_service.get_handoff_summary(db, project=project))
 
 
+@app.get("/api/projects/{project_id}/handoff/evidence", response_model=list[HandoffEvidenceRead])
+def get_project_handoff_evidence(
+    project_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> list[HandoffEvidenceRead]:
+    project = _get_project_or_404(db, project_id)
+    return [HandoffEvidenceRead.model_validate(item) for item in service.list_handoff_evidence(db, project)]
+
+
+@app.post("/api/projects/{project_id}/handoff/evidence", response_model=HandoffEvidenceRead)
+def create_project_handoff_evidence(
+    project_id: int,
+    payload: HandoffEvidenceCreate,
+    request: Request,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> HandoffEvidenceRead:
+    project = _get_project_or_404(db, project_id)
+    return HandoffEvidenceRead.model_validate(service.add_handoff_evidence(db, project, payload.model_dump()))
+
+
+@app.post("/api/projects/{project_id}/handoff/generate", response_model=EvidenceBasedHandoffRead)
+def generate_project_handoff_record(
+    project_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> EvidenceBasedHandoffRead:
+    project = _get_project_or_404(db, project_id)
+    return EvidenceBasedHandoffRead.model_validate(service.generate_evidence_handoff(db, project))
+
+
 @app.get("/api/projects/{project_id}/safe-mode", response_model=SafeModeStatusRead)
 def get_project_safe_mode(
     project_id: int,
@@ -1237,6 +1425,223 @@ async def resume_workspace(
     return ResumeWorkspaceRead(**result)
 
 
+@app.get("/api/subagent-policy", response_model=SubagentPolicyRead)
+def get_subagent_policy(
+    request: Request,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> SubagentPolicyRead:
+    return SubagentPolicyRead(**subagent_planner_service._serialize_policy(subagent_planner_service.ensure_policy(db)))
+
+
+@app.put("/api/subagent-policy", response_model=SubagentPolicyRead)
+def update_subagent_policy(
+    payload: SubagentPolicyUpdate,
+    request: Request,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> SubagentPolicyRead:
+    policy = subagent_planner_service.update_policy(db, payload.model_dump(exclude_none=True))
+    return SubagentPolicyRead(**subagent_planner_service._serialize_policy(policy))
+
+
+@app.post("/api/projects/{project_id}/subagent-bursts/recommend", response_model=SubagentBurstRecommendationRead)
+def recommend_subagent_burst(
+    project_id: int,
+    payload: SubagentBurstRecommendRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> SubagentBurstRecommendationRead:
+    project = _get_project_or_404(db, project_id)
+    orchestration = coordinator.get_active_session_for_project(db, project)
+    recommendation = subagent_planner_service.recommend_burst(
+        db,
+        project=project,
+        payload=payload.model_dump(),
+        orchestration_id=orchestration.id if orchestration is not None else None,
+    )
+    return SubagentBurstRecommendationRead(**recommendation)
+
+
+@app.get("/api/projects/{project_id}/subagent-batches", response_model=list[SubagentBatchRead])
+def list_project_subagent_batches(
+    project_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> list[SubagentBatchRead]:
+    project = _get_project_or_404(db, project_id)
+    return [SubagentBatchRead(**item) for item in subagent_planner_service.list_batches(db, project)]
+
+
+@app.get("/api/subagents/batches/{batch_id}", response_model=SubagentBatchRead)
+def get_subagent_batch(
+    batch_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> SubagentBatchRead:
+    batch = _get_subagent_batch_or_404(db, batch_id)
+    return SubagentBatchRead(**subagent_planner_service.serialize_batch(db, batch))
+
+
+@app.post("/api/subagents/batches/{batch_id}/results", response_model=SubagentBatchRead)
+def ingest_subagent_batch_results(
+    batch_id: int,
+    payload: SubagentBatchResultsIngestRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> SubagentBatchRead:
+    batch = _get_subagent_batch_or_404(db, batch_id)
+    try:
+        updated = subagent_planner_service.ingest_results(db, batch, payload.model_dump())
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return SubagentBatchRead(**subagent_planner_service.serialize_batch(db, updated))
+
+
+@app.post("/api/projects/{project_id}/subagent-agents/generate", response_model=CustomCodexAgentsGenerateRead)
+def generate_custom_codex_agents(
+    project_id: int,
+    payload: CustomCodexAgentsGenerateRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> CustomCodexAgentsGenerateRead:
+    project = _get_project_or_404(db, project_id)
+    result = subagent_planner_service.generate_custom_agents(
+        db,
+        project,
+        overwrite_existing=payload.overwrite_existing,
+        template_names=payload.template_names,
+    )
+    return CustomCodexAgentsGenerateRead(**result)
+
+
+@app.get("/api/projects/{project_id}/agent-contracts", response_model=list[AgentContractRead])
+def get_project_agent_contracts(
+    project_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> list[AgentContractRead]:
+    project = _get_project_or_404(db, project_id)
+    contracts = service._sync_agent_contracts(db, project)
+    return [AgentContractRead.model_validate(contract) for contract in contracts]
+
+
+@app.get("/api/projects/{project_id}/decision-ledger", response_model=list[DecisionRecordRead])
+def get_project_decision_ledger(
+    project_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> list[DecisionRecordRead]:
+    project = _get_project_or_404(db, project_id)
+    decisions = service._sync_decision_records(db, project)
+    return [DecisionRecordRead.model_validate(entry) for entry in decisions]
+
+
+@app.get("/api/projects/{project_id}/path-locks", response_model=list[PathLockRead])
+def get_project_path_locks(
+    project_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> list[PathLockRead]:
+    project = _get_project_or_404(db, project_id)
+    locks = service._sync_path_locks(db, project)
+    return [PathLockRead.model_validate(lock) for lock in locks]
+
+
+@app.get("/api/projects/{project_id}/snapshots", response_model=list[ProjectSnapshotRead])
+def get_project_snapshots(
+    project_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> list[ProjectSnapshotRead]:
+    project = _get_project_or_404(db, project_id)
+    return [ProjectSnapshotRead.model_validate(snapshot) for snapshot in service.list_snapshots(db, project)]
+
+
+@app.post("/api/projects/{project_id}/snapshots", response_model=ProjectSnapshotRead)
+def create_project_snapshot(
+    project_id: int,
+    payload: ProjectSnapshotCreate,
+    request: Request,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> ProjectSnapshotRead:
+    project = _get_project_or_404(db, project_id)
+    snapshot = service.create_project_snapshot(
+        db,
+        project,
+        label=payload.label,
+        description=payload.description,
+        created_before_task_id=payload.created_before_task_id,
+        created_before_agent_id=payload.created_before_agent_id,
+    )
+    return ProjectSnapshotRead.model_validate(snapshot)
+
+
+@app.get("/api/projects/{project_id}/snapshots/{snapshot_id}/restore-plan", response_model=SnapshotRestorePlanRead)
+def get_snapshot_restore_plan(
+    project_id: int,
+    snapshot_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> SnapshotRestorePlanRead:
+    project = _get_project_or_404(db, project_id)
+    snapshot = _get_snapshot_or_404(db, snapshot_id)
+    if snapshot.project_id != project.id:
+        raise HTTPException(status_code=404, detail="Project snapshot not found")
+    return SnapshotRestorePlanRead(**service.build_restore_plan(db, snapshot_id))
+
+
+@app.get("/api/projects/{project_id}/recovery-plans", response_model=list[RecoveryPlanRead])
+def get_project_recovery_plans(
+    project_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> list[RecoveryPlanRead]:
+    project = _get_project_or_404(db, project_id)
+    return [RecoveryPlanRead.model_validate(plan) for plan in service.list_recovery_plans(db, project)]
+
+
+@app.post("/api/projects/{project_id}/recovery-plans", response_model=RecoveryPlanRead)
+def create_project_recovery_plan(
+    project_id: int,
+    payload: RecoveryPlanCreate,
+    request: Request,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> RecoveryPlanRead:
+    project = _get_project_or_404(db, project_id)
+    plan = service.create_recovery_plan(db, project, payload.model_dump())
+    return RecoveryPlanRead.model_validate(plan)
+
+
+@app.post("/api/recovery-plans/{plan_id}/select", response_model=RecoveryPlanRead)
+def select_project_recovery_plan(
+    plan_id: int,
+    payload: RecoveryPlanSelectRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> RecoveryPlanRead:
+    _get_recovery_plan_or_404(db, plan_id)
+    try:
+        plan = service.select_recovery_action(db, plan_id, payload.action)
+    except ValueError as exc:
+        raise HTTPException(status_code=400 if "not found" not in str(exc).lower() else 404, detail=str(exc)) from exc
+    return RecoveryPlanRead.model_validate(plan)
+
+
 @app.post("/api/projects", response_model=ProjectRead)
 def create_project(payload: ProjectCreate, db: Session = Depends(get_db)) -> Project:
     project = service.create_project(
@@ -1255,9 +1660,10 @@ def create_project(payload: ProjectCreate, db: Session = Depends(get_db)) -> Pro
 
 @app.post("/api/projects/import-folder", response_model=ImportFolderResponse)
 def import_existing_folder(payload: ImportFolderRequest, db: Session = Depends(get_db)) -> ImportFolderResponse:
-    folder = Path(payload.folder_path).expanduser().resolve()
-    if not folder.exists() or not folder.is_dir():
-        raise HTTPException(status_code=400, detail="Folder path does not exist or is not a directory.")
+    try:
+        folder = resolve_local_path(payload.folder_path, must_exist=True, must_be_dir=True)
+    except PathValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     project_name = payload.name.strip() if payload.name and payload.name.strip() else folder.name
     project = service.create_project(
         db,

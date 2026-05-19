@@ -12,6 +12,7 @@ from typing import Any
 
 from config import LAUNCHER_ROOT, RUNTIME_LOGS_ROOT
 from runtime_paths import diagnostics_root, runtime_path_payload
+from security.path_validation import PathValidationError, ensure_within_roots
 from security.redaction import redact_text, redact_value
 
 
@@ -168,10 +169,13 @@ def write_diagnostic_report(
     }
 
 
-def open_folder(path: str) -> dict[str, Any]:
-    target = Path(path)
-    if not target.exists():
-        return {"ok": False, "path": str(target), "message": "Path does not exist."}
+def open_folder(path: str | Path, *, allowed_roots: list[str | Path] | None = None) -> dict[str, Any]:
+    try:
+        target = ensure_within_roots(path, allowed_roots or [diagnostics_root()], must_exist=True)
+    except PathValidationError as exc:
+        return {"ok": False, "path": str(path), "message": str(exc)}
+    if not target.is_dir():
+        return {"ok": False, "path": str(target), "message": "Path must be a directory."}
     try:
         if sys.platform.startswith("win"):
             os.startfile(target)  # type: ignore[attr-defined]

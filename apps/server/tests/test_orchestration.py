@@ -87,6 +87,22 @@ def test_attach_workspace_imports_existing_codebase_folder(client) -> None:
     assert project["scan_status"] == "completed"
 
 
+def test_attach_workspace_rejects_non_local_path_inputs(client) -> None:
+    response = client.post(
+        "/api/orchestrations/attach-workspace",
+        headers=_bridge_headers(),
+        json={
+            "workspace_path": "https://example.com/not-a-workspace",
+            "project_name": "Bad Attach",
+            "mode": "auto",
+            "read_only_first": True,
+            "attach_policy": "reuse_existing",
+        },
+    )
+    assert response.status_code == 400
+    assert "local filesystem" in response.json()["detail"].lower()
+
+
 def test_attach_known_folder_reuses_existing_project(client) -> None:
     workspace = _fresh_workspace("attach-known")
     first = client.post(
@@ -204,3 +220,31 @@ def test_bridge_routes_require_token(client) -> None:
     assert response.status_code == 401
     status = client.get("/api/daemon/status")
     assert status.status_code == 401
+
+
+def test_targeted_scan_ignores_parent_escape_targets(client) -> None:
+    workspace = _fresh_workspace("targeted-scan")
+    (workspace / "README.md").write_text("# Existing codebase\n", encoding="utf-8")
+    (workspace / "src").mkdir(exist_ok=True)
+    (workspace / "src" / "main.py").write_text("print('ok')\n", encoding="utf-8")
+    attach = client.post(
+        "/api/orchestrations/attach-workspace",
+        headers=_bridge_headers(),
+        json={
+            "workspace_path": workspace.as_posix(),
+            "project_name": "Targeted Scan",
+            "mode": "existing_codebase",
+            "read_only_first": True,
+            "attach_policy": "reuse_existing",
+        },
+    )
+    assert attach.status_code == 200, attach.text
+    project_id = attach.json()["project"]["id"]
+
+    scan = client.post(
+        f"/api/projects/{project_id}/scan-codebase/targeted",
+        json={"target_paths": ["src", "../escape", "C:/outside"]},
+    )
+    assert scan.status_code == 200, scan.text
+    payload = scan.json()
+    assert payload["indexed_areas_json"] == ["src"]

@@ -75,6 +75,16 @@ Bridge behavior:
 - send the user’s selected option back through `mission_control_answer_decision`
 - fetch the evidence-backed handoff only when Mission Control reports readiness
 
+Chat-native bridge summaries are available from:
+
+- `GET /api/orchestrations/{id}/status-summary`
+- `GET /api/projects/{id}/status-summary`
+- `GET /api/orchestrations/{id}/event-digest`
+- `GET /api/projects/{id}/event-digest`
+- `GET /api/orchestrations/{id}/handoff-summary`
+- `GET /api/projects/{id}/handoff-summary`
+- `GET /api/headless/diagnostic-summary`
+
 Installation and packaging guidance lives in [docs/CODEX_PLUGIN_INSTALL.md](CODEX_PLUGIN_INSTALL.md). Bridge behavior and security are documented in [docs/CODEX_PLUGIN_MODE.md](CODEX_PLUGIN_MODE.md) and [docs/MCP_SECURITY.md](MCP_SECURITY.md).
 
 Headless bridge runtime docs:
@@ -82,7 +92,22 @@ Headless bridge runtime docs:
 - [Bridge Runtime](BRIDGE_RUNTIME.md)
 - [Pending Decisions](PENDING_DECISIONS.md)
 - [Plugin Health Doctor](PLUGIN_HEALTH_DOCTOR.md)
+- [Chat-Native UX](CHAT_NATIVE_UX.md)
+- [Bridge Messages](BRIDGE_MESSAGES.md)
+- [Headless Happy Path](HEADLESS_HAPPY_PATH.md)
 - [Chat-Native Handoffs](CHAT_NATIVE_HANDOFFS.md)
+- [Diagnostic Summaries](DIAGNOSTIC_SUMMARIES.md)
+- [Headless Install](HEADLESS_INSTALL.md)
+- [Autowire Providers](AUTOWIRE_PROVIDERS.md)
+- [Headless Health](HEADLESS_HEALTH.md)
+- [No-UI Setup](NO_UI_SETUP.md)
+
+Headless bootstrap additions:
+
+- install and repair scripts target headless mode first
+- daemon startup is localhost-only by default
+- dashboard startup is optional and disabled in generated headless config
+- runner autowire prefers `dry_run`, `codex_cli`, and local `ollama` before anything that can bill an API account
 
 ## Codex login vs API billing
 

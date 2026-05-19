@@ -85,3 +85,10 @@ def test_appimagetool_env_enables_extract_and_run(monkeypatch) -> None:
     monkeypatch.delenv("APPIMAGE_EXTRACT_AND_RUN", raising=False)
     env = module.appimagetool_env()
     assert env["APPIMAGE_EXTRACT_AND_RUN"] == "1"
+
+
+def test_package_workflow_declares_read_only_permissions() -> None:
+    workflow_path = Path(__file__).resolve().parents[3] / ".github" / "workflows" / "package-desktop.yml"
+    workflow_text = workflow_path.read_text(encoding="utf-8")
+    assert "permissions:" in workflow_text
+    assert "contents: read" in workflow_text

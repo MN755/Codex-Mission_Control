@@ -12,7 +12,7 @@ from bridge_formatter import (
 )
 from conftest import sample_workspace, wait_for
 from db import SessionLocal
-from models import EvidenceBasedHandoff, ManagerQuestion, Project, ProjectEvent, utc_now
+from models import DecisionRecord, EvidenceBasedHandoff, ManagerQuestion, Project, ProjectEvent, utc_now
 
 
 def _bridge_headers() -> dict[str, str]:
@@ -102,7 +102,8 @@ def test_bridge_formatter_command_and_tool_approval_payloads() -> None:
     )
     assert command["source_type"] == "security"
     assert command["message_type"] == "approval_request"
-    assert "Command: `python -m pytest`" in command["fallback_markdown"]
+    assert "**Command:** `python -m pytest`" in command["fallback_markdown"]
+    assert "### Options" in command["fallback_markdown"]
     assert tool["source_type"] == "security"
     assert tool["machine_payload_json"]["tool_name"] == "mission_control_get_status"
 
@@ -150,12 +151,40 @@ def test_bridge_formatter_manager_question_handoff_and_redaction() -> None:
         created_at=utc_now(),
     )
     assert question["message_type"] == "manager_question"
-    assert "Question:" in question["fallback_markdown"]
+    assert "**Question:**" in question["fallback_markdown"]
     assert handoff["user_action_required"] is True
     assert "Validation / evidence" in handoff["fallback_markdown"]
     assert diagnostic["redaction_status"] == "redacted"
     assert "sk-proj-secret-value" not in diagnostic["summary"]
     assert "super-secret-token" not in diagnostic["fallback_markdown"]
+
+
+def test_headless_diagnostic_summary_route_formats_sections_and_redacts(monkeypatch, client) -> None:
+    async def fake_health() -> dict:
+        return {
+            "status": "broken",
+            "checks": [
+                {"label": "Daemon reachable", "status": "ready", "summary": "Daemon responded from localhost."},
+                {"label": "Bridge auth", "status": "broken", "summary": "OPENAI_API_KEY=sk-proj-secret-value leaked in logs."},
+            ],
+            "recommended_next_steps": ["Restart the local bridge after checking the token file."],
+            "safe_troubleshooting_commands": ["codex login status", "set OPENAI_API_KEY=should-not-leak"],
+            "notes": ["Authorization: Bearer super-secret-token should never be shown."],
+            "checked_at": utc_now(),
+        }
+
+    monkeypatch.setattr("bridge_messages.mission_control_plugin_health", fake_health)
+    response = client.get("/api/headless/diagnostic-summary", headers=_bridge_headers())
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["message_type"] == "diagnostic_summary"
+    assert payload["user_action_required"] is True
+    assert "## Mission Control Diagnostics" in payload["fallback_markdown"]
+    assert "### What works" in payload["fallback_markdown"]
+    assert "### What needs attention" in payload["fallback_markdown"]
+    assert "### Safe commands" in payload["fallback_markdown"]
+    assert "sk-proj-secret-value" not in payload["fallback_markdown"]
+    assert "super-secret-token" not in payload["fallback_markdown"]
 
 
 def test_pending_decision_bridge_routes_and_answer_flow(client) -> None:
@@ -351,3 +380,78 @@ def test_resume_workspace_reports_found_and_not_found_states(client) -> None:
     )
     assert missing.status_code == 200, missing.text
     assert missing.json()["status"] == "not_found"
+
+
+def test_resume_workspace_rejects_non_local_path_inputs(client) -> None:
+    response = client.post(
+        "/api/mission-control/resume-workspace",
+        headers=_bridge_headers(),
+        json={"workspace_path": "file:///tmp/not-local", "attach_policy": "reuse_existing"},
+    )
+    assert response.status_code == 400
+    assert "local filesystem" in response.json()["detail"].lower()
+
+
+def test_bridge_support_endpoints_cover_decisions_snapshots_and_recovery(client) -> None:
+    project = _create_project(client, "Bridge Support", "bridge-support")
+    db = SessionLocal()
+    try:
+        db.add(
+            DecisionRecord(
+                project_id=project["id"],
+                decision_type="manager_question",
+                title="Keep current architecture",
+                decision="preserve",
+                reason="User approved the current structure.",
+                made_by="user",
+                impact_area_json=["requirements"],
+                reversible=True,
+            )
+        )
+        db.commit()
+    finally:
+        db.close()
+
+    ledger = client.get(f"/api/projects/{project['id']}/decision-ledger", headers=_bridge_headers())
+    assert ledger.status_code == 200, ledger.text
+    assert ledger.json()[0]["title"] == "Keep current architecture"
+
+    locks = client.get(f"/api/projects/{project['id']}/path-locks", headers=_bridge_headers())
+    assert locks.status_code == 200, locks.text
+    assert isinstance(locks.json(), list)
+
+    contracts = client.get(f"/api/projects/{project['id']}/agent-contracts", headers=_bridge_headers())
+    assert contracts.status_code == 200, contracts.text
+    assert isinstance(contracts.json(), list)
+
+    snapshot = client.post(
+        f"/api/projects/{project['id']}/snapshots",
+        headers=_bridge_headers(),
+        json={"label": "Before risky change", "description": "Checkpoint before recovery work."},
+    )
+    assert snapshot.status_code == 200, snapshot.text
+    snapshot_payload = snapshot.json()
+    assert snapshot_payload["label"] == "Before risky change"
+
+    restore = client.get(
+        f"/api/projects/{project['id']}/snapshots/{snapshot_payload['id']}/restore-plan",
+        headers=_bridge_headers(),
+    )
+    assert restore.status_code == 200, restore.text
+    assert "summary" in restore.json()
+
+    recovery = client.post(
+        f"/api/projects/{project['id']}/recovery-plans",
+        headers=_bridge_headers(),
+        json={
+            "trigger_type": "agent_stuck",
+            "trigger_summary": "Verifier has been blocked for too long.",
+            "suggested_actions_json": ["pause_project", "ask_user"],
+        },
+    )
+    assert recovery.status_code == 200, recovery.text
+    assert recovery.json()["status"] == "proposed"
+
+    recovery_list = client.get(f"/api/projects/{project['id']}/recovery-plans", headers=_bridge_headers())
+    assert recovery_list.status_code == 200, recovery_list.text
+    assert recovery_list.json()[0]["trigger_type"] == "agent_stuck"

@@ -9,6 +9,7 @@ Pending decisions are the single relay format for approvals and high-impact ques
 - `write_permission`
 - `manager_question`
 - `swarm_approval`
+- `subagent_burst_approval`
 - `snapshot_approval`
 - `handoff_review`
 - `recovery_decision`
@@ -22,17 +23,28 @@ Pending decisions are the single relay format for approvals and high-impact ques
 - `GET /api/decisions/{decision_id}/bridge-message`
 - `POST /api/decisions/{decision_id}/answer`
 
+Attach ambiguity also uses the same relay model. If Mission Control finds multiple projects for one workspace, it raises a pending decision instead of guessing and making a mess.
+
 ## Response shape
 
 Each pending decision includes:
 
-- identity and project or orchestration linkage
-- decision type
-- title and message
-- risk level
-- allowed options
-- recommended option when available
-- optional presentation payload for future custom UI
+- `id`
+- `project_id`
+- `orchestration_id`
+- `decision_type`
+- `title`
+- `message`
+- `requesting_agent_id`
+- `related_task_id`
+- `risk_level`
+- `options_json`
+- `recommended_option`
+- `status`
+- `presentation_json`
+- `created_at`
+- `answered_at`
+- `answer_json`
 
 ## Answer behavior
 
@@ -43,6 +55,8 @@ Each pending decision includes:
 - updates the decision status
 - writes an audit record when appropriate
 - returns the answered decision plus the next compact status summary
+
+That next summary now also works for attach-workspace decisions instead of shrugging and returning `null`, which was not exactly a shining example of bridge ergonomics.
 
 Invalid answers are rejected instead of being guessed. Radical concept.
 
@@ -62,6 +76,8 @@ Every payload is designed to work two ways:
 
 - structured JSON for future Codex card rendering
 - fallback Markdown for plain chat
+
+Bridge messages are available at `GET /api/decisions/{decision_id}/bridge-message` so Codex chat can render the decision without acting like the manager.
 
 ## Security
 

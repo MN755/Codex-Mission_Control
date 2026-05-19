@@ -10,7 +10,7 @@ The Codex chat agent is not the Mission Control Manager. It is the bridge betwee
 - Planning and intake workflows handle import, interviews, clarifications, plans, and scoped follow-up requests.
 - Execution and swarm workflows handle swarm plans, contracts, path locks, snapshots, and conflict or stuck-agent handling.
 - Validation, evidence, docs, and release workflows keep proof, runbooks, public docs, and release readiness explicit.
-- Diagnostics and policy workflows cover recovery, health, model or tool policy, local-first posture, and provider modes.
+- Diagnostics and policy workflows cover recovery, health, headless install or autowire, model or tool policy, local-first posture, and provider modes.
 
 ## How Codex should use these skills
 
@@ -49,4 +49,4 @@ The Codex chat agent is not the Mission Control Manager. It is the bridge betwee
 
 ## Index
 
-See `plugins/mission-control/SKILL_INDEX.md` for the grouped index of all 50 skills.
+See `plugins/mission-control/SKILL_INDEX.md` for the grouped index of all 53 skills.

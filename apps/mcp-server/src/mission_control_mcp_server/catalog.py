@@ -42,6 +42,7 @@ def prompt_entries() -> list[dict[str, Any]]:
 
 def prompt_entry(name: str) -> dict[str, Any]:
     for entry in prompt_entries():
-        if entry["name"] == name:
+        aliases = [str(alias) for alias in entry.get("aliases", [])]
+        if entry["name"] == name or name in aliases:
             return entry
     raise RuntimeError(f"Unknown Mission Control prompt: {name}")

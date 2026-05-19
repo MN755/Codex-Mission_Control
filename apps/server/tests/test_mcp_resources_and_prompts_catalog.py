@@ -9,7 +9,11 @@ PLUGIN_MANIFEST = ROOT / "plugins" / "mission-control" / "plugin.json"
 RESOURCES_CATALOG = ROOT / "plugins" / "mission-control" / "mcp" / "resources.json"
 PROMPTS_CATALOG = ROOT / "plugins" / "mission-control" / "mcp" / "prompts.json"
 PROMPTS_DIR = ROOT / "plugins" / "mission-control" / "prompts"
-DOC_PATH = ROOT / "docs" / "MCP_RESOURCES_PROMPTS.md"
+RUNTIME_DOC = ROOT / "docs" / "MCP_RUNTIME.md"
+TOOLS_DOC = ROOT / "docs" / "MCP_TOOLS.md"
+RESOURCES_DOC = ROOT / "docs" / "MCP_RESOURCES.md"
+PROMPTS_DOC = ROOT / "docs" / "MCP_PROMPTS.md"
+PENDING_DOC = ROOT / "docs" / "PENDING_DECISIONS.md"
 
 
 EXPECTED_RESOURCES = [
@@ -25,24 +29,28 @@ EXPECTED_RESOURCES = [
     "mission-control://projects/{project_id}/risk-register",
     "mission-control://projects/{project_id}/agent-contracts",
     "mission-control://projects/{project_id}/validation-summary",
+    "mission-control://projects/{project_id}/decision-ledger",
+    "mission-control://projects/{project_id}/path-locks",
 ]
 
 EXPECTED_PROMPTS = [
-    "attach-current-workspace",
-    "use-mission-control-for-this-repo",
-    "import-existing-codebase",
-    "start-manager-led-task",
-    "continue-orchestration",
-    "show-pending-approvals",
-    "answer-pending-approval",
-    "review-latest-handoff",
-    "debug-failed-orchestration",
-    "pause-orchestration",
-    "resume-orchestration",
-    "explain-current-swarm",
-    "switch-swarm-strategy",
-    "enable-safe-mode",
-    "generate-agents-md-proposal",
+    "attach_current_workspace",
+    "use_mission_control_for_repo",
+    "import_existing_codebase",
+    "start_manager_led_task",
+    "continue_orchestration",
+    "show_pending_approvals",
+    "answer_pending_approval",
+    "review_latest_handoff",
+    "debug_failed_orchestration",
+    "pause_orchestration",
+    "resume_orchestration",
+    "explain_current_swarm",
+    "switch_swarm_strategy",
+    "enable_safe_mode",
+    "generate_agents_md_proposal",
+    "install_from_github",
+    "autowire_providers",
 ]
 
 
@@ -92,7 +100,15 @@ def test_prompt_catalog_and_prompt_files_exist() -> None:
 
 
 def test_docs_explain_resources_prompts_and_headless_boundary() -> None:
-    content = DOC_PATH.read_text(encoding="utf-8")
-    assert "## Resource Rules" in content
-    assert "## Prompt Catalog" in content
-    assert "dashboard is optional" in content.lower()
+    runtime_content = RUNTIME_DOC.read_text(encoding="utf-8")
+    tools_content = TOOLS_DOC.read_text(encoding="utf-8")
+    resources_content = RESOURCES_DOC.read_text(encoding="utf-8")
+    prompts_content = PROMPTS_DOC.read_text(encoding="utf-8")
+    pending_content = PENDING_DOC.read_text(encoding="utf-8")
+
+    assert "Codex chat is the bridge" in runtime_content
+    assert "localhost" in runtime_content.lower()
+    assert "mission_control_attach_workspace" in tools_content
+    assert "mission-control://projects/{project_id}/decision-ledger" in resources_content
+    assert "attach_current_workspace" in prompts_content
+    assert "Invalid answers are rejected" in pending_content

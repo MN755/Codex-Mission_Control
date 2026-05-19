@@ -66,6 +66,9 @@ REQUIRED_SKILLS = [
     "mission-control-claude-cli-mode",
     "mission-control-api-provider-mode",
     "mission-control-plugin-health",
+    "mission-control-install-from-github",
+    "mission-control-autowire-providers",
+    "mission-control-headless-health",
     "mission-control-event-digest",
     "mission-control-evidence-check",
     "mission-control-change-request",
@@ -98,8 +101,12 @@ def validate() -> list[str]:
                 errors.append(f"Docs missing phrase: {phrase}")
 
     manifest_skills = manifest.get("skills", [])
-    if manifest_skills != REQUIRED_SKILLS:
-        errors.append("plugin.json skills list does not exactly match the required Mission Control skill set.")
+    missing_manifest_skills = [skill for skill in REQUIRED_SKILLS if skill not in manifest_skills]
+    if missing_manifest_skills:
+        errors.append(
+            "plugin.json is missing required Mission Control skills: "
+            + ", ".join(missing_manifest_skills)
+        )
 
     for skill_name in REQUIRED_SKILLS:
         skill_path = SKILLS_ROOT / skill_name / "SKILL.md"

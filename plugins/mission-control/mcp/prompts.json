@@ -1,9 +1,10 @@
 {
-  "catalog_version": "0.2.0",
+  "catalog_version": "0.3.0",
   "kind": "mission-control-prompt-catalog",
   "prompts": [
     {
-      "name": "attach-current-workspace",
+      "name": "attach_current_workspace",
+      "aliases": ["attach-current-workspace"],
       "title": "Attach current workspace",
       "description": "Attach the current folder to Mission Control and report the safest next step.",
       "required_arguments": ["WORKSPACE_PATH", "USER_REQUEST"],
@@ -14,7 +15,8 @@
       "prompt_text": "Attach the current workspace to Mission Control. Reuse an existing project or orchestration if safe. If the folder looks like an existing codebase, prefer read-only first behavior. Summarize the attach result and the safest next step in compact markdown."
     },
     {
-      "name": "use-mission-control-for-this-repo",
+      "name": "use_mission_control_for_repo",
+      "aliases": ["use-mission-control-for-this-repo"],
       "title": "Use Mission Control for this repo",
       "description": "Start a manager-led Mission Control workflow for the current repo from Codex chat.",
       "required_arguments": ["WORKSPACE_PATH", "USER_REQUEST"],
@@ -25,18 +27,20 @@
       "prompt_text": "Use Mission Control for this repo. Attach the workspace, start the requested manager-led task, summarize status, and surface pending decisions if Mission Control needs user input. Do not act like the manager yourself."
     },
     {
-      "name": "import-existing-codebase",
+      "name": "import_existing_codebase",
+      "aliases": ["import-existing-codebase"],
       "title": "Import existing codebase",
       "description": "Attach an existing repo or folder to Mission Control with a read-only scan and understanding pass first.",
       "required_arguments": ["WORKSPACE_PATH", "USER_REQUEST"],
-      "tool_sequence": ["mission_control_attach_workspace", "mission_control_get_codebase_map", "mission_control_get_codebase_understanding", "mission_control_set_import_interview_choice", "mission_control_start_task"],
+      "tool_sequence": ["mission_control_import_existing_codebase", "mission_control_set_import_interview_choice", "mission_control_start_task"],
       "resource_sequence": ["mission-control://projects/{project_id}/codebase-map", "mission-control://projects/{project_id}/status"],
       "expected_chat_output": "Codebase map summary, understanding summary, interview choice request, and safe next step.",
       "safety_notes": "Do not run write-capable steps until Mission Control and the user allow them.",
       "prompt_text": "Import this existing codebase into Mission Control. Attach it in read-only-first mode, retrieve the codebase map and understanding summary, ask for the interview mode if needed, then start the requested task through Mission Control."
     },
     {
-      "name": "start-manager-led-task",
+      "name": "start_manager_led_task",
+      "aliases": ["start-manager-led-task"],
       "title": "Start Manager-led task",
       "description": "Start a Mission Control task for an already attached project and return compact status.",
       "required_arguments": ["PROJECT_ID", "USER_REQUEST"],
@@ -47,29 +51,20 @@
       "prompt_text": "Start a Mission Control manager-led task for the attached project. Return compact status and surface any pending decisions immediately if the orchestration is waiting on the user."
     },
     {
-      "name": "ask-manager-for-plan",
-      "title": "Ask Manager for plan",
-      "description": "Request a fresh Mission Control manager plan without replacing the manager with Codex chat logic.",
-      "required_arguments": ["PROJECT_ID", "USER_REQUEST"],
-      "tool_sequence": ["mission_control_start_task", "mission_control_get_status", "mission_control_get_pending_decisions"],
-      "resource_sequence": ["mission-control://projects/{project_id}/status", "mission-control://projects/{project_id}/swarm-plan"],
-      "expected_chat_output": "Compact status plus the latest manager plan posture or plan-blocking decision.",
-      "safety_notes": "Use Mission Control as the planner. Do not invent the plan locally in Codex chat.",
-      "prompt_text": "Ask Mission Control Manager for a plan for this project. Route the request through Mission Control, summarize the returned status and plan posture, and surface any pending decisions instead of improvising the plan in chat."
-    },
-    {
-      "name": "continue-orchestration",
+      "name": "continue_orchestration",
+      "aliases": ["continue-orchestration"],
       "title": "Continue orchestration",
       "description": "Check the current orchestration, summarize progress, and stop at pending user decisions when necessary.",
       "required_arguments": ["PROJECT_OR_ORCHESTRATION_REFERENCE"],
-      "tool_sequence": ["mission_control_get_status", "mission_control_get_pending_decisions", "mission_control_get_orchestration_events"],
+      "tool_sequence": ["mission_control_get_status", "mission_control_get_pending_decisions", "mission_control_get_event_digest"],
       "resource_sequence": ["mission-control://orchestrations/{orchestration_id}/status", "mission-control://projects/{project_id}/agents", "mission-control://projects/{project_id}/pending-decisions"],
       "expected_chat_output": "Progress summary, blockers, active agents, and pending decisions if present.",
       "safety_notes": "Poll only when useful and do not confuse waiting with completion.",
-      "prompt_text": "Continue the Mission Control orchestration by checking status, recent events, and pending decisions. If the run is blocked on the user, present that cleanly and stop there. If it is active, summarize progress in compact markdown."
+      "prompt_text": "Continue the Mission Control orchestration by checking status, a safe event digest, and pending decisions. If the run is blocked on the user, present that cleanly and stop there. If it is active, summarize progress in compact markdown."
     },
     {
-      "name": "show-pending-approvals",
+      "name": "show_pending_approvals",
+      "aliases": ["show-pending-approvals"],
       "title": "Show pending approvals",
       "description": "Load the current pending decisions and present the top user-facing approval or question cleanly.",
       "required_arguments": ["PROJECT_OR_ORCHESTRATION_REFERENCE"],
@@ -80,7 +75,8 @@
       "prompt_text": "Show the current pending approvals or manager questions from Mission Control. Render the highest-priority decision in compact markdown with risk, reason, and options."
     },
     {
-      "name": "answer-pending-approval",
+      "name": "answer_pending_approval",
+      "aliases": ["answer-pending-approval"],
       "title": "Answer pending approval",
       "description": "Send the user's selected answer back to Mission Control and confirm the result.",
       "required_arguments": ["DECISION_ID", "OPTION_ID", "SELECTED_TEXT", "FREE_TEXT"],
@@ -91,29 +87,32 @@
       "prompt_text": "Answer the pending Mission Control decision with the user's chosen option, then confirm the updated decision state without implying that any blocked action already ran."
     },
     {
-      "name": "review-latest-handoff",
+      "name": "review_latest_handoff",
+      "aliases": ["review-latest-handoff"],
       "title": "Review latest handoff",
       "description": "Retrieve the latest Mission Control handoff and summarize it for Codex chat.",
       "required_arguments": ["PROJECT_OR_ORCHESTRATION_REFERENCE"],
-      "tool_sequence": ["mission_control_get_handoff"],
+      "tool_sequence": ["mission_control_get_handoff_summary"],
       "resource_sequence": ["mission-control://projects/{project_id}/handoff", "mission-control://projects/{project_id}/validation-summary"],
       "expected_chat_output": "What changed, how to run it, validation posture, limitations, and next steps.",
       "safety_notes": "Warn if the handoff is dry-run or missing evidence.",
       "prompt_text": "Review the latest Mission Control handoff and summarize what changed, how to run it, what validation exists, what limitations remain, and what next steps are recommended."
     },
     {
-      "name": "debug-failed-orchestration",
+      "name": "debug_failed_orchestration",
+      "aliases": ["debug-failed-orchestration"],
       "title": "Debug failed orchestration",
       "description": "Collect the minimum safe context needed to explain a stuck or failed Mission Control run.",
       "required_arguments": ["PROJECT_OR_ORCHESTRATION_REFERENCE"],
-      "tool_sequence": ["mission_control_get_status", "mission_control_get_diagnostics", "mission_control_get_pending_decisions", "mission_control_get_orchestration_events", "mission_control_request_recovery_options"],
-      "resource_sequence": ["mission-control://projects/{project_id}/diagnostics", "mission-control://orchestrations/{orchestration_id}/events"],
+      "tool_sequence": ["mission_control_get_status", "mission_control_get_diagnostics", "mission_control_get_pending_decisions", "mission_control_get_event_digest", "mission_control_request_recovery_plan"],
+      "resource_sequence": ["mission-control://projects/{project_id}/diagnostics", "mission-control://projects/{project_id}/decision-ledger"],
       "expected_chat_output": "Concise blocker explanation and safe recovery options.",
       "safety_notes": "Do not expose raw logs or secrets by default.",
-      "prompt_text": "Debug the failed or stuck Mission Control orchestration by collecting status, diagnostics, pending decisions, and recent events. If available, ask Mission Control for recovery options and summarize the safest next moves."
+      "prompt_text": "Debug the failed or stuck Mission Control orchestration by collecting status, diagnostics, pending decisions, and a safe event digest. If needed, create a recovery plan request and summarize the safest next moves."
     },
     {
-      "name": "pause-orchestration",
+      "name": "pause_orchestration",
+      "aliases": ["pause-orchestration"],
       "title": "Pause orchestration",
       "description": "Pause the active Mission Control orchestration and confirm the new state.",
       "required_arguments": ["ORCHESTRATION_ID"],
@@ -124,7 +123,8 @@
       "prompt_text": "Pause the specified Mission Control orchestration and then confirm the paused state with a compact status summary."
     },
     {
-      "name": "resume-orchestration",
+      "name": "resume_orchestration",
+      "aliases": ["resume-orchestration"],
       "title": "Resume orchestration",
       "description": "Resume a paused Mission Control orchestration after the user confirms it should continue.",
       "required_arguments": ["ORCHESTRATION_ID"],
@@ -135,7 +135,8 @@
       "prompt_text": "Resume the specified Mission Control orchestration if the user asked to continue, then summarize the updated state and any remaining pending decisions."
     },
     {
-      "name": "explain-current-swarm",
+      "name": "explain_current_swarm",
+      "aliases": ["explain-current-swarm"],
       "title": "Explain current swarm",
       "description": "Explain the active or proposed Mission Control swarm plan in compact Codex chat language.",
       "required_arguments": ["PROJECT_ID"],
@@ -146,7 +147,8 @@
       "prompt_text": "Explain the current Mission Control swarm plan. Keep it short, include mode, size, risks, dynamic spawning state, and whether any approval gates apply."
     },
     {
-      "name": "switch-swarm-strategy",
+      "name": "switch_swarm_strategy",
+      "aliases": ["switch-swarm-strategy"],
       "title": "Switch swarm strategy",
       "description": "Request a change to swarm strategy and summarize the updated plan or approval requirement.",
       "required_arguments": ["PROJECT_ID", "STRATEGY_REQUEST"],
@@ -157,26 +159,62 @@
       "prompt_text": "Switch the Mission Control swarm strategy according to the user's request, regenerate or refresh the plan if needed, and summarize the updated plan with any approval implications."
     },
     {
-      "name": "enable-safe-mode",
+      "name": "enable_safe_mode",
+      "aliases": ["enable-safe-mode"],
       "title": "Enable safe mode",
       "description": "Tighten project safety settings for a cautious Mission Control run.",
       "required_arguments": ["PROJECT_ID"],
-      "tool_sequence": ["mission_control_get_project_settings", "mission_control_update_project_settings", "mission_control_get_import_safety", "mission_control_update_import_safety", "mission_control_get_tool_catalog", "mission_control_set_tool_permission"],
-      "resource_sequence": ["mission-control://projects/{project_id}/diagnostics"],
+      "tool_sequence": ["mission_control_enable_safe_mode", "mission_control_get_diagnostics"],
+      "resource_sequence": ["mission-control://projects/{project_id}/diagnostics", "mission-control://projects/{project_id}/path-locks"],
       "expected_chat_output": "Which safety settings were tightened and what remains approval-gated.",
       "safety_notes": "Never claim safe mode is active unless the policy updates succeeded.",
       "prompt_text": "Enable Mission Control safe mode for this project by tightening approvals, preserving read-only import posture, pausing dynamic spawning when supported, and restricting risky tools. Then summarize the resulting safety posture."
     },
     {
-      "name": "generate-agents-md-proposal",
+      "name": "generate_agents_md_proposal",
+      "aliases": ["generate-agents-md-proposal"],
       "title": "Generate AGENTS.md proposal",
       "description": "Produce a chat-friendly AGENTS.md proposal from Mission Control's codebase understanding.",
       "required_arguments": ["PROJECT_ID"],
-      "tool_sequence": ["mission_control_get_codebase_map", "mission_control_get_agents_md_status", "mission_control_propose_agents_md"],
-      "resource_sequence": ["mission-control://projects/{project_id}/codebase-map"],
+      "tool_sequence": ["mission_control_get_codebase_map", "mission_control_get_agents_md_status", "mission_control_generate_agents_md"],
+      "resource_sequence": ["mission-control://projects/{project_id}/codebase-map", "mission-control://projects/{project_id}/agent-contracts"],
       "expected_chat_output": "AGENTS.md status, recommended path, proposal summary, and proposed sections.",
       "safety_notes": "Ask before writing or replacing AGENTS.md.",
       "prompt_text": "Generate an AGENTS.md proposal through Mission Control. Use the codebase map and AGENTS.md status, then present the proposal in Codex chat and ask the user whether to accept or revise it."
+    },
+    {
+      "name": "install_from_github",
+      "title": "Install from GitHub",
+      "description": "Bootstrap Mission Control headlessly from the GitHub repo, then report what is ready in Codex chat.",
+      "required_arguments": ["REPO_URL", "WORKSPACE_PATH"],
+      "tool_sequence": ["mission_control_plugin_health"],
+      "resource_sequence": [],
+      "expected_chat_output": "Install status, daemon/MCP readiness, ready runners, and any user actions still required.",
+      "safety_notes": "Do not ask the user to open the standalone Mission Control UI. Never expose secrets or force API billing.",
+      "prompt_text": "Install Mission Control from GitHub in headless mode, configure the daemon and MCP bridge, run plugin health, and summarize exactly what is ready and what still needs user action in Codex chat."
+    },
+    {
+      "name": "autowire_providers",
+      "title": "Autowire providers",
+      "description": "Probe safe local runners and provider config, then summarize ready and degraded runner paths.",
+      "required_arguments": ["WORKSPACE_PATH"],
+      "tool_sequence": ["mission_control_plugin_health"],
+      "resource_sequence": [],
+      "expected_chat_output": "Ready runners, degraded runners, unavailable runners, and specific user setup steps if any remain.",
+      "safety_notes": "Local-first. Do not silently use billed API providers or persist secrets in chat-visible output.",
+      "prompt_text": "Autowire all safely available Mission Control runners and providers, prefer local runners first, and report exactly which providers are ready, degraded, unavailable, or require explicit user setup."
+    },
+    {
+      "name": "ask_manager_for_plan",
+      "aliases": ["ask-manager-for-plan"],
+      "title": "Ask Manager for plan",
+      "description": "Request a fresh Mission Control manager plan without replacing the manager with Codex chat logic.",
+      "required_arguments": ["PROJECT_ID", "USER_REQUEST"],
+      "tool_sequence": ["mission_control_start_task", "mission_control_get_status", "mission_control_get_pending_decisions"],
+      "resource_sequence": ["mission-control://projects/{project_id}/status", "mission-control://projects/{project_id}/swarm-plan"],
+      "expected_chat_output": "Compact status plus the latest manager plan posture or plan-blocking decision.",
+      "safety_notes": "Use Mission Control as the planner. Do not invent the plan locally in Codex chat.",
+      "prompt_text": "Ask Mission Control Manager for a plan for this project. Route the request through Mission Control, summarize the returned status and plan posture, and surface any pending decisions instead of improvising the plan in chat."
     }
   ]
 }

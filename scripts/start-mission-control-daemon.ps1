@@ -23,6 +23,13 @@ $effectiveBackendPort = if ($PSBoundParameters.ContainsKey("BackendPort")) { $Ba
 $launcherDir = Join-Path $repoRoot ([string]$config.launcherLogDir)
 $null = New-Item -ItemType Directory -Path $launcherDir -Force
 
+function Assert-LocalHost {
+  param([string]$HostValue)
+  if ($HostValue -notin @("127.0.0.1", "localhost", "::1")) {
+    throw "Mission Control headless daemon must stay localhost-only. Refusing host '$HostValue'."
+  }
+}
+
 function Get-RequiredCommand {
   param([string[]]$Names)
   foreach ($name in $Names) {
@@ -32,6 +39,17 @@ function Get-RequiredCommand {
     }
   }
   throw "Required command not found: $($Names -join ', ')"
+}
+
+function Normalize-ProcessPathVariable {
+  $pathValue = [System.Environment]::GetEnvironmentVariable("Path", "Process")
+  if (-not $pathValue) {
+    $pathValue = [System.Environment]::GetEnvironmentVariable("PATH", "Process")
+  }
+  if ($pathValue) {
+    [System.Environment]::SetEnvironmentVariable("PATH", $null, "Process")
+    [System.Environment]::SetEnvironmentVariable("Path", $pathValue, "Process")
+  }
 }
 
 function Test-BackendHealthy {
@@ -59,11 +77,14 @@ $serverScript = Join-Path $repoRoot "apps\server\src\mission_control_daemon.py"
 $stdoutPath = Join-Path $launcherDir "daemon.stdout.log"
 $stderrPath = Join-Path $launcherDir "daemon.stderr.log"
 
+Assert-LocalHost -HostValue $effectiveHost
+
 if (Test-BackendHealthy) {
   Write-Host "[Mission Control] Daemon already healthy on http://${effectiveHost}:${effectiveBackendPort}"
   exit 0
 }
 
+Normalize-ProcessPathVariable
 $env:MISSION_CONTROL_SERVER_MODE = "daemon"
 $env:MISSION_CONTROL_BACKEND_HOST = $effectiveHost
 $env:MISSION_CONTROL_BACKEND_PORT = [string]$effectiveBackendPort
@@ -71,7 +92,7 @@ $env:MISSION_CONTROL_REPO_ROOT = $repoRoot
 
 $process = Start-Process `
   -FilePath $pythonPath `
-  -ArgumentList @($serverScript) `
+  -ArgumentList @("`"$serverScript`"") `
   -WorkingDirectory $repoRoot `
   -WindowStyle Hidden `
   -RedirectStandardOutput $stdoutPath `

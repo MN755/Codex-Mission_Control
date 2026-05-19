@@ -75,6 +75,12 @@ Current state:
 - `.codex/plugins/mission-control/` contains a repo-local Codex plugin bundle with MCP config and bridge docs.
 - `.codex/skills/` contains compatible local skill copies for direct Codex skill loading where supported.
 
+Fastest repo-local install on Windows:
+
+```powershell
+.\scripts\install-mission-control-plugin.ps1 -HeadlessOnly
+```
+
 Suggested install flow:
 
 1. Copy or link `.codex/plugins/mission-control/` into the Codex plugin location if your Codex install does not read repo-local plugin bundles directly.
