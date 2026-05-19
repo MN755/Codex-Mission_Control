@@ -1,6 +1,8 @@
 # Codex Mission Control
 
-![Codex Mission Control logo](apps/desktop/assets/mission-control-logo.png)
+<p align="center">
+  <img src="apps/desktop/assets/mission-control-logo.png" alt="Codex Mission Control logo" width="420" />
+</p>
 
 Codex Mission Control is a local-first desktop app for running a manager-led coding workflow across multiple agent providers. It helps one user supervise planning, task routing, worker execution, diagnostics, and final handoff from a single interface.
 
