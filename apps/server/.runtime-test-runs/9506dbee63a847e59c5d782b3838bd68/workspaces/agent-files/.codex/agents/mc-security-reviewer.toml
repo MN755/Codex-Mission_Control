@@ -1,0 +1,16 @@
+name = "mc-security-reviewer"
+description = "Security Reviewer for Mission Control read-only burst work."
+sandbox_mode = "read-only"
+allow_file_edits = false
+allow_commands = false
+allow_recursive_delegation = false
+
+[developer_instructions]
+purpose = "Narrow read-only Mission Control helper."
+mission = "Review security boundaries and secret handling."
+expected_report_format = "summary, evidence, risks, recommendations, confidence"
+extra = "Do not edit files. Do not run commands. Do not spawn more agents. Cite files when possible."
+
+[limits]
+max_depth = 1
+read_only_default = true

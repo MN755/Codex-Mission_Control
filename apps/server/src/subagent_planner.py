@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 from bridge_formatter import format_pending_decision_message
 from manager import service
 from models import PendingDecision, Project, SubagentBatch, SubagentPolicy, SubagentSpec, utc_now
+from security.path_validation import PathValidationError, resolve_local_path
 
 
 DEFAULT_ALLOWED_TASK_TYPES = [
@@ -131,6 +132,15 @@ CUSTOM_AGENT_LIBRARY = {
 
 
 class SubagentPlannerService:
+    def _workspace_root(self, project: Project) -> Path:
+        try:
+            workspace_root = resolve_local_path(project.workspace_path)
+        except PathValidationError as exc:
+            raise ValueError(str(exc)) from exc
+        if workspace_root.exists() and not workspace_root.is_dir():
+            raise ValueError("Workspace path must be a directory.")
+        return workspace_root
+
     def ensure_policy(self, db: Session) -> SubagentPolicy:
         policy = db.get(SubagentPolicy, 1)
         if policy is None:
@@ -603,7 +613,9 @@ class SubagentPlannerService:
         return batch
 
     def generate_custom_agents(self, db: Session, project: Project, *, overwrite_existing: bool = False, template_names: list[str] | None = None) -> dict[str, Any]:
-        agents_dir = Path(project.workspace_path) / ".codex" / "agents"
+        workspace_root = self._workspace_root(project)
+        workspace_root.mkdir(parents=True, exist_ok=True)
+        agents_dir = workspace_root / ".codex" / "agents"
         agents_dir.mkdir(parents=True, exist_ok=True)
         requested = template_names or list(CUSTOM_AGENT_LIBRARY.keys())
         generated_files: list[str] = []

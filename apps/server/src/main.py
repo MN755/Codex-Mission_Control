@@ -1511,12 +1511,15 @@ def generate_custom_codex_agents(
     _: None = Depends(_require_bridge_token),
 ) -> CustomCodexAgentsGenerateRead:
     project = _get_project_or_404(db, project_id)
-    result = subagent_planner_service.generate_custom_agents(
-        db,
-        project,
-        overwrite_existing=payload.overwrite_existing,
-        template_names=payload.template_names,
-    )
+    try:
+        result = subagent_planner_service.generate_custom_agents(
+            db,
+            project,
+            overwrite_existing=payload.overwrite_existing,
+            template_names=payload.template_names,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     return CustomCodexAgentsGenerateRead(**result)
 
 

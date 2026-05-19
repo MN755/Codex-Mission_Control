@@ -1,0 +1,281 @@
+{
+  "timestamp": "2026-05-19T02:01:51.376353+00:00",
+  "startup_status": {
+    "mode": "first_time",
+    "first_run_completed": false,
+    "setup_version_completed": null,
+    "current_setup_version": "startup-v1",
+    "install_id": "2fa6148258f44eff97a5a7676b4146c1",
+    "startup_attempt": 1,
+    "max_startup_attempts": 3,
+    "overall_status": "ready",
+    "checks": [
+      {
+        "name": "runtime_paths",
+        "required": true,
+        "status": "passed",
+        "summary": "Runtime folders are available.",
+        "error_code": null,
+        "details": {
+          "runtime_root": "C:\\Users\\mike\\OneDrive\\Desktop\\Codex Mission Control\\apps\\server\\.runtime-test-runs\\b2d7498235de420c85a890991f71cc12",
+          "logs_root": "C:\\Users\\mike\\OneDrive\\Desktop\\Codex Mission Control\\apps\\server\\.runtime-test-runs\\b2d7498235de420c85a890991f71cc12\\logs",
+          "worktree_root": "C:\\Users\\mike\\OneDrive\\Desktop\\Codex Mission Control\\apps\\server\\.runtime-test-runs\\b2d7498235de420c85a890991f71cc12\\worktrees",
+          "workspace_root": "C:\\Users\\mike\\OneDrive\\Desktop\\Codex Mission Control\\workspace",
+          "launcher_root": "C:\\Users\\mike\\OneDrive\\Desktop\\Codex Mission Control\\apps\\server\\.runtime-test-runs\\b2d7498235de420c85a890991f71cc12\\launcher"
+        }
+      },
+      {
+        "name": "database",
+        "required": true,
+        "status": "passed",
+        "summary": "Database connection is healthy.",
+        "error_code": null,
+        "details": {}
+      },
+      {
+        "name": "settings",
+        "required": true,
+        "status": "passed",
+        "summary": "App startup state loaded.",
+        "error_code": null,
+        "details": {
+          "first_run_completed": false,
+          "selected_provider": "codex"
+        }
+      },
+      {
+        "name": "projects",
+        "required": true,
+        "status": "passed",
+        "summary": "Loaded 1 project records.",
+        "error_code": null,
+        "details": {
+          "project_count": 1
+        }
+      },
+      {
+        "name": "backend_route",
+        "required": true,
+        "status": "passed",
+        "summary": "Backend route availability confirmed.",
+        "error_code": null,
+        "details": {}
+      },
+      {
+        "name": "codex_cli",
+        "required": false,
+        "status": "failed",
+        "summary": "Codex CLI was not detected on PATH.",
+        "error_code": "MC-BOOT-006",
+        "details": {}
+      },
+      {
+        "name": "codex_login",
+        "required": false,
+        "status": "warning",
+        "summary": "Unavailable",
+        "error_code": "MC-BOOT-006",
+        "details": {}
+      },
+      {
+        "name": "app_server",
+        "required": false,
+        "status": "warning",
+        "summary": "Codex app-server support not detected; CLI fallback remains available.",
+        "error_code": "MC-BOOT-007",
+        "details": {}
+      },
+      {
+        "name": "claude_code",
+        "required": false,
+        "status": "skipped",
+        "summary": "Interactive Claude Code login is managed outside Mission Control.",
+        "error_code": null,
+        "details": {}
+      },
+      {
+        "name": "ollama",
+        "required": false,
+        "status": "passed",
+        "summary": "Ollama endpoint reachable at http://localhost:11434.",
+        "error_code": null,
+        "details": {
+          "provider": "ollama",
+          "label": "Ollama",
+          "cli_detected": true,
+          "cli_version": "http://localhost:11434",
+          "login_status": "Ollama endpoint reachable at http://localhost:11434.",
+          "auth_mode": "local",
+          "authenticated": true,
+          "auth_status_detectable": true,
+          "supports_model_override": true,
+          "supports_reasoning_effort": true,
+          "supports_app_server": false,
+          "supports_builtin_auth": false,
+          "available_models": [
+            "qwen2.5:7b",
+            "llama3:latest",
+            "yarn-mistral:latest",
+            "deepseek-r1:latest",
+            "deepseek-r1:8b",
+            "gemma3:latest",
+            "gemma3:12b",
+            "gpt-oss:120b-cloud",
+            "gpt-oss:20b"
+          ],
+          "notes": [
+            "Ollama is local-first. Mission Control expects a local adapter or wrapper command for live execution."
+          ],
+          "reachable": true,
+          "summary": "Ollama endpoint reachable at http://localhost:11434."
+        }
+      },
+      {
+        "name": "openai_api",
+        "required": false,
+        "status": "skipped",
+        "summary": "OPENAI_API_KEY is not configured in the current environment.",
+        "error_code": null,
+        "details": {}
+      },
+      {
+        "name": "anthropic_api",
+        "required": false,
+        "status": "skipped",
+        "summary": "ANTHROPIC_API_KEY is not configured in the current environment.",
+        "error_code": null,
+        "details": {}
+      },
+      {
+        "name": "xai_api",
+        "required": false,
+        "status": "skipped",
+        "summary": "XAI_API_KEY is not configured in the current environment.",
+        "error_code": null,
+        "details": {}
+      },
+      {
+        "name": "custom",
+        "required": false,
+        "status": "skipped",
+        "summary": "Adapter-defined authentication",
+        "error_code": null,
+        "details": {}
+      },
+      {
+        "name": "github",
+        "required": false,
+        "status": "skipped",
+        "summary": "Not connected.",
+        "error_code": null,
+        "details": {}
+      },
+      {
+        "name": "vercel",
+        "required": false,
+        "status": "skipped",
+        "summary": "Not connected.",
+        "error_code": null,
+        "details": {}
+      },
+      {
+        "name": "notion",
+        "required": false,
+        "status": "skipped",
+        "summary": "Not connected.",
+        "error_code": null,
+        "details": {}
+      }
+    ],
+    "recommended_route": "/setup",
+    "error_code": null,
+    "error_summary": null,
+    "diagnostic_report_path": null,
+    "degraded_reasons": [],
+    "failed_checks": [
+      "codex_cli"
+    ],
+    "startup_started_at": "2026-05-19 02:01:51.306881+00:00",
+    "last_completed_at": "2026-05-19 02:01:51.347293+00:00"
+  },
+  "system_status": {
+    "selected_provider": "codex",
+    "selected_provider_label": "Codex",
+    "cli_detected": false,
+    "cli_version": null,
+    "login_status": "Unavailable",
+    "app_server_handshake_status": "not_checked"
+  },
+  "settings_status": {
+    "selected_provider": "codex",
+    "default_runner_mode": "auto"
+  },
+  "recent_errors": null,
+  "platform": {
+    "platform": "Windows-10-10.0.26200-SP0",
+    "system": "Windows",
+    "release": "10",
+    "python": "3.10.11 (tags/v3.10.11:7d4cc5a, Apr  5 2023, 00:38:17) [MSC v.1929 64 bit (AMD64)]",
+    "node_detected": true,
+    "npm_detected": true
+  },
+  "runtime_paths": {
+    "runtime_root": "C:\\Users\\mike\\OneDrive\\Desktop\\Codex Mission Control\\apps\\server\\.runtime-test-runs\\b2d7498235de420c85a890991f71cc12",
+    "logs_root": "C:\\Users\\mike\\OneDrive\\Desktop\\Codex Mission Control\\apps\\server\\.runtime-test-runs\\b2d7498235de420c85a890991f71cc12\\logs",
+    "worktree_root": "C:\\Users\\mike\\OneDrive\\Desktop\\Codex Mission Control\\apps\\server\\.runtime-test-runs\\b2d7498235de420c85a890991f71cc12\\worktrees",
+    "workspace_root": "C:\\Users\\mike\\OneDrive\\Desktop\\Codex Mission Control\\workspace",
+    "launcher_root": "C:\\Users\\mike\\OneDrive\\Desktop\\Codex Mission Control\\apps\\server\\.runtime-test-runs\\b2d7498235de420c85a890991f71cc12\\launcher"
+  },
+  "sanitized_environment": {},
+  "recent_launcher_logs": [],
+  "recent_runtime_logs": [
+    {
+      "path": "C:\\Users\\mike\\OneDrive\\Desktop\\Codex Mission Control\\apps\\server\\.runtime-test-runs\\b2d7498235de420c85a890991f71cc12\\logs\\dry-41814c22243a4039808eefc95e90a26d.log",
+      "tail": [
+        "  \"blockers\": [",
+        "    \"string\"",
+        "  ],",
+        "  \"risks\": [",
+        "    \"string\"",
+        "  ],",
+        "  \"recommended_next_task\": \"string\"",
+        "}",
+        "",
+        "Return only a JSON object matching the schema as your final answer."
+      ]
+    },
+    {
+      "path": "C:\\Users\\mike\\OneDrive\\Desktop\\Codex Mission Control\\apps\\server\\.runtime-test-runs\\b2d7498235de420c85a890991f71cc12\\logs\\dry-7019a910b7b44c4b874d6e77e60a8449.log",
+      "tail": [
+        "  \"blockers\": [",
+        "    \"string\"",
+        "  ],",
+        "  \"risks\": [",
+        "    \"string\"",
+        "  ],",
+        "  \"recommended_next_task\": \"string\"",
+        "}",
+        "",
+        "Return only a JSON object matching the schema as your final answer."
+      ]
+    },
+    {
+      "path": "C:\\Users\\mike\\OneDrive\\Desktop\\Codex Mission Control\\apps\\server\\.runtime-test-runs\\b2d7498235de420c85a890991f71cc12\\logs\\dry-96441af3b5e84daaad442e27ab1f2733.log",
+      "tail": [
+        "  \"blockers\": [",
+        "    \"string\"",
+        "  ],",
+        "  \"risks\": [",
+        "    \"string\"",
+        "  ],",
+        "  \"recommended_next_task\": \"string\"",
+        "}",
+        "",
+        "Return only a JSON object matching the schema as your final answer."
+      ]
+    }
+  ],
+  "recommended_fixes": [
+    "Review the `codex_cli` check: Codex CLI was not detected on PATH."
+  ]
+}

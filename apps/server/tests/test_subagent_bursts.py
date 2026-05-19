@@ -5,6 +5,8 @@ from pathlib import Path
 
 from bridge_formatter import format_pending_decision_message
 from conftest import sample_workspace, wait_for
+from db import SessionLocal
+from models import Project
 from models import utc_now
 from subagent_planner import BURST_TEMPLATES
 
@@ -180,6 +182,26 @@ def test_custom_agent_generation_does_not_overwrite_existing_files(client) -> No
     second_payload = second.json()
     assert second_payload["generated_count"] == 0
     assert any(path.endswith("mc-repo-mapper.toml") for path in second_payload["skipped_existing_files"])
+
+
+def test_custom_agent_generation_rejects_non_local_workspace_path(client) -> None:
+    project = _create_project(client, "Bad Agent Root", "bad-agent-root")
+    db = SessionLocal()
+    try:
+        record = db.get(Project, project["id"])
+        assert record is not None
+        record.workspace_path = "https://example.com/not-a-workspace"
+        db.commit()
+    finally:
+        db.close()
+
+    response = client.post(
+        f"/api/projects/{project['id']}/subagent-agents/generate",
+        headers=_bridge_headers(),
+        json={"overwrite_existing": False},
+    )
+    assert response.status_code == 400, response.text
+    assert "local filesystem" in response.json()["detail"].lower()
 
 
 def test_result_ingestion_completes_batch(client) -> None:
