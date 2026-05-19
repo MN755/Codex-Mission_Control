@@ -9,6 +9,7 @@ from typing import Any
 from urllib.error import URLError
 from urllib.request import urlopen
 
+from claude_cli_path import claude_command_path
 from codex_cli_path import codex_command_path
 from config import DEFAULT_BACKEND_PORT, RUNTIME_ROOT, get_codex_home, load_launcher_config
 from daemon_state import resolve_backend_binding
@@ -118,15 +119,18 @@ def detect_codex_status() -> dict[str, Any]:
 
 
 def detect_claude_code_status() -> dict[str, Any]:
-    cli_ok, cli_output = _run_command(["claude", "--version"])
+    cli_path = claude_command_path()
+    cli_ok, cli_output = _run_command([cli_path, "--version"]) if cli_path else (False, "")
     notes = [
         "Claude Code login is managed by the local Claude Code CLI, not by Mission Control.",
         "Mission Control can pass per-run model overrides when the CLI supports them.",
+        f"Claude CLI path: {cli_path or 'not found'}.",
     ]
     return {
         "provider": "claude_code",
         "label": "Claude Code",
         "cli_detected": cli_ok,
+        "cli_path": cli_path,
         "cli_version": cli_output if cli_ok else None,
         "login_status": "Interactive Claude Code login is managed outside Mission Control.",
         "auth_mode": None,

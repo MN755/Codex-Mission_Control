@@ -2,12 +2,12 @@ from __future__ import annotations
 
 import asyncio
 import json
-import shutil
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from claude_cli_path import claude_command_path
 from codex_runner.base import BaseCodexRunner, RunnerContext, RunnerHandle, RunnerSettings
 from config import RUNTIME_LOGS_ROOT
 from prompts import worker_task_prompt
@@ -48,12 +48,13 @@ class ClaudeCodeRunner(BaseCodexRunner):
         self.last_cli_version: str | None = None
 
     async def handshake(self, settings: RunnerSettings | None = None) -> bool:
-        if shutil.which("claude") is None:
+        cli_path = claude_command_path()
+        if cli_path is None:
             self.last_cli_version = None
             return False
         try:
             process = await asyncio.create_subprocess_exec(
-                "claude",
+                cli_path,
                 "--version",
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
@@ -93,8 +94,11 @@ class ClaudeCodeRunner(BaseCodexRunner):
         return state.status if state else "error"
 
     def build_exec_args(self, context: RunnerContext, *, resume: bool) -> list[str]:
+        cli_path = claude_command_path()
+        if cli_path is None:
+            raise RuntimeError("Claude Code CLI executable could not be resolved.")
         args = [
-            "claude",
+            cli_path,
             "-p",
             "Read the full Mission Control task instructions from standard input and follow them exactly. Return only the format requested in those instructions.",
             "--output-format",
@@ -111,7 +115,7 @@ class ClaudeCodeRunner(BaseCodexRunner):
 
     async def _start_process(self, context: RunnerContext, prompt: str, resume: bool) -> RunnerHandle:
         if not await self.handshake(context.settings):
-            raise RuntimeError("Claude Code CLI is not available on PATH.")
+            raise RuntimeError("Claude Code CLI is not available.")
         run_id = f"claude-{uuid.uuid4().hex}"
         logs_path = RUNTIME_LOGS_ROOT / f"{run_id}.log"
         stdout_path = RUNTIME_LOGS_ROOT / f"{run_id}.stdout.log"

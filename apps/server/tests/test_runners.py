@@ -180,10 +180,40 @@ def test_claude_build_exec_args_include_model_when_set() -> None:
             reasoning_effort=None,
         ),
     )
-    args = runner.build_exec_args(context, resume=False)
+    from codex_runner import claude_code_runner as claude_module
+
+    original = claude_module.claude_command_path
+    claude_module.claude_command_path = lambda: "C:/tools/claude.cmd"
+    try:
+        args = runner.build_exec_args(context, resume=False)
+    finally:
+        claude_module.claude_command_path = original
     assert "--model" in args
     assert "sonnet" in args
     assert "--output-format" in args
+    assert args[0] == "C:/tools/claude.cmd"
+
+
+def test_claude_runner_handshake_uses_resolved_claude_path(monkeypatch) -> None:
+    runner = ClaudeCodeRunner()
+
+    class FakeProcess:
+        returncode = 0
+
+        async def communicate(self):
+            return (b"claude 1.2.3", b"")
+
+    captured: list[str] = []
+
+    async def fake_exec(*args, **kwargs):
+        captured.extend(args)
+        return FakeProcess()
+
+    monkeypatch.setattr("codex_runner.claude_code_runner.claude_command_path", lambda: "/opt/homebrew/bin/claude")
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+
+    assert asyncio.run(runner.handshake()) is True
+    assert captured[0] == "/opt/homebrew/bin/claude"
 
 
 def test_launcher_scripts_exist() -> None:

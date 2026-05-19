@@ -122,6 +122,36 @@ function Resolve-CodexCliPath {
   return $null
 }
 
+function Resolve-ClaudeCliPath {
+  foreach ($name in @("claude", "claude.cmd", "claude.exe", "claude.ps1", "claude.bat")) {
+    $command = Get-Command $name -ErrorAction SilentlyContinue
+    if ($command) {
+      return $command.Source
+    }
+  }
+
+  $userHome = [Environment]::GetFolderPath("UserProfile")
+  $appData = [Environment]::GetFolderPath("ApplicationData")
+  $localAppData = [Environment]::GetFolderPath("LocalApplicationData")
+  $candidates = @(
+    $env:MISSION_CONTROL_CLAUDE_PATH,
+    $env:CLAUDE_CLI_PATH,
+    (Join-Path $appData "npm\claude.cmd"),
+    (Join-Path $appData "npm\claude.ps1"),
+    (Join-Path $appData "npm\claude"),
+    (Join-Path $localAppData "Programs\Claude\claude.exe"),
+    (Join-Path $userHome ".local\bin\claude.exe"),
+    (Join-Path $userHome ".local\bin\claude")
+  ) | Where-Object { $_ }
+
+  foreach ($candidate in $candidates) {
+    if (Test-Path $candidate) {
+      return (Resolve-Path $candidate).Path
+    }
+  }
+  return $null
+}
+
 function Add-CodexCliPaths {
   $userHome = [Environment]::GetFolderPath("UserProfile")
   $localAppData = [Environment]::GetFolderPath("LocalApplicationData")
@@ -154,6 +184,39 @@ function Add-CodexCliPaths {
 
   Add-UniquePathEntries -Entries ($candidateDirs | Where-Object { $_ -and (Test-Path $_) })
   return Resolve-CodexCliPath
+}
+
+function Add-ClaudeCliPaths {
+  $userHome = [Environment]::GetFolderPath("UserProfile")
+  $appData = [Environment]::GetFolderPath("ApplicationData")
+  $localAppData = [Environment]::GetFolderPath("LocalApplicationData")
+  $candidateDirs = @()
+
+  foreach ($entry in (Get-ProcessPathEntries)) {
+    if (Test-Path $entry) {
+      $candidateDirs += $entry
+    }
+  }
+
+  foreach ($explicit in @($env:MISSION_CONTROL_CLAUDE_PATH, $env:CLAUDE_CLI_PATH)) {
+    if (-not $explicit) {
+      continue
+    }
+    if (Test-Path $explicit -PathType Leaf) {
+      $candidateDirs += (Split-Path $explicit -Parent)
+    } elseif (Test-Path $explicit -PathType Container) {
+      $candidateDirs += $explicit
+    }
+  }
+
+  $candidateDirs += @(
+    (Join-Path $appData "npm"),
+    (Join-Path $localAppData "Programs\Claude"),
+    (Join-Path $userHome ".local\bin")
+  )
+
+  Add-UniquePathEntries -Entries ($candidateDirs | Where-Object { $_ -and (Test-Path $_) })
+  return Resolve-ClaudeCliPath
 }
 
 function Test-ProcessRunning {
@@ -263,6 +326,7 @@ Assert-LocalHost -HostValue $effectiveHost
 $pythonPath = Get-RequiredCommand -Names @("python", "py")
 $serverScript = Join-Path $repoRoot "apps\server\src\mission_control_daemon.py"
 $codexCliPath = Add-CodexCliPaths
+$claudeCliPath = Add-ClaudeCliPaths
 
 $launchInfo = [ordered]@{
   generated_at = (Get-Date).ToString("o")
@@ -272,6 +336,7 @@ $launchInfo = [ordered]@{
   python_path = $pythonPath
   server_script = $serverScript
   codex_cli_path = $codexCliPath
+  claude_cli_path = $claudeCliPath
   stdout_path = $stdoutPath
   stderr_path = $stderrPath
 }
@@ -295,6 +360,9 @@ $env:MISSION_CONTROL_BACKEND_PORT = [string]$effectiveBackendPort
 $env:MISSION_CONTROL_REPO_ROOT = $repoRoot
 if ($codexCliPath) {
   $env:MISSION_CONTROL_CODEX_PATH = $codexCliPath
+}
+if ($claudeCliPath) {
+  $env:MISSION_CONTROL_CLAUDE_PATH = $claudeCliPath
 }
 
 $process = Start-Process `

@@ -1324,7 +1324,7 @@ add(
 
             ```powershell
             .\\scripts\\start-mission-control-daemon.ps1
-            Invoke-WebRequest http://127.0.0.1:8000/api/health
+            Invoke-WebRequest http://127.0.0.1:8010/api/health
             codex --version
             codex login status
             ```
@@ -1380,7 +1380,7 @@ add(
 
             ```powershell
             .\\scripts\\start-mission-control-daemon.ps1
-            Invoke-WebRequest http://127.0.0.1:8000/api/health
+            Invoke-WebRequest http://127.0.0.1:8010/api/health
             ```
 
             Fix:

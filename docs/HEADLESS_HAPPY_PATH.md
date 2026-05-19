@@ -36,7 +36,7 @@ Expected bridge flow:
 
 The backend happy-path test lives in:
 
-- [apps/server/tests/test_headless_happy_path.py](</C:/Users/mike/OneDrive/Desktop/Codex Mission Control/apps/server/tests/test_headless_happy_path.py>)
+- `apps/server/tests/test_headless_happy_path.py`
 
 It covers:
 
@@ -68,7 +68,7 @@ It does not claim real edits or real test execution happened, because lying in t
 
 The manual smoke script lives in:
 
-- [scripts/smoke-headless-happy-path.ps1](</C:/Users/mike/OneDrive/Desktop/Codex Mission Control/scripts/smoke-headless-happy-path.ps1>)
+- [scripts/smoke-headless-happy-path.ps1](../scripts/smoke-headless-happy-path.ps1)
 
 It will:
 

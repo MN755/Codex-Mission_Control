@@ -9,7 +9,7 @@
     "env": {
       "PYTHONPATH": "src",
       "MISSION_CONTROL_BACKEND_HOST": "127.0.0.1",
-      "MISSION_CONTROL_BACKEND_PORT": "8000"
+      "MISSION_CONTROL_BACKEND_PORT": "8010"
     },
     "notes": [
       "This example runs the local MCP bridge directly from the repository without requiring a separate package install.",

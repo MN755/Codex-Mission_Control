@@ -161,14 +161,14 @@ def probe_ollama(*, endpoint: str | None = None) -> dict[str, Any]:
 def probe_claude_cli() -> dict[str, Any]:
     status = detect_claude_code_status()
     command_info = probe_command("claude")
-    path_text = command_info["path"]
+    path_text = status.get("cli_path") or command_info["path"]
     available = bool(path_text or status.get("cli_detected"))
     configured = False
     install_status = "missing"
     recommended_fix = "Install Claude CLI if you want Mission Control to use it."
     if available:
         install_status = "needs_setup"
-        recommended_fix = "Finish Claude CLI authentication outside Mission Control, then rerun autowire."
+        recommended_fix = "Finish Claude CLI setup outside Mission Control, or set MISSION_CONTROL_CLAUDE_PATH / CLAUDE_CLI_PATH if the executable is installed in a non-standard location."
         error = MissionControlError(code="MC-CLAUDE-AUTH-UNKNOWN-001", breakpoint="claude_cli.auth_status", severity="warning", safe_details={"runner": "claude_cli"})
     else:
         error = MissionControlError(code="MC-CLAUDE-CLI-MISSING-001", breakpoint="claude_cli.detect", severity="warning", safe_details={"runner": "claude_cli"})

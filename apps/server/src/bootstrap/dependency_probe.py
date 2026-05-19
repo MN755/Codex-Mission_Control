@@ -6,6 +6,7 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
+from claude_cli_path import claude_command_path
 from codex_cli_path import codex_command_path
 from security.redaction import redact_text
 
@@ -39,6 +40,10 @@ def command_path(*names: str) -> str | None:
         resolved_codex = codex_command_path()
         if resolved_codex:
             return resolved_codex
+    if names and any(name.startswith("claude") for name in names if name):
+        resolved_claude = claude_command_path()
+        if resolved_claude:
+            return resolved_claude
     for name in names:
         resolved = shutil.which(name)
         if resolved:

@@ -118,6 +118,27 @@ def test_claude_cli_missing_state(monkeypatch) -> None:
     assert probe["install_status"] == "missing"
 
 
+def test_claude_cli_probe_prefers_resolved_cli_path(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "bootstrap.runner_probe.probe_command",
+        lambda *names: {"detected": False, "path": None, "version": None},
+    )
+    monkeypatch.setattr(
+        "bootstrap.runner_probe.detect_claude_code_status",
+        lambda: {
+            "cli_detected": True,
+            "cli_path": "/opt/homebrew/bin/claude",
+            "cli_version": "claude 1.2.3",
+            "available_models": ["sonnet"],
+            "login_status": "Interactive Claude Code login is managed outside Mission Control.",
+        },
+    )
+
+    probe = probe_claude_cli()
+    assert probe["available"] is True
+    assert probe["command_path"] == "/opt/homebrew/bin/claude"
+
+
 def test_autowire_generates_safe_headless_config_and_repair_preserves_install_id(monkeypatch) -> None:
     fake_runner_summary = {
         "status": "degraded",

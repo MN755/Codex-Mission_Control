@@ -47,11 +47,11 @@ Mission Control uses `BridgeMessage` responses for chat-native output.
 
 Bridge chat output is built through these backend modules:
 
-- [apps/server/src/bridge_formatter.py](</C:/Users/mike/OneDrive/Desktop/Codex Mission Control/apps/server/src/bridge_formatter.py>)
-- [apps/server/src/chat_markdown.py](</C:/Users/mike/OneDrive/Desktop/Codex Mission Control/apps/server/src/chat_markdown.py>)
-- [apps/server/src/handoff_formatter.py](</C:/Users/mike/OneDrive/Desktop/Codex Mission Control/apps/server/src/handoff_formatter.py>)
-- [apps/server/src/event_digest_formatter.py](</C:/Users/mike/OneDrive/Desktop/Codex Mission Control/apps/server/src/event_digest_formatter.py>)
-- [apps/server/src/diagnostic_formatter.py](</C:/Users/mike/OneDrive/Desktop/Codex Mission Control/apps/server/src/diagnostic_formatter.py>)
+- `apps/server/src/bridge_formatter.py`
+- `apps/server/src/chat_markdown.py`
+- `apps/server/src/handoff_formatter.py`
+- `apps/server/src/event_digest_formatter.py`
+- `apps/server/src/diagnostic_formatter.py`
 
 The daemon-backed MCP tool `mission_control_get_status` should surface the bridge-safe status summary, not the raw orchestration status payload. The raw status API still exists, but Codex chat does not need a JSON brick when a compact summary will do.
 

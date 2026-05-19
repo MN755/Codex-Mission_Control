@@ -39,7 +39,7 @@ Likely cause:
 Checks:
 
 ```powershell
-Invoke-WebRequest http://127.0.0.1:8000/api/health
+Invoke-WebRequest http://127.0.0.1:8010/api/health
 .\scripts\mission-control-headless-health.ps1
 ```
 
@@ -232,7 +232,7 @@ Try:
 
 ```powershell
 .\scripts\mission-control-headless-health.ps1
-Invoke-WebRequest http://127.0.0.1:8000/api/health
+Invoke-WebRequest http://127.0.0.1:8010/api/health
 ```
 
 Related codes:
