@@ -20,7 +20,7 @@ from config import frontend_dist_root
 from context_packs import context_pack_service
 from db import get_db, init_db
 from diagnostics import open_folder
-from daemon_state import read_daemon_token
+from daemon_state import read_daemon_token, resolve_backend_binding, update_daemon_metadata_status
 from errors import MissionControlError, as_mission_control_error, format_problem_details
 from imported_codebase import import_service
 from intelligence import reputation_service, scope_creep_service
@@ -237,10 +237,28 @@ from validation_coverage import validation_coverage_service
 async def lifespan(_: FastAPI):
     init_db()
     coordinator.on_startup()
+    if os.environ.get("MISSION_CONTROL_SERVER_MODE") == "daemon":
+        binding = resolve_backend_binding(prefer_live_metadata=False)
+        update_daemon_metadata_status(
+            status="ok",
+            host=str(binding["host"]),
+            port=int(binding["port"]),
+            pid=os.getpid(),
+            mode="daemon",
+        )
     try:
         yield
     finally:
         await coordinator.on_shutdown()
+        if os.environ.get("MISSION_CONTROL_SERVER_MODE") == "daemon":
+            binding = resolve_backend_binding(prefer_live_metadata=False)
+            update_daemon_metadata_status(
+                status="stopped",
+                host=str(binding["host"]),
+                port=int(binding["port"]),
+                pid=os.getpid(),
+                mode="daemon",
+            )
 
 
 app = FastAPI(title="Codex Mission Control Server", version="0.1.0", lifespan=lifespan)
@@ -337,6 +355,10 @@ def _require_bridge_token(request: Request) -> None:
 
 def _serialize_interview(project: Project, session: InterviewSession) -> InterviewSessionRead:
     understanding = service.get_project_understanding(project)
+    generated_questions = session.questions_asked
+    answered_questions = sum(1 for question in session.questions if question.status in {"answered", "auto_decided"} or question.answered_at is not None)
+    pending_questions = sum(1 for question in session.questions if question.status == "pending")
+    generation_budget_remaining = max(session.question_budget - generated_questions, 0)
     questions = [
         InterviewQuestionRead(
             id=question.id,
@@ -364,8 +386,12 @@ def _serialize_interview(project: Project, session: InterviewSession) -> Intervi
         id=session.id,
         project_id=session.project_id,
         question_budget=session.question_budget,
-        questions_asked=session.questions_asked,
-        questions_remaining=max(session.question_budget - session.questions_asked, 0),
+        questions_asked=generated_questions,
+        questions_remaining=generation_budget_remaining,
+        questions_generated=generated_questions,
+        questions_answered=answered_questions,
+        pending_questions=pending_questions,
+        generation_budget_remaining=generation_budget_remaining,
         manager_mode=session.manager_mode,
         stopped_early=session.stopped_early,
         stop_reason=session.stop_reason,

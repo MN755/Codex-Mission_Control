@@ -218,7 +218,7 @@ def test_headless_endpoints_and_runner_status_endpoint(client, monkeypatch) -> N
         "headless_only": True,
         "dashboard_enabled": False,
         "daemon_host": "127.0.0.1",
-        "daemon_port": 8000,
+        "daemon_port": 8010,
         "mcp_transport": "stdio",
         "mcp_port": None,
         "enabled_runners": ["dry_run", "codex_cli"],

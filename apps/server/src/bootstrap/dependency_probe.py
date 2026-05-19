@@ -6,6 +6,7 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
+from codex_cli_path import codex_command_path
 from security.redaction import redact_text
 
 
@@ -34,6 +35,10 @@ def _run_command(args: list[str], *, timeout: int = 12) -> tuple[bool, str]:
 
 
 def command_path(*names: str) -> str | None:
+    if names and any(name.startswith("codex") for name in names if name):
+        resolved_codex = codex_command_path()
+        if resolved_codex:
+            return resolved_codex
     for name in names:
         resolved = shutil.which(name)
         if resolved:

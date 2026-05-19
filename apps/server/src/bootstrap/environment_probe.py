@@ -9,7 +9,7 @@ from bootstrap.dependency_probe import probe_core_tools
 from bootstrap.headless_config import headless_config_path
 from bootstrap.secret_redaction import redact_bootstrap_text, redact_bootstrap_value
 from config import DEFAULT_BACKEND_PORT, REPO_ROOT, RUNTIME_ROOT, get_codex_home, load_launcher_config
-from daemon_state import read_daemon_metadata
+from daemon_state import read_daemon_metadata, resolve_backend_binding
 
 
 PLUGIN_ROOT = REPO_ROOT / "plugins" / "mission-control"
@@ -80,15 +80,19 @@ def probe_environment(
 ) -> dict[str, Any]:
     launcher_config = load_launcher_config()
     metadata = read_daemon_metadata()
+    backend_binding = resolve_backend_binding()
     runtime_root = Path(runtime_path).expanduser().resolve() if runtime_path else RUNTIME_ROOT
     install_root = Path(install_path).expanduser().resolve() if install_path else REPO_ROOT
     plugin_paths = _plugin_paths()
     skill_paths = _skill_paths()
     daemon_status = {
-        "host": str(metadata.get("host") or launcher_config.get("host") or "127.0.0.1"),
-        "port": int(metadata.get("port") or launcher_config.get("backendPort") or DEFAULT_BACKEND_PORT),
-        "mode": str(metadata.get("mode") or "unknown"),
+        "host": str(backend_binding["host"]),
+        "port": int(backend_binding["port"]),
+        "mode": str(backend_binding["mode"] or "unknown"),
+        "binding_source": str(backend_binding["source"]),
         "metadata_present": bool(metadata),
+        "metadata_status": str(metadata.get("status") or "unknown"),
+        "pid_running": bool(metadata.get("pid_running")),
     }
     mcp_status = {
         "transport": "stdio",

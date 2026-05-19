@@ -9,7 +9,9 @@ from typing import Any
 from urllib.error import URLError
 from urllib.request import urlopen
 
+from codex_cli_path import codex_command_path
 from config import DEFAULT_BACKEND_PORT, RUNTIME_ROOT, get_codex_home, load_launcher_config
+from daemon_state import resolve_backend_binding
 from provider_support import normalize_provider, provider_label, supports_app_server, supports_builtin_auth, supports_reasoning_effort
 
 
@@ -46,10 +48,11 @@ def _detect_codex_environment() -> dict[str, Any]:
     codex_home = get_codex_home()
     config_path = codex_home / "config.toml"
     skills_root = codex_home / "skills"
-    cli_ok, cli_output = _run_command(["codex", "--version"])
-    login_ok, login_output = _run_command(["codex", "login", "status"])
-    _, mcp_output = _run_command(["codex", "mcp", "list", "--json"])
-    _, app_help = _run_command(["codex", "app-server", "--help"])
+    cli_path = codex_command_path()
+    cli_ok, cli_output = _run_command([cli_path, "--version"]) if cli_path else (False, "")
+    login_ok, login_output = _run_command([cli_path, "login", "status"]) if cli_path else (False, "")
+    _, mcp_output = _run_command([cli_path, "mcp", "list", "--json"]) if cli_path else (False, "")
+    _, app_help = _run_command([cli_path, "app-server", "--help"]) if cli_path else (False, "")
 
     configured_plugins: list[str] = []
     notes: list[str] = []
@@ -78,6 +81,7 @@ def _detect_codex_environment() -> dict[str, Any]:
 
     return {
         "cli_detected": cli_ok,
+        "cli_path": cli_path,
         "cli_version": cli_output if cli_ok else None,
         "login_status": login_output or "Unavailable",
         "auth_mode": auth_mode_from_login_output(login_output),
@@ -106,6 +110,7 @@ def detect_codex_status() -> dict[str, Any]:
             + [
                 "Model availability depends on the local Codex plan and current sign-in session.",
                 "ChatGPT sign-in is recommended. API keys are optional and can use API billing.",
+                f"Codex CLI path: {payload.get('cli_path') or 'not found'}.",
             ],
         }
     )
@@ -233,6 +238,7 @@ def detect_provider_statuses(adapter_command: str | None = None, ollama_endpoint
 def detect_system_status(*, selected_provider: str = "codex", adapter_command: str | None = None, ollama_endpoint: str | None = None, adapter_args: list[str] | None = None) -> dict[str, Any]:
     normalized_provider = normalize_provider(selected_provider)
     launcher_config = load_launcher_config()
+    backend_binding = resolve_backend_binding()
     provider_statuses = detect_provider_statuses(adapter_command, ollama_endpoint, adapter_args)
     provider_lookup = {entry["provider"]: entry for entry in provider_statuses}
     selected = provider_lookup.get(normalized_provider, provider_lookup["codex"])
@@ -252,7 +258,10 @@ def detect_system_status(*, selected_provider: str = "codex", adapter_command: s
         "effective_runner_mode": "auto",
         "dry_run_available": True,
         "runtime_directory": str(RUNTIME_ROOT),
-        "backend_port": int(launcher_config.get("backendPort", DEFAULT_BACKEND_PORT)),
+        "backend_host": str(backend_binding["host"]),
+        "backend_port": int(backend_binding["port"]),
+        "configured_backend_port": int(launcher_config["backendPort"]) if launcher_config.get("backendPort") is not None else None,
+        "backend_binding_source": str(backend_binding["source"]),
         "frontend_port": int(launcher_config["frontendPort"]) if launcher_config.get("frontendPort") is not None else None,
         "active_runs": [],
         "current_settings_summary": None,
@@ -264,5 +273,5 @@ def detect_system_status(*, selected_provider: str = "codex", adapter_command: s
         "configured_plugins": list(codex.get("configured_plugins", [])),
         "local_skills": list(codex.get("local_skills", [])),
         "current_auth_job": None,
-        "notes": notes,
+        "notes": notes + [f"Backend binding source: {backend_binding['source']}."],
     }

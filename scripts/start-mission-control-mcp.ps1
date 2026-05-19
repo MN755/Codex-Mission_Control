@@ -23,7 +23,7 @@ if ($Serve) {
     $env:MISSION_CONTROL_BACKEND_HOST = "127.0.0.1"
   }
   if (-not $env:MISSION_CONTROL_BACKEND_PORT) {
-    $env:MISSION_CONTROL_BACKEND_PORT = "8000"
+    $env:MISSION_CONTROL_BACKEND_PORT = "8010"
   }
   $mcpRoot = Join-Path $repoRoot "apps\mcp-server"
   $env:PYTHONPATH = Join-Path $mcpRoot "src"

@@ -12,13 +12,18 @@ from urllib.parse import urlparse
 
 import httpx
 
+DEFAULT_BACKEND_HOST = "127.0.0.1"
+DEFAULT_BACKEND_PORT = 8010
+
 
 class MissionControlDaemonClient:
     def __init__(self, *, base_url: str | None = None, timeout: float = 20.0) -> None:
         self.repo_root = self._discover_repo_root()
         self.config = self._load_launcher_config()
-        host = os.environ.get("MISSION_CONTROL_BACKEND_HOST", str(self.config.get("host", "127.0.0.1")))
-        port = int(os.environ.get("MISSION_CONTROL_BACKEND_PORT", int(self.config.get("backendPort", 8000))))
+        host = os.environ.get("MISSION_CONTROL_BACKEND_HOST", str(self.config.get("host", DEFAULT_BACKEND_HOST)))
+        port = int(os.environ.get("MISSION_CONTROL_BACKEND_PORT", int(self.config.get("backendPort", DEFAULT_BACKEND_PORT))))
+        self._configured_host = host
+        self._configured_port = port
         self.base_url = base_url or f"http://{host}:{port}"
         self.timeout = timeout
 
@@ -35,11 +40,11 @@ class MissionControlDaemonClient:
     def _load_launcher_config(self) -> dict[str, Any]:
         config_path = self.repo_root / "scripts" / "mission-control.config.json"
         if not config_path.exists():
-            return {"host": "127.0.0.1", "backendPort": 8000}
+            return {"host": DEFAULT_BACKEND_HOST, "backendPort": DEFAULT_BACKEND_PORT}
         try:
             return json.loads(config_path.read_text(encoding="utf-8"))
         except json.JSONDecodeError:
-            return {"host": "127.0.0.1", "backendPort": 8000}
+            return {"host": DEFAULT_BACKEND_HOST, "backendPort": DEFAULT_BACKEND_PORT}
 
     @property
     def _runtime_root(self) -> Path:
@@ -80,8 +85,8 @@ class MissionControlDaemonClient:
 
     def _port_in_use(self) -> bool:
         parsed = urlparse(self.base_url)
-        host = parsed.hostname or "127.0.0.1"
-        port = parsed.port or 8000
+        host = parsed.hostname or self._configured_host
+        port = parsed.port or self._configured_port
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
             sock.settimeout(0.75)
             return sock.connect_ex((host, port)) == 0
@@ -98,14 +103,19 @@ class MissionControlDaemonClient:
         if self._healthcheck():
             return
         if self._port_in_use():
+            parsed = urlparse(self.base_url)
+            effective_host = parsed.hostname or self._configured_host
+            effective_port = parsed.port or self._configured_port
             raise RuntimeError(
-                f"Mission Control daemon port is already in use at {self.base_url}, but the service did not answer the health check."
+                "Mission Control daemon port is already in use but the health check failed. "
+                f"configured_base_url={self.base_url} configured_host={effective_host} configured_port={effective_port}. "
+                "Likely causes: stale launcher config, another localhost service on the same port, or a dead Mission Control process with stale metadata."
             )
         self._launcher_root.mkdir(parents=True, exist_ok=True)
         env = os.environ.copy()
         env.setdefault("MISSION_CONTROL_SERVER_MODE", "daemon")
-        env.setdefault("MISSION_CONTROL_BACKEND_HOST", urlparse(self.base_url).hostname or "127.0.0.1")
-        env.setdefault("MISSION_CONTROL_BACKEND_PORT", str(urlparse(self.base_url).port or 8000))
+        env.setdefault("MISSION_CONTROL_BACKEND_HOST", urlparse(self.base_url).hostname or self._configured_host)
+        env.setdefault("MISSION_CONTROL_BACKEND_PORT", str(urlparse(self.base_url).port or self._configured_port))
         env.setdefault("MISSION_CONTROL_REPO_ROOT", str(self.repo_root))
         stdout_handle = open(self._launcher_root / "daemon.stdout.log", "a", encoding="utf-8")
         stderr_handle = open(self._launcher_root / "daemon.stderr.log", "a", encoding="utf-8")

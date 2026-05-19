@@ -81,7 +81,7 @@ def probe_dry_run() -> dict[str, Any]:
 def probe_codex_cli() -> dict[str, Any]:
     status = detect_codex_status()
     command_info = probe_command("codex")
-    path_text = command_info["path"]
+    path_text = status.get("cli_path") or command_info["path"]
     authenticated = bool(status.get("authenticated"))
     available = bool(path_text or status.get("cli_detected"))
     if not available:

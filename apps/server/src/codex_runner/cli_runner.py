@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import shutil
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -10,6 +9,7 @@ from typing import Any
 
 from codex_runner.base import BaseCodexRunner, RunnerContext, RunnerHandle
 from codex_runner.events import parse_json_line
+from codex_cli_path import codex_command_path
 from config import RUNTIME_LOGS_ROOT
 from prompts import worker_task_prompt
 from provider_support import default_label
@@ -41,14 +41,17 @@ class CliCodexRunner(BaseCodexRunner):
         self.runs: dict[str, CliRunState] = {}
         self.last_cli_version: str | None = None
         self.last_login_status: str | None = None
+        self.last_cli_path: str | None = None
 
     async def handshake(self, settings=None) -> bool:
-        if shutil.which("codex") is None:
+        cli_path = codex_command_path()
+        self.last_cli_path = cli_path
+        if cli_path is None:
             self.last_cli_version = None
             return False
         try:
             process = await asyncio.create_subprocess_exec(
-                "codex",
+                cli_path,
                 "--version",
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
@@ -62,9 +65,14 @@ class CliCodexRunner(BaseCodexRunner):
         return process.returncode == 0
 
     async def _refresh_login_status(self) -> None:
+        cli_path = self.last_cli_path or codex_command_path()
+        self.last_cli_path = cli_path
+        if cli_path is None:
+            self.last_login_status = "Unavailable"
+            return
         try:
             process = await asyncio.create_subprocess_exec(
-                "codex",
+                cli_path,
                 "login",
                 "status",
                 stdout=asyncio.subprocess.PIPE,
@@ -104,7 +112,11 @@ class CliCodexRunner(BaseCodexRunner):
 
     def build_exec_args(self, context: RunnerContext, *, resume: bool) -> list[str]:
         workdir = context.agent.workspace_path or context.project.workspace_path
-        base_args = ["codex", "exec"]
+        cli_path = self.last_cli_path or codex_command_path()
+        if cli_path is None:
+            raise RuntimeError("Codex CLI resolved path is unavailable.")
+        self.last_cli_path = cli_path
+        base_args = [cli_path, "exec"]
         if resume and context.agent.session_ref:
             base_args.extend(["resume", context.agent.session_ref])
         base_args.extend(["--json", "--skip-git-repo-check"])

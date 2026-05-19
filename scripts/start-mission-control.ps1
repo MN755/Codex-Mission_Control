@@ -17,7 +17,7 @@ $config = if (Test-Path $configPath) {
 } else {
   [pscustomobject]@{
     host = "127.0.0.1"
-    backendPort = 8000
+    backendPort = 8010
     frontendPort = 5173
     autoOpenBrowser = $true
     launcherLogDir = ".runtime/launcher"

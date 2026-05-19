@@ -66,6 +66,20 @@ def test_attach_workspace_creates_new_project_for_empty_folder(client) -> None:
     assert "## Mission Control Status" in payload["status_summary_markdown"]
 
 
+def test_manager_ask_next_bootstraps_greenfield_intake(client) -> None:
+    workspace = _fresh_workspace("greenfield-intake")
+    project = _create_project(client, "Greenfield Intake", workspace.as_posix(), runner_mode="dry_run")
+
+    response = client.post(f"/api/projects/{project['id']}/manager/ask-next")
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert "Mission Control started intake" in payload["content_markdown"]
+    assert "First question:" in payload["content_markdown"]
+
+    refreshed = client.get(f"/api/projects/{project['id']}").json()
+    assert refreshed["status"] == "interview_in_progress"
+
+
 def test_attach_missing_workspace_returns_clean_error(client) -> None:
     workspace = Path(sample_workspace("missing-workspace"))
     if workspace.exists():

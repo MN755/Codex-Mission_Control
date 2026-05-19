@@ -93,6 +93,10 @@ def test_manager_generated_questions_are_project_scoped_and_rich(client, monkeyp
 
     assert session["status"] == "in_progress"
     assert session["questions_asked"] == 3
+    assert session["questions_generated"] == 3
+    assert session["questions_answered"] == 0
+    assert session["pending_questions"] == 3
+    assert session["generation_budget_remaining"] == 17
     assert session["generation_sources"] == ["manager_ai"]
     assert all(question["project_id"] == project["id"] for question in session["questions"])
     assert all(question["why"] for question in session["questions"])
@@ -130,6 +134,9 @@ def test_answer_updates_understanding_and_stores_custom_answer(client, monkeypat
 
     assert answered["status"] == "completed"
     assert answered["stopped_early"] is True
+    assert answered["questions_generated"] == 1
+    assert answered["questions_answered"] == 1
+    assert answered["pending_questions"] == 0
     assert answered["questions"][0]["custom_answer"] == "The first version should help both engineers and reviewers."
 
     understanding = client.get(f"/api/projects/{project['id']}/understanding").json()

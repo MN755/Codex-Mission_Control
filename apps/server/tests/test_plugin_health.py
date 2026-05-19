@@ -27,6 +27,10 @@ def test_plugin_health_ready(monkeypatch) -> None:
         },
     )
     monkeypatch.setattr("plugin_health.read_daemon_metadata", lambda: {"host": "127.0.0.1", "port": 8000, "mode": "daemon"})
+    monkeypatch.setattr(
+        "plugin_health.resolve_backend_binding",
+        lambda: {"host": "127.0.0.1", "port": 8000, "mode": "daemon", "source": "daemon_metadata"},
+    )
     monkeypatch.setattr("plugin_health.daemon_dashboard_url", lambda project_id=None: "http://127.0.0.1:8000/dashboard")
     monkeypatch.setattr("plugin_health._probe_url", lambda url, timeout=2.0: (True, "HTTP 200"))
     monkeypatch.setattr("plugin_health.service.runners.inventory", fake_inventory)
@@ -37,6 +41,37 @@ def test_plugin_health_ready(monkeypatch) -> None:
     assert any(check["key"] == "mission_control_daemon_reachable" and check["status"] == "ready" for check in payload["checks"])
     assert any(check["key"] == "mcp_server_reachable" and check["status"] == "ready" for check in payload["checks"])
     assert "## Plugin Health Doctor" in payload["codex_chat_markdown"]
+
+
+def test_plugin_health_uses_resolved_backend_port_in_commands(monkeypatch) -> None:
+    async def fake_inventory() -> list[dict]:
+        return [{"runner_type": "dry_run", "availability": True}]
+
+    monkeypatch.setattr(
+        "plugin_health.detect_codex_status",
+        lambda: {
+            "cli_detected": True,
+            "cli_version": "codex 1.0.0",
+            "login_status": "Logged in using ChatGPT",
+            "auth_mode": "chatgpt",
+            "authenticated": True,
+            "auth_status_detectable": True,
+            "mcp_servers": [{"name": "mission-control", "status": "connected"}],
+            "local_skills": [],
+        },
+    )
+    monkeypatch.setattr("plugin_health.read_daemon_metadata", lambda: {"host": "127.0.0.1", "port": 8000, "mode": "daemon", "status": "stale", "pid_running": False})
+    monkeypatch.setattr(
+        "plugin_health.resolve_backend_binding",
+        lambda: {"host": "127.0.0.1", "port": 8010, "mode": "daemon", "source": "launcher_config"},
+    )
+    monkeypatch.setattr("plugin_health.daemon_dashboard_url", lambda project_id=None: "http://127.0.0.1:8010/dashboard")
+    monkeypatch.setattr("plugin_health._probe_url", lambda url, timeout=2.0: (True, "HTTP 200"))
+    monkeypatch.setattr("plugin_health.service.runners.inventory", fake_inventory)
+
+    payload = asyncio.run(__import__("plugin_health").mission_control_plugin_health())
+    daemon_check = next(check for check in payload["checks"] if check["key"] == "mission_control_daemon_reachable")
+    assert any("8010/api/health" in command for command in daemon_check["commands"])
 
 
 def test_plugin_health_degraded_when_noncritical_checks_warn(monkeypatch) -> None:
@@ -57,6 +92,10 @@ def test_plugin_health_degraded_when_noncritical_checks_warn(monkeypatch) -> Non
         },
     )
     monkeypatch.setattr("plugin_health.read_daemon_metadata", lambda: {"host": "127.0.0.1", "port": 8000, "mode": "daemon"})
+    monkeypatch.setattr(
+        "plugin_health.resolve_backend_binding",
+        lambda: {"host": "127.0.0.1", "port": 8000, "mode": "daemon", "source": "daemon_metadata"},
+    )
     monkeypatch.setattr("plugin_health.daemon_dashboard_url", lambda project_id=None: "http://127.0.0.1:8000/dashboard")
     monkeypatch.setattr(
         "plugin_health._probe_url",
@@ -91,6 +130,10 @@ def test_plugin_health_broken_when_critical_checks_fail(monkeypatch, client) -> 
         },
     )
     monkeypatch.setattr("plugin_health.read_daemon_metadata", lambda: {"host": "127.0.0.1", "port": 8000, "mode": "web"})
+    monkeypatch.setattr(
+        "plugin_health.resolve_backend_binding",
+        lambda: {"host": "127.0.0.1", "port": 8000, "mode": "web", "source": "daemon_metadata"},
+    )
     monkeypatch.setattr("plugin_health.daemon_dashboard_url", lambda project_id=None: "http://127.0.0.1:8000/dashboard")
     monkeypatch.setattr("plugin_health._probe_url", lambda url, timeout=2.0: (False, "URLError"))
     monkeypatch.setattr("plugin_health.service.runners.inventory", fake_inventory)

@@ -202,8 +202,30 @@ def test_launcher_scripts_exist() -> None:
     assert (root / "apps" / "desktop" / "assets" / "mission-control-logo.png").exists()
     assert (root / "apps" / "dashboard" / "public" / "mission-control-mark.png").exists()
     config_text = (scripts / "mission-control.config.json").read_text(encoding="utf-8")
-    assert '"backendPort": 8000' in config_text
+    assert '"backendPort": 8010' in config_text
     assert '"frontendPort": 5173' in config_text
+
+
+def test_cli_runner_build_exec_args_use_resolved_codex_path(monkeypatch) -> None:
+    runner = CliCodexRunner()
+    monkeypatch.setattr("codex_runner.cli_runner.codex_command_path", lambda: "C:/tools/codex.exe")
+    project = Project(id=1, name="Demo", idea="Idea", workspace_path="C:/demo", status="building", runner_mode="cli", manager_mode="auto")
+    agent = Agent(id=2, project_id=1, name="Worker", role="Implementation", kind="worker", status="idle", workspace_path="C:/demo")
+    context = RunnerContext(
+        project=project,
+        agent=agent,
+        task=None,
+        docs_path="C:/demo/mission-control",
+        settings=RunnerSettings(
+            sandbox_mode="workspace-write",
+            approval_policy="on-request",
+            model=None,
+            reasoning_effort=None,
+        ),
+    )
+
+    args = runner.build_exec_args(context, resume=False)
+    assert args[0] == "C:/tools/codex.exe"
 
 
 def test_system_status_includes_provider_matrix() -> None:

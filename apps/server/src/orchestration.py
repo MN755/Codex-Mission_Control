@@ -9,7 +9,7 @@ from typing import Any
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from daemon_state import daemon_dashboard_url, ensure_daemon_token, read_daemon_metadata
+from daemon_state import daemon_dashboard_url, ensure_daemon_token, read_daemon_metadata, resolve_backend_binding
 from db import SessionLocal
 from errors import MissionControlError
 from imported_codebase import import_service
@@ -920,6 +920,8 @@ class OrchestrationCoordinator:
 
     async def daemon_status(self, db: Session) -> dict[str, Any]:
         metadata = read_daemon_metadata()
+        binding = resolve_backend_binding()
+        metadata_status = str(metadata.get("status") or "unknown")
         active_count = int(
             db.scalar(
                 select(func.count(OrchestrationSession.id)).where(OrchestrationSession.status.in_(list(ACTIVE_ORCHESTRATION_STATUSES)))
@@ -928,16 +930,21 @@ class OrchestrationCoordinator:
         )
         return {
             "status": "ok",
-            "mode": metadata.get("mode", "web"),
-            "host": metadata.get("host", "127.0.0.1"),
-            "port": int(metadata.get("port", 8000)),
+            "metadata_status": metadata_status,
+            "mode": binding.get("mode", "web"),
+            "host": binding.get("host", "127.0.0.1"),
+            "port": int(binding.get("port", 8010)),
             "pid": int(metadata.get("pid", 0)),
             "started_at": datetime.fromisoformat(str(metadata.get("started_at"))),
             "token_configured": ensure_daemon_token() is not None,
             "active_orchestrations": active_count,
             "runner_inventory": await service.runners.inventory(),
             "dashboard_url": daemon_dashboard_url(),
-            "notes": ["Mission Control daemon endpoints are localhost-only and bridge-token guarded."],
+            "notes": [
+                "Mission Control daemon endpoints are localhost-only and bridge-token guarded.",
+                f"Backend binding source: {binding.get('source')}.",
+                f"Daemon metadata status: {metadata_status}.",
+            ],
         }
 
     def _schedule_background_turn(self, orchestration_id: int, reason: str) -> None:

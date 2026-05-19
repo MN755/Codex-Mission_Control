@@ -273,6 +273,10 @@ class InterviewSessionRead(BaseModel):
     question_budget: int
     questions_asked: int
     questions_remaining: int
+    questions_generated: int = 0
+    questions_answered: int = 0
+    pending_questions: int = 0
+    generation_budget_remaining: int = 0
     manager_mode: ManagerMode
     stopped_early: bool = False
     stop_reason: str | None = None
@@ -1199,6 +1203,7 @@ class OrchestrationStatusRead(BaseModel):
 
 class DaemonStatusRead(BaseModel):
     status: str
+    metadata_status: str | None = None
     mode: str
     host: str
     port: int
@@ -2591,7 +2596,10 @@ class SystemStatusRead(BaseModel):
     dry_run_available: bool
     runtime_directory: str
     diagnostics_directory: str | None = None
+    backend_host: str = "127.0.0.1"
     backend_port: int
+    configured_backend_port: int | None = None
+    backend_binding_source: str | None = None
     frontend_port: int | None
     active_runs: list[dict[str, Any]]
     current_settings_summary: ProjectSettingsRead | None = None

@@ -9505,7 +9505,12 @@ class MissionControlService:
         manager_agent.active_reasoning_effort = resolved_settings.effective_reasoning_label
         manager_agent.active_runner_type = resolved_settings.runner_mode
         manager_agent.current_action = "message"
-        reply = f"Manager fallback: project is **{project.status}**. Ask for next tasks or start idle agents to continue the build."
+        intake_decision = await self._greenfield_intake_decision(db, project)
+        reply = (
+            intake_decision.summary_markdown
+            if intake_decision is not None
+            else f"Manager fallback: project is **{project.status}**. Ask for next tasks or start idle agents to continue the build."
+        )
         self.events.publish(db, project.id, "manager.mode.deterministic", {"action": "message"})
         manager_record = self._record_manager_message(
             db,
@@ -9550,7 +9555,111 @@ class MissionControlService:
         )
         return self._serialize_manager_message(message)
 
+    def _greenfield_intake_candidate(self, db: Session, project: Project) -> bool:
+        if project.source_type != "idea":
+            return False
+        if project.status not in {"draft", "interview_in_progress", "interview_complete", "plan_ready"}:
+            return False
+        has_tasks = db.scalar(select(Task.id).where(Task.project_id == project.id).limit(1)) is not None
+        return not has_tasks
+
+    def _manager_interview_prompt_markdown(self, project: Project, session: InterviewSession, question: InterviewQuestion) -> str:
+        options = []
+        for option in question.options_json or []:
+            if not isinstance(option, dict):
+                continue
+            option_id = str(option.get("id") or "").strip()
+            label = str(option.get("label") or "").strip()
+            description = str(option.get("description") or "").strip()
+            if not option_id or not label:
+                continue
+            suffix = f" - {description}" if description else ""
+            options.append(f"- `{option_id}`: {label}{suffix}")
+        generated = session.questions_asked
+        answered = sum(1 for item in session.questions if item.status in {"answered", "auto_decided"} or item.answered_at is not None)
+        remaining = max(session.question_budget - generated, 0)
+        lines = [
+            f"Mission Control started intake for **{project.name}**.",
+            "",
+            f"**First question:** {question.question}",
+            f"**Why this matters:** {question.why or 'The manager needs this answer to reduce planning uncertainty.'}",
+        ]
+        if options:
+            lines.extend(["", "### Answer options", *options])
+        lines.extend(
+            [
+                "",
+                f"**Interview progress:** {generated} generated, {answered} answered, up to {remaining} more useful questions if needed.",
+                "Reply with the option id or the matching answer text so the manager can move into planning instead of guessing.",
+            ]
+        )
+        return "\n".join(lines)
+
+    async def _greenfield_intake_decision(self, db: Session, project: Project) -> ManagerWorkerDecision | None:
+        if not self._greenfield_intake_candidate(db, project):
+            return None
+
+        session = self._latest_session(db, project.id)
+        if session is None or session.status == "superseded":
+            session = await self.start_interview(db, project, question_budget=6)
+        elif session.status == "in_progress" and not self._pending_interview_questions(session):
+            session = await self.generate_next_interview(db, project)
+        elif session.status == "completed":
+            return ManagerWorkerDecision(
+                decision_type="wait",
+                summary_markdown="The greenfield intake interview is complete. Generate the initial project plan next from the captured answers.",
+            )
+
+        pending_questions = self._pending_interview_questions(session)
+        if not pending_questions and session.status == "in_progress":
+            turn = self._default_interview_turn(project, session)
+            session = self._apply_interview_turn(db, project, session, turn, question_source="fallback_generated")
+            pending_questions = self._pending_interview_questions(session)
+        if not pending_questions and session.status == "in_progress":
+            emergency_questions = [
+                InterviewTurnQuestion(**question)
+                for question in select_fallback_questions(1, asked_categories=set(), pending_categories=set())
+            ]
+            normalized_questions = self._normalize_interview_questions(session, emergency_questions, allow_repeated_categories=True)
+            if normalized_questions:
+                self._record_interview_questions(db, session, normalized_questions, question_source="fallback_generated")
+                self._refresh_interview_session_state(session, project=project)
+                pending_questions = self._pending_interview_questions(session)
+        if not pending_questions:
+            project.status = "interview_in_progress"
+            return ManagerWorkerDecision(
+                decision_type="escalate_to_user",
+                summary_markdown=(
+                    f"Mission Control started intake for **{project.name}**.\n\n"
+                    "**First question:** What is the first usable outcome you want this project to deliver?\n"
+                    "**Why this matters:** The manager needs a concrete first slice before it can plan tasks or route agents.\n\n"
+                    "Reply with a short answer such as:\n"
+                    "- a local prototype\n"
+                    "- a working bug fix\n"
+                    "- a usable CLI command\n"
+                    "- a small web flow\n\n"
+                    "Mission Control will keep the project in interview mode until it gets enough signal to plan safely."
+                ),
+                escalation_message="What is the first usable outcome you want this project to deliver?",
+            )
+
+        first_question = pending_questions[0]
+        return ManagerWorkerDecision(
+            decision_type="escalate_to_user",
+            summary_markdown=self._manager_interview_prompt_markdown(project, session, first_question),
+            escalation_message=first_question.question,
+        )
+
     async def manager_next_step(self, db: Session, project: Project) -> ManagerWorkerDecision:
+        intake_decision = await self._greenfield_intake_decision(db, project)
+        if intake_decision is not None:
+            self.events.publish(
+                db,
+                project.id,
+                "manager.worker_decision",
+                {"decision": _dump_model(intake_decision), "manager_mode_used": "deterministic_greenfield_intake"},
+            )
+            return intake_decision
         workers = list(db.scalars(select(Agent).where(Agent.project_id == project.id, Agent.kind == "worker").order_by(Agent.id.asc())))
         fallback_decision = ManagerWorkerDecision(decision_type="wait", summary_markdown="No safe backlog task is ready.")
         for agent in workers:

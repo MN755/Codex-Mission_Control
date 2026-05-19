@@ -5,19 +5,45 @@ from pathlib import Path
 
 import uvicorn
 
-from config import DEFAULT_BACKEND_HOST, DEFAULT_BACKEND_PORT, ensure_runtime_dirs
-from daemon_state import ensure_daemon_token, write_daemon_metadata
+from config import ensure_runtime_dirs
+from daemon_state import ensure_daemon_token, resolve_backend_binding, update_daemon_metadata_status, write_daemon_metadata
 from main import app
 
 
 def main() -> None:
     ensure_runtime_dirs()
     ensure_daemon_token()
-    host = os.environ.get("MISSION_CONTROL_BACKEND_HOST", DEFAULT_BACKEND_HOST)
-    port = int(os.environ.get("MISSION_CONTROL_BACKEND_PORT", DEFAULT_BACKEND_PORT))
     os.environ.setdefault("MISSION_CONTROL_SERVER_MODE", "daemon")
-    write_daemon_metadata(host=host, port=port, pid=os.getpid(), mode=os.environ["MISSION_CONTROL_SERVER_MODE"])
-    uvicorn.run(app, host=host, port=port, log_level="warning", access_log=False)
+    binding = resolve_backend_binding(prefer_live_metadata=False)
+    host = str(binding["host"])
+    port = int(binding["port"])
+    started_at = write_daemon_metadata(
+        host=host,
+        port=port,
+        pid=os.getpid(),
+        mode=os.environ["MISSION_CONTROL_SERVER_MODE"],
+        status="starting",
+    )["started_at"]
+    try:
+        uvicorn.run(app, host=host, port=port, log_level="warning", access_log=False)
+        update_daemon_metadata_status(
+            status="stopped",
+            host=host,
+            port=port,
+            pid=os.getpid(),
+            mode=os.environ["MISSION_CONTROL_SERVER_MODE"],
+        )
+    except Exception as exc:
+        write_daemon_metadata(
+            host=host,
+            port=port,
+            pid=os.getpid(),
+            mode=os.environ["MISSION_CONTROL_SERVER_MODE"],
+            status="failed",
+            started_at=started_at,
+            last_error=f"{type(exc).__name__}: {exc}",
+        )
+        raise
 
 
 if __name__ == "__main__":

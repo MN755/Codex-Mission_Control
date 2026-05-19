@@ -10,7 +10,7 @@ from urllib.request import urlopen
 from sqlalchemy import text
 
 from config import REPO_ROOT, RUNTIME_ROOT, get_codex_home
-from daemon_state import daemon_dashboard_url, read_daemon_metadata
+from daemon_state import daemon_dashboard_url, read_daemon_metadata, resolve_backend_binding
 from db import engine
 from errors import MissionControlError, derive_health_status, format_health_check_item
 from manager import service
@@ -99,10 +99,11 @@ def _find_mission_control_mcp_server(servers: list[dict[str, Any]]) -> dict[str,
 async def mission_control_plugin_health() -> dict[str, Any]:
     codex = detect_codex_status()
     metadata = read_daemon_metadata()
+    backend_binding = resolve_backend_binding()
     dashboard_url = daemon_dashboard_url()
-    daemon_host = str(metadata.get("host") or "")
-    daemon_port = int(metadata.get("port") or 0)
-    daemon_mode = str(metadata.get("mode") or "unknown")
+    daemon_host = str(backend_binding.get("host") or "")
+    daemon_port = int(backend_binding.get("port") or 0)
+    daemon_mode = str(backend_binding.get("mode") or "unknown")
     daemon_url = f"http://{daemon_host}:{daemon_port}/api/health" if daemon_host and daemon_port else ""
     daemon_ok, daemon_probe = _probe_url(daemon_url) if daemon_url else (False, "no_target")
     dashboard_ok, dashboard_probe = _probe_url(dashboard_url)
@@ -142,8 +143,17 @@ async def mission_control_plugin_health() -> dict[str, Any]:
             ),
             critical=True,
             fix=None if daemon_error is None else daemon_error.recommended_fix,
-            commands=[".\\scripts\\start-mission-control.ps1", "Invoke-WebRequest http://127.0.0.1:8000/api/health"],
-            details={"host": daemon_host, "port": daemon_port, "mode": daemon_mode},
+            commands=[
+                f".\\scripts\\start-mission-control-daemon.ps1 -BackendPort {daemon_port}",
+                f"Invoke-WebRequest http://{daemon_host}:{daemon_port}/api/health",
+            ],
+            details={
+                "host": daemon_host,
+                "port": daemon_port,
+                "mode": daemon_mode,
+                "binding_source": backend_binding.get("source"),
+                "metadata_status": metadata.get("status"),
+            },
             error=daemon_error,
         )
     )
@@ -423,7 +433,7 @@ async def mission_control_plugin_health() -> dict[str, Any]:
             summary="Mission Control dashboard URL responded successfully." if dashboard_ok else dashboard_error.detail,
             critical=False,
             fix=None if dashboard_ok else "Start the standalone dashboard only if you specifically need it.",
-            commands=["Invoke-WebRequest http://127.0.0.1:8000/dashboard"],
+            commands=[f"Invoke-WebRequest http://{daemon_host}:{daemon_port}/dashboard"],
             details={"dashboard_url": dashboard_url},
             error=dashboard_error,
         )

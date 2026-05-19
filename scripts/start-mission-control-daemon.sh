@@ -16,7 +16,7 @@ if ! command -v "${PYTHON_BIN}" >/dev/null 2>&1; then
 fi
 
 HOST="${MISSION_CONTROL_BACKEND_HOST:-127.0.0.1}"
-PORT="${MISSION_CONTROL_BACKEND_PORT:-8000}"
+PORT="${MISSION_CONTROL_BACKEND_PORT:-8010}"
 if [[ -f "${CONFIG_PATH}" ]]; then
   HOST="${MISSION_CONTROL_BACKEND_HOST:-$(python3 - <<'PY' "${CONFIG_PATH}"
 import json, sys
@@ -29,7 +29,7 @@ PY
 import json, sys
 with open(sys.argv[1], 'r', encoding='utf-8') as handle:
     payload = json.load(handle)
-print(payload.get('backendPort', 8000))
+print(payload.get('backendPort', 8010))
 PY
 )}"
 fi

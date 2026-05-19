@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import shutil
 import subprocess
 import uuid
 from dataclasses import dataclass, field
@@ -9,6 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from codex_cli_path import codex_command_path
 from config import RUNTIME_ROOT
 from system_status import auth_mode_from_login_output, detect_codex_status
 
@@ -77,7 +77,10 @@ class CodexAuthService:
         return self.jobs.get(job_id)
 
     async def start_chatgpt_login(self, *, device_auth: bool = False) -> AuthJobState:
-        args = ["codex", "login"]
+        cli_path = codex_command_path()
+        if cli_path is None:
+            raise RuntimeError("Codex CLI was not found on PATH.")
+        args = [cli_path, "login"]
         method = "chatgpt"
         message = "Waiting for Codex ChatGPT sign-in to finish."
         if device_auth:
@@ -90,23 +93,29 @@ class CodexAuthService:
         cleaned = api_key.strip()
         if not cleaned:
             raise ValueError("API key is required.")
+        cli_path = codex_command_path()
+        if cli_path is None:
+            raise RuntimeError("Codex CLI was not found on PATH.")
         return await self._start_job(
             method="api_key",
-            args=["codex", "login", "--with-api-key"],
+            args=[cli_path, "login", "--with-api-key"],
             stdin_text=cleaned + "\n",
             initial_message="Sending the API key to the local Codex CLI login flow.",
         )
 
     async def start_logout(self) -> AuthJobState:
+        cli_path = codex_command_path()
+        if cli_path is None:
+            raise RuntimeError("Codex CLI was not found on PATH.")
         return await self._start_job(
             method="logout",
-            args=["codex", "logout"],
+            args=[cli_path, "logout"],
             stdin_text=None,
             initial_message="Signing out of the local Codex CLI session.",
         )
 
     async def _start_job(self, *, method: str, args: list[str], stdin_text: str | None, initial_message: str) -> AuthJobState:
-        if shutil.which("codex") is None:
+        if codex_command_path() is None:
             raise RuntimeError("Codex CLI was not found on PATH.")
         async with self._lock:
             current = self.current_job()

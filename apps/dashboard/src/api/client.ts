@@ -85,14 +85,6 @@ function defaultApiBaseUrl(): string {
   if (configured) {
     return configured;
   }
-  if (typeof window === "undefined") {
-    return "";
-  }
-  const { hostname, protocol, port } = window.location;
-  const isLocalHost = hostname === "localhost" || hostname === "127.0.0.1";
-  if (isLocalHost && port && port !== "8000") {
-    return `${protocol}//${hostname}:8000`;
-  }
   return "";
 }
 
