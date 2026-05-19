@@ -1,35 +1,35 @@
 # Autowire Providers
 
-Mission Control headless mode probes local runners and enables only the safe defaults.
+> Status: Partial / Experimental
 
-## Safe default behavior
+Provider autowiring probes the local environment and enables only the runners that are available, safe, and clearly understood.
 
-- `dry_run`: always enabled
-- `codex_cli`: enabled only when the CLI exists and login looks valid
-- `ollama`: enabled only when the local server is reachable
-- `claude_cli`: detected, but not auto-enabled if auth cannot be confirmed
-- `openai_api`, `anthropic_api`, `xai_api`, `custom_api`: detected only from external config and not auto-enabled by default
+## Default behavior
 
-## Why API runners stay conservative
+- `dry_run` is always enabled
+- `codex_cli` is enabled only when the CLI is present and login can be confirmed
+- `ollama` is enabled only when the local server is reachable
+- `claude_cli` may be detected without being auto-enabled
+- API-backed runners remain disabled unless secure external configuration already exists and the user explicitly wants them
 
-- Mission Control does not store raw keys in SQLite, logs, or JSON reports.
-- External env configuration can be detected without printing the secret value.
-- Billing-backed paths should be explicit, not accidental.
+## Safety rules
 
-## Typical autowire outputs
+- do not print raw API keys, tokens, or `.env` contents
+- do not trigger billed providers silently
+- do not pull large local models without user awareness
+- do not treat missing authentication as a successful configuration
+
+## Expected autowire output
 
 - ready runners
-- missing login steps
-- recommended fixes
-- billing warnings for API-backed paths
-- next prompt the user can try in Codex chat
+- blocked or unknown runners
+- missing login or local service steps
+- billing notes for API-backed options
+- a recommended next action in Codex chat
 
-## Codex CLI login vs API key
+## Related docs
 
-Preferred:
-
-- local Codex CLI with ChatGPT or Codex login
-
-Fallback:
-
-- API-backed providers only when the user already configured them externally and accepts billing
+- [Background Install](HEADLESS_INSTALL.md)
+- [Runners](RUNNERS.md)
+- [Background Health](HEADLESS_HEALTH.md)
+- [Security](SECURITY.md)

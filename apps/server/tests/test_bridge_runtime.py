@@ -256,7 +256,7 @@ def test_pending_decision_rejects_invalid_option(client) -> None:
         json={"option_id": "reckless", "selected_text": "Reckless path"},
     )
     assert response.status_code == 400
-    assert "not allowed" in response.json()["detail"].lower()
+    assert response.json()["code"] == "MC-DECISION-INVALID-OPTION-001"
 
 
 def test_event_digest_endpoints_are_compact_and_redacted(client) -> None:
@@ -307,7 +307,7 @@ def test_empty_event_digest_and_handoff_summary_are_honest(client) -> None:
         params={"window": "last_5_minutes"},
     )
     assert digest.status_code == 200, digest.text
-    assert "No significant orchestration events" in digest.json()["fallback_markdown"]
+    assert "No events yet." in digest.json()["fallback_markdown"]
 
     handoff = client.get(f"/api/projects/{project['id']}/handoff-summary", headers=_bridge_headers())
     assert handoff.status_code == 200, handoff.text

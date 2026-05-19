@@ -1,58 +1,49 @@
-# Docs Index
+# Documentation
 
-Headless usage is primary in this repo. Standalone dashboard material is optional and should be read as secondary context.
+This directory contains the maintained long-form documentation for Codex Mission Control as a background-running orchestration platform for Codex.
 
-## Headless Usage
+GitHub's repository navigation is controlled by GitHub. Project-specific documentation is linked from README and maintained in `docs/` and the Wiki.
 
-- [Headless Install](HEADLESS_INSTALL.md)
-- [Autowire Providers](AUTOWIRE_PROVIDERS.md)
-- [Headless Health](HEADLESS_HEALTH.md)
-- [No-UI Setup](NO_UI_SETUP.md)
-- [Headless Happy Path](HEADLESS_HAPPY_PATH.md)
-- [Headless UX](HEADLESS_UX.md)
-- [Headless Architecture](HEADLESS_ARCHITECTURE.md)
-- [Codex Chat UX Spec](CODEX_CHAT_UX_SPEC.md)
-- [Codex Plugin Mode](CODEX_PLUGIN_MODE.md)
-- [Codex Chat Workflows](CODEX_CHAT_WORKFLOWS.md)
-- [Chat-Native Handoffs](CHAT_NATIVE_HANDOFFS.md)
-- [Workflow](WORKFLOW.md)
+## Start here
 
-## Codex Plugin And Skills
+- [Overview](OVERVIEW.md)
+- [Quick Start](QUICK_START.md)
+- [Background Install](HEADLESS_INSTALL.md)
+- [Codex Chat Mode](CODEX_CHAT_MODE.md)
 
-- [Codex Integration](CODEX_INTEGRATION.md)
-- [Codex Plugin Install](CODEX_PLUGIN_INSTALL.md)
-- [Mission Control Skills](MISSION_CONTROL_SKILLS.md)
-- [Mission Control Skill Library](MISSION_CONTROL_SKILL_LIBRARY.md)
-- [Skill Pack](SKILL_PACK.md)
+## Architecture
 
-## MCP Bridge
-
-- [Bridge Runtime](BRIDGE_RUNTIME.md)
-- [Bridge Messages](BRIDGE_MESSAGES.md)
-- [MCP Resources And Prompts](MCP_RESOURCES_AND_PROMPTS.md)
-- [MCP Resources Prompts](MCP_RESOURCES_PROMPTS.md)
+- [Background Architecture](HEADLESS_ARCHITECTURE.md)
+- [Architecture Summary](ARCHITECTURE.md)
+- [MCP Plugin Bridge](MCP_PLUGIN_BRIDGE.md)
+- [Runner System](RUNNERS.md)
 - [Pending Decisions](PENDING_DECISIONS.md)
+- [Handoffs](HANDOFFS.md)
 
-## Daemon And Runtime
+## Operations
 
-- [Architecture](ARCHITECTURE.md)
-- [Headless Install](HEADLESS_INSTALL.md)
-- [Headless Health](HEADLESS_HEALTH.md)
+- [Autowire Providers](AUTOWIRE_PROVIDERS.md)
+- [Background Health](HEADLESS_HEALTH.md)
+- [Mission Control Errors](ERRORS.md)
+- [Error Registry](ERROR_REGISTRY.md)
+- [Debug Breakpoints](DEBUG_BREAKPOINTS.md)
+- [Diagnostic Taxonomy](DIAGNOSTIC_TAXONOMY.md)
 - [Plugin Health Doctor](PLUGIN_HEALTH_DOCTOR.md)
-
-## Security
-
+- [Troubleshooting](TROUBLESHOOTING.md)
 - [Security](SECURITY.md)
-- [Security Model](SECURITY_MODEL.md)
-- [Approval Policy](APPROVAL_POLICY.md)
-- [MCP Security](MCP_SECURITY.md)
 
-## Testing And Validation
+## Development
 
-- [Workflow](WORKFLOW.md)
+- [Contributing](CONTRIBUTING.md)
+- [Testing and workflow notes](WORKFLOW.md)
+- [Public release checklist](PUBLIC_RELEASE_CHECKLIST.md)
+- [Changelog](../CHANGELOG.md)
 
-## Optional UI
+## Optional / future
 
 - [Optional Dashboard UI](OPTIONAL_DASHBOARD_UI.md)
 
-The dashboard docs remain in the repo, but headless Codex-native docs are the current product direction.
+## External docs
+
+- [Repository README](../README.md)
+- [GitHub Wiki](https://github.com/MN755/Codex-Mission_Control/wiki)

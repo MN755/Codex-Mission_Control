@@ -12,6 +12,7 @@ from sqlalchemy import text
 from config import REPO_ROOT, RUNTIME_ROOT, get_codex_home
 from daemon_state import daemon_dashboard_url, read_daemon_metadata
 from db import engine
+from errors import MissionControlError, derive_health_status, format_health_check_item
 from manager import service
 from system_status import detect_codex_status
 
@@ -62,18 +63,19 @@ def _check(
     fix: str | None = None,
     commands: list[str] | None = None,
     details: dict[str, Any] | None = None,
+    error: MissionControlError | None = None,
 ) -> dict[str, Any]:
-    return {
-        "key": check_id,
-        "label": label,
-        "status": status,
-        "summary": summary,
-        "recommended_fix": fix,
-        "details_json": dict(details or {}),
-        "checked_at": _utc_now(),
-        "critical": critical,
-        "commands": list(commands or []),
-    }
+    return format_health_check_item(
+        check_id=check_id,
+        label=label,
+        status=status,
+        summary=summary,
+        critical=critical,
+        error=error,
+        fix=fix,
+        commands=commands,
+        details=details,
+    )
 
 
 def _is_local_host(host: str | None) -> bool:
@@ -107,49 +109,80 @@ async def mission_control_plugin_health() -> dict[str, Any]:
 
     checks: list[dict[str, Any]] = []
 
+    daemon_error = None
+    if not daemon_ok:
+        daemon_error = MissionControlError(
+            code="MC-DAEMON-NOT-RUNNING-001",
+            breakpoint="daemon.health_check",
+            safe_details={"host": daemon_host or None, "port": daemon_port or None, "probe": daemon_probe},
+        )
+    elif daemon_mode != "daemon":
+        daemon_error = MissionControlError(
+            code="MC-DAEMON-HEALTH-FAILED-001",
+            detail="Mission Control backend is reachable, but daemon mode is not confirmed.",
+            severity="warning",
+            breakpoint="daemon.health_check",
+            retryable=True,
+            user_action_required=False,
+            safe_details={"host": daemon_host or None, "port": daemon_port or None, "mode": daemon_mode},
+        )
     checks.append(
         _check(
             check_id="mission_control_daemon_reachable",
             label="Mission Control daemon reachable",
-            status="ready" if daemon_ok and daemon_mode == "daemon" else ("degraded" if daemon_ok else "broken"),
+            status="ready" if daemon_error is None else derive_health_status(daemon_error, critical=True),
             summary=(
                 "Mission Control daemon health endpoint responded successfully."
-                if daemon_ok and daemon_mode == "daemon"
+                if daemon_error is None
                 else (
-                    "Mission Control backend is reachable, but daemon mode is not confirmed."
-                    if daemon_ok
+                    daemon_error.detail
+                    if daemon_error.detail
                     else f"Mission Control daemon health probe failed at {daemon_url or 'unknown target'} ({daemon_probe})."
                 )
             ),
             critical=True,
-            fix=None if daemon_ok and daemon_mode == "daemon" else "Start Mission Control locally and verify the backend health endpoint responds.",
+            fix=None if daemon_error is None else daemon_error.recommended_fix,
             commands=[".\\scripts\\start-mission-control.ps1", "Invoke-WebRequest http://127.0.0.1:8000/api/health"],
             details={"host": daemon_host, "port": daemon_port, "mode": daemon_mode},
+            error=daemon_error,
         )
     )
 
     mcp_servers = list(codex.get("mcp_servers", []))
     mission_server = _find_mission_control_mcp_server(mcp_servers)
     if mission_server is None:
+        bridge_error = MissionControlError(
+            code="MC-MCP-BRIDGE-MISSING-001",
+            breakpoint="mcp.start",
+            safe_details={"mcp_server_count": len(mcp_servers)},
+        )
         checks.append(
             _check(
                 check_id="mcp_server_reachable",
                 label="MCP server reachable",
-                status="broken",
-                summary="No Mission Control MCP server entry was detected in Codex MCP configuration.",
+                status=derive_health_status(bridge_error, critical=True),
+                summary=bridge_error.detail,
                 critical=True,
-                fix="Add the Mission Control MCP server to Codex and reload the MCP config.",
+                fix=bridge_error.recommended_fix,
                 commands=["codex mcp list --json", "Get-Content plugins\\mission-control\\mcp\\mission-control-mcp.example.json"],
+                error=bridge_error,
             )
         )
     else:
         raw_status = str(mission_server.get("status") or mission_server.get("connection_status") or "").strip().lower()
+        bridge_error = None
         if raw_status in PASSING_MCP_STATUSES:
             state = "ready"
             summary = "Mission Control MCP server is configured and reports a healthy connection state."
         elif raw_status in FAILING_MCP_STATUSES:
-            state = "broken"
-            summary = f"Mission Control MCP server is configured but reports '{raw_status}'."
+            bridge_error = MissionControlError(
+                code="MC-MCP-HANDSHAKE-FAILED-001",
+                detail=f"Mission Control MCP server is configured but reports '{raw_status}'.",
+                breakpoint="mcp.handshake",
+                safe_details={"reported_status": raw_status},
+            )
+            state = derive_health_status(bridge_error, critical=True)
+            summary = bridge_error.detail
         else:
             state = "unknown"
             summary = "Mission Control MCP server is configured, but Codex does not expose a definitive live reachability state."
@@ -160,9 +193,10 @@ async def mission_control_plugin_health() -> dict[str, Any]:
                 status=state,
                 summary=summary,
                 critical=True,
-                fix=None if state == "ready" else "Verify the MCP bridge command and reload Codex MCP configuration.",
+                fix=None if state == "ready" else (bridge_error.recommended_fix if bridge_error is not None else "Verify the MCP bridge command and reload Codex MCP configuration."),
                 commands=["codex mcp list --json"],
                 details={"server": mission_server},
+                error=bridge_error,
             )
         )
         for key, label in [
@@ -197,87 +231,127 @@ async def mission_control_plugin_health() -> dict[str, Any]:
             )
 
     missing_plugin_files = [str(path.relative_to(REPO_ROOT)) for path in REQUIRED_PLUGIN_FILES if not path.exists()]
+    package_error = MissionControlError(
+        code="MC-PLUGIN-PACKAGE-INVALID-001",
+        breakpoint="plugin.package_validate",
+        safe_details={"missing_files": missing_plugin_files},
+    ) if missing_plugin_files else None
     checks.append(
         _check(
             check_id="plugin_package_exists",
             label="Plugin package exists",
-            status="ready" if not missing_plugin_files else "broken",
-            summary="Mission Control plugin package files are present." if not missing_plugin_files else "Mission Control plugin package is incomplete.",
+            status="ready" if package_error is None else derive_health_status(package_error, critical=True),
+            summary="Mission Control plugin package files are present." if package_error is None else package_error.detail,
             critical=True,
-            fix=None if not missing_plugin_files else "Restore the Mission Control plugin package under plugins/mission-control.",
+            fix=None if package_error is None else package_error.recommended_fix,
             commands=["Get-ChildItem plugins\\mission-control -Recurse"],
             details={"missing_files": missing_plugin_files},
+            error=package_error,
         )
     )
 
     missing_skill_files = [str(path.relative_to(REPO_ROOT)) for path in [*REQUIRED_PLUGIN_SKILLS, *REQUIRED_LOCAL_SKILLS] if not path.exists()]
+    skill_error = MissionControlError(
+        code="MC-PLUGIN-SKILL-MISSING-001",
+        breakpoint="plugin.skill_discovery",
+        safe_details={"missing_files": missing_skill_files},
+    ) if missing_skill_files else None
     checks.append(
         _check(
             check_id="skill_files_exist",
             label="Skill files exist",
-            status="ready" if not missing_skill_files else "broken",
+            status="ready" if skill_error is None else derive_health_status(skill_error, critical=True),
             summary="Mission Control skill files are present in both plugin and repo-local Codex skill folders."
-            if not missing_skill_files
-            else "One or more Mission Control skill files are missing.",
+            if skill_error is None
+            else skill_error.detail,
             critical=True,
-            fix=None if not missing_skill_files else "Restore the Mission Control skill files and reload Codex skill discovery.",
+            fix=None if skill_error is None else skill_error.recommended_fix,
             commands=["Get-ChildItem .codex\\skills", "Get-ChildItem plugins\\mission-control\\skills -Recurse"],
             details={"missing_files": missing_skill_files},
+            error=skill_error,
         )
     )
 
+    codex_cli_error = None if codex.get("cli_detected") else MissionControlError(
+        code="MC-CODEX-CLI-MISSING-001",
+        breakpoint="codex_cli.detect",
+        safe_details={"cli_version": codex.get("cli_version")},
+    )
     checks.append(
         _check(
             check_id="codex_cli_detected",
             label="Codex CLI detected",
-            status="ready" if bool(codex.get("cli_detected")) else "broken",
-            summary="Codex CLI is available." if codex.get("cli_detected") else "Codex CLI is not available on the current PATH.",
+            status="ready" if codex_cli_error is None else derive_health_status(codex_cli_error, critical=True),
+            summary="Codex CLI is available." if codex_cli_error is None else codex_cli_error.detail,
             critical=True,
-            fix=None if codex.get("cli_detected") else "Install Codex CLI or fix the PATH.",
+            fix=None if codex_cli_error is None else codex_cli_error.recommended_fix,
             commands=["codex --version"],
             details={"cli_version": codex.get("cli_version")},
+            error=codex_cli_error,
         )
     )
 
     login_status = str(codex.get("login_status") or "").strip()
     login_detectable = bool(codex.get("auth_status_detectable")) and login_status not in {"", "Unavailable"}
+    login_error = None if login_detectable else MissionControlError(
+        code="MC-CODEX-LOGIN-UNKNOWN-001",
+        breakpoint="codex_cli.login_status",
+        severity="warning",
+        safe_details={"auth_mode": codex.get("auth_mode"), "authenticated": bool(codex.get("authenticated"))},
+    )
     checks.append(
         _check(
             check_id="codex_login_status_detectable",
             label="Codex login status detectable",
-            status="ready" if login_detectable else "degraded",
-            summary="Codex login status can be queried safely." if login_detectable else "Codex login status could not be confirmed cleanly.",
+            status="ready" if login_error is None else derive_health_status(login_error, critical=False),
+            summary="Codex login status can be queried safely." if login_error is None else login_error.detail,
             critical=False,
-            fix=None if login_detectable else "Run `codex login status` and sign in again if needed.",
+            fix=None if login_error is None else login_error.recommended_fix,
             commands=["codex login status"],
             details={"auth_mode": codex.get("auth_mode"), "authenticated": bool(codex.get("authenticated"))},
+            error=login_error,
         )
     )
 
     try:
         runner_inventory = await service.runners.inventory()
+        runner_error = None if runner_inventory else MissionControlError(
+            code="MC-RUNNER-NONE-AVAILABLE-001",
+            breakpoint="runner.registry_load",
+            severity="warning",
+            safe_details={"runner_types": []},
+        )
         checks.append(
             _check(
                 check_id="runner_registry_available",
                 label="Runner registry available",
-                status="ready" if runner_inventory else "broken",
-                summary="Runner registry responded with available runner inventory." if runner_inventory else "Runner registry returned no runner entries.",
+                status="ready" if runner_error is None else derive_health_status(runner_error, critical=True),
+                summary="Runner registry responded with available runner inventory." if runner_error is None else runner_error.detail,
                 critical=True,
-                fix=None if runner_inventory else "Inspect Mission Control runner registration before trying plugin-driven execution.",
+                fix=None if runner_error is None else runner_error.recommended_fix,
                 commands=["python -m pytest apps/server/tests/test_runners.py"],
                 details={"runner_types": [item.get("runner_type") for item in runner_inventory]},
+                error=runner_error,
             )
         )
     except Exception as exc:
+        runner_error = MissionControlError(
+            code="MC-RUNNER-SELECTION-FAILED-001",
+            detail=f"Runner registry lookup failed: {type(exc).__name__}.",
+            breakpoint="runner.registry_load",
+            safe_details={"exception_type": type(exc).__name__},
+            caused_by=exc,
+        )
         checks.append(
             _check(
                 check_id="runner_registry_available",
                 label="Runner registry available",
-                status="broken",
-                summary=f"Runner registry lookup failed: {type(exc).__name__}.",
+                status=derive_health_status(runner_error, critical=True),
+                summary=runner_error.detail,
                 critical=True,
-                fix="Inspect Mission Control runner registration and startup logs.",
+                fix=runner_error.recommended_fix,
                 commands=["python -m pytest apps/server/tests/test_runners.py"],
+                error=runner_error,
             )
         )
 
@@ -290,16 +364,22 @@ async def mission_control_plugin_health() -> dict[str, Any]:
         runtime_writable = True
     except OSError:
         runtime_writable = False
+    runtime_error = None if runtime_writable else MissionControlError(
+        code="MC-STORAGE-RUNTIME-WRITE-FAILED-001",
+        breakpoint="diagnostics.write_report",
+        safe_details={"runtime_root": str(runtime_root)},
+    )
     checks.append(
         _check(
             check_id="runtime_directory_writable",
             label="Runtime directory writable",
-            status="ready" if runtime_writable else "broken",
-            summary="Mission Control runtime directory is writable." if runtime_writable else "Mission Control runtime directory is not writable.",
+            status="ready" if runtime_error is None else derive_health_status(runtime_error, critical=True),
+            summary="Mission Control runtime directory is writable." if runtime_error is None else runtime_error.detail,
             critical=True,
-            fix=None if runtime_writable else "Fix filesystem permissions for the Mission Control runtime directory.",
+            fix=None if runtime_error is None else runtime_error.recommended_fix,
             commands=["Get-ChildItem .runtime"],
             details={"runtime_root": str(runtime_root)},
+            error=runtime_error,
         )
     )
 
@@ -309,44 +389,69 @@ async def mission_control_plugin_health() -> dict[str, Any]:
         db_ready = True
     except Exception:
         db_ready = False
+    db_error = None if db_ready else MissionControlError(
+        code="MC-STORAGE-DB-UNAVAILABLE-001",
+        breakpoint="bootstrap.health_check",
+    )
     checks.append(
         _check(
             check_id="sqlite_db_reachable",
             label="SQLite DB reachable",
-            status="ready" if db_ready else "broken",
-            summary="Mission Control SQLite database responded to a simple query." if db_ready else "Mission Control SQLite database could not be queried.",
+            status="ready" if db_error is None else derive_health_status(db_error, critical=True),
+            summary="Mission Control SQLite database responded to a simple query." if db_error is None else db_error.detail,
             critical=True,
-            fix=None if db_ready else "Inspect the runtime SQLite file and backend startup logs.",
+            fix=None if db_error is None else db_error.recommended_fix,
             commands=["python -m pytest apps/server/tests/test_api_smoke.py"],
+            error=db_error,
         )
     )
 
+    dashboard_error = None if dashboard_ok else MissionControlError(
+        code="MC-DAEMON-HEALTH-FAILED-001",
+        detail=f"Mission Control dashboard URL did not respond cleanly ({dashboard_probe}), but dashboard reachability is optional for background bridge mode.",
+        severity="debug",
+        breakpoint="daemon.health_check",
+        retryable=True,
+        user_action_required=False,
+        safe_details={"dashboard_url": dashboard_url},
+    )
     checks.append(
         _check(
             check_id="dashboard_optional_status",
             label="Dashboard optional status",
             status="ready" if dashboard_ok else "unknown",
-            summary="Mission Control dashboard URL responded successfully." if dashboard_ok else f"Mission Control dashboard URL did not respond cleanly ({dashboard_probe}), but dashboard reachability is optional for headless bridge mode.",
+            summary="Mission Control dashboard URL responded successfully." if dashboard_ok else dashboard_error.detail,
             critical=False,
             fix=None if dashboard_ok else "Start the standalone dashboard only if you specifically need it.",
             commands=["Invoke-WebRequest http://127.0.0.1:8000/dashboard"],
             details={"dashboard_url": dashboard_url},
+            error=dashboard_error,
         )
     )
 
     dashboard_host = urlparse(dashboard_url).hostname
+    binding_error = None if _is_local_host(daemon_host) and _is_local_host(dashboard_host) else MissionControlError(
+        code="MC-NETWORK-LOCALHOST-UNREACHABLE-001",
+        detail="Mission Control binding is not clearly localhost-only.",
+        severity="warning",
+        breakpoint="daemon.port_bind",
+        retryable=True,
+        user_action_required=True,
+        safe_details={"daemon_host": daemon_host, "dashboard_host": dashboard_host},
+    )
     checks.append(
         _check(
             check_id="localhost_only_binding",
             label="Localhost-only binding",
-            status="ready" if _is_local_host(daemon_host) and _is_local_host(dashboard_host) else "degraded",
+            status="ready" if binding_error is None else derive_health_status(binding_error, critical=False),
             summary="Mission Control appears to be bound to localhost-only addresses."
-            if _is_local_host(daemon_host) and _is_local_host(dashboard_host)
-            else "Mission Control binding is not clearly localhost-only.",
+            if binding_error is None
+            else binding_error.detail,
             critical=False,
-            fix=None if _is_local_host(daemon_host) and _is_local_host(dashboard_host) else "Bind Mission Control to 127.0.0.1 or localhost for plugin mode.",
+            fix=None if binding_error is None else binding_error.recommended_fix,
             commands=["Get-Content scripts\\mission-control.config.json"],
             details={"daemon_host": daemon_host, "dashboard_host": dashboard_host},
+            error=binding_error,
         )
     )
 
@@ -371,7 +476,8 @@ async def mission_control_plugin_health() -> dict[str, Any]:
         "### Checks",
     ]
     for check in checks:
-        markdown_lines.append(f"- **{check['label']}** [{check['status']}]: {check['summary']}")
+        suffix = f" ({check['code']})" if check.get("code") else ""
+        markdown_lines.append(f"- **{check['label']}** [{check['status']}]{suffix}: {check['summary']}")
     if recommended_next_steps:
         markdown_lines.extend(["", "### Recommended next steps", *[f"- {item}" for item in recommended_next_steps]])
     if safe_commands:

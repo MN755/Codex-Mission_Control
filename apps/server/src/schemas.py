@@ -62,8 +62,11 @@ ApprovalAuditDecision = Literal["approved", "denied", "allowed_for_project", "ex
 ApprovalAuditActor = Literal["user", "manager", "policy", "system"]
 OrchestrationSource = Literal["codex_plugin", "dashboard", "cli", "desktop", "test"]
 OrchestrationStatus = Literal["initializing", "planning", "waiting_for_user", "running", "paused", "completed", "failed"]
+OrchestrationMode = Literal["dry_run", "codex_cli", "mixed", "unknown"]
 AttachMode = Literal["auto", "new_project", "existing_codebase"]
 AttachPolicy = Literal["reuse_existing", "create_new", "ask"]
+HeadlessTaskMode = Literal["dry_run", "auto", "codex_cli"]
+HeadlessTaskStrategy = Literal["manager_decides", "fastest_build", "balanced", "high_quality", "documentation_heavy", "safe_mode"]
 PendingDecisionType = Literal[
     "manager_question",
     "command_approval",
@@ -95,6 +98,7 @@ BridgeMessageType = Literal[
     "safe_mode_update",
 ]
 BridgeRedactionStatus = Literal["clean", "redacted"]
+ErrorSeverity = Literal["debug", "info", "warning", "error", "fatal"]
 EventDigestWindow = Literal["last_5_minutes", "last_15_minutes", "since_last_user_interaction", "since_orchestration_start"]
 ProjectActionType = Literal["no_action", "manager_question", "command_approval", "tool_approval", "blocker", "handoff_ready", "degraded", "paused", "error"]
 ProjectActionSeverity = Literal["info", "warning", "danger", "success"]
@@ -855,6 +859,7 @@ class OrchestrationSessionRead(BaseModel):
     user_request: str
     status: OrchestrationStatus
     manager_status: str
+    mode: OrchestrationMode = "unknown"
     created_at: datetime
     updated_at: datetime
     completed_at: datetime | None = None
@@ -868,6 +873,7 @@ class OrchestrationAttachRead(BaseModel):
     project_id: int | None = None
     project_name: str | None = None
     source_type: ProjectSourceType | None = None
+    workspace_path: str | None = None
     orchestration: OrchestrationSessionRead | None = None
     attach_outcome: str
     next_action: str | None = None
@@ -876,6 +882,7 @@ class OrchestrationAttachRead(BaseModel):
     user_action_required: bool = False
     pending_decision_id: int | None = None
     message: str
+    status_summary_markdown: str | None = None
 
 
 class OrchestrationCreateRequest(BaseModel):
@@ -883,6 +890,8 @@ class OrchestrationCreateRequest(BaseModel):
     user_request: str = Field(min_length=1)
     source: OrchestrationSource = "codex_plugin"
     orchestration_id: int | None = None
+    mode: OrchestrationMode | None = None
+    metadata_json: dict[str, Any] = Field(default_factory=dict)
 
 
 class OrchestrationEventRead(BaseModel):
@@ -924,6 +933,27 @@ class PendingDecisionAnswerRequest(BaseModel):
     free_text: str | None = None
 
 
+class ProblemDetailsRead(BaseModel):
+    type: str
+    title: str
+    status: int
+    detail: str
+    instance: str
+    code: str
+    family: str
+    severity: ErrorSeverity
+    breakpoint: str
+    retryable: bool
+    user_action_required: bool
+    recommended_fix: str
+    correlation_id: str
+    orchestration_id: int | None = None
+    project_id: int | None = None
+    runner: str | None = None
+    redaction_status: BridgeRedactionStatus = "clean"
+    safe_details: dict[str, Any] = Field(default_factory=dict)
+
+
 class BridgeMessageRead(BaseModel):
     id: str
     project_id: int | None = None
@@ -955,18 +985,39 @@ class HeadlessHappyPathDemoRequest(BaseModel):
     mode: AttachMode = "existing_codebase"
     read_only_first: bool = True
     attach_policy: AttachPolicy = "reuse_existing"
+    create_pending_decision: bool = True
 
 
 class HeadlessHappyPathDemoRead(BaseModel):
     attach: OrchestrationAttachRead
     orchestration: OrchestrationSessionRead
     initial_status_summary: BridgeMessageRead
-    pending_decision: PendingDecisionRead
-    decision_bridge_message: BridgeMessageRead
-    answer_result: PendingDecisionAnswerResultRead
-    event_digest: BridgeMessageRead
-    handoff_summary: BridgeMessageRead
+    pending_decision: PendingDecisionRead | None = None
+    decision_bridge_message: BridgeMessageRead | None = None
+    answer_result: PendingDecisionAnswerResultRead | None = None
+    event_digest: BridgeMessageRead | None = None
+    handoff_summary: BridgeMessageRead | None = None
     dry_run: bool = True
+
+
+class HeadlessStartTaskRequest(BaseModel):
+    workspace_path: str | None = None
+    project_id: int | None = None
+    user_request: str = Field(min_length=1)
+    strategy: HeadlessTaskStrategy = "manager_decides"
+    mode: HeadlessTaskMode = "auto"
+    interview_mode: InterviewChoice = "manager_decides"
+
+
+class HeadlessStartTaskRead(BaseModel):
+    project: ProjectRead
+    orchestration: OrchestrationSessionRead | None = None
+    attach: OrchestrationAttachRead | None = None
+    status_summary: BridgeMessageRead | None = None
+    pending_decisions: list[PendingDecisionRead] = Field(default_factory=list)
+    next_action: str | None = None
+    user_action_required: bool = False
+    mode_used: OrchestrationMode = "unknown"
 
 
 class SafeModeStatusRead(BaseModel):
@@ -2309,6 +2360,13 @@ class StartupCheckRead(BaseModel):
     status: StartupCheckStatus
     summary: str
     error_code: str | None = None
+    family: str | None = None
+    severity: ErrorSeverity | None = None
+    breakpoint: str | None = None
+    retryable: bool | None = None
+    user_action_required: bool | None = None
+    recommended_fix: str | None = None
+    correlation_id: str | None = None
     details: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -2366,6 +2424,7 @@ class DiagnosticReportRead(BaseModel):
     summary: str
     error_code: str | None = None
     recommended_fixes: list[str] = Field(default_factory=list)
+    problem: ProblemDetailsRead | None = None
 
 
 class AppStateRead(AppProfileRead):
@@ -2565,6 +2624,14 @@ class PluginHealthCheckRead(BaseModel):
     recommended_fix: str | None = None
     details_json: dict[str, Any] = Field(default_factory=dict)
     checked_at: datetime
+    code: str | None = None
+    family: str | None = None
+    severity: ErrorSeverity | None = None
+    breakpoint: str | None = None
+    retryable: bool | None = None
+    user_action_required: bool | None = None
+    correlation_id: str | None = None
+    redaction_status: BridgeRedactionStatus = "clean"
 
 
 class PluginHealthSummaryRead(BaseModel):
@@ -2597,6 +2664,11 @@ class RunnerProbeRead(BaseModel):
     requires_user_action: bool = False
     recommended_fix: str | None = None
     billing_warning: str | None = None
+    code: str | None = None
+    severity: ErrorSeverity | None = None
+    breakpoint: str | None = None
+    retryable: bool | None = None
+    user_action_required: bool | None = None
     models: list[str] = Field(default_factory=list)
     details_json: dict[str, Any] = Field(default_factory=dict)
     checked_at: datetime
@@ -2672,3 +2744,4 @@ class InstallReportRead(BaseModel):
     codex_chat_markdown: str
     headless_config: HeadlessConfigRead | None = None
     plugin_health: PluginHealthSummaryRead | None = None
+    problems: list[ProblemDetailsRead] = Field(default_factory=list)

@@ -63,6 +63,26 @@ def test_attach_workspace_creates_new_project_for_empty_folder(client) -> None:
     payload = response.json()
     assert payload["attach_outcome"] == "created_new_project"
     assert payload["project"]["workspace_path"] == workspace.as_posix()
+    assert "## Mission Control Status" in payload["status_summary_markdown"]
+
+
+def test_attach_missing_workspace_returns_clean_error(client) -> None:
+    workspace = Path(sample_workspace("missing-workspace"))
+    if workspace.exists():
+        shutil.rmtree(workspace)
+    response = client.post(
+        "/api/headless/attach-workspace",
+        headers=_bridge_headers(),
+        json={
+            "workspace_path": workspace.as_posix(),
+            "project_name": "Missing Attach",
+            "mode": "auto",
+            "read_only_first": True,
+            "attach_policy": "reuse_existing",
+        },
+    )
+    assert response.status_code == 400
+    assert "does not exist" in response.json()["detail"].lower()
 
 
 def test_attach_workspace_imports_existing_codebase_folder(client) -> None:
@@ -175,6 +195,49 @@ def test_pending_decisions_can_be_listed_and_answered(client) -> None:
     answered = answer.json()
     assert answered["decision"]["status"] == "answered"
     assert "next_status_summary" in answered
+
+
+def test_invalid_pending_decision_answer_is_rejected(client) -> None:
+    workspace = _fresh_workspace("invalid-decision-answer")
+    project = _create_project(client, "Invalid Decision Answer", workspace.as_posix(), runner_mode="dry_run")
+    client.post(f"/api/projects/{project['id']}/open")
+    orchestration = client.post(
+        "/api/orchestrations",
+        headers=_bridge_headers(),
+        json={"project_id": project["id"], "user_request": "Run this through Mission Control.", "source": "codex_plugin"},
+    )
+    session_id = orchestration.json()["id"]
+    decisions = client.get(f"/api/orchestrations/{session_id}/pending-decisions", headers=_bridge_headers()).json()
+    assert decisions
+    response = client.post(
+        f"/api/decisions/{decisions[0]['id']}/answer",
+        headers=_bridge_headers(),
+        json={"option_id": "definitely_not_allowed", "selected_text": "Nope"},
+    )
+    assert response.status_code == 400
+    assert "not allowed" in response.json()["detail"].lower()
+
+
+def test_headless_start_task_creates_waiting_dry_run_flow(client) -> None:
+    workspace = _fresh_workspace("headless-start-task")
+    (workspace / "README.md").write_text("# Existing codebase\n", encoding="utf-8")
+    response = client.post(
+        "/api/headless/start-task",
+        headers=_bridge_headers(),
+        json={
+            "workspace_path": workspace.as_posix(),
+            "user_request": "Use Mission Control for this repo and fix the failing tests.",
+            "strategy": "balanced",
+            "mode": "dry_run",
+            "interview_mode": "skip",
+        },
+    )
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["mode_used"] == "dry_run"
+    assert payload["orchestration"]["status"] == "waiting_for_user"
+    assert payload["status_summary"]["user_action_required"] is True
+    assert any(item["decision_type"] == "command_approval" for item in payload["pending_decisions"])
 
 
 def test_orchestration_status_reports_pending_decision_count(client) -> None:

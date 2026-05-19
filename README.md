@@ -1,516 +1,119 @@
 # Codex Mission Control
 
-<p align="center">
-  <img src="apps/desktop/assets/mission-control-logo.png" alt="Codex Mission Control logo" width="420" />
-</p>
+Codex Mission Control is a background-running orchestration platform that lets a single Codex chat coordinate a Manager AI and multiple background coding agents.
 
-Codex Mission Control is a headless orchestration platform for Codex. It lets one Codex chat attach to a folder, invoke a Mission Control Manager AI, and coordinate background worker agents through Codex CLI, Ollama, Claude CLI, APIs, and other configured runners.
+Mission Control runs as a local daemon. Codex interacts with it through a plugin and MCP bridge, reusable skills, and chat-native approval flows. The Manager AI plans work, coordinates worker agents, relays user decisions, and returns evidence-backed handoffs.
 
-Mission Control daemon owns orchestration. The Codex chat agent is the bridge. It is not the Manager AI.
+## Why it exists
 
-## Headless-First Workflow
+Large coding tasks usually fail for boring reasons: unclear scope, conflicting edits, missing approvals, weak validation, and lost context between iterations. Mission Control keeps the user in one Codex chat while moving orchestration, worker coordination, approvals, and handoff generation into a dedicated local runtime.
 
-Primary flow:
+## Core features
 
-1. Install or autowire Mission Control from Codex chat.
-2. Attach the current workspace.
-3. Mission Control scans or imports the project if needed.
-4. The user asks Codex chat to use Mission Control.
-5. Mission Control Manager plans, spawns, and coordinates background agents.
-6. Approvals and manager questions relay back through Codex chat.
-7. The user receives a chat-native handoff.
+- Background-running Codex-native workflow
+- Manager AI orchestration behind a local daemon
+- Adaptive worker swarms with coordination guardrails
+- Runner autowiring for local CLI and API-backed providers
+- Existing codebase import with read-only intake
+- Pending decisions and approval relay through Codex chat
+- Safe local-first defaults and secret redaction
+- Chat-native handoffs with validation and evidence summaries
+- Diagnostics and health checks for daemon, bridge, and runners
 
-## Standalone UI Status
+## Quick start
 
-The standalone dashboard and app UI are optional and currently secondary.
+From a Codex chat in your project folder:
 
-- they may remain in the repo
-- they may later move into a separate app or package
-- they are not required for normal Mission Control use
-- they should be treated as a future observability surface, not the primary product
+```text
+Install Mission Control from https://github.com/MN755/Codex-Mission_Control and wire it up.
+```
 
-## Background Orchestration + Codex Plugin Mode
+Then:
 
-Mission Control can run as a localhost-only background daemon and expose a thin MCP bridge for Codex desktop.
+```text
+Use Mission Control for this repo and fix the failing tests.
+```
 
-That split matters:
+Useful follow-up prompts:
 
-- Codex chat is the bridge to the user
-- Mission Control Manager stays inside Mission Control
-- worker runners stay behind Mission Control approvals
-- the standalone dashboard remains optional
+```text
+Show Mission Control status.
+Show pending Mission Control approvals.
+Get the latest Mission Control handoff.
+```
 
-Bridge flow:
+## Example Codex chat workflow
 
-1. Codex attaches the current workspace to Mission Control
-2. Codex starts or resumes an orchestration request
-3. Mission Control Manager plans and coordinates background work
-4. Pending approvals or manager questions are relayed back into Codex chat
-5. Codex sends the user’s answer back through the bridge
-6. Mission Control returns status updates and final handoff
+1. Attach the current workspace to Mission Control.
+2. Start or resume a task through the MCP bridge.
+3. Review pending decisions and answer them in chat.
+4. Check status or event digests while work continues.
+5. Review the final handoff with validation and next steps.
 
-Chat-native bridge routes now include:
+## Architecture
 
-- `GET /api/orchestrations/{id}/status-summary`
-- `GET /api/projects/{id}/status-summary`
-- `GET /api/orchestrations/{id}/event-digest`
-- `GET /api/projects/{id}/event-digest`
-- `GET /api/orchestrations/{id}/handoff-summary`
-- `GET /api/projects/{id}/handoff-summary`
-- `GET /api/headless/diagnostic-summary`
+```text
+Codex chat
+  ->
+Mission Control plugin / MCP bridge
+  ->
+Mission Control daemon
+  ->
+Manager AI
+  ->
+Worker agents / runners
+```
 
-Daemon and plugin docs:
+Core boundaries:
 
-- [Codex Plugin Mode](docs/CODEX_PLUGIN_MODE.md)
-- [MCP Security](docs/MCP_SECURITY.md)
-- [Codex Plugin Install](docs/CODEX_PLUGIN_INSTALL.md)
-- [Chat-Native UX](docs/CHAT_NATIVE_UX.md)
-- [Bridge Messages](docs/BRIDGE_MESSAGES.md)
-- [Headless Happy Path](docs/HEADLESS_HAPPY_PATH.md)
-- [Diagnostic Summaries](docs/DIAGNOSTIC_SUMMARIES.md)
-- [Headless Install](docs/HEADLESS_INSTALL.md)
-- [Autowire Providers](docs/AUTOWIRE_PROVIDERS.md)
-- [Headless Health](docs/HEADLESS_HEALTH.md)
-- [No-UI Setup](docs/NO_UI_SETUP.md)
-- [Bridge Runtime](docs/BRIDGE_RUNTIME.md)
-- [Pending Decisions](docs/PENDING_DECISIONS.md)
-- [Plugin Health Doctor](docs/PLUGIN_HEALTH_DOCTOR.md)
-- [Chat-Native Handoffs](docs/CHAT_NATIVE_HANDOFFS.md)
-- [Headless UX](docs/HEADLESS_UX.md)
-- [Headless Architecture](docs/HEADLESS_ARCHITECTURE.md)
+- Codex chat is the user-facing bridge.
+- Mission Control daemon owns orchestration state.
+- The Manager AI lives inside Mission Control.
+- MCP tools act, MCP resources summarize, and MCP prompts guide.
+- Worker agents stay behind Mission Control approvals and runner policy.
+
+## Safety model
+
+- Local-first by default, with loopback daemon binding
+- No raw secrets or raw logs in bridge summaries by default
+- Explicit pending decisions for high-risk actions
+- Read-only resource summaries for status, diagnostics, and handoff context
+- API-backed runners require explicit configuration and user awareness
+
+## Documentation
+
+- [Overview](docs/OVERVIEW.md)
+- [Quick Start](docs/QUICK_START.md)
+- [Background Install](docs/HEADLESS_INSTALL.md)
+- [Codex Chat Mode](docs/CODEX_CHAT_MODE.md)
 - [Codex Chat UX Spec](docs/CODEX_CHAT_UX_SPEC.md)
-- [Docs Index](docs/README.md)
-
-## What it does
-
-- Runs a headless Mission Control daemon for Codex-native orchestration
-- Exposes skills, prompts, MCP tools, and resources as the primary interface
-- Lets a Codex chat attach workspaces and relay approvals, questions, status, and handoffs
-- Coordinates manager and worker agents while preventing overlapping writable paths
-- Guides first-time users through setup, provider selection, and startup defaults
-- Builds project docs, interviews the user, creates a plan, and decomposes work into tasks
-- Builds adaptive swarm plans instead of relying on one fixed worker roster
-- Applies deterministic risk assessment, approval policy, and redacted audit logging before dangerous actions proceed
-- Streams live orchestration events into bridge-safe summaries
-- Produces a final handoff with run instructions, tests, limitations, and follow-up work
-- Keeps the standalone dashboard available only as an optional observability layer
-
-## Optional app startup model
-
-Mission Control has two startup modes:
-
-- `first_time`: shown only until setup is explicitly completed
-- `regular`: used on normal launches after setup
-
-Startup always routes through `/startup`, where the app checks:
-
-- runtime paths
-- database readiness
-- settings and app state
-- project storage
-- backend route availability
-- optional provider capabilities such as Codex CLI, login status, app-server, Ollama, and other adapters
-
-If an optional provider check fails, Mission Control can continue in degraded mode. If required checks fail, the startup coordinator retries targeted checks up to three times, then generates a diagnostic report and routes to the startup error screen.
-
-## Optional first-time setup wizard
-
-Headless bootstrap from Codex chat is the preferred path. The setup wizard below applies only to the optional standalone app flow.
-
-The first-time wizard walks through:
-
-1. Welcome
-2. Username
-3. Provider
-4. API or Login
-5. Connect Accounts
-6. Model / Runner Defaults
-7. Finish
-
-Important behavior:
-
-- first-run state is stored in the local backend database, not browser localStorage
-- setup does not reappear after ordinary code updates or version changes
-- Codex via ChatGPT Login does not require an API key
-- API-based providers are clearly marked as API-key-based
-- raw API keys are not stored in Mission Control's SQLite database or diagnostics
-
-## Supported providers
-
-- `codex`
-- `ollama`
-- `openai_api`
-- `anthropic_api`
-- `xai_api`
-- `claude_code`
-- `custom`
-
-Recommended default:
-
-- `codex` via local ChatGPT-backed Codex CLI login
-
-Other providers are supported when their local CLI, endpoint, or adapter is available. Model availability depends on the selected provider and the current local session.
-
-## Running The Optional Standalone App
-
-### Windows
-
-PowerShell:
-
-```powershell
-.\scripts\start-mission-control.ps1
-```
-
-Double-click:
-
-- `scripts/start-mission-control.bat`
-
-Create a desktop shortcut:
-
-```powershell
-.\scripts\create-desktop-shortcut.ps1
-```
-
-### macOS or Linux
-
-```bash
-./scripts/start-mission-control.sh
-```
-
-All launcher entrypoints route the app through `/startup`, not directly to the dashboard.
-
-## Development Setup
-
-### Requirements
-
-- Python 3.10+
-- Node.js 20+
-- A supported local desktop webview backend
-
-### Backend
-
-```powershell
-cd apps/server
-python -m pip install -e .[dev]
-python -m uvicorn main:app --app-dir src --reload
-```
-
-### Backend daemon only
-
-```powershell
-.\scripts\start-mission-control-daemon.ps1
-```
-
-```bash
-./scripts/start-mission-control-daemon.sh
-```
-
-### Headless bootstrap from the repo
-
-```powershell
-.\scripts\install-mission-control-plugin.ps1 -HeadlessOnly
-```
-
-### Frontend (optional)
-
-```powershell
-cd apps/dashboard
-npm install
-npm run dev
-```
-
-### Browser fallback on Windows
-
-```powershell
-.\scripts\start-mission-control.ps1 -Mode web
-```
-
-## Diagnostics
-
-Mission Control writes startup diagnostics to:
-
-- source runs: `apps/server/.runtime/diagnostics/`
-- packaged builds: the writable app-data runtime directory used by the desktop shell
-
-Reports include:
-
-- startup summary
-- failed and degraded checks
-- runtime path state
-- database state
-- settings and app-state state
-- provider detection summaries
-- recent startup errors
-- recommended fixes
-
-Diagnostics intentionally redact API keys, tokens, and sensitive environment variables.
-
-## Approval safety
-
-Mission Control keeps command, tool, plugin, connected-account, and deployment approvals behind an explicit policy layer.
-
-- high-risk and critical actions do not auto-approve
-- approval decisions are written to a redacted audit log
-- risk assessment is deterministic and does not execute a command just to classify it
-- the local daemon is intended to stay on loopback, not as a public control plane
-
-## Resetting setup intentionally
-
-Mission Control does not auto-reset first-run state. That is deliberate.
-
-If you need to rerun setup in development:
-
-1. Back up the runtime database.
-2. Remove or reset the single app-profile record that stores `first_run_completed`.
-3. Restart the app and allow `/startup` to route back into `/setup`.
-
-There is no automatic destructive reset in the normal user flow by default.
-
-## Optional Standalone App Workflow
-
-1. Start in the dashboard
-2. Create a project from a general idea
-3. Run the interview
-4. Review and approve the plan
-5. Review the adaptive swarm plan and approve it when required
-6. Generate and assign tasks
-7. Work inside the project workspace:
-   - top action banner tells whether the user is needed
-   - center manager chat is the only user-facing conversation surface
-   - left sidebar shows worker agent status
-   - the swarm strategy panel shows mode, risks, bottlenecks, and scaling controls
-   - right sidebar shows the manager queue and project widgets
-   - command and tool approvals are resolved inline above the manager input
-8. Monitor workers, path reservations, and swarm scaling decisions
-9. Review handoff output
-10. Request follow-up changes through the manager
-
-## Adaptive swarm planning
-
-Mission Control no longer assumes one fixed roster like `Planner + Coder + Tester + Docs`.
-
-Instead, the Manager creates a **Swarm Plan** per project or milestone. The plan decides:
-
-- swarm mode
-- recommended and maximum agent count
-- specialized agent names and missions
-- allowed and forbidden paths
-- toolset and model policy
-- spawn timing and retirement conditions
-- coordination and path-conflict risk
-- expected bottlenecks
-- validation strategy
-
-Supported optimization modes:
-
-- `fastest_build`
-- `balanced`
-- `high_quality`
-- `documentation_heavy`
-- `research_planning`
-- `massive_codebase`
-- `manager_decides`
-
-Project-level swarm preferences control:
-
-- optimization mode
-- swarm aggressiveness
-- max agents
-- approval threshold for large swarms
-- dynamic spawning and retirement
-- docs depth
-- testing depth
-
-Dry-run mode demonstrates different swarm behavior honestly. It can simulate adaptive spawn and retire decisions, but it does not claim that real provider-backed Codex agents were launched.
-
-## Post-start command center
-
-After startup completes, Mission Control uses two explicit shells:
-
-- a **home shell** for `Dashboard`, `Archive`, `Handoffs`, `Models & Runners`, `Skills & Tools`, `Diagnostics`, and `Settings`
-- a **project workspace shell** for `/projects/:projectId/:projectSlug?`
-
-The home shell keeps navigation, runtime status, and quick project access stable. The project workspace shell keeps the manager conversation centered while workers, queue state, and widgets stay visible around it.
-
-## Dashboard and archive
-
-The dashboard is the post-start home base. It includes:
-
-- a Recent Projects bar
-- a New Project card
-- a real persisted widget grid
-- a bottom-right widget selector
-
-Sidebar project behavior is intentionally constrained:
-
-- up to 3 pinned or most-recent projects stay in the main sidebar
-- older or archived projects overflow into `Archive`
-- archive, pin, and restore actions remain tied to project IDs, not project names
-
-Archive supports search, sorting, filtering, pinning, and archive or unarchive actions without destructive delete-by-default behavior.
-
-## Widget system
-
-Mission Control now uses a real widget system instead of a string list pretending to be layout state.
-
-Core widget model:
-
-- `WidgetDefinition`: seeded catalog entry with scope, category, size, and capability metadata
-- `WidgetInstance`: persisted placement, order, size, collapsed state, and per-widget config
-- `WidgetDataResponse`: scoped data payload with status, warnings, and honest empty states
-- `AppEvent` plus project events: targeted SSE refresh instead of blunt full-page reloads
-
-Supported scopes:
-
-- `dashboard`
-- `project`
-
-Supported areas:
-
-- dashboard: `dashboard_main`, `dashboard_right`, `dashboard_bottom`, `dashboard_custom`
-- project: `project_right_sidebar`, `project_bottom`, `project_overview`, `project_custom`
-
-This pass intentionally exposes the core areas first instead of pretending a full drag-and-drop builder is somehow the urgent problem:
-
-- dashboard: `dashboard_main`, `dashboard_bottom`
-- project: `project_right_sidebar`, `project_bottom`
-
-Default dashboard widgets:
-
-- `Needs Attention`
-- `Active Builds`
-- `Recent Handoffs`
-- `Runner & Provider Status`
-- `Swarm Budget Overview`
-- `Project Health Overview`
-
-Default project widgets:
-
-- `Swarm Strategy`
-- `Swarm Budget`
-- `Agent Contracts`
-- `Path Ownership Map`
-- `Decision Ledger`
-- `Project Health Score`
-- `Validation Recipe`
-- `Manager Assumptions`
-- `Handoff Quality`
-
-Empty widget areas use the exact in-product message:
-
-`Select the plus symbol in the bottom-right corner to add customizable widgets!`
-
-## Widgets vs Manager Chat vs tools
-
-Mission Control now draws a hard boundary between summary panels, decisions, and execution. Amazing what happens when an app stops trying to do everything from every card.
-
-Widgets are for:
-
-- concise state summaries
-- health and risk visibility
-- swarm posture and ownership visibility
-- model, sandbox, and tool-routing summaries
-- handoff readiness and change-management summaries
-
-Manager Chat is for:
-
-- approvals
-- manager questions
-- recovery proposals
-- assumption changes
-- change-request triage
-- swarm revision prompts
-
-Tools stay in `Skills & Tools`:
-
-- widgets can summarize tool routing and approval posture
-- widgets do not execute web search, browser tests, deployments, or other built-in tools
-- Manager Chat remains the place where tool approvals and follow-up decisions surface
-
-## High-impact project widgets
-
-Project widgets currently emphasize the parts of the workspace that actually change execution quality instead of ornamental dashboard filler:
-
-- `Swarm Budget`: active agents, intensity, approval threshold, premium-model pressure, and dynamic-spawn pause state
-- `Agent Contracts`: mission, boundaries, allowed tools, validation expectations, and completion shape per agent
-- `Path Ownership Map`: active path locks, waiting work, and conflict risk instead of magical thinking about concurrent edits
-- `Decision Ledger`: manager decisions, user approvals, assumptions, and reversible changes
-- `Confidence Tracker`: low-confidence planning areas and unknowns by category
-- `Failure Recovery`: recovery proposals without unsafe rollback theater
-- `Agent Stuck Detection`: timeout, repeated-error, and repeated-approval signals
-- `Merge / Review Gates`: required gates for code review, tests, docs, security, and handoff
-- `Repo Intelligence`: safe filesystem scanning for frameworks, entry points, build commands, CI, and deployment config without running untrusted commands
-- `Validation Recipe`: persisted validation steps and approval posture
-- `Handoff Quality`: the expected output quality level and included sections
-- `Change Request Mode`: follow-up requests and their manager triage state
-
-## Project workspace model
-
-Project routes use:
-
-- `/projects/:projectId/:projectSlug?`
-
-Important behavior:
-
-- `projectId` is authoritative
-- `projectSlug` is cosmetic
-- missing or incorrect slugs are redirected to the canonical slug
-- the app never loads a project by name alone
-
-The workspace core loop is intentionally manager-led:
-
-- the user talks only to the Manager AI
-- follow-up questions are answered in structured cards
-- command and tool approvals are recorded as project-scoped decisions
-- worker activity is visible without exposing raw logs by default
-- dry-run mode seeds a safe simulated question-and-approval loop so the UI can be exercised without live Codex execution
-
-## Models, tools, diagnostics, and handoffs
-
-Mission Control keeps these post-start pages separate so each surface stays focused:
-
-- `Models & Runners`: project-specific provider, model, reasoning, sandbox, and approval settings
-- `Skills & Tools`: local tool catalog with availability, risk, and permission policy
-- `Diagnostics`: startup status, runtime status, saved reports, and retry actions
-- `Handoffs`: completed project handoffs derived from real final reports
-
-Important behavior:
-
-- `Models & Runners` is project-scoped by design
-- empty model values mean `use provider default`
-- diagnostics reports are stored locally and redact secrets
-- tool availability is honest about unsupported or not-yet-configured environments
-
-## Runner modes
-
-- `dry_run`: local simulation for demos and UI testing
-- `cli`: provider CLI execution
-- `app_server`: experimental Codex app-server path
-- `auto`: choose the best supported live path and fall back safely
-
-## Security posture
-
-- local-first by default
-- no required OpenAI API keys for the Codex login path
-- no raw API keys stored in Mission Control state
-- loopback-only backend by default
-- sandbox and approval defaults remain conservative
-
-More detail:
-
-- [Architecture](docs/ARCHITECTURE.md)
-- [Workflow](docs/WORKFLOW.md)
-- [Provider Integration](docs/CODEX_INTEGRATION.md)
-- [Codex Plugin Install](docs/CODEX_PLUGIN_INSTALL.md)
-- [Bridge Runtime](docs/BRIDGE_RUNTIME.md)
-- [Pending Decisions](docs/PENDING_DECISIONS.md)
-- [Plugin Health Doctor](docs/PLUGIN_HEALTH_DOCTOR.md)
-- [Chat-Native Handoffs](docs/CHAT_NATIVE_HANDOFFS.md)
+- [Background Architecture](docs/HEADLESS_ARCHITECTURE.md)
+- [MCP Plugin Bridge](docs/MCP_PLUGIN_BRIDGE.md)
+- [Runners](docs/RUNNERS.md)
+- [Autowire Providers](docs/AUTOWIRE_PROVIDERS.md)
+- [Background Health](docs/HEADLESS_HEALTH.md)
 - [Security](docs/SECURITY.md)
+- [Docs Index](docs/README.md)
+- [GitHub Wiki](https://github.com/MN755/Codex-Mission_Control/wiki)
 
-## Current limits
+## Current status
 
-- Codex app-server support remains experimental
-- Provider capability depth varies by local CLI or adapter
-- Packaged binaries are unsigned unless you add platform signing yourself
-- Connected accounts in setup are honest placeholders unless you configure them separately
+Mission Control is designed first for background running through Codex chat.
+
+- Current: daemon-oriented orchestration, plugin and MCP bridge packaging, skill library, pending decision relay, diagnostics, and chat-native handoffs
+- Partial / experimental: some runner integrations, deeper autowiring coverage, app-server paths, and orchestration hardening
+- Optional / future: standalone dashboard observability
+
+## Contributing
+
+Contributions should follow the current product direction: Codex chat is the user-facing surface, and Mission Control daemon is the orchestration platform.
+
+- [Contributing guide](CONTRIBUTING.md)
+- [Development docs](docs/CONTRIBUTING.md)
+- [Security policy](SECURITY.md)
+- [Support](SUPPORT.md)
+- [Changelog](CHANGELOG.md)
+
+## License
+
+This project is licensed under the [MIT License](LICENSE).

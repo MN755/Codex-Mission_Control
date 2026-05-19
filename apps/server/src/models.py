@@ -1305,6 +1305,7 @@ class OrchestrationSession(Base):
     user_request: Mapped[str] = mapped_column(Text, nullable=False, default="")
     status: Mapped[str] = mapped_column(String(30), nullable=False, default="initializing")
     manager_status: Mapped[str] = mapped_column(Text, nullable=False, default="Starting orchestration.")
+    mode: Mapped[str] = mapped_column(String(30), nullable=False, default="unknown")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

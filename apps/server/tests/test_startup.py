@@ -41,12 +41,12 @@ def test_required_check_failure_returns_error(monkeypatch, client) -> None:
     monkeypatch.setattr(
         startup_service,
         "_check_database",
-        lambda db: startup_service._check("database", required=True, status="failed", summary="Database init failed.", error_code="MC-BOOT-002"),
+        lambda db: startup_service._check("database", required=True, status="failed", summary="Database init failed.", error_code="MC-STORAGE-DB-UNAVAILABLE-001"),
     )
     payload = client.post("/api/startup/check", json={"attempt_number": 1, "include_optional_checks": True}).json()
     assert payload["mode"] == "error"
     assert payload["overall_status"] == "error"
-    assert payload["error_code"] == "MC-BOOT-002"
+    assert payload["error_code"] == "MC-STORAGE-DB-UNAVAILABLE-001"
     assert payload["recommended_route"] == "/startup-error"
 
 
@@ -64,24 +64,24 @@ def test_optional_selected_provider_failure_returns_degraded(monkeypatch, client
         startup_service,
         "_provider_optional_checks",
         lambda profile: [
-            startup_service._check("claude_code", required=False, status="failed", summary="Claude CLI missing.", error_code="MC-BOOT-006")
+            startup_service._check("claude_code", required=False, status="failed", summary="Claude CLI missing.", error_code="MC-CLAUDE-CLI-MISSING-001")
         ],
     )
     payload = client.post("/api/startup/check", json={"attempt_number": 1, "include_optional_checks": True}).json()
     assert payload["mode"] == "degraded"
     assert payload["overall_status"] == "degraded"
     assert payload["recommended_route"] == "/dashboard"
-    assert payload["error_code"] == "MC-BOOT-006"
+    assert payload["error_code"] == "MC-CLAUDE-CLI-MISSING-001"
 
 
 def test_retry_after_three_attempts_generates_diagnostic_report(monkeypatch, client) -> None:
     monkeypatch.setattr(
         startup_service,
         "_check_runtime_paths",
-        lambda: startup_service._check("runtime_paths", required=True, status="failed", summary="Runtime path failure.", error_code="MC-BOOT-001"),
+        lambda: startup_service._check("runtime_paths", required=True, status="failed", summary="Runtime path failure.", error_code="MC-BOOT-RUNTIME-PATH-001"),
     )
     payload = client.post("/api/startup/retry", json={"attempt_number": 3, "failed_check": "runtime_paths", "retry_mode": "full"}).json()
-    assert payload["error_code"] == "MC-BOOT-001"
+    assert payload["error_code"] == "MC-BOOT-RUNTIME-PATH-001"
     assert payload["diagnostic_report_path"]
     assert Path(payload["diagnostic_report_path"]).exists()
 

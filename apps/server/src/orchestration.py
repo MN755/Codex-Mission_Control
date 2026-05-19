@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 
 from daemon_state import daemon_dashboard_url, ensure_daemon_token, read_daemon_metadata
 from db import SessionLocal
+from errors import MissionControlError
 from imported_codebase import import_service
 from manager import service
 from models import (
@@ -80,6 +81,7 @@ class OrchestrationCoordinator:
             "user_request": session.user_request,
             "status": session.status,
             "manager_status": session.manager_status,
+            "mode": session.mode,
             "created_at": session.created_at,
             "updated_at": session.updated_at,
             "completed_at": session.completed_at,
@@ -271,6 +273,7 @@ class OrchestrationCoordinator:
             "project_id": project.id,
             "project_name": project.name,
             "source_type": project.source_type,
+            "workspace_path": project.workspace_path,
             "orchestration": orchestration_payload,
             "attach_outcome": attach_outcome,
             "next_action": self._attach_next_action(
@@ -283,6 +286,7 @@ class OrchestrationCoordinator:
             "user_action_required": user_action_required,
             "pending_decision_id": pending_decision_id,
             "message": message,
+            "status_summary_markdown": None,
         }
 
     def attach_workspace(
@@ -298,9 +302,7 @@ class OrchestrationCoordinator:
     ) -> dict[str, Any]:
         workspace = self._normalize_workspace(workspace_path)
         if not workspace.exists():
-            if mode == "existing_codebase":
-                raise ValueError("Existing codebase attach requires a folder that already exists.")
-            workspace.mkdir(parents=True, exist_ok=True)
+            raise ValueError("Workspace path does not exist.")
         if not workspace.is_dir():
             raise ValueError("Workspace path must be a directory.")
 
@@ -429,6 +431,9 @@ class OrchestrationCoordinator:
         source: str,
         user_request: str,
         orchestration_id: int | None = None,
+        mode: str = "unknown",
+        metadata: dict[str, Any] | None = None,
+        schedule_background_turn: bool = True,
     ) -> OrchestrationSession:
         workspace = self._normalize_workspace(project.workspace_path)
         session = None
@@ -444,25 +449,32 @@ class OrchestrationCoordinator:
                 user_request=user_request.strip(),
                 status="initializing",
                 manager_status="Preparing the background orchestration session.",
-                metadata_json={"request_history": [user_request.strip()] if user_request.strip() else []},
+                mode=mode,
+                metadata_json={
+                    "request_history": [user_request.strip()] if user_request.strip() else [],
+                    **dict(metadata or {}),
+                },
             )
             db.add(session)
             db.flush()
             self._record_event(db, session, "orchestration_created", {"source": source})
         else:
-            metadata = dict(session.metadata_json or {})
-            history = [str(item) for item in metadata.get("request_history", []) if str(item).strip()]
+            session_metadata = dict(session.metadata_json or {})
+            history = [str(item) for item in session_metadata.get("request_history", []) if str(item).strip()]
             if user_request.strip():
                 history.append(user_request.strip())
-            metadata["request_history"] = history[-20:]
-            session.metadata_json = metadata
+            session_metadata["request_history"] = history[-20:]
+            session_metadata.update(dict(metadata or {}))
+            session.metadata_json = session_metadata
             if user_request.strip():
                 session.user_request = user_request.strip()
             session.source = source
+            session.mode = mode
             session.updated_at = utc_now()
             self._record_event(db, session, "orchestration_request_appended", {"source": source})
         db.flush()
-        self._schedule_background_turn(session.id, "user_request")
+        if schedule_background_turn:
+            self._schedule_background_turn(session.id, "user_request")
         return session
 
     def get_session(self, db: Session, orchestration_id: int) -> OrchestrationSession:
@@ -487,6 +499,19 @@ class OrchestrationCoordinator:
             service.pause_project(db, project)
         self._update_session_status(db, session, status="paused", manager_status="Background orchestration paused by the user.")
         self._record_event(db, session, "orchestration_paused", {})
+        return session
+
+    def complete_orchestration(
+        self,
+        db: Session,
+        session: OrchestrationSession,
+        *,
+        manager_status: str,
+        event_type: str = "orchestration_completed",
+        payload: dict[str, Any] | None = None,
+    ) -> OrchestrationSession:
+        self._update_session_status(db, session, status="completed", manager_status=manager_status, completed=True)
+        self._record_event(db, session, event_type, dict(payload or {}))
         return session
 
     def resume_orchestration(self, db: Session, session: OrchestrationSession) -> OrchestrationSession:
@@ -705,31 +730,69 @@ class OrchestrationCoordinator:
         free_text: str | None = None,
     ) -> PendingDecision:
         session = db.get(OrchestrationSession, decision.orchestration_id) if decision.orchestration_id is not None else None
-        if session is None:
-            raise ValueError("Orchestration session not found for this decision.")
+        if session is None and decision.source_kind not in {"manager_question", "approval_request"}:
+            raise MissionControlError(
+                code="MC-ORCH-SESSION-NOT-FOUND-001",
+                detail="Orchestration session not found for this decision.",
+                breakpoint="decision.answer",
+                project_id=decision.project_id,
+                orchestration_id=decision.orchestration_id,
+            )
         if decision.status != "pending":
-            raise ValueError("Pending decision is no longer actionable.")
+            raise MissionControlError(
+                code="MC-DECISION-EXPIRED-001",
+                breakpoint="decision.answer",
+                project_id=decision.project_id,
+                orchestration_id=decision.orchestration_id,
+                safe_details={"decision_status": decision.status},
+            )
         if decision.source_kind == "manager_question" and decision.source_id is not None:
             question = db.get(ManagerQuestion, decision.source_id)
             if question is None:
-                raise ValueError("Manager question not found.")
+                raise MissionControlError(
+                    code="MC-MANAGER-QUESTION-FAILED-001",
+                    detail="Manager question not found.",
+                    breakpoint="manager.create_pending_decision",
+                    project_id=decision.project_id,
+                    orchestration_id=decision.orchestration_id,
+                )
             service.answer_question(db, question.id, option_id=option_id, selected_text=selected_text, project_id=question.project_id)
         elif decision.source_kind == "approval_request" and decision.source_id is not None:
             approval = db.get(ApprovalRequest, decision.source_id)
             if approval is None:
-                raise ValueError("Approval request not found.")
+                raise MissionControlError(
+                    code="MC-DECISION-NOT-FOUND-001",
+                    detail="Approval request not found.",
+                    breakpoint="decision.answer",
+                    project_id=decision.project_id,
+                    orchestration_id=decision.orchestration_id,
+                )
             if option_id == "approve_once":
                 service.approve_once(db, approval.id, project_id=approval.project_id)
             elif option_id == "deny":
                 service.deny_approval(db, approval.id, project_id=approval.project_id)
-            elif option_id == "allow_for_project":
+            elif option_id in {"allow_for_project", "always_allow_if_safe"}:
                 service.allow_approval_for_project(db, approval.id, project_id=approval.project_id)
             else:
-                raise ValueError("Unsupported approval resolution option.")
+                raise MissionControlError(
+                    code="MC-DECISION-INVALID-OPTION-001",
+                    detail="Unsupported approval resolution option.",
+                    breakpoint="decision.validate_option",
+                    project_id=decision.project_id,
+                    orchestration_id=decision.orchestration_id,
+                    safe_details={"received_option": option_id},
+                )
         elif decision.source_kind == "attach_workspace":
             selected_project = db.get(Project, int(option_id))
             if selected_project is None:
-                raise ValueError("Selected project was not found.")
+                raise MissionControlError(
+                    code="MC-WORKSPACE-AMBIGUOUS-001",
+                    detail="Selected project was not found.",
+                    breakpoint="workspace.attach",
+                    project_id=decision.project_id,
+                    orchestration_id=decision.orchestration_id,
+                    safe_details={"received_option": option_id},
+                )
             session.project_id = selected_project.id
             session.workspace_path = selected_project.workspace_path
             session.manager_status = f"Workspace selection recorded for {selected_project.name}."
@@ -737,7 +800,14 @@ class OrchestrationCoordinator:
             metadata["selected_project_id"] = selected_project.id
             session.metadata_json = metadata
         else:
-            raise ValueError("Unsupported pending decision source.")
+            raise MissionControlError(
+                code="MC-DECISION-NOT-FOUND-001",
+                detail="Unsupported pending decision source.",
+                breakpoint="decision.answer",
+                project_id=decision.project_id,
+                orchestration_id=decision.orchestration_id,
+                safe_details={"source_kind": decision.source_kind},
+            )
         decision.status = "answered"
         decision.answered_at = utc_now()
         decision.answer_json = {
@@ -745,16 +815,17 @@ class OrchestrationCoordinator:
             "selected_text": selected_text,
             "free_text": free_text,
         }
-        self._record_event(
-            db,
-            session,
-            "pending_decision_answered",
-            {"decision_id": decision.id, "decision_type": decision.decision_type, "option_id": option_id},
-        )
-        self.sync_pending_decisions(db, session)
-        if session.status != "completed":
-            self._update_session_status(db, session, status="planning", manager_status="Decision recorded. Mission Control is continuing the orchestration.")
-            self._schedule_background_turn(session.id, "decision_answered")
+        if session is not None:
+            self._record_event(
+                db,
+                session,
+                "pending_decision_answered",
+                {"decision_id": decision.id, "decision_type": decision.decision_type, "option_id": option_id},
+            )
+            self.sync_pending_decisions(db, session)
+            if session.status != "completed":
+                self._update_session_status(db, session, status="planning", manager_status="Decision recorded. Mission Control is continuing the orchestration.")
+                self._schedule_background_turn(session.id, "decision_answered")
         return decision
 
     def _session_project_action_type(self, db: Session, session: OrchestrationSession, project: Project) -> str:
@@ -825,7 +896,13 @@ class OrchestrationCoordinator:
     def get_handoff(self, db: Session, session: OrchestrationSession) -> dict[str, Any]:
         project = db.get(Project, session.project_id)
         if project is None:
-            raise ValueError("Project not found for this orchestration session.")
+            raise MissionControlError(
+                code="MC-HANDOFF-RENDER-FAILED-001",
+                detail="Project not found for this orchestration session.",
+                breakpoint="handoff.render_chat_summary",
+                orchestration_id=session.id,
+                project_id=session.project_id,
+            )
         handoff = service.get_project_handoff_summary(db, project)
         if handoff["status"] == "not_ready":
             return {

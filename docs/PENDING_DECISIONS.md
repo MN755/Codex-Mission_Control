@@ -1,86 +1,52 @@
 # Pending Decisions
 
-Pending decisions are the single relay format for approvals and high-impact questions in Codex bridge mode.
+> Status: Current
 
-## Supported decision types
+Pending decisions are the canonical way Mission Control asks the user for approval, scope clarification, or recovery choices through Codex chat.
+
+## Common decision types
 
 - `command_approval`
 - `tool_approval`
 - `write_permission`
 - `manager_question`
 - `swarm_approval`
-- `subagent_burst_approval`
 - `snapshot_approval`
 - `handoff_review`
 - `recovery_decision`
 - `scope_change_decision`
 - `safe_mode_confirmation`
 
-## Endpoints
+## How the flow works
 
-- `GET /api/orchestrations/{orchestration_id}/pending-decisions`
-- `GET /api/projects/{project_id}/pending-decisions`
-- `GET /api/decisions/{decision_id}/bridge-message`
-- `POST /api/decisions/{decision_id}/answer`
+1. Mission Control creates a pending decision.
+2. Codex chat reads the safe summary.
+3. The user chooses an option.
+4. Codex returns the answer through `mission_control_answer_decision`.
+5. Mission Control resumes with the recorded decision.
 
-Attach ambiguity also uses the same relay model. If Mission Control finds multiple projects for one workspace, it raises a pending decision instead of guessing and making a mess.
+Invalid answers are rejected so Mission Control does not quietly continue on made-up options.
 
-## Response shape
+## What the user should see
 
-Each pending decision includes:
+- decision type
+- short title
+- reason
+- risk level
+- available options
+- recommended option when appropriate
+- whether the answer applies once or more broadly
 
-- `id`
-- `project_id`
-- `orchestration_id`
-- `decision_type`
-- `title`
-- `message`
-- `requesting_agent_id`
-- `related_task_id`
-- `risk_level`
-- `options_json`
-- `recommended_option`
-- `status`
-- `presentation_json`
-- `created_at`
-- `answered_at`
-- `answer_json`
+## What should stay hidden by default
 
-## Answer behavior
+- raw secrets
+- secret-like command arguments
+- raw logs
+- oversized execution payloads
 
-`POST /api/decisions/{decision_id}/answer`:
+## Related docs
 
-- validates the selected option
-- stores the answer payload
-- updates the decision status
-- writes an audit record when appropriate
-- returns the answered decision plus the next compact status summary
-
-That next summary now also works for attach-workspace decisions instead of shrugging and returning `null`, which was not exactly a shining example of bridge ergonomics.
-
-Invalid answers are rejected instead of being guessed. Radical concept.
-
-## Presentation payloads
-
-Current bridge payload families:
-
-- command approval
-- tool approval
-- manager question
-- swarm approval
-- write permission request
-- handoff review
-- recovery decision
-
-Every payload is designed to work two ways:
-
-- structured JSON for future Codex card rendering
-- fallback Markdown for plain chat
-
-Bridge messages are available at `GET /api/decisions/{decision_id}/bridge-message` so Codex chat can render the decision without acting like the manager.
-
-## Security
-
-- secret-looking values are redacted before they reach the bridge
-- command details are summarized, not dumped as raw logs
-- dangerous actions remain pending until the user answers
+- [Codex Chat Mode](CODEX_CHAT_MODE.md)
+- [MCP Plugin Bridge](MCP_PLUGIN_BRIDGE.md)
+- [Security](SECURITY.md)
+- [Handoffs](HANDOFFS.md)

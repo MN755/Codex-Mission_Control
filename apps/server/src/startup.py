@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 from app_profile import complete_first_run, get_or_create_app_profile
 from config import DEFAULT_APPROVAL_POLICY, DEFAULT_RUNNER_MODE, DEFAULT_SANDBOX
 from diagnostics import write_diagnostic_report
+from errors import MissionControlError
 from models import AppProfile, Project
 from provider_support import normalize_provider
 from runtime_paths import ensure_runtime_paths
@@ -62,13 +63,29 @@ class StartupCoordinator:
         }
 
     @staticmethod
-    def _check(name: str, *, required: bool, status: str, summary: str, error_code: str | None = None, details: dict[str, Any] | None = None) -> dict[str, Any]:
+    def _check(
+        name: str,
+        *,
+        required: bool,
+        status: str,
+        summary: str,
+        error_code: str | None = None,
+        details: dict[str, Any] | None = None,
+        error: MissionControlError | None = None,
+    ) -> dict[str, Any]:
         return {
             "name": name,
             "required": required,
             "status": status,
             "summary": summary,
-            "error_code": error_code,
+            "error_code": error.code if error is not None else error_code,
+            "family": error.family if error is not None else None,
+            "severity": error.severity if error is not None else None,
+            "breakpoint": error.breakpoint if error is not None else None,
+            "retryable": bool(error.retryable) if error is not None else None,
+            "user_action_required": bool(error.user_action_required) if error is not None else None,
+            "recommended_fix": error.recommended_fix if error is not None else None,
+            "correlation_id": error.correlation_id if error is not None else None,
             "details": details or {},
         }
 
@@ -89,14 +106,26 @@ class StartupCoordinator:
             paths = ensure_runtime_paths()
             return self._check("runtime_paths", required=True, status="passed", summary="Runtime folders are available.", details=paths)
         except Exception as exc:  # noqa: BLE001
-            return self._check("runtime_paths", required=True, status="failed", summary=str(exc), error_code="MC-BOOT-001")
+            error = MissionControlError(
+                code="MC-BOOT-RUNTIME-PATH-001",
+                detail=str(exc),
+                breakpoint="bootstrap.start",
+                caused_by=exc,
+            )
+            return self._check("runtime_paths", required=True, status="failed", summary=error.detail or str(exc), error=error)
 
     def _check_database(self, db: Session) -> dict[str, Any]:
         try:
             db.execute(text("SELECT 1"))
             return self._check("database", required=True, status="passed", summary="Database connection is healthy.")
         except Exception as exc:  # noqa: BLE001
-            return self._check("database", required=True, status="failed", summary=str(exc), error_code="MC-BOOT-002")
+            error = MissionControlError(
+                code="MC-STORAGE-DB-UNAVAILABLE-001",
+                detail=str(exc),
+                breakpoint="bootstrap.health_check",
+                caused_by=exc,
+            )
+            return self._check("database", required=True, status="failed", summary=error.detail or str(exc), error=error)
 
     def _check_settings(self, db: Session) -> tuple[dict[str, Any], AppProfile | None]:
         try:
@@ -119,8 +148,14 @@ class StartupCoordinator:
                 profile,
             )
         except Exception as exc:  # noqa: BLE001
+            error = MissionControlError(
+                code="MC-BOOT-DEPENDENCY-MISSING-001",
+                detail=str(exc),
+                breakpoint="bootstrap.environment_probe",
+                caused_by=exc,
+            )
             return (
-                self._check("settings", required=True, status="failed", summary=str(exc), error_code="MC-BOOT-008"),
+                self._check("settings", required=True, status="failed", summary=error.detail or str(exc), error=error),
                 None,
             )
 
@@ -129,7 +164,13 @@ class StartupCoordinator:
             project_count = db.scalar(select(func.count(Project.id))) or 0
             return self._check("projects", required=True, status="passed", summary=f"Loaded {project_count} project records.", details={"project_count": project_count})
         except Exception as exc:  # noqa: BLE001
-            return self._check("projects", required=True, status="failed", summary=str(exc), error_code="MC-BOOT-005")
+            error = MissionControlError(
+                code="MC-STORAGE-DB-UNAVAILABLE-001",
+                detail=str(exc),
+                breakpoint="bootstrap.health_check",
+                caused_by=exc,
+            )
+            return self._check("projects", required=True, status="failed", summary=error.detail or str(exc), error=error)
 
     def _check_backend_route(self) -> dict[str, Any]:
         return self._check("backend_route", required=True, status="passed", summary="Backend route availability confirmed.")
@@ -141,21 +182,25 @@ class StartupCoordinator:
             required=False,
             status="passed" if status["cli_detected"] else "failed",
             summary=status["cli_version"] or "Codex CLI was not detected on PATH.",
-            error_code=None if status["cli_detected"] else "MC-BOOT-006",
+            error=None
+            if status["cli_detected"]
+            else MissionControlError(code="MC-CODEX-CLI-MISSING-001", breakpoint="codex_cli.detect"),
         )
         login_check = self._check(
             "codex_login",
             required=False,
             status="passed" if status["authenticated"] else "warning",
             summary=status["login_status"],
-            error_code=None if status["authenticated"] else "MC-BOOT-006",
+            error=None
+            if status["authenticated"]
+            else MissionControlError(code="MC-CODEX-LOGIN-UNKNOWN-001", breakpoint="codex_cli.login_status", severity="warning"),
         )
         app_server_check = self._check(
             "app_server",
             required=False,
             status="passed" if status["app_server_supported"] else "warning",
             summary="Codex app-server support detected." if status["app_server_supported"] else "Codex app-server support not detected; CLI fallback remains available.",
-            error_code=None if status["app_server_supported"] else "MC-BOOT-007",
+            error=None if status["app_server_supported"] else MissionControlError(code="MC-DAEMON-HEALTH-FAILED-001", breakpoint="daemon.health_check", severity="warning"),
         )
         return [cli_check, login_check, app_server_check]
 
@@ -170,7 +215,7 @@ class StartupCoordinator:
                 required=False,
                 status="passed" if claude["cli_detected"] else ("failed" if selected == "claude_code" else "skipped"),
                 summary=claude["cli_version"] or claude["login_status"],
-                error_code="MC-BOOT-006" if selected == "claude_code" and not claude["cli_detected"] else None,
+                error=MissionControlError(code="MC-CLAUDE-CLI-MISSING-001", breakpoint="claude_cli.detect") if selected == "claude_code" and not claude["cli_detected"] else None,
             )
         )
 
@@ -182,7 +227,7 @@ class StartupCoordinator:
                 required=False,
                 status="passed" if ollama["reachable"] else ("failed" if selected == "ollama" else "skipped"),
                 summary=ollama["summary"],
-                error_code="MC-BOOT-006" if selected == "ollama" and not ollama["reachable"] else None,
+                error=MissionControlError(code="MC-OLLAMA-SERVER-OFFLINE-001", breakpoint="ollama.server_check", severity="warning") if selected == "ollama" and not ollama["reachable"] else None,
                 details=ollama,
             )
         )
@@ -202,7 +247,7 @@ class StartupCoordinator:
                     required=False,
                     status="passed" if configured else ("warning" if selected == name else "skipped"),
                     summary=f"{env_key} {'is configured' if configured else 'is not configured in the current environment.'}",
-                    error_code="MC-BOOT-006" if selected == name and not configured else None,
+                    error=MissionControlError(code="MC-API-KEY-MISSING-001", breakpoint="api_provider.auth_check", severity="warning") if selected == name and not configured else None,
                 )
             )
 
@@ -213,7 +258,7 @@ class StartupCoordinator:
                 required=False,
                 status="passed" if custom["cli_detected"] else ("warning" if selected == "custom" else "skipped"),
                 summary=custom["cli_version"] or custom["login_status"],
-                error_code="MC-BOOT-006" if selected == "custom" and not custom["cli_detected"] else None,
+                error=MissionControlError(code="MC-RUNNER-NONE-AVAILABLE-001", breakpoint="runner.select", severity="warning") if selected == "custom" and not custom["cli_detected"] else None,
             )
         )
 
@@ -252,7 +297,7 @@ class StartupCoordinator:
             payload["mode"] = "error"
             payload["overall_status"] = "error"
             payload["recommended_route"] = "/startup-error"
-            payload["error_code"] = primary["error_code"] or "MC-BOOT-009"
+            payload["error_code"] = primary["error_code"] or "MC-UNKNOWN-UNEXPECTED-001"
             payload["error_summary"] = primary["summary"]
             profile.recent_startup_error_json = {
                 "error_code": payload["error_code"],

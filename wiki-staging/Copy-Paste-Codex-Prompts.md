@@ -1,6 +1,6 @@
 # Copy Paste Codex Prompts
 
-This page collects copyable prompts for the most common Mission Control chat workflows.
+This page collects copyable prompts for common Mission Control workflows in Codex chat.
 
 > Status: Reference
 
@@ -78,7 +78,7 @@ Ask Mission Control Manager whether this task should use a larger worker burst, 
 
 ## Related pages
 
-- [Headless Happy Path](Headless-Happy-Path)
+- [Background-Running Happy Path](Headless-Happy-Path)
 - [Quick Start](Quick-Start)
 - [Skills and Prompts](Skills-and-Prompts)
 - [Pending Decisions and Approvals](Pending-Decisions-and-Approvals)

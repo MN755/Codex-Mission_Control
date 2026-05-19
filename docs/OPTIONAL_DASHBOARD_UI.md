@@ -1,88 +1,29 @@
 # Optional Dashboard UI
 
-The standalone Mission Control dashboard is currently optional and paused as a product priority.
+> Status: Optional / Future
 
-It may remain in the repo as:
+This page keeps historical and optional UI notes out of the primary product story. Mission Control is built for background running first, and normal use should not depend on a standalone dashboard.
 
-- a future observability surface
-- a local operator console
-- a separate app or package later
+## Current rule
 
-It is not required for normal Mission Control use from Codex chat.
+Do not treat the dashboard as the public-facing product center unless a task explicitly asks for UI work.
 
-## Current Rule
+## What remains optional
 
-Headless Codex-native workflows are primary.
+- dashboard routes and navigation
+- project workspace layouts
+- widget placement and visual summaries
+- desktop-shell presentation details
+- observability-only surfaces that do not change the background-running workflow
 
-Do not spend current core-agent time on:
+## Public release position
 
-- dashboard UI
-- project workspace UI
-- widget UI
-- sidebars
-- settings pages
-- visual polish
-- React layout work
-- frontend redesigns
+- Codex chat is the primary user-facing surface
+- Mission Control daemon is the orchestration platform
+- dashboard work is paused or secondary unless explicitly requested
 
-## What The Dashboard Is For
+## Related docs
 
-If it is used later, the dashboard should be treated as:
-
-- optional observability
-- optional inspection of orchestration state
-- optional operator tooling
-
-It should not become a required dependency for:
-
-- install
-- attach
-- orchestration
-- approvals
-- status
-- diagnostics
-- handoff
-
-## Deferred UI Details
-
-These details were moved out of the primary architecture and workflow docs so the repo stops centering the paused UI.
-
-### Optional dashboard routes
-
-- `/startup`
-- `/setup`
-- `/startup-error`
-- `/dashboard`
-- `/archive`
-- `/handoffs`
-- `/diagnostics`
-- `/skills-tools`
-- `/settings`
-- `/models-runners`
-- project-specific intake, interview, workspace, models, and handoff routes
-
-### Optional widget model
-
-- dashboard widgets are global summaries
-- project widgets summarize project-scoped state
-- widgets do not execute tools directly
-- widget layout and placement are observability concerns, not core runtime requirements
-
-### Optional project workspace layout
-
-- top project action banner
-- left worker agent sidebar
-- center manager chat
-- right manager queue and project widgets
-- lower task board and activity log
-
-### Optional archive behavior
-
-- archived and overflow projects can live in `Archive`
-- sidebar curation is an optional UI concern, not part of headless orchestration
-
-## Related Docs
-
+- [Overview](OVERVIEW.md)
 - [Architecture](ARCHITECTURE.md)
-- [Workflow](WORKFLOW.md)
-- [Headless UX](HEADLESS_UX.md)
+- [Contributing](CONTRIBUTING.md)

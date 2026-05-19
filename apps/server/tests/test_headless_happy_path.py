@@ -252,6 +252,7 @@ def test_headless_happy_path_demo_endpoint(client) -> None:
             "read_only_first": True,
             "attach_policy": "reuse_existing",
             "user_request": "Use Mission Control for this repo and fix the failing tests.",
+            "create_pending_decision": True,
         },
     )
     assert response.status_code == 200, response.text
@@ -259,11 +260,87 @@ def test_headless_happy_path_demo_endpoint(client) -> None:
     assert payload["dry_run"] is True
     assert payload["attach"]["project_id"] == payload["attach"]["project"]["id"]
     assert payload["orchestration"]["source"] == "test"
+    assert payload["orchestration"]["mode"] == "dry_run"
     assert payload["initial_status_summary"]["message_type"] in {"blocked", "status_update"}
     assert payload["pending_decision"]["status"] == "pending"
     assert payload["decision_bridge_message"]["message_type"] in {"approval_request", "manager_question"}
-    assert payload["answer_result"]["decision"]["status"] == "answered"
-    assert payload["answer_result"]["next_status_summary"] is not None
-    assert payload["event_digest"]["message_type"] == "event_digest"
-    assert payload["handoff_summary"]["message_type"] in {"handoff_ready", "warning"}
-    assert "dry-run" in payload["handoff_summary"]["fallback_markdown"].lower()
+    assert payload["answer_result"] is None
+    assert payload["event_digest"] is None
+    assert payload["handoff_summary"] is None
+
+
+def test_full_headless_happy_path_approve_flow(client) -> None:
+    workspace = _prepare_repo_workspace("headless-approve-flow")
+    start = client.post(
+        "/api/headless/start-task",
+        headers=_bridge_headers(),
+        json={
+            "workspace_path": workspace.as_posix(),
+            "user_request": "Use Mission Control for this repo and fix the failing tests.",
+            "strategy": "balanced",
+            "mode": "dry_run",
+            "interview_mode": "skip",
+        },
+    )
+    assert start.status_code == 200, start.text
+    payload = start.json()
+    orchestration_id = payload["orchestration"]["id"]
+    approval = next(item for item in payload["pending_decisions"] if item["decision_type"] == "command_approval")
+    answered = client.post(
+        f"/api/decisions/{approval['id']}/answer",
+        headers=_bridge_headers(),
+        json={"option_id": "approve_once", "selected_text": "Approve once"},
+    )
+    assert answered.status_code == 200, answered.text
+    answer_payload = answered.json()
+    assert answer_payload["decision"]["status"] == "answered"
+    assert answer_payload["next_status_summary"]["user_action_required"] is False
+
+    digest = client.get(
+        f"/api/orchestrations/{orchestration_id}/event-digest",
+        headers=_bridge_headers(),
+        params={"window": "since_orchestration_start"},
+    )
+    assert digest.status_code == 200, digest.text
+    assert "dry run validation simulated" in digest.json()["fallback_markdown"].lower()
+
+    handoff = client.get(f"/api/orchestrations/{orchestration_id}/handoff-summary", headers=_bridge_headers())
+    assert handoff.status_code == 200, handoff.text
+    handoff_payload = handoff.json()
+    assert "dry-run" in handoff_payload["fallback_markdown"].lower()
+    assert "not run" in handoff_payload["fallback_markdown"].lower()
+
+
+def test_full_headless_happy_path_deny_flow(client) -> None:
+    workspace = _prepare_repo_workspace("headless-deny-flow")
+    start = client.post(
+        "/api/headless/start-task",
+        headers=_bridge_headers(),
+        json={
+            "workspace_path": workspace.as_posix(),
+            "user_request": "Use Mission Control for this repo and fix the failing tests.",
+            "strategy": "safe_mode",
+            "mode": "dry_run",
+            "interview_mode": "skip",
+        },
+    )
+    assert start.status_code == 200, start.text
+    payload = start.json()
+    orchestration_id = payload["orchestration"]["id"]
+    approval = next(item for item in payload["pending_decisions"] if item["decision_type"] == "command_approval")
+    answered = client.post(
+        f"/api/decisions/{approval['id']}/answer",
+        headers=_bridge_headers(),
+        json={"option_id": "deny", "selected_text": "Deny"},
+    )
+    assert answered.status_code == 200, answered.text
+    answer_payload = answered.json()
+    assert answer_payload["decision"]["status"] == "answered"
+    assert answer_payload["next_status_summary"]["user_action_required"] is False
+
+    handoff = client.get(f"/api/orchestrations/{orchestration_id}/handoff-summary", headers=_bridge_headers())
+    assert handoff.status_code == 200, handoff.text
+    handoff_markdown = handoff.json()["fallback_markdown"].lower()
+    assert "dry-run" in handoff_markdown
+    assert "not run" in handoff_markdown
+    assert "denied" in handoff_markdown or "limitations" in handoff_markdown

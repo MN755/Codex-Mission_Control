@@ -38,7 +38,7 @@ def build_event_digest_markdown(*, title: str, grouped_items: dict[str, list[str
         key for key in grouped_items.keys() if key not in EVENT_DIGEST_CATEGORY_ORDER and grouped_items.get(key)
     ]
     if not ordered_keys:
-        lines.extend(["", "No significant orchestration events were recorded in this window."])
+        lines.extend(["", "No events yet."])
         return join_markdown(lines)
     for key in ordered_keys:
         lines.extend(section(key, _collapse_items(grouped_items.get(key, [])), empty_message="No notable events."))

@@ -67,7 +67,7 @@ def write_diagnostic_report(
     recommended_fixes = []
     for check in startup_status.get("checks", []):
         if check.get("status") == "failed":
-            recommended_fixes.append(f"Review the `{check.get('name')}` check: {check.get('summary')}")
+            recommended_fixes.append(str(check.get("recommended_fix") or f"Review the `{check.get('name')}` check: {check.get('summary')}"))
     if not recommended_fixes:
         recommended_fixes.append("Review optional provider checks and confirm the selected local runner is installed.")
 
@@ -166,6 +166,37 @@ def write_diagnostic_report(
         "summary": startup_status.get("error_summary") or startup_status.get("overall_status") or "Diagnostic report generated.",
         "error_code": startup_status.get("error_code"),
         "recommended_fixes": recommended_fixes,
+        "problem": {
+            "type": f"https://github.com/MN755/Codex-Mission_Control/wiki/Errors-and-Debug-Codes#{str(startup_status.get('error_code') or '').lower()}",
+            "title": "Mission Control diagnostic failure" if startup_status.get("error_code") else "Mission Control diagnostic report",
+            "status": 500 if startup_status.get("error_code") else 200,
+            "detail": startup_status.get("error_summary") or "Diagnostic report generated.",
+            "instance": str(markdown_path),
+            "code": startup_status.get("error_code") or "",
+            "family": next((str(check.get("family") or "") for check in startup_status.get("checks", []) if check.get("error_code") == startup_status.get("error_code")), ""),
+            "severity": next((str(check.get("severity") or "error") for check in startup_status.get("checks", []) if check.get("error_code") == startup_status.get("error_code")), "error"),
+            "breakpoint": next((str(check.get("breakpoint") or "") for check in startup_status.get("checks", []) if check.get("error_code") == startup_status.get("error_code")), ""),
+            "retryable": bool(next((check.get("retryable") for check in startup_status.get("checks", []) if check.get("error_code") == startup_status.get("error_code")), False)),
+            "user_action_required": bool(next((check.get("user_action_required") for check in startup_status.get("checks", []) if check.get("error_code") == startup_status.get("error_code")), False)),
+            "recommended_fix": recommended_fixes[0] if recommended_fixes else "",
+            "correlation_id": str(
+                next(
+                    (
+                        check.get("correlation_id") or ""
+                        for check in startup_status.get("checks", [])
+                        if check.get("error_code") == startup_status.get("error_code")
+                    ),
+                    "",
+                )
+            ),
+            "orchestration_id": None,
+            "project_id": None,
+            "runner": None,
+            "redaction_status": "redacted",
+            "safe_details": {},
+        }
+        if startup_status.get("error_code")
+        else None,
     }
 
 

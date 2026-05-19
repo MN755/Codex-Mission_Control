@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import atexit
 import gc
 import os
+import shutil
 import time
 import uuid
 from pathlib import Path
@@ -13,6 +15,14 @@ TEST_ROOT = (Path(__file__).resolve().parents[1] / ".runtime-test-runs" / uuid.u
 os.environ["MISSION_CONTROL_APP_HOME"] = str(TEST_ROOT / "app-home")
 os.environ["MISSION_CONTROL_RUNTIME_ROOT"] = str(TEST_ROOT)
 os.environ["MISSION_CONTROL_LAUNCHER_DIR"] = str(TEST_ROOT / "launcher")
+
+
+def _cleanup_test_root() -> None:
+    gc.collect()
+    shutil.rmtree(TEST_ROOT, ignore_errors=True)
+
+
+atexit.register(_cleanup_test_root)
 
 from config import DB_PATH
 from db import Base, engine, init_db
@@ -49,6 +59,12 @@ def reset_db() -> None:
 def client() -> TestClient:
     with TestClient(app) as test_client:
         yield test_client
+
+
+def pytest_sessionfinish(session, exitstatus) -> None:  # type: ignore[no-untyped-def]
+    engine.dispose()
+    gc.collect()
+    shutil.rmtree(TEST_ROOT, ignore_errors=True)
 
 
 def wait_for(condition, timeout: float = 6.0) -> None:

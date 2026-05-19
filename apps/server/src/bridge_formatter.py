@@ -6,6 +6,7 @@ from typing import Any
 
 from chat_markdown import bullet_lines, compact_reason, compact_text, join_markdown, option_lines, section
 from diagnostic_formatter import build_diagnostic_summary_markdown
+from errors import MissionControlError, format_codex_chat_error
 from event_digest_formatter import build_event_digest_markdown
 from handoff_formatter import build_handoff_markdown
 from security.redaction import redact_text, redact_value
@@ -371,6 +372,73 @@ def format_handoff_message(
             missing_evidence=missing,
             dry_run=dry_run,
         ),
+        created_at=created_at,
+    )
+
+
+def format_error_summary_message(
+    *,
+    message_id: str,
+    project_id: int | None,
+    orchestration_id: int | None,
+    title: str,
+    summary: str,
+    current_work: list[str],
+    waiting_on_you: list[str],
+    next_expected_step: str,
+    created_at: datetime,
+    risk_level: str | None = "high",
+) -> dict[str, Any]:
+    lines = [
+        "## Mission Control Status",
+        "",
+        f"**Project:** {compact_text(str(project_id) if project_id is not None else 'Unknown project')}",
+        f"**Manager:** {compact_text(summary, fallback='Mission Control hit an execution failure.')}",
+        "**User action needed:** no",
+    ]
+    lines.extend(section("Current work", bullet_lines(current_work, empty_message="Mission Control stopped before it could record more work.")))
+    lines.extend(section("Waiting on you", bullet_lines(waiting_on_you, empty_message="Nothing pending from the user right now.")))
+    lines.extend(["", "### Next expected step", compact_text(next_expected_step)])
+    return _make_bridge_message(
+        message_id=message_id,
+        project_id=project_id,
+        orchestration_id=orchestration_id,
+        source_type="system",
+        message_type="failed",
+        title=title,
+        summary=summary,
+        user_action_required=False,
+        risk_level=risk_level,
+        options_json=None,
+        machine_payload_json={
+            "current_work": current_work,
+            "waiting_on_you": waiting_on_you,
+            "next_expected_step": next_expected_step,
+        },
+        fallback_markdown=join_markdown(lines),
+        created_at=created_at,
+    )
+
+
+def format_mission_control_error_message(
+    *,
+    message_id: str,
+    error: MissionControlError,
+    created_at: datetime,
+) -> dict[str, Any]:
+    return _make_bridge_message(
+        message_id=message_id,
+        project_id=error.project_id,
+        orchestration_id=error.orchestration_id,
+        source_type="system",
+        message_type="failed",
+        title=f"Mission Control Error: {error.code}",
+        summary=error.detail or error.title or error.code,
+        user_action_required=bool(error.user_action_required),
+        risk_level="high" if error.severity in {"error", "fatal"} else ("medium" if error.severity == "warning" else None),
+        options_json=None,
+        machine_payload_json=error.to_problem_details(),
+        fallback_markdown=format_codex_chat_error(error),
         created_at=created_at,
     )
 

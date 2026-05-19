@@ -4,43 +4,32 @@ This page captures the current edges of the product so the wiki does not oversel
 
 > Status: Current
 
-## Reference
+## Current limitations
 
-- standalone dashboard is optional, not primary
-- some install/autowire surfaces remain planned or partial
+- some install and autowire surfaces remain partial
 - runner support depth varies by local environment
-- worker orchestration hardening is still in progress
-- plugin packaging may evolve
+- orchestration hardening is still in progress
+- plugin packaging and local setup may continue to evolve
 
 ## Do not build right now
 
-- standalone dashboard UI is optional/future
+- standalone dashboard UI is optional or future-facing
 - dashboard widgets are not the current priority
-- headless Codex chat UX is the current priority
+- background-running Codex chat UX is the current priority
 - deeper app-server integration remains experimental
-- API-backed runners require secure config and explicit user awareness
+- API-backed runners require secure configuration and explicit user awareness
 
 ## GitHub wiki rendering notes
 
-- the current staged wiki does not show broken internal links
+- the staged wiki does not currently show broken internal links
 - `_Sidebar.md` is moderate in size and does not appear unusually large
-- filenames are plain Markdown names without encoded punctuation or unusual Unicode
-- duplicate-looking pages are reference-oriented, not exact duplicates
+- filenames are plain Markdown names without unusual punctuation or Unicode
+- there are no exact duplicate content pages in the staged set
 
-Possible cause if GitHub still shows repeated `Uh oh! There was an error while loading.` messages:
-
-- a transient GitHub wiki rendering or page-list issue
-- a GitHub-side cache problem
-- a partial sync state in the live wiki repo after page updates
-
-If the error persists after pushing the pages, confirm the live wiki repo contents and then treat it as a possible GitHub rendering issue rather than assuming the markdown is broken.
-
-## Example
-
-Use this page when a user or contributor needs a compact reference instead of a full architecture walkthrough.
+If GitHub still shows repeated `Uh oh! There was an error while loading.` messages after a push, the most likely remaining causes are a GitHub-side rendering or cache issue rather than a broken staged markdown set.
 
 ## Related pages
 
 - [Roadmap](Roadmap)
-- [Headless First Direction](Headless-First-Direction)
+- [Background-Running Direction](Headless-First-Direction)
 - [Troubleshooting CLI Runners](Troubleshooting-CLI-Runners)

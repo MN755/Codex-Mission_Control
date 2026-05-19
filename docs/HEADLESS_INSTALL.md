@@ -1,58 +1,59 @@
-# Headless Install
+# Background Install
 
-Mission Control can be installed and wired for Codex chat without opening the standalone app.
+> Status: Current
 
-## What this mode does
+This page describes the preferred install path for Mission Control: set up the daemon, plugin assets, MCP bridge, and skills for background running without relying on the standalone UI.
 
-- clones or reuses the Mission Control repo
-- syncs the repo-local plugin bundle into Codex home when possible
-- syncs Mission Control skills into Codex home when possible
-- generates a safe headless config
-- detects local runners
-- verifies daemon and plugin health
-- validates MCP bridge assets
-- returns a chat-ready install report
+## What the background install does
 
-## Windows-first install flow
+- prepares or reuses a local Mission Control checkout
+- syncs plugin and skill assets when supported
+- generates a safe local configuration
+- probes supported runners
+- verifies daemon and MCP bridge health
+- returns a compact install summary for Codex chat
+
+## PowerShell examples
 
 ```powershell
 .\scripts\install-mission-control-plugin.ps1 -HeadlessOnly
-```
-
-Clone into a dedicated location:
-
-```powershell
-.\scripts\install-mission-control-plugin.ps1 -RepoUrl "https://github.com/MN755/Codex-Mission_Control" -InstallDir "$env:LOCALAPPDATA\MissionControl" -HeadlessOnly
-```
-
-Dry-run and repair:
-
-```powershell
 .\scripts\install-mission-control-plugin.ps1 -DryRun
 .\scripts\install-mission-control-plugin.ps1 -Repair
 .\scripts\install-mission-control-plugin.ps1 -HealthCheckOnly
 ```
 
-## What gets configured
+## Default behavior
 
 - daemon host defaults to `127.0.0.1`
-- repo-local Mission Control plugin assets are copied into Codex home unless explicitly skipped
-- Mission Control skills are copied into Codex home unless explicitly skipped
-- dashboard is disabled by default
-- `dry_run` is always enabled
-- `codex_cli` is enabled when installed and signed in
-- `ollama` is enabled when installed and reachable
-- `claude_cli` is detected but not auto-enabled when auth is unclear
-- API-backed runners stay disabled unless secure external config already exists and the user explicitly wants them
+- `dry_run` is always available
+- `codex_cli` is preferred when installed and signed in
+- `ollama` is enabled only when reachable locally
+- API-backed runners stay disabled unless they were configured securely and intentionally
 
-## What is not forced
+## What is not automatic
 
-- no standalone UI
-- no automatic API key collection
-- no silent external tool installs
-- no automatic model downloads
-- no dashboard startup requirement
+- no dashboard requirement
+- no silent API billing
+- no raw API key collection in chat
+- no automatic large model downloads
+- no destructive repair actions without user awareness
 
-## Example Codex prompt after setup
+## Expected install summary
 
-`Use Mission Control for this repo and fix the failing tests.`
+```text
+Mission Control install summary
+
+- Repo: attached
+- Daemon: ready on localhost
+- MCP bridge: configured
+- Skills: available
+- Preferred runner: codex_cli
+- Missing action: none
+```
+
+## Related docs
+
+- [Quick Start](QUICK_START.md)
+- [Autowire Providers](AUTOWIRE_PROVIDERS.md)
+- [Background Health](HEADLESS_HEALTH.md)
+- [Troubleshooting](TROUBLESHOOTING.md)

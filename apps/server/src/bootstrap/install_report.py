@@ -133,6 +133,54 @@ def build_install_report(
         "headless_config": headless_config,
         "plugin_health": health,
         "environment": environment or {},
+        "problems": [
+            {
+                "type": f"https://github.com/MN755/Codex-Mission_Control/wiki/Errors-and-Debug-Codes#{str(item.get('code')).lower()}",
+                "title": str(item.get("label") or "Mission Control issue"),
+                "status": 503 if item.get("status") in {"broken", "failed"} else 409,
+                "detail": str(item.get("summary") or ""),
+                "instance": "",
+                "code": str(item.get("code")),
+                "family": str(item.get("family") or ""),
+                "severity": str(item.get("severity") or "warning"),
+                "breakpoint": str(item.get("breakpoint") or ""),
+                "retryable": bool(item.get("retryable")),
+                "user_action_required": bool(item.get("user_action_required")),
+                "recommended_fix": str(item.get("recommended_fix") or ""),
+                "correlation_id": str(item.get("correlation_id") or ""),
+                "orchestration_id": None,
+                "project_id": None,
+                "runner": None,
+                "redaction_status": str(item.get("redaction_status") or "clean"),
+                "safe_details": dict(item.get("details_json") or {}),
+            }
+            for item in health.get("checks", [])
+            if item.get("code")
+        ]
+        + [
+            {
+                "type": f"https://github.com/MN755/Codex-Mission_Control/wiki/Errors-and-Debug-Codes#{str(probe.get('code')).lower()}",
+                "title": str(probe.get("label") or "Runner issue"),
+                "status": 503 if not probe.get("configured") else 409,
+                "detail": str(probe.get("recommended_fix") or probe.get("install_status") or ""),
+                "instance": "",
+                "code": str(probe.get("code")),
+                "family": "MC-RUNNER" if str(probe.get("runner_id")) not in {"codex_cli", "ollama", "claude_cli"} else f"MC-{str(probe.get('runner_id')).split('_')[0].upper()}",
+                "severity": str(probe.get("severity") or "warning"),
+                "breakpoint": str(probe.get("breakpoint") or ""),
+                "retryable": bool(probe.get("retryable")),
+                "user_action_required": bool(probe.get("user_action_required")),
+                "recommended_fix": str(probe.get("recommended_fix") or ""),
+                "correlation_id": "",
+                "orchestration_id": None,
+                "project_id": None,
+                "runner": str(probe.get("runner_id") or ""),
+                "redaction_status": "clean",
+                "safe_details": dict(probe.get("details_json") or {}),
+            }
+            for probe in probes
+            if probe.get("code")
+        ],
     }
     report["codex_chat_markdown"] = compose_install_markdown(report)
     return redact_bootstrap_value(report)

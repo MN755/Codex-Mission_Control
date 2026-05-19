@@ -1,4 +1,4 @@
-# Headless Happy Path
+# Background-Running Happy Path
 
 This page documents the simplest successful Mission Control flow from install through final handoff using Codex chat as the bridge.
 
@@ -6,7 +6,7 @@ This page documents the simplest successful Mission Control flow from install th
 
 ## Overview
 
-The headless happy path is:
+The background-running happy path is:
 
 1. install or autowire Mission Control
 2. run a health check
@@ -17,7 +17,7 @@ The headless happy path is:
 7. review an event digest if needed
 8. get the final handoff
 
-## Step 1 install or autowire
+## Step 1: install or autowire
 
 User prompt:
 
@@ -38,7 +38,7 @@ Mission Control install summary
 - Missing action: none
 ```
 
-## Step 2 health check
+## Step 2: health check
 
 User prompt:
 
@@ -58,7 +58,7 @@ Mission Control health
 - Runtime folder: writable
 ```
 
-## Step 3 attach workspace
+## Step 3: attach workspace
 
 User prompt:
 
@@ -77,7 +77,7 @@ Workspace attached to Mission Control.
 - Next step: read-only scan and codebase understanding
 ```
 
-## Step 4 start task
+## Step 4: start task
 
 User prompt:
 
@@ -96,7 +96,7 @@ Mission Control task started.
 - Next checkpoint: targeted fix plan
 ```
 
-## Step 5 handle pending decision
+## Step 5: handle a pending decision
 
 User prompt:
 
@@ -128,7 +128,7 @@ Decision recorded.
 - Next step: validation is running
 ```
 
-## Step 6 get status
+## Step 6: get status
 
 User prompt:
 
@@ -149,7 +149,7 @@ Mission Control status
 - Next step: prepare handoff
 ```
 
-## Step 7 get event digest
+## Step 7: get an event digest
 
 User prompt:
 
@@ -169,7 +169,7 @@ Last 15 minutes
 - Handoff preparation started
 ```
 
-## Step 8 get handoff
+## Step 8: get the handoff
 
 User prompt:
 

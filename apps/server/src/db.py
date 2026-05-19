@@ -269,6 +269,8 @@ def _apply_sqlite_migrations() -> None:
         _ensure_column("app_profile", "adapter_args_json", "adapter_args_json JSON NOT NULL DEFAULT '[]'")
         _ensure_column("app_profile", "recent_startup_error_json", "recent_startup_error_json JSON")
         _ensure_column("app_profile", "last_opened_at", "last_opened_at DATETIME")
+    if "orchestration_sessions" in tables:
+        _ensure_column("orchestration_sessions", "mode", "mode VARCHAR(30) NOT NULL DEFAULT 'unknown'")
 
 
 def init_db() -> None:

@@ -16,6 +16,7 @@ from bridge_formatter import (
     format_safe_mode_message,
     format_status_summary_message,
 )
+from errors import MissionControlError
 from imported_codebase import import_service
 from manager import service
 from models import (
@@ -47,6 +48,42 @@ ACTIVE_AGENT_STATUSES = {"starting", "working", "waiting", "needs_review", "bloc
 
 
 class BridgeRuntimeService:
+    def _error(
+        self,
+        code: str,
+        *,
+        detail: str | None = None,
+        breakpoint: str | None = None,
+        project_id: int | None = None,
+        orchestration_id: int | None = None,
+        safe_details: dict[str, Any] | None = None,
+        caused_by: Exception | None = None,
+    ) -> MissionControlError:
+        return MissionControlError(
+            code=code,
+            detail=detail,
+            breakpoint=breakpoint,
+            project_id=project_id,
+            orchestration_id=orchestration_id,
+            safe_details=safe_details or {},
+            caused_by=caused_by,
+        )
+
+    def _runner_available(self, inventory: Sequence[dict[str, Any]], runner_type: str) -> bool:
+        return any(str(item.get("runner_type")) == runner_type and bool(item.get("availability")) for item in inventory)
+
+    async def _resolve_orchestration_mode(self, requested_mode: str) -> str:
+        normalized = str(requested_mode or "auto").strip().lower()
+        if normalized == "dry_run":
+            return "dry_run"
+        inventory = [dict(item) for item in list(await service.runners.inventory())]
+        codex_ready = self._runner_available(inventory, "codex_cli")
+        if normalized == "codex_cli":
+            return "codex_cli" if codex_ready else "dry_run"
+        if normalized == "auto":
+            return "codex_cli" if codex_ready else "dry_run"
+        return "unknown"
+
     def _latest_project_orchestration(self, db: Session, project: Project) -> OrchestrationSession | None:
         return db.scalar(
             select(OrchestrationSession)
@@ -120,6 +157,9 @@ class BridgeRuntimeService:
         source: str,
         user_request: str,
         orchestration_id: int | None = None,
+        mode: str = "unknown",
+        metadata_json: dict[str, Any] | None = None,
+        schedule_background_turn: bool = True,
     ) -> dict[str, Any]:
         session = coordinator.start_orchestration(
             db,
@@ -127,8 +167,34 @@ class BridgeRuntimeService:
             source=source,
             user_request=user_request,
             orchestration_id=orchestration_id,
+            mode=mode,
+            metadata=metadata_json,
+            schedule_background_turn=schedule_background_turn,
         )
         return coordinator._serialize_session(session)
+
+    def create_orchestration(
+        self,
+        db: Session,
+        *,
+        project: Project,
+        source: str,
+        user_request: str,
+        orchestration_id: int | None = None,
+        mode: str = "unknown",
+        metadata_json: dict[str, Any] | None = None,
+        schedule_background_turn: bool = True,
+    ) -> dict[str, Any]:
+        return self.start_orchestration(
+            db,
+            project=project,
+            source=source,
+            user_request=user_request,
+            orchestration_id=orchestration_id,
+            mode=mode,
+            metadata_json=metadata_json,
+            schedule_background_turn=schedule_background_turn,
+        )
 
     def _serialize_pending_decision(self, decision: PendingDecision) -> dict[str, Any]:
         options = list(decision.options_json or [])
@@ -386,6 +452,250 @@ class BridgeRuntimeService:
             agent_name = agent.name if agent is not None else None
         return format_pending_decision_message(decision=self._serialize_pending_decision(decision), requesting_agent=agent_name)
 
+    def _prime_dry_run_happy_path(
+        self,
+        db: Session,
+        *,
+        project: Project,
+        orchestration: OrchestrationSession,
+        user_request: str,
+        strategy: str,
+        interview_mode: str,
+        create_pending_decision: bool,
+    ) -> list[dict[str, Any]]:
+        metadata = dict(orchestration.metadata_json or {})
+        metadata.update(
+            {
+                "headless_happy_path": True,
+                "strategy": strategy,
+                "interview_mode": interview_mode,
+                "simulated": True,
+            }
+        )
+        orchestration.metadata_json = metadata
+        orchestration.mode = "dry_run"
+        existing_event_types = {
+            str(event.event_type)
+            for event in db.scalars(
+                select(OrchestrationEvent)
+                .where(OrchestrationEvent.orchestration_id == orchestration.id)
+                .order_by(OrchestrationEvent.id.asc())
+            )
+        }
+        if "manager_analyzed_request" not in existing_event_types:
+            coordinator._record_event(
+                db,
+                orchestration,
+                "manager_analyzed_request",
+                {"message": f"Mission Control analyzed the request in dry-run mode: {user_request.strip()}"},
+            )
+        if "dry_run_agent_plan_created" not in existing_event_types:
+            coordinator._record_event(
+                db,
+                orchestration,
+                "dry_run_agent_plan_created",
+                {
+                    "message": "Mission Control prepared a deterministic dry-run agent plan.",
+                    "strategy": strategy,
+                    "interview_mode": interview_mode,
+                },
+            )
+        pending = self.get_pending_decisions(db, project=project, orchestration=orchestration)
+        has_command_approval = any(str(item.get("decision_type")) == "command_approval" for item in pending)
+        if create_pending_decision and not has_command_approval:
+            approval = service._create_approval(
+                db,
+                project,
+                request_type="command",
+                title="Approve local validation command",
+                reason_short="Run a local pytest validation step so Mission Control can check the failing tests safely. No deployment or external service access is involved.",
+                risk_level="low",
+                cwd=project.workspace_path,
+                request_payload_json={
+                    "command": "python -m pytest",
+                    "scope": ["tests/"],
+                    "simulated": True,
+                    "headless_happy_path": True,
+                },
+            )
+            if approval.status != "pending":
+                approval.status = "pending"
+                approval.resolved_by = None
+                approval.resolved_at = None
+                db.flush()
+            coordinator._record_event(
+                db,
+                orchestration,
+                "pending_decision_created",
+                {
+                    "decision_type": "command_approval",
+                    "message": "Mission Control queued a deterministic dry-run validation approval.",
+                },
+            )
+            pending = self.get_pending_decisions(db, project=project, orchestration=orchestration)
+        for record in list(
+            db.scalars(
+                select(PendingDecision)
+                .where(PendingDecision.project_id == project.id, PendingDecision.status == "pending")
+                .order_by(PendingDecision.created_at.asc(), PendingDecision.id.asc())
+            )
+        ):
+            if record.decision_type == "command_approval":
+                continue
+            if record.source_kind == "manager_question" and record.source_id is not None:
+                question = db.get(ManagerQuestion, record.source_id)
+                if question is not None and question.status == "pending":
+                    question.status = "cancelled"
+                    question.resolved_at = utc_now()
+            elif record.source_kind == "approval_request" and record.source_id is not None:
+                approval = db.get(ApprovalRequest, record.source_id)
+                if approval is not None and approval.status == "pending":
+                    approval.status = "denied"
+                    approval.resolved_by = "system"
+                    approval.resolved_at = utc_now()
+            record.status = "cancelled"
+            record.answered_at = utc_now()
+        pending = self.get_pending_decisions(db, project=project, orchestration=orchestration)
+        if pending:
+            coordinator._update_session_status(
+                db,
+                orchestration,
+                status="waiting_for_user",
+                manager_status="Dry-run orchestration is waiting for a user decision before it can continue.",
+            )
+        else:
+            coordinator._update_session_status(
+                db,
+                orchestration,
+                status="running",
+                manager_status="Dry-run orchestration is ready to continue in the background.",
+            )
+        db.flush()
+        return pending
+
+    async def start_headless_task(
+        self,
+        db: Session,
+        *,
+        workspace_path: str | None,
+        project_id: int | None,
+        user_request: str,
+        strategy: str,
+        mode: str,
+        interview_mode: str,
+        source: str = "codex_plugin",
+        create_pending_decision: bool = True,
+    ) -> dict[str, Any]:
+        attached: dict[str, Any] | None = None
+        project: Project | None = None
+        orchestration: OrchestrationSession | None = None
+        if workspace_path:
+            attach_mode = "existing_codebase"
+            try:
+                workspace = resolve_local_path(workspace_path)
+            except PathValidationError as exc:
+                raise self._error(
+                    "MC-WORKSPACE-PATH-MISSING-001",
+                    detail=str(exc),
+                    breakpoint="workspace.attach",
+                    safe_details={"workspace_path": workspace_path},
+                    caused_by=exc,
+                ) from exc
+            if workspace.exists() and workspace.is_dir() and not any(workspace.iterdir()):
+                attach_mode = "new_project"
+            attached = self.attach_workspace(
+                db,
+                workspace_path=workspace_path,
+                project_name=None,
+                mode=attach_mode,
+                read_only_first=True,
+                attach_policy="reuse_existing",
+                source=source,
+            )
+            if attached.get("project_id") is not None:
+                project = db.get(Project, int(attached["project_id"]))
+            orchestration_payload = attached.get("orchestration") or None
+            if orchestration_payload and orchestration_payload.get("id") is not None:
+                orchestration = db.get(OrchestrationSession, int(orchestration_payload["id"]))
+        elif project_id is not None:
+            project = db.get(Project, project_id)
+        if project is None:
+            raise self._error(
+                "MC-WORKSPACE-PATH-MISSING-001",
+                detail="Mission Control could not resolve a project for this background task.",
+                breakpoint="workspace.attach",
+                project_id=project_id,
+                safe_details={"workspace_path": workspace_path, "project_id": project_id},
+            )
+
+        if orchestration is not None and attached and attached.get("pending_decision_id") is not None:
+            status_summary = await self.get_status_summary(db, project=project, orchestration=orchestration)
+            attached["status_summary_markdown"] = status_summary["fallback_markdown"]
+            return {
+                "project": service._serialize_project_card(db, project),
+                "orchestration": coordinator._serialize_session(orchestration),
+                "attach": attached,
+                "status_summary": status_summary,
+                "pending_decisions": self.get_pending_decisions(db, project=project, orchestration=orchestration),
+                "next_action": attached.get("next_action"),
+                "user_action_required": True,
+                "mode_used": orchestration.mode,
+            }
+
+        resolved_mode = await self._resolve_orchestration_mode(mode)
+        project.runner_mode = "dry_run" if resolved_mode == "dry_run" else ("cli" if resolved_mode == "codex_cli" else project.runner_mode)
+        if project.settings is not None:
+            project.settings.runner_mode = project.runner_mode
+        service.open_project(db, project)
+        orchestration_payload = self.create_orchestration(
+            db,
+            project=project,
+            source=source,
+            user_request=user_request,
+            orchestration_id=orchestration.id if orchestration is not None else None,
+            mode=resolved_mode,
+            metadata_json={
+                "strategy": strategy,
+                "interview_mode": interview_mode,
+                "headless_entrypoint": "start_task",
+            },
+            schedule_background_turn=resolved_mode != "dry_run",
+        )
+        orchestration = db.get(OrchestrationSession, int(orchestration_payload["id"]))
+        if orchestration is None:
+            raise self._error(
+                "MC-ORCH-START-FAILED-001",
+                detail="Mission Control could not create an orchestration session.",
+                breakpoint="orchestration.create",
+                project_id=project.id,
+                safe_details={"workspace_path": workspace_path, "mode": resolved_mode},
+            )
+        if resolved_mode == "dry_run":
+            pending = self._prime_dry_run_happy_path(
+                db,
+                project=project,
+                orchestration=orchestration,
+                user_request=user_request,
+                strategy=strategy,
+                interview_mode=interview_mode,
+                create_pending_decision=create_pending_decision,
+            )
+        else:
+            pending = self.get_pending_decisions(db, project=project, orchestration=orchestration)
+        status_summary = await self.get_status_summary(db, project=project, orchestration=orchestration)
+        if attached is not None:
+            attached["status_summary_markdown"] = status_summary["fallback_markdown"]
+        return {
+            "project": service._serialize_project_card(db, project),
+            "orchestration": coordinator._serialize_session(orchestration),
+            "attach": attached,
+            "status_summary": status_summary,
+            "pending_decisions": pending,
+            "next_action": "answer_pending_decision" if pending else "get_status_summary",
+            "user_action_required": bool(pending),
+            "mode_used": resolved_mode,
+        }
+
     async def get_status_summary(
         self,
         db: Session,
@@ -396,7 +706,12 @@ class BridgeRuntimeService:
         if orchestration is not None and project is None:
             project = db.get(Project, orchestration.project_id)
         if project is None:
-            raise ValueError("Project not found for status summary.")
+            raise self._error(
+                "MC-BRIDGE-FORMAT-FAILED-001",
+                detail="Project not found for status summary.",
+                breakpoint="bridge.format_status",
+                orchestration_id=orchestration.id if orchestration is not None else None,
+            )
         pending = self.get_pending_decisions(db, project=project, orchestration=orchestration)
         current_action = await service.get_project_action(db, project)
         health = service.get_project_health(db, project)
@@ -434,7 +749,7 @@ class BridgeRuntimeService:
             summary=redact_text(manager_status[:220]),
             project_name=project.name,
             manager_status=manager_status,
-            mode=f"{project.runner_mode} / {project.manager_mode}",
+            mode=f"{(orchestration.mode if orchestration is not None else project.runner_mode)} / {project.manager_mode}",
             swarm=swarm_summary,
             user_action_needed=user_action_needed,
             current_work=current_work[:5],
@@ -458,130 +773,64 @@ class BridgeRuntimeService:
         mode: str,
         read_only_first: bool,
         attach_policy: str,
+        create_pending_decision: bool,
     ) -> dict[str, Any]:
-        attached = self.attach_workspace(
+        start_payload = await self.start_headless_task(
+            db,
+            workspace_path=workspace_path,
+            project_id=None,
+            user_request=user_request,
+            strategy="balanced",
+            mode="dry_run",
+            interview_mode="skip",
+            source="test",
+            create_pending_decision=create_pending_decision,
+        )
+        orchestration_payload = start_payload.get("orchestration")
+        if orchestration_payload is None:
+            raise self._error(
+                "MC-ORCH-START-FAILED-001",
+                detail="Mission Control could not create the background-running happy path orchestration.",
+                breakpoint="orchestration.create",
+                safe_details={"workspace_path": workspace_path, "mode": mode},
+            )
+        pending = list(start_payload.get("pending_decisions") or [])
+        selected = next((item for item in pending if item["decision_type"] == "command_approval"), pending[0] if pending else None)
+        selected_record = db.get(PendingDecision, int(selected["id"])) if selected is not None else None
+        return {
+            "attach": start_payload.get("attach"),
+            "orchestration": orchestration_payload,
+            "initial_status_summary": start_payload.get("status_summary"),
+            "pending_decision": selected,
+            "decision_bridge_message": self.get_bridge_message_for_decision(db, selected_record) if selected_record is not None else None,
+            "answer_result": None,
+            "event_digest": None,
+            "handoff_summary": None,
+            "dry_run": True,
+        }
+
+    async def run_happy_path_demo(
+        self,
+        db: Session,
+        *,
+        workspace_path: str,
+        project_name: str | None,
+        user_request: str,
+        mode: str,
+        read_only_first: bool,
+        attach_policy: str,
+        create_pending_decision: bool,
+    ) -> dict[str, Any]:
+        return await self.happy_path_demo(
             db,
             workspace_path=workspace_path,
             project_name=project_name,
+            user_request=user_request,
             mode=mode,
             read_only_first=read_only_first,
             attach_policy=attach_policy,
-            source="codex_plugin",
+            create_pending_decision=create_pending_decision,
         )
-        project = db.get(Project, int(attached["project_id"]))
-        if project is None:
-            raise ValueError("Project not found after workspace attach.")
-        project.runner_mode = "dry_run"
-        if project.settings is not None:
-            project.settings.runner_mode = "dry_run"
-        service.open_project(db, project)
-        orchestration_payload = self.start_orchestration(
-            db,
-            project=project,
-            source="test",
-            user_request=user_request,
-            orchestration_id=attached.get("orchestration", {}).get("id") if attached.get("orchestration") else None,
-        )
-        orchestration = db.get(OrchestrationSession, int(orchestration_payload["id"]))
-        if orchestration is None:
-            raise ValueError("Orchestration session was not created.")
-
-        pending: list[dict[str, Any]] = []
-        for _ in range(20):
-            await asyncio.sleep(0.05)
-            db.expire_all()
-            orchestration = db.get(OrchestrationSession, int(orchestration_payload["id"]))
-            if orchestration is None:
-                raise ValueError("Orchestration session disappeared during demo setup.")
-            pending = self.get_pending_decisions(db, project=project, orchestration=orchestration)
-            if pending:
-                break
-
-        if not pending:
-            service._create_approval(
-                db,
-                project,
-                request_type="command",
-                title="Approve simulated dry-run test command",
-                reason_short="Run a simulated local test command so Mission Control can continue the headless bridge flow safely.",
-                risk_level="medium",
-                cwd=project.workspace_path,
-                request_payload_json={
-                    "command": "python -m pytest",
-                    "scope": ["tests/"],
-                    "simulated": True,
-                },
-            )
-            db.flush()
-            pending = self.get_pending_decisions(db, project=project, orchestration=orchestration)
-
-        if not pending:
-            raise ValueError("Mission Control could not create a pending decision for the headless happy path demo.")
-
-        initial_status_summary = await self.get_status_summary(db, project=project, orchestration=orchestration)
-        selected = next((item for item in pending if item["decision_type"] == "command_approval"), pending[0])
-
-        for decision in pending:
-            if decision["id"] == selected["id"]:
-                continue
-            option = self._preferred_option(decision)
-            if option is None:
-                continue
-            decision_record = db.get(PendingDecision, int(decision["id"]))
-            if decision_record is None or decision_record.status != "pending":
-                continue
-            await self.answer_decision(
-                db,
-                decision_record,
-                option_id=str(option["id"]),
-                selected_text=str(option.get("label") or option["id"]),
-            )
-            db.flush()
-
-        selected_record = db.get(PendingDecision, int(selected["id"]))
-        if selected_record is None:
-            raise ValueError("Pending decision not found for the headless happy path demo.")
-        decision_bridge_message = self.get_bridge_message_for_decision(db, selected_record)
-        selected_option = self._preferred_option(selected)
-        if selected_option is None:
-            raise ValueError("Pending decision has no selectable options.")
-        answered_decision, next_status_summary = await self.answer_decision(
-            db,
-            selected_record,
-            option_id=str(selected_option["id"]),
-            selected_text=str(selected_option.get("label") or selected_option["id"]),
-        )
-
-        service.add_handoff_evidence(
-            db,
-            project,
-            {
-                "evidence_type": "manual_note",
-                "claim": "Headless happy path demo was executed in dry-run mode.",
-                "summary": "Mission Control completed a simulated attach, decision relay, digest, and handoff pass without claiming real execution.",
-                "command": "dry-run demo",
-                "status": "not_run",
-                "metadata_json": {"source": "headless_happy_path_demo"},
-            },
-        )
-        service.generate_evidence_handoff(db, project)
-        event_digest = self.get_event_digest(db, project=project, orchestration=orchestration, window="since_orchestration_start")
-        handoff_summary = self.get_handoff_summary(db, project=project, orchestration=orchestration)
-
-        return {
-            "attach": attached,
-            "orchestration": orchestration_payload,
-            "initial_status_summary": initial_status_summary,
-            "pending_decision": selected,
-            "decision_bridge_message": decision_bridge_message,
-            "answer_result": {
-                "decision": answered_decision,
-                "next_status_summary": next_status_summary,
-            },
-            "event_digest": event_digest,
-            "handoff_summary": handoff_summary,
-            "dry_run": True,
-        }
 
     def _event_time_cutoff(
         self,
@@ -655,7 +904,12 @@ class BridgeRuntimeService:
         if orchestration is not None and project is None:
             project = db.get(Project, orchestration.project_id)
         if project is None:
-            raise ValueError("Project not found for event digest.")
+            raise self._error(
+                "MC-BRIDGE-FORMAT-FAILED-001",
+                detail="Project not found for event digest.",
+                breakpoint="bridge.format_status",
+                orchestration_id=orchestration.id if orchestration is not None else None,
+            )
         cutoff = self._event_time_cutoff(db, project=project, orchestration=orchestration, window=window)
         timeline_events = list(
             db.scalars(
@@ -716,7 +970,12 @@ class BridgeRuntimeService:
         if orchestration is not None and project is None:
             project = db.get(Project, orchestration.project_id)
         if project is None:
-            raise ValueError("Project not found for handoff summary.")
+            raise self._error(
+                "MC-HANDOFF-RENDER-FAILED-001",
+                detail="Project not found for handoff summary.",
+                breakpoint="handoff.render_chat_summary",
+                orchestration_id=orchestration.id if orchestration is not None else None,
+            )
         handoff_record = self._latest_handoff(db, project)
         handoff = service.get_project_handoff_summary(db, project)
         missing_evidence = [str(item) for item in list(handoff.get("missing_evidence") or []) if str(item).strip()]
@@ -742,7 +1001,7 @@ class BridgeRuntimeService:
         if handoff_record.tests_run_json:
             for item in handoff_record.tests_run_json:
                 name = str(item.get("name") or item.get("title") or item.get("command") or "validation step")
-                status = str(item.get("status") or item.get("result") or "unknown")
+                status = str(item.get("status") or item.get("result") or "unknown").replace("_", " ")
                 validation_items.append(f"{name}: {status}")
         else:
             validation_items.append("Not run.")
@@ -865,48 +1124,131 @@ class BridgeRuntimeService:
     ) -> tuple[dict[str, Any], dict[str, Any] | None]:
         allowed = {str(item.get("id")) for item in list(decision.options_json or []) if item.get("id")}
         if option_id not in allowed:
-            raise ValueError("Selected option is not allowed for this decision.")
+            raise MissionControlError(
+                code="MC-DECISION-INVALID-OPTION-001",
+                breakpoint="decision.validate_option",
+                project_id=decision.project_id,
+                orchestration_id=decision.orchestration_id,
+                safe_details={"allowed_options": sorted(allowed), "received_option": option_id},
+            )
         project = db.get(Project, decision.project_id) if decision.project_id is not None else None
         if decision.status != "pending":
-            raise ValueError("Pending decision is no longer actionable.")
-        if decision.source_kind == "manager_question" and decision.source_id is not None:
-            question = db.get(ManagerQuestion, decision.source_id)
-            if question is None:
-                raise ValueError("Manager question not found.")
-            service.answer_question(db, question.id, option_id=option_id, selected_text=selected_text, project_id=question.project_id)
-        elif decision.source_kind == "approval_request" and decision.source_id is not None:
-            approval = db.get(ApprovalRequest, decision.source_id)
-            if approval is None:
-                raise ValueError("Approval request not found.")
-            if option_id == "approve_once":
-                service.approve_once(db, approval.id, project_id=approval.project_id)
-            elif option_id == "deny":
-                service.deny_approval(db, approval.id, project_id=approval.project_id)
-            elif option_id in {"always_allow_for_project", "always_allow_if_safe"}:
-                service.allow_approval_for_project(db, approval.id, project_id=approval.project_id)
+            raise MissionControlError(
+                code="MC-DECISION-EXPIRED-001",
+                breakpoint="decision.answer",
+                project_id=decision.project_id,
+                orchestration_id=decision.orchestration_id,
+                safe_details={"decision_status": decision.status},
+            )
+        if decision.source_kind == "attach_workspace":
+            updated_record = coordinator.answer_pending_decision(
+                db,
+                decision,
+                option_id=option_id,
+                selected_text=selected_text,
+                free_text=free_text,
+            )
+            decision = updated_record
+            project = db.get(Project, decision.project_id) if decision.project_id is not None else project
+        elif decision.source_kind == "manager_question" and decision.source_id is not None:
+            if decision.orchestration_id is not None:
+                updated_record = coordinator.answer_pending_decision(
+                    db,
+                    decision,
+                    option_id=option_id,
+                    selected_text=selected_text,
+                    free_text=free_text,
+                )
+                decision = updated_record
+                project = db.get(Project, decision.project_id) if decision.project_id is not None else project
             else:
-                raise ValueError("Unsupported approval resolution option.")
-        elif decision.source_kind == "attach_workspace":
-            updated = coordinator.answer_pending_decision(db, decision, option_id=option_id, selected_text=selected_text, free_text=free_text)
-            next_summary = None
-            if updated.orchestration_id is not None:
-                orchestration = db.get(OrchestrationSession, updated.orchestration_id)
-                project = db.get(Project, updated.project_id) if updated.project_id is not None else None
-                if orchestration is not None and project is not None:
-                    next_summary = redact_value(await self.get_status_summary(db, project=project, orchestration=orchestration))
-            return self._serialize_pending_decision(updated), next_summary
+                question = db.get(ManagerQuestion, decision.source_id)
+                if question is None:
+                    raise MissionControlError(
+                        code="MC-QUESTION-NOT-FOUND-001",
+                        detail="Manager question not found.",
+                        breakpoint="decision.answer",
+                        project_id=decision.project_id,
+                        orchestration_id=decision.orchestration_id,
+                    )
+                service.answer_question(
+                    db,
+                    question.id,
+                    option_id=option_id,
+                    selected_text=selected_text,
+                    project_id=project.id if project is not None else None,
+                )
+                decision.status = "answered"
+                decision.answered_at = utc_now()
+                decision.answer_json = {"option_id": option_id, "selected_text": selected_text, "free_text": free_text}
+                db.flush()
+        elif decision.source_kind == "approval_request" and decision.source_id is not None:
+            if decision.orchestration_id is not None:
+                updated_record = coordinator.answer_pending_decision(
+                    db,
+                    decision,
+                    option_id=option_id,
+                    selected_text=selected_text,
+                    free_text=free_text,
+                )
+                decision = updated_record
+                project = db.get(Project, decision.project_id) if decision.project_id is not None else project
+            else:
+                approval = db.get(ApprovalRequest, decision.source_id)
+                if approval is None:
+                    raise MissionControlError(
+                        code="MC-APPROVAL-NOT-FOUND-001",
+                        detail="Approval request not found.",
+                        breakpoint="decision.answer",
+                        project_id=decision.project_id,
+                        orchestration_id=decision.orchestration_id,
+                    )
+                if option_id == "approve_once":
+                    service.approve_once(db, approval.id, project_id=project.id if project is not None else None)
+                elif option_id == "deny":
+                    service.deny_approval(db, approval.id, project_id=project.id if project is not None else None)
+                elif option_id in {"allow_for_project", "always_allow_if_safe"}:
+                    service.allow_approval_for_project(
+                        db,
+                        approval.id,
+                        project_id=project.id if project is not None else None,
+                    )
+                else:
+                    raise MissionControlError(
+                        code="MC-DECISION-INVALID-OPTION-001",
+                        breakpoint="decision.validate_option",
+                        project_id=decision.project_id,
+                        orchestration_id=decision.orchestration_id,
+                        safe_details={"received_option": option_id},
+                    )
+                decision.status = "answered"
+                decision.answered_at = utc_now()
+                decision.answer_json = {"option_id": option_id, "selected_text": selected_text, "free_text": free_text}
+                db.flush()
         elif decision.source_kind == "subagent_batch" and decision.source_id is not None:
             batch = db.get(SubagentBatch, decision.source_id)
             if batch is None:
-                raise ValueError("Subagent batch not found.")
+                raise MissionControlError(
+                    code="MC-SUBAGENT-RESULT-INVALID-001",
+                    detail="Subagent batch not found.",
+                    breakpoint="subagent_burst.ingest_result",
+                    project_id=decision.project_id,
+                    orchestration_id=decision.orchestration_id,
+                )
             subagent_planner_service.resolve_batch_decision(db, batch, option_id=option_id, selected_text=selected_text)
+            decision.status = "answered"
+            decision.answered_at = utc_now()
+            decision.answer_json = {"option_id": option_id, "selected_text": selected_text, "free_text": free_text}
+            db.flush()
         else:
-            raise ValueError("Unsupported pending decision source.")
-
-        decision.status = "answered"
-        decision.answered_at = utc_now()
-        decision.answer_json = {"option_id": option_id, "selected_text": selected_text, "free_text": free_text}
-        db.flush()
+            raise MissionControlError(
+                code="MC-DECISION-NOT-FOUND-001",
+                detail="Unsupported pending decision source.",
+                breakpoint="decision.answer",
+                project_id=decision.project_id,
+                orchestration_id=decision.orchestration_id,
+                safe_details={"source_kind": decision.source_kind},
+            )
         if project is not None:
             service.events.publish(
                 db,
@@ -927,9 +1269,79 @@ class BridgeRuntimeService:
                 reason=selected_text or option_id,
                 metadata_json={"free_text": free_text},
             )
+        orchestration = db.get(OrchestrationSession, decision.orchestration_id) if decision.orchestration_id is not None else None
+        if orchestration is not None and project is not None:
+            metadata = dict(orchestration.metadata_json or {})
+            if metadata.get("headless_happy_path") and decision.decision_type == "command_approval":
+                coordinator._record_event(
+                    db,
+                    orchestration,
+                    "approval_recorded",
+                    {"decision_id": decision.id, "option_id": option_id},
+                )
+                if option_id in {"approve_once", "allow_for_project", "always_allow_if_safe"}:
+                    coordinator._record_event(
+                        db,
+                        orchestration,
+                        "dry_run_validation_simulated",
+                        {
+                            "command": "python -m pytest",
+                            "status": "not_run",
+                            "message": "Mission Control simulated the local pytest validation step in dry-run mode.",
+                        },
+                    )
+                    service.add_handoff_evidence(
+                        db,
+                        project,
+                        {
+                            "evidence_type": "test_result",
+                            "claim": "Dry-run validation simulated for python -m pytest.",
+                            "summary": "Mission Control recorded a simulated local validation step without claiming that real tests executed.",
+                            "command": "python -m pytest",
+                            "status": "not_run",
+                            "metadata_json": {"source": "headless_happy_path", "simulated": True},
+                        },
+                    )
+                    service.generate_evidence_handoff(db, project)
+                    coordinator.complete_orchestration(
+                        db,
+                        orchestration,
+                        manager_status="Dry-run orchestration completed with a simulated handoff.",
+                        event_type="dry_run_happy_path_completed",
+                        payload={"result": "approved"},
+                    )
+                elif option_id == "deny":
+                    coordinator._record_event(
+                        db,
+                        orchestration,
+                        "command_denied",
+                        {
+                            "command": "python -m pytest",
+                            "message": "The user denied the local validation command.",
+                        },
+                    )
+                    service.add_handoff_evidence(
+                        db,
+                        project,
+                        {
+                            "evidence_type": "manual_note",
+                            "claim": "Validation was not run because the user denied the dry-run validation command.",
+                            "summary": "Mission Control completed the dry-run flow with a limitation after approval was denied.",
+                            "command": "python -m pytest",
+                            "status": "not_run",
+                            "metadata_json": {"source": "headless_happy_path", "denied": True},
+                        },
+                    )
+                    service.generate_evidence_handoff(db, project)
+                    coordinator.complete_orchestration(
+                        db,
+                        orchestration,
+                        manager_status="Dry-run orchestration completed with limitations because validation approval was denied.",
+                        event_type="dry_run_happy_path_completed",
+                        payload={"result": "denied"},
+                    )
         next_summary = None
         if project is not None:
-            orchestration = db.get(OrchestrationSession, decision.orchestration_id) if decision.orchestration_id is not None else None
             next_summary = redact_value(await self.get_status_summary(db, project=project, orchestration=orchestration))
         return self._serialize_pending_decision(decision), next_summary
 
@@ -937,13 +1349,24 @@ class BridgeRuntimeService:
         try:
             workspace = resolve_local_path(workspace_path)
         except PathValidationError as exc:
-            raise ValueError(str(exc)) from exc
+            raise self._error(
+                "MC-WORKSPACE-PATH-MISSING-001",
+                detail=str(exc),
+                breakpoint="workspace.attach",
+                safe_details={"workspace_path": workspace_path},
+                caused_by=exc,
+            ) from exc
         matches = self._workspace_projects(db, workspace)
         session = self._latest_workspace_orchestration(db, workspace)
         if session is not None:
             project = db.get(Project, session.project_id)
             if project is None:
-                raise ValueError("Active orchestration references a missing project.")
+                raise self._error(
+                    "MC-ORCH-SESSION-NOT-FOUND-001",
+                    detail="Active orchestration references a missing project.",
+                    breakpoint="orchestration.resume_after_decision",
+                    orchestration_id=session.id,
+                )
             status_summary = await self.get_status_summary(db, project=project, orchestration=session)
             pending = self.get_pending_decisions(db, project=project, orchestration=session)
             return {

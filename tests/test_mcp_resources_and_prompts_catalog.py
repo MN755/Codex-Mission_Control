@@ -25,15 +25,15 @@ REQUIRED_RESOURCES = {
 }
 
 REQUIRED_PROMPT_ALIASES = [
-    {"attach-current-workspace"},
-    {"start-manager-led-task", "use-mission-control-for-this-repo"},
-    {"continue-orchestration"},
-    {"answer-pending-approval", "show-pending-approvals"},
-    {"review-handoff", "review-latest-handoff"},
-    {"import-existing-repo", "import-existing-codebase"},
-    {"ask-manager-for-plan"},
-    {"pause-orchestration"},
-    {"resume-orchestration"},
+    {"attach-current-workspace", "attach_current_workspace"},
+    {"start-manager-led-task", "start_manager_led_task", "use-mission-control-for-this-repo", "use_mission_control_for_repo"},
+    {"continue-orchestration", "continue_orchestration"},
+    {"answer-pending-approval", "answer_pending_approval", "show-pending-approvals", "show_pending_approvals"},
+    {"review-handoff", "review-latest-handoff", "review_latest_handoff"},
+    {"import-existing-repo", "import-existing-codebase", "import_existing_codebase"},
+    {"ask-manager-for-plan", "ask_manager_for_plan"},
+    {"pause-orchestration", "pause_orchestration"},
+    {"resume-orchestration", "resume_orchestration"},
 ]
 
 

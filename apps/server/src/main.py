@@ -7,7 +7,7 @@ from typing import Any
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -21,6 +21,7 @@ from context_packs import context_pack_service
 from db import get_db, init_db
 from diagnostics import open_folder
 from daemon_state import read_daemon_token
+from errors import MissionControlError, as_mission_control_error, format_problem_details
 from imported_codebase import import_service
 from intelligence import reputation_service, scope_creep_service
 from manager import service
@@ -97,6 +98,8 @@ from schemas import (
     HeadlessConfigRead,
     HeadlessHappyPathDemoRead,
     HeadlessHappyPathDemoRequest,
+    HeadlessStartTaskRead,
+    HeadlessStartTaskRequest,
     HeadlessRepairRequest,
     ImportFolderRequest,
     ImportFolderResponse,
@@ -250,6 +253,15 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
+@app.exception_handler(MissionControlError)
+async def mission_control_error_handler(request: Request, exc: MissionControlError) -> JSONResponse:
+    return JSONResponse(
+        status_code=exc.http_status or 500,
+        content=format_problem_details(exc, instance=str(request.url.path)),
+        media_type="application/problem+json",
+    )
+
 def _get_project_or_404(db: Session, project_id: int) -> Project:
     project = db.get(Project, project_id)
     if not project:
@@ -309,10 +321,18 @@ def _get_subagent_batch_or_404(db: Session, batch_id: int) -> SubagentBatch:
 def _require_bridge_token(request: Request) -> None:
     token = read_daemon_token()
     if not token:
-        raise HTTPException(status_code=503, detail="Mission Control bridge token is not configured.")
+        raise MissionControlError(
+            code="MC-AUTH-BRIDGE-TOKEN-MISSING-001",
+            breakpoint="mcp.handshake",
+            safe_details={"path": str(request.url.path)},
+        )
     supplied = request.headers.get("X-Mission-Control-Token", "").strip()
     if supplied != token:
-        raise HTTPException(status_code=401, detail="Missing or invalid Mission Control bridge token.")
+        raise MissionControlError(
+            code="MC-AUTH-BRIDGE-TOKEN-INVALID-001",
+            breakpoint="mcp.handshake",
+            safe_details={"path": str(request.url.path)},
+        )
 
 
 def _serialize_interview(project: Project, session: InterviewSession) -> InterviewSessionRead:
@@ -404,6 +424,25 @@ def _attach_workspace_via_bridge(db: Session, payload: OrchestrationAttachReques
         attach_policy=payload.attach_policy,
         source="codex_plugin",
     )
+
+
+async def _enrich_attach_with_status_summary(db: Session, attached: dict[str, Any]) -> dict[str, Any]:
+    project_id = attached.get("project_id")
+    if project_id is None:
+        return attached
+    project = db.get(Project, int(project_id))
+    if project is None:
+        return attached
+    orchestration_payload = attached.get("orchestration") or None
+    orchestration = None
+    if orchestration_payload and orchestration_payload.get("id") is not None:
+        orchestration = db.get(OrchestrationSession, int(orchestration_payload["id"]))
+    try:
+        summary = await bridge_runtime_service.get_status_summary(db, project=project, orchestration=orchestration)
+    except ValueError:
+        return attached
+    attached["status_summary_markdown"] = summary["fallback_markdown"]
+    return attached
 
 
 @app.get("/api/health")
@@ -1054,7 +1093,7 @@ async def get_dashboard_summary(db: Session = Depends(get_db)) -> DashboardSumma
 
 
 @app.post("/api/orchestrations/attach-workspace", response_model=OrchestrationAttachRead)
-def attach_workspace(
+async def attach_workspace(
     payload: OrchestrationAttachRequest,
     request: Request,
     db: Session = Depends(get_db),
@@ -1062,13 +1101,22 @@ def attach_workspace(
 ) -> OrchestrationAttachRead:
     try:
         attached = _attach_workspace_via_bridge(db, payload)
+    except MissionControlError:
+        raise
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise MissionControlError(
+            code="MC-WORKSPACE-PATH-MISSING-001",
+            detail=str(exc),
+            breakpoint="workspace.attach",
+            safe_details={"workspace_path": payload.workspace_path},
+            caused_by=exc,
+        ) from exc
+    attached = await _enrich_attach_with_status_summary(db, attached)
     return OrchestrationAttachRead(**attached)
 
 
 @app.post("/api/headless/attach-workspace", response_model=OrchestrationAttachRead)
-def attach_headless_workspace(
+async def attach_headless_workspace(
     payload: OrchestrationAttachRequest,
     request: Request,
     db: Session = Depends(get_db),
@@ -1076,8 +1124,17 @@ def attach_headless_workspace(
 ) -> OrchestrationAttachRead:
     try:
         attached = _attach_workspace_via_bridge(db, payload)
+    except MissionControlError:
+        raise
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise MissionControlError(
+            code="MC-WORKSPACE-PATH-MISSING-001",
+            detail=str(exc),
+            breakpoint="workspace.attach",
+            safe_details={"workspace_path": payload.workspace_path},
+            caused_by=exc,
+        ) from exc
+    attached = await _enrich_attach_with_status_summary(db, attached)
     return OrchestrationAttachRead(**attached)
 
 
@@ -1096,10 +1153,57 @@ async def create_orchestration(
             source=payload.source,
             user_request=payload.user_request,
             orchestration_id=payload.orchestration_id,
+            mode=payload.mode or "unknown",
+            metadata_json=payload.metadata_json,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return OrchestrationSessionRead(**session)
+
+
+@app.post("/api/headless/start-task", response_model=HeadlessStartTaskRead)
+async def start_headless_task(
+    payload: HeadlessStartTaskRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> HeadlessStartTaskRead:
+    if payload.project_id is None and not payload.workspace_path:
+        raise MissionControlError(
+            code="MC-WORKSPACE-PATH-MISSING-001",
+            detail="Mission Control needs either a workspace_path or a project_id to start a background task.",
+            breakpoint="workspace.attach",
+        )
+    try:
+        result = await bridge_runtime_service.start_headless_task(
+            db,
+            workspace_path=payload.workspace_path,
+            project_id=payload.project_id,
+            user_request=payload.user_request,
+            strategy=payload.strategy,
+            mode=payload.mode,
+            interview_mode=payload.interview_mode,
+        )
+    except MissionControlError:
+        raise
+    except ValueError as exc:
+        raise MissionControlError(
+            code="MC-ORCH-START-FAILED-001",
+            detail=str(exc),
+            breakpoint="orchestration.create",
+            safe_details={"workspace_path": payload.workspace_path, "project_id": payload.project_id},
+            caused_by=exc,
+        ) from exc
+    return HeadlessStartTaskRead(
+        project=result["project"],
+        orchestration=OrchestrationSessionRead(**result["orchestration"]) if result.get("orchestration") else None,
+        attach=OrchestrationAttachRead(**result["attach"]) if result.get("attach") else None,
+        status_summary=BridgeMessageRead(**result["status_summary"]) if result.get("status_summary") else None,
+        pending_decisions=[PendingDecisionRead(**item) for item in result.get("pending_decisions", [])],
+        next_action=result.get("next_action"),
+        user_action_required=bool(result.get("user_action_required")),
+        mode_used=result.get("mode_used", "unknown"),
+    )
 
 
 @app.get("/api/orchestrations/plugin-health", response_model=PluginHealthSummaryRead)
@@ -1134,6 +1238,7 @@ async def run_headless_happy_path_demo(
             mode=payload.mode,
             read_only_first=payload.read_only_first,
             attach_policy=payload.attach_policy,
+            create_pending_decision=payload.create_pending_decision,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -1271,9 +1376,16 @@ async def answer_pending_decision(
             selected_text=payload.selected_text,
             free_text=payload.free_text,
         )
-    except ValueError as exc:
-        status_code = 404 if "not found" in str(exc).lower() else 400
-        raise HTTPException(status_code=status_code, detail=str(exc)) from exc
+    except MissionControlError:
+        raise
+    except Exception as exc:
+        raise as_mission_control_error(
+            exc,
+            breakpoint="decision.answer",
+            project_id=decision.project_id,
+            orchestration_id=decision.orchestration_id,
+            safe_details={"decision_id": decision.id, "option_id": payload.option_id},
+        ) from exc
     return PendingDecisionAnswerResultRead(
         decision=PendingDecisionRead(**updated),
         next_status_summary=BridgeMessageRead(**next_summary) if next_summary else None,

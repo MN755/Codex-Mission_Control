@@ -6,6 +6,7 @@ from typing import Any
 
 from bootstrap.dependency_probe import probe_command
 from bootstrap.secret_redaction import redact_bootstrap_value
+from errors import MissionControlError
 from system_status import detect_claude_code_status, detect_codex_status, detect_ollama_status
 
 
@@ -36,6 +37,7 @@ def _probe(
     billing_warning: str | None = None,
     models: list[str] | None = None,
     details: dict[str, Any] | None = None,
+    error: MissionControlError | None = None,
 ) -> dict[str, Any]:
     return redact_bootstrap_value(
         {
@@ -51,6 +53,11 @@ def _probe(
             "requires_user_action": requires_user_action,
             "recommended_fix": recommended_fix,
             "billing_warning": billing_warning,
+            "code": error.code if error is not None else None,
+            "severity": error.severity if error is not None else None,
+            "breakpoint": error.breakpoint if error is not None else None,
+            "retryable": bool(error.retryable) if error is not None else None,
+            "user_action_required": bool(error.user_action_required) if error is not None else requires_user_action,
             "models": list(models or []),
             "details_json": dict(details or {}),
             "checked_at": _utc_now(),
@@ -80,12 +87,15 @@ def probe_codex_cli() -> dict[str, Any]:
     if not available:
         install_status = "missing"
         recommended_fix = "Install Codex CLI and sign in with the local ChatGPT or Codex session."
+        error = MissionControlError(code="MC-CODEX-CLI-MISSING-001", breakpoint="codex_cli.detect", safe_details={"runner": "codex_cli"})
     elif authenticated:
         install_status = "ready"
         recommended_fix = None
+        error = None
     else:
         install_status = "installed_needs_login"
         recommended_fix = "Run `codex login` or `codex login status` and complete the local sign-in flow."
+        error = MissionControlError(code="MC-CODEX-LOGIN-UNKNOWN-001", breakpoint="codex_cli.login_status", severity="warning", safe_details={"runner": "codex_cli"})
     return _probe(
         runner_id="codex_cli",
         label="Codex CLI",
@@ -98,6 +108,7 @@ def probe_codex_cli() -> dict[str, Any]:
         safe_default=available and authenticated,
         requires_user_action=not (available and authenticated),
         recommended_fix=recommended_fix,
+        error=error,
         details={
             "login_status": status.get("login_status"),
             "auth_mode": status.get("auth_mode"),
@@ -116,12 +127,15 @@ def probe_ollama(*, endpoint: str | None = None) -> dict[str, Any]:
     if not available:
         install_status = "missing"
         recommended_fix = "Install Ollama locally if you want a local model runner."
+        error = MissionControlError(code="MC-OLLAMA-CLI-MISSING-001", breakpoint="ollama.detect", severity="warning", safe_details={"runner": "ollama"})
     elif reachable:
         install_status = "ready"
         recommended_fix = None
+        error = None
     else:
         install_status = "installed_not_running"
         recommended_fix = "Start the local Ollama server with `ollama serve` before enabling the runner."
+        error = MissionControlError(code="MC-OLLAMA-SERVER-OFFLINE-001", breakpoint="ollama.server_check", severity="warning", safe_details={"runner": "ollama"})
     return _probe(
         runner_id="ollama",
         label="Ollama",
@@ -134,6 +148,7 @@ def probe_ollama(*, endpoint: str | None = None) -> dict[str, Any]:
         safe_default=reachable,
         requires_user_action=bool(path_text and not reachable),
         recommended_fix=recommended_fix,
+        error=error,
         models=[str(item) for item in list(status.get("available_models", []))],
         details={
             "endpoint": status.get("cli_version"),
@@ -154,6 +169,9 @@ def probe_claude_cli() -> dict[str, Any]:
     if available:
         install_status = "needs_setup"
         recommended_fix = "Finish Claude CLI authentication outside Mission Control, then rerun autowire."
+        error = MissionControlError(code="MC-CLAUDE-AUTH-UNKNOWN-001", breakpoint="claude_cli.auth_status", severity="warning", safe_details={"runner": "claude_cli"})
+    else:
+        error = MissionControlError(code="MC-CLAUDE-CLI-MISSING-001", breakpoint="claude_cli.detect", severity="warning", safe_details={"runner": "claude_cli"})
     return _probe(
         runner_id="claude_cli",
         label="Claude CLI",
@@ -166,6 +184,7 @@ def probe_claude_cli() -> dict[str, Any]:
         safe_default=False,
         requires_user_action=available,
         recommended_fix=recommended_fix,
+        error=error,
         models=[str(item) for item in list(status.get("available_models", []))],
         details={"login_status": status.get("login_status")},
     )
@@ -178,6 +197,12 @@ def _api_probe(runner_id: str, label: str, env_key: str) -> dict[str, Any]:
         if configured_in_env
         else f"Set {env_key} in a secure external environment if you explicitly want this API-backed runner."
     )
+    error = MissionControlError(
+        code="MC-API-BILLING-WARNING-001" if configured_in_env else "MC-API-KEY-MISSING-001",
+        breakpoint="api_provider.auth_check" if not configured_in_env else "api_provider.detect",
+        severity="warning",
+        safe_details={"runner": runner_id, "env_var": env_key},
+    )
     return _probe(
         runner_id=runner_id,
         label=label,
@@ -189,6 +214,7 @@ def _api_probe(runner_id: str, label: str, env_key: str) -> dict[str, Any]:
         requires_user_action=False,
         recommended_fix=recommended_fix,
         billing_warning=f"{label} may incur API billing.",
+        error=error,
         details={"env_var": env_key, "secure_storage_supported": False},
     )
 
@@ -199,6 +225,12 @@ def probe_custom_api() -> dict[str, Any]:
     available = bool(base_url)
     configured = bool(base_url and key_present)
     auth_status = "authenticated" if configured else ("unknown" if available else "unauthenticated")
+    error = MissionControlError(
+        code="MC-API-BILLING-WARNING-001" if available else "MC-RUNNER-NONE-AVAILABLE-001",
+        breakpoint="api_provider.detect",
+        severity="warning",
+        safe_details={"runner": "custom_api", "base_url_present": available},
+    )
     return _probe(
         runner_id="custom_api",
         label="Custom API",
@@ -212,6 +244,7 @@ def probe_custom_api() -> dict[str, Any]:
         if available
         else "Set a custom API base URL and adapter outside Mission Control if you intentionally need one.",
         billing_warning="Custom API runners may incur third-party billing.",
+        error=error if (available or not configured) else None,
         details={"base_url_present": available, "secure_storage_supported": False},
     )
 

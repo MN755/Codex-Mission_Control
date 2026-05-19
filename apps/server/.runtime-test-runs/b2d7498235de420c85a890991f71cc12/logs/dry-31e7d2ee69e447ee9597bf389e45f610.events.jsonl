@@ -1,5 +1,0 @@
-{"type": "thread.started", "thread_id": "dry-31e7d2ee69e447ee9597bf389e45f610"}
-{"type": "turn.started", "message": "Dry-run worker started.", "effective_settings": {"provider": "codex", "model": "Codex default", "reasoning_effort": "Codex default", "sandbox_mode": "workspace-write", "approval_policy": "on-request"}}
-{"type": "item.completed", "item": {"type": "agent_message", "text": "Worker is working on Simulated task."}}
-{"type": "item.completed", "item": {"type": "agent_message", "text": "{\"agent\": \"Worker\", \"task_id\": \"3\", \"status\": \"done\", \"summary\": \"Simulated completion for Simulated task.\", \"files_changed\": [], \"tests_run\": [\"dry-run simulation\"], \"blockers\": [], \"risks\": [\"Simulated result only\"], \"recommended_next_task\": \"Move the next backlog item into working state.\"}"}}
-{"type": "turn.completed", "usage": {"simulated": true}}
