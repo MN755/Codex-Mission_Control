@@ -27,3 +27,4 @@ apps/server/codex_mission_control_server.egg-info/
 apps/desktop/codex_mission_control_desktop.egg-info/
 apps/desktop/*.spec
 *.AppImage
+tmp_remote_probe/

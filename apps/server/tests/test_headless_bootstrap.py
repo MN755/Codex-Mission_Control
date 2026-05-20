@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import importlib.util
 import os
 from pathlib import Path
 
@@ -318,6 +319,10 @@ def test_scripts_and_headless_skills_exist() -> None:
     script_paths = [
         ROOT / "scripts" / "install-mission-control-plugin.ps1",
         ROOT / "scripts" / "install-mission-control-plugin.bat",
+        ROOT / "scripts" / "uninstall-mission-control-plugin.ps1",
+        ROOT / "scripts" / "uninstall-mission-control-plugin.bat",
+        ROOT / "scripts" / "uninstall-mission-control-plugin.sh",
+        ROOT / "scripts" / "uninstall-mission-control-plugin.py",
         ROOT / "scripts" / "start-mission-control-daemon.ps1",
         ROOT / "scripts" / "stop-mission-control-daemon.ps1",
         ROOT / "scripts" / "start-mission-control-mcp.ps1",
@@ -358,3 +363,32 @@ def test_runner_status_summary_degrades_to_dry_run_only(monkeypatch) -> None:
     summary = summarize_runner_status()
     assert summary["status"] == "degraded"
     assert summary["enabled_runners"] == ["dry_run"]
+
+
+def test_uninstall_script_removes_plugin_bundle_and_mission_control_skills(tmp_path) -> None:
+    module_path = ROOT / "scripts" / "uninstall-mission-control-plugin.py"
+    spec = importlib.util.spec_from_file_location("mission_control_uninstall", module_path)
+    assert spec is not None
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+
+    codex_home = tmp_path / ".codex"
+    plugin_dir = codex_home / "plugins" / "mission-control"
+    skill_dir = codex_home / "skills" / "mission-control-status"
+    unrelated_skill = codex_home / "skills" / "something-else"
+    plugin_dir.mkdir(parents=True, exist_ok=True)
+    skill_dir.mkdir(parents=True, exist_ok=True)
+    unrelated_skill.mkdir(parents=True, exist_ok=True)
+    (plugin_dir / "plugin.json").write_text("{}", encoding="utf-8")
+    (skill_dir / "SKILL.md").write_text("# status", encoding="utf-8")
+    (unrelated_skill / "SKILL.md").write_text("# keep", encoding="utf-8")
+
+    payload = module.uninstall_plugin_bundle(codex_home, dry_run=False)
+
+    assert payload["plugin_removed"] is True
+    assert payload["removed_skill_count"] == 1
+    assert payload["removed_skills"] == ["mission-control-status"]
+    assert not plugin_dir.exists()
+    assert not skill_dir.exists()
+    assert unrelated_skill.exists()

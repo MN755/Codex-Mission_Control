@@ -2,7 +2,7 @@
   "manifest_format": "provisional-placeholder",
   "name": "mission-control",
   "display_name": "Mission Control",
-  "version": "0.1.0",
+  "version": "1.2.0",
   "description": "Codex bridge package for using Codex Mission Control as the orchestration layer from Codex desktop.",
   "status": "draft",
   "notes": [

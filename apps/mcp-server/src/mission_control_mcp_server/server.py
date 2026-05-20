@@ -673,7 +673,7 @@ class MissionControlMcpServer:
             if method == "initialize":
                 result = {
                     "protocolVersion": "2025-03-26",
-                    "serverInfo": {"name": "mission-control", "title": "Codex Mission Control", "version": "0.3.0"},
+                    "serverInfo": {"name": "mission-control", "title": "Codex Mission Control", "version": "1.2.0"},
                     "capabilities": {"tools": {}, "resources": {}, "prompts": {}},
                 }
             elif method == "tools/list":

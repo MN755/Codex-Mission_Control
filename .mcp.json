@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "mission-control": {
+      "command": "${MISSION_CONTROL_PYTHON:-python}",
+      "args": [
+        "scripts/serve-mission-control-mcp.py"
+      ],
+      "env": {
+        "MISSION_CONTROL_REPO_ROOT": "${MISSION_CONTROL_REPO_ROOT:-.}"
+      }
+    }
+  }
+}

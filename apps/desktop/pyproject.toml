@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "codex-mission-control-desktop"
-version = "0.1.0"
+version = "1.2.0"
 description = "Desktop shell for Codex Mission Control"
 requires-python = ">=3.10"
 dependencies = [

@@ -105,6 +105,8 @@ def test_dry_run_runner_reaches_done_state() -> None:
 
 def test_cli_build_exec_args_include_model_and_reasoning_when_set() -> None:
     runner = CliCodexRunner()
+    from codex_runner import cli_runner as cli_module
+
     project = Project(id=1, name="Demo", idea="Idea", workspace_path="C:/demo", status="building", runner_mode="cli", manager_mode="auto")
     agent = Agent(id=2, project_id=1, name="Worker", role="Implementation", kind="worker", status="idle", workspace_path="C:/demo")
     task = Task(
@@ -136,7 +138,12 @@ def test_cli_build_exec_args_include_model_and_reasoning_when_set() -> None:
             reasoning_effort="high",
         ),
     )
-    args = runner.build_exec_args(context, resume=False)
+    original = cli_module.codex_command_path
+    cli_module.codex_command_path = lambda: "C:/tools/codex.exe"
+    try:
+        args = runner.build_exec_args(context, resume=False)
+    finally:
+        cli_module.codex_command_path = original
     assert "-m" in args
     assert "gpt-5.5" in args
     assert any('model_reasoning_effort="high"' == value for value in args)
@@ -144,6 +151,8 @@ def test_cli_build_exec_args_include_model_and_reasoning_when_set() -> None:
 
 def test_cli_build_exec_args_omit_model_when_unset() -> None:
     runner = CliCodexRunner()
+    from codex_runner import cli_runner as cli_module
+
     project = Project(id=1, name="Demo", idea="Idea", workspace_path="C:/demo", status="building", runner_mode="cli", manager_mode="auto")
     agent = Agent(id=2, project_id=1, name="Worker", role="Implementation", kind="worker", status="idle", workspace_path="C:/demo")
     context = RunnerContext(
@@ -158,7 +167,12 @@ def test_cli_build_exec_args_omit_model_when_unset() -> None:
             reasoning_effort=None,
         ),
     )
-    args = runner.build_exec_args(context, resume=False)
+    original = cli_module.codex_command_path
+    cli_module.codex_command_path = lambda: "C:/tools/codex.exe"
+    try:
+        args = runner.build_exec_args(context, resume=False)
+    finally:
+        cli_module.codex_command_path = original
     assert "-m" not in args
     assert not any("model_reasoning_effort" in value for value in args)
 
