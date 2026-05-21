@@ -15,6 +15,7 @@ from typing import Any
 MANAGED_BLOCK_START = "# >>> mission-control managed >>>"
 MANAGED_BLOCK_END = "# <<< mission-control managed <<<"
 DEFAULT_REPO_URL = "https://github.com/MN755/Codex-Mission_Control"
+DEFAULT_MARKETPLACE_NAME = "local"
 
 
 def looks_like_repo(path: Path) -> bool:
@@ -63,6 +64,15 @@ def resolve_codex_home(override: str | None = None) -> Path:
     return Path.home().joinpath(".codex").resolve()
 
 
+def resolve_agents_home(override: str | None = None) -> Path:
+    if override:
+        return Path(override).expanduser().resolve()
+    env_home = os.environ.get("AGENTS_HOME")
+    if env_home:
+        return Path(env_home).expanduser().resolve()
+    return Path.home().joinpath(".agents").resolve()
+
+
 def resolve_python_command(explicit: str | None = None) -> str:
     if explicit:
         return str(Path(explicit).expanduser().resolve())
@@ -99,7 +109,9 @@ def _plugin_source_root(repo_root: Path) -> Path:
 
 
 def _read_plugin_manifest(plugin_root: Path) -> dict[str, Any]:
-    manifest_path = plugin_root / "plugin.json"
+    manifest_path = plugin_root / ".codex-plugin" / "plugin.json"
+    if not manifest_path.exists():
+        manifest_path = plugin_root / "plugin.json"
     if not manifest_path.exists():
         return {
             "status": "missing",
@@ -117,13 +129,148 @@ def _read_plugin_manifest(plugin_root: Path) -> dict[str, Any]:
         "status": "ready",
         "manifest_path": str(manifest_path),
         "name": payload.get("name"),
-        "display_name": payload.get("display_name") or payload.get("name"),
+        "display_name": payload.get("display_name") or ((payload.get("interface") or {}).get("displayName")) or payload.get("name"),
         "version": payload.get("version"),
     }
 
 
 def _skill_source_root(repo_root: Path) -> Path:
     return repo_root / ".codex" / "skills"
+
+
+def _default_marketplace() -> dict[str, Any]:
+    return {
+        "name": DEFAULT_MARKETPLACE_NAME,
+        "interface": {
+            "displayName": "Local Plugins",
+        },
+        "plugins": [],
+    }
+
+
+def _marketplace_entry(plugin_name: str) -> dict[str, Any]:
+    return {
+        "name": plugin_name,
+        "source": {
+            "source": "local",
+            "path": f"./plugins/{plugin_name}",
+        },
+        "policy": {
+            "installation": "AVAILABLE",
+            "authentication": "ON_INSTALL",
+        },
+        "category": "Coding",
+    }
+
+
+def sync_local_plugin_marketplace(
+    repo_root: Path,
+    agents_home: Path,
+    *,
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    plugin_source = _plugin_source_root(repo_root)
+    plugin_manifest = _read_plugin_manifest(plugin_source)
+    plugin_name = plugin_manifest.get("name") or "mission-control"
+    plugin_display_name = plugin_manifest.get("display_name") or "Mission Control"
+    plugins_root = agents_home.parent / "plugins"
+    plugin_destination = plugins_root / plugin_name
+    marketplace_path = agents_home / "plugins" / "marketplace.json"
+    existing: dict[str, Any]
+    if marketplace_path.exists():
+        try:
+            existing = json.loads(marketplace_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            existing = _default_marketplace()
+    else:
+        existing = _default_marketplace()
+
+    marketplace_name = str(existing.get("name") or DEFAULT_MARKETPLACE_NAME)
+    plugins = list(existing.get("plugins") or [])
+    entry = _marketplace_entry(plugin_name)
+    updated = False
+    for index, current in enumerate(plugins):
+        if current.get("name") == plugin_name:
+            if current != entry:
+                plugins[index] = entry
+                updated = True
+            break
+    else:
+        plugins.append(entry)
+        updated = True
+
+    existing["name"] = marketplace_name
+    existing.setdefault("interface", {"displayName": "Local Plugins"})
+    existing["plugins"] = plugins
+
+    plugin_files_copied = _copy_tree(plugin_source, plugin_destination, dry_run=dry_run)
+    if not dry_run:
+        marketplace_path.parent.mkdir(parents=True, exist_ok=True)
+        marketplace_path.write_text(json.dumps(existing, indent=2), encoding="utf-8")
+
+    plugin_id = f"{plugin_name}@{marketplace_name}"
+    return {
+        "status": "ready",
+        "agents_home": str(agents_home),
+        "plugins_root": str(plugins_root),
+        "plugin_source": str(plugin_source),
+        "plugin_destination": str(plugin_destination),
+        "plugin_manifest": plugin_manifest,
+        "plugin_name": plugin_name,
+        "plugin_display_name": plugin_display_name,
+        "plugin_files_copied": plugin_files_copied,
+        "marketplace_path": str(marketplace_path),
+        "marketplace_name": marketplace_name,
+        "plugin_id": plugin_id,
+        "entry_updated": updated,
+        "dry_run": dry_run,
+    }
+
+
+def remove_local_plugin_marketplace(
+    agents_home: Path,
+    *,
+    plugin_name: str = "mission-control",
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    plugins_root = agents_home.parent / "plugins"
+    plugin_path = plugins_root / plugin_name
+    marketplace_path = agents_home / "plugins" / "marketplace.json"
+    plugin_removed = False
+    marketplace_changed = False
+    marketplace_name = DEFAULT_MARKETPLACE_NAME
+
+    if plugin_path.exists():
+        plugin_removed = True
+        if not dry_run:
+            shutil.rmtree(plugin_path)
+
+    if marketplace_path.exists():
+        try:
+            payload = json.loads(marketplace_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            payload = _default_marketplace()
+        marketplace_name = str(payload.get("name") or DEFAULT_MARKETPLACE_NAME)
+        plugins = list(payload.get("plugins") or [])
+        filtered = [entry for entry in plugins if entry.get("name") != plugin_name]
+        marketplace_changed = len(filtered) != len(plugins)
+        if marketplace_changed:
+            payload["plugins"] = filtered
+            if not dry_run:
+                marketplace_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+    return {
+        "status": "ready" if plugin_removed or marketplace_changed else "not_installed",
+        "agents_home": str(agents_home),
+        "plugins_root": str(plugins_root),
+        "plugin_path": str(plugin_path),
+        "plugin_removed": plugin_removed,
+        "marketplace_path": str(marketplace_path),
+        "marketplace_name": marketplace_name,
+        "plugin_id": f"{plugin_name}@{marketplace_name}",
+        "marketplace_changed": marketplace_changed,
+        "dry_run": dry_run,
+    }
 
 
 def sync_codex_bundle(repo_root: Path, codex_home: Path, *, dry_run: bool = False) -> dict[str, Any]:
@@ -169,21 +316,36 @@ def reload_guidance(action: str) -> dict[str, Any]:
     }
 
 
-def build_codex_mcp_block(repo_root: Path, python_command: str, *, backend_host: str = "127.0.0.1", backend_port: int = 8010) -> str:
+def build_codex_mcp_block(
+    repo_root: Path,
+    python_command: str,
+    *,
+    backend_host: str = "127.0.0.1",
+    backend_port: int = 8010,
+    plugin_id: str | None = None,
+) -> str:
     repo_text = _toml_escape(_posix_text(repo_root.resolve()))
     python_text = _toml_escape(_posix_text(Path(python_command).resolve() if Path(python_command).exists() else python_command))
     host_text = _toml_escape(backend_host)
-    return "\n".join(
-        [
-            MANAGED_BLOCK_START,
-            '[mcp_servers."mission-control"]',
-            f'command = "{python_text}"',
-            'args = ["scripts/serve-mission-control-mcp.py"]',
-            f'cwd = "{repo_text}"',
-            f'env = {{ MISSION_CONTROL_REPO_ROOT = "{repo_text}", MISSION_CONTROL_PYTHON = "{python_text}", MISSION_CONTROL_BACKEND_HOST = "{host_text}", MISSION_CONTROL_BACKEND_PORT = "{backend_port}" }}',
-            MANAGED_BLOCK_END,
-        ]
-    )
+    lines = [
+        MANAGED_BLOCK_START,
+        '[mcp_servers."mission-control"]',
+        f'command = "{python_text}"',
+        'args = ["scripts/serve-mission-control-mcp.py"]',
+        f'cwd = "{repo_text}"',
+        f'env = {{ MISSION_CONTROL_REPO_ROOT = "{repo_text}", MISSION_CONTROL_PYTHON = "{python_text}", MISSION_CONTROL_BACKEND_HOST = "{host_text}", MISSION_CONTROL_BACKEND_PORT = "{backend_port}" }}',
+    ]
+    if plugin_id:
+        escaped_plugin_id = _toml_escape(plugin_id)
+        lines.extend(
+            [
+                "",
+                f'[plugins."{escaped_plugin_id}"]',
+                "enabled = true",
+            ]
+        )
+    lines.append(MANAGED_BLOCK_END)
+    return "\n".join(lines)
 
 
 def strip_mission_control_config(text: str) -> tuple[str, bool]:
@@ -214,12 +376,19 @@ def upsert_codex_config(
     *,
     backend_host: str = "127.0.0.1",
     backend_port: int = 8010,
+    plugin_id: str | None = None,
     dry_run: bool = False,
 ) -> dict[str, Any]:
     config_path = codex_home / "config.toml"
     existing = config_path.read_text(encoding="utf-8", errors="ignore") if config_path.exists() else ""
     stripped, removed = strip_mission_control_config(existing)
-    block = build_codex_mcp_block(repo_root, python_command, backend_host=backend_host, backend_port=backend_port)
+    block = build_codex_mcp_block(
+        repo_root,
+        python_command,
+        backend_host=backend_host,
+        backend_port=backend_port,
+        plugin_id=plugin_id,
+    )
     new_text = f"{stripped.rstrip()}\n\n{block}\n" if stripped.strip() else f"{block}\n"
     changed = new_text != existing.replace("\r\n", "\n")
     if not dry_run:
@@ -393,6 +562,7 @@ def _install_or_update(
     action: str,
     repo_root: Path,
     codex_home: Path,
+    agents_home: Path,
     python_command: str,
     dry_run: bool,
     skip_python_setup: bool,
@@ -401,6 +571,7 @@ def _install_or_update(
     daemon_port: int | None,
 ) -> dict[str, Any]:
     dependency_setup = ensure_python_packages(repo_root, python_command, dry_run=dry_run, skip=skip_python_setup)
+    marketplace_result = {"status": "skipped"} if skip_codex_sync else sync_local_plugin_marketplace(repo_root, agents_home, dry_run=dry_run)
     sync_result = {"status": "skipped"} if skip_codex_sync else sync_codex_bundle(repo_root, codex_home, dry_run=dry_run)
     config_result = {"status": "skipped"} if skip_codex_sync else upsert_codex_config(
         codex_home,
@@ -408,6 +579,7 @@ def _install_or_update(
         python_command,
         backend_host=daemon_host or "127.0.0.1",
         backend_port=daemon_port or 8010,
+        plugin_id=marketplace_result.get("plugin_id"),
         dry_run=dry_run,
     )
     bootstrap_result = run_bootstrap(
@@ -420,6 +592,7 @@ def _install_or_update(
     )
     return {
         "dependency_setup": dependency_setup,
+        "marketplace_sync": marketplace_result,
         "codex_sync": sync_result,
         "codex_config": config_result,
         "bootstrap": bootstrap_result,
@@ -451,8 +624,10 @@ def _build_markdown(action: str, payload: dict[str, Any]) -> str:
             [
                 "",
                 "### Setup",
+                f"- Local plugin marketplace: {(payload.get('marketplace_sync') or {}).get('status')}",
                 f"- Plugin sync: {codex_sync.get('status')}",
                 f"- Codex plugin: {codex_sync.get('plugin_display_name', 'Mission Control')} ({codex_sync.get('plugin_name', 'mission-control')})",
+                f"- Plugin id: {(payload.get('marketplace_sync') or {}).get('plugin_id', 'mission-control@local')}",
                 f"- Codex MCP registration: {codex_config.get('status')}",
                 f"- Claude assets: {(payload.get('claude_assets') or {}).get('status')}",
                 f"- Bootstrap: {bootstrap.get('status')}",
@@ -481,6 +656,7 @@ def _build_markdown(action: str, payload: dict[str, Any]) -> str:
                 f"- Plugin removed: {'yes' if uninstall_result.get('plugin_removed') else 'no'}",
                 f"- Skills removed: {uninstall_result.get('removed_skill_count', 0)}",
                 f"- Codex config cleanup: {(uninstall_result.get('config') or {}).get('status')}",
+                f"- Local marketplace cleanup: {(payload.get('marketplace_cleanup') or {}).get('status')}",
             ]
         )
         if payload.get("stop_daemon"):
@@ -495,6 +671,7 @@ def run_management_workflow(
     repo_url: str = DEFAULT_REPO_URL,
     install_dir: str | None = None,
     codex_home_override: str | None = None,
+    agents_home_override: str | None = None,
     python_command_override: str | None = None,
     dry_run: bool = False,
     skip_python_setup: bool = False,
@@ -505,11 +682,13 @@ def run_management_workflow(
 ) -> dict[str, Any]:
     repo_root = resolve_repo_root(install_dir=install_dir, repo_url=repo_url)
     codex_home = resolve_codex_home(codex_home_override)
+    agents_home = resolve_agents_home(agents_home_override)
     python_command = resolve_python_command(python_command_override)
     payload: dict[str, Any] = {
         "action": action,
         "repo_root": str(repo_root),
         "codex_home": str(codex_home),
+        "agents_home": str(agents_home),
         "python_command": python_command,
         "dry_run": dry_run,
         "reload_guidance": reload_guidance(action),
@@ -521,6 +700,7 @@ def run_management_workflow(
                 action=action,
                 repo_root=repo_root,
                 codex_home=codex_home,
+                agents_home=agents_home,
                 python_command=python_command,
                 dry_run=dry_run,
                 skip_python_setup=skip_python_setup,
@@ -539,6 +719,7 @@ def run_management_workflow(
         if stop_daemon and not dry_run:
             payload["stop_daemon"] = run_stop_daemon(repo_root)
         payload["uninstall"] = uninstall_codex_bundle(codex_home, dry_run=dry_run)
+        payload["marketplace_cleanup"] = remove_local_plugin_marketplace(agents_home, dry_run=dry_run)
         payload["claude_assets"] = detect_claude_assets(repo_root)
         payload["status"] = "ready"
     else:
@@ -554,6 +735,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--repo-url", default=DEFAULT_REPO_URL)
     parser.add_argument("--install-dir", default=None)
     parser.add_argument("--codex-home", default=None)
+    parser.add_argument("--agents-home", default=None)
     parser.add_argument("--python-command", default=None)
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--skip-python-setup", action="store_true")
@@ -572,6 +754,7 @@ def main(argv: list[str] | None = None) -> int:
         repo_url=args.repo_url,
         install_dir=args.install_dir,
         codex_home_override=args.codex_home,
+        agents_home_override=args.agents_home,
         python_command_override=args.python_command,
         dry_run=args.dry_run,
         skip_python_setup=args.skip_python_setup,

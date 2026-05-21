@@ -1,0 +1,44 @@
+{
+  "name": "mission-control",
+  "version": "1.2.0",
+  "description": "Run Mission Control as a headless orchestration plugin from Codex chat.",
+  "author": {
+    "name": "OpenAI Codex Mission Control",
+    "email": "support@openai.com",
+    "url": "https://openai.com/"
+  },
+  "homepage": "https://github.com/MN755/Codex-Mission_Control",
+  "repository": "https://github.com/MN755/Codex-Mission_Control",
+  "license": "MIT",
+  "keywords": [
+    "mission-control",
+    "orchestration",
+    "agents",
+    "mcp",
+    "headless"
+  ],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Mission Control",
+    "shortDescription": "Headless orchestration for manager-led coding workflows",
+    "longDescription": "Use Mission Control from Codex chat to attach a workspace, run manager-led orchestration, route approvals safely, review evidence-based handoffs, and inspect headless runtime diagnostics without depending on the standalone dashboard.",
+    "developerName": "OpenAI Codex Mission Control",
+    "category": "Coding",
+    "capabilities": [
+      "Interactive",
+      "Write"
+    ],
+    "websiteURL": "https://github.com/MN755/Codex-Mission_Control",
+    "privacyPolicyURL": "https://openai.com/policies/privacy-policy/",
+    "termsOfServiceURL": "https://openai.com/policies/terms-of-use/",
+    "defaultPrompt": [
+      "Use Mission Control for this repo and fix the failing tests.",
+      "Show me the current Mission Control status.",
+      "Get the latest Mission Control handoff."
+    ],
+    "composerIcon": "./assets/icon.svg",
+    "logo": "./assets/icon.svg",
+    "screenshots": [],
+    "brandColor": "#0F766E"
+  }
+}

@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-labelledby="title desc">
+  <title>Mission Control</title>
+  <desc>Placeholder icon for the Mission Control Codex plugin package.</desc>
+  <rect width="128" height="128" rx="24" fill="#0f172a"/>
+  <path d="M24 92L48 36h10l24 56h-10l-6-14H42l-6 14H24zm22-24h16l-8-20-8 20z" fill="#f8fafc"/>
+  <circle cx="92" cy="40" r="12" fill="#f59e0b"/>
+</svg>

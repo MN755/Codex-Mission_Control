@@ -1,0 +1,2 @@
+[console_scripts]
+mission-control-mcp = mission_control_mcp_server.__main__:main

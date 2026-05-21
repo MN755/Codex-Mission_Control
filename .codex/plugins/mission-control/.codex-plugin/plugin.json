@@ -1,0 +1,42 @@
+{
+  "name": "mission-control",
+  "version": "1.2.0",
+  "description": "Repo-local Mission Control plugin bundle for Codex chat integration.",
+  "author": {
+    "name": "OpenAI Codex Mission Control",
+    "email": "support@openai.com",
+    "url": "https://openai.com/"
+  },
+  "homepage": "https://github.com/MN755/Codex-Mission_Control",
+  "repository": "https://github.com/MN755/Codex-Mission_Control",
+  "license": "MIT",
+  "keywords": [
+    "mission-control",
+    "plugin",
+    "headless",
+    "mcp"
+  ],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Mission Control",
+    "shortDescription": "Repo-local Mission Control plugin bundle",
+    "longDescription": "Use the repo-local Mission Control plugin bundle to install, update, and route Mission Control workflows from Codex chat.",
+    "developerName": "OpenAI Codex Mission Control",
+    "category": "Coding",
+    "capabilities": [
+      "Interactive",
+      "Write"
+    ],
+    "websiteURL": "https://github.com/MN755/Codex-Mission_Control",
+    "privacyPolicyURL": "https://openai.com/policies/privacy-policy/",
+    "termsOfServiceURL": "https://openai.com/policies/terms-of-use/",
+    "defaultPrompt": [
+      "Install Mission Control for this repo.",
+      "Update the Mission Control plugin."
+    ],
+    "composerIcon": "./assets/icon.svg",
+    "logo": "./assets/icon.svg",
+    "screenshots": [],
+    "brandColor": "#0F766E"
+  }
+}

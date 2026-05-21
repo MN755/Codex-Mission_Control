@@ -1,0 +1,8 @@
+Metadata-Version: 2.4
+Name: codex-mission-control-mcp-server
+Version: 1.2.0
+Summary: Local MCP bridge for Codex Mission Control
+Requires-Python: >=3.10
+Requires-Dist: httpx<1.0,>=0.28
+Provides-Extra: dev
+Requires-Dist: pytest<9.0,>=8.4; extra == "dev"
