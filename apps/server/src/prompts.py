@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from pathlib import Path
 
 from models import Agent, Project, Task
@@ -130,7 +131,207 @@ MANAGER_SWARM_PLAN_SCHEMA = {
 }
 
 
-def manager_system_prompt(project: Project) -> str:
+@dataclass(frozen=True)
+class PromptProfile:
+    tier: str
+    label: str
+    manager_rules: tuple[str, ...]
+    worker_rules: tuple[str, ...]
+
+
+def build_prompt_profile(*, provider: str | None = None, model: str | None = None, reasoning_effort: str | None = None) -> PromptProfile:
+    provider_text = (provider or "").strip().lower()
+    model_text = (model or "").strip().lower()
+    reasoning_text = (reasoning_effort or "").strip().lower()
+
+    if (
+        ("gpt-5.5" in model_text and "mini" not in model_text)
+        or "claude-opus" in model_text
+        or "opus 4" in model_text
+        or ("codex" in provider_text and reasoning_text in {"high", "xhigh"})
+    ):
+        return PromptProfile(
+            tier="elite",
+            label="elite planner",
+            manager_rules=(
+                "You can evaluate multiple plausible approaches before choosing one, but present only the chosen path plus the key tradeoff.",
+                "Use richer context when it materially improves the decision, not because you feel lonely.",
+                "For task, interview, or swarm outputs, precision matters more than breadth; keep every item distinct and justified.",
+            ),
+            worker_rules=(
+                "You may coordinate related changes across multiple allowed files when the task truly requires it.",
+                "Prefer the smallest coherent fix, but include the full set of necessary in-scope edits when a single-file patch would be fake.",
+                "Keep the final report terse even when the reasoning behind it was not.",
+            ),
+        )
+    if any(token in model_text for token in ("gpt-5.4", "gpt-oss:20b", "codestral", "qwen2.5-coder:14b", "codellama:13b", "claude-sonnet", "sonnet")):
+        return PromptProfile(
+            tier="strong",
+            label="strong builder",
+            manager_rules=(
+                "Handle moderate ambiguity directly, but avoid speculative branches that do not change the decision.",
+                "Keep structured outputs tight: enough detail to execute, not enough to become their own climate system.",
+                "Bias toward 3-5 strong items over longer lists.",
+            ),
+            worker_rules=(
+                "Work across the minimum number of in-scope files needed for a correct fix.",
+                "Do not spend tokens narrating obvious steps; spend them avoiding bad edits.",
+                "If testing was not run, say so plainly instead of decorating the absence.",
+            ),
+        )
+    if (
+        any(token in model_text for token in ("qwen2.5:7b", "qwen2.5-coder:7b", "llama3", "gemma3", "deepseek-r1", "7b", "8b"))
+        or provider_text == "ollama"
+    ):
+        return PromptProfile(
+            tier="weak_local",
+            label="compact local model",
+            manager_rules=(
+                "Prefer the smallest valid output shape and stay close to the payload facts.",
+                "Avoid subtle inference, optional branches, or long explanations unless explicitly requested.",
+                "For plans, tasks, interviews, or swarm rosters, keep the item count minimal and high-signal.",
+            ),
+            worker_rules=(
+                "Favor one narrow change at a time and avoid opportunistic cleanup.",
+                "Prefer single-file edits when they can solve the task honestly.",
+                "Do not claim a fix, refactor, or validation result unless the output proves it directly.",
+            ),
+        )
+    if "mini" in model_text or reasoning_text in {"minimal", "low", "none"}:
+        return PromptProfile(
+            tier="compact",
+            label="compact hosted model",
+            manager_rules=(
+                "Be concise and literal; do not elaborate unless the payload requires it.",
+                "Use short lists and explicit wording over nuanced but fragile phrasing.",
+                "Prefer the direct answer over a tour of every path not taken.",
+            ),
+            worker_rules=(
+                "Keep changes tightly scoped and reports short.",
+                "Avoid speculative cleanup or broad rewrites.",
+                "Return the requested structure exactly; correctness beats style.",
+            ),
+        )
+    return PromptProfile(
+        tier="standard",
+        label="standard general model",
+        manager_rules=(
+            "Balance speed, clarity, and precision; avoid both underspecifying and rambling.",
+            "Use context when it helps the decision, but keep the final answer lean.",
+            "Prefer actionable structure over commentary.",
+        ),
+        worker_rules=(
+            "Keep the edit set coherent and modest.",
+            "Stay literal about test evidence and risk.",
+            "Do not widen scope unless the task explicitly demands it.",
+        ),
+    )
+
+
+def prompt_profile_block(*, provider: str | None = None, model: str | None = None, reasoning_effort: str | None = None, audience: str) -> str:
+    profile = build_prompt_profile(provider=provider, model=model, reasoning_effort=reasoning_effort)
+    rules = profile.manager_rules if audience == "manager" else profile.worker_rules
+    role_label = "Manager" if audience == "manager" else "Worker"
+    return "\n".join(
+        [
+            f"{role_label} execution profile:",
+            f"- Treat the current model as: {profile.label}.",
+            "- These are default biases, not hard laws. Break them when the task evidence clearly requires it.",
+            *[f"- {rule}" for rule in rules],
+        ]
+    )
+
+
+def _manager_action_biases(action: str, profile: PromptProfile) -> tuple[str, ...]:
+    normalized = (action or "").strip().lower()
+    if normalized.startswith("interview."):
+        common = (
+            "Bias toward only the highest-leverage unknowns; do not burn question budget on trivia.",
+            "Keep categories distinct so the user is not answering the same question wearing a fake mustache.",
+        )
+        if profile.tier == "weak_local":
+            return common + (
+                "Prefer 2-3 sharp questions in the next batch unless the payload makes more strictly necessary.",
+                "Keep every question and rationale short, literal, and directly tied to implementation decisions.",
+            )
+        if profile.tier in {"elite", "strong"}:
+            return common + (
+                "You may ask a slightly broader batch when the payoff is real, but prioritize ordering and impact over volume.",
+                "Use nuanced tradeoffs only when they help choose a materially better next question.",
+            )
+        return common + (
+            "Keep the next batch focused and implementation-relevant.",
+        )
+    if normalized in {"tasks.decompose", "plan.generate"}:
+        common = (
+            "Bias toward tasks or plan steps with explicit ownership, dependencies, and validation.",
+            "Prefer concrete path or subsystem boundaries over vague phases.",
+        )
+        if profile.tier == "weak_local":
+            return common + (
+                "Default to a compact task set with crisp titles and minimal overlap.",
+                "Avoid ornate milestone structures unless the payload explicitly demands them.",
+            )
+        if profile.tier in {"elite", "strong"}:
+            return common + (
+                "You may express deeper sequencing and cross-cutting validation when it materially reduces execution risk.",
+                "Use more than the minimum number of tasks only when the extra split improves coordination, not aesthetics.",
+            )
+        return common + (
+            "Keep decomposition practical and execution-ready.",
+        )
+    if normalized == "swarm.plan":
+        common = (
+            "Bias toward the smallest swarm that still creates real parallelism.",
+            "Avoid duplicate specialists unless their path ownership or mission is clearly different.",
+        )
+        if profile.tier == "weak_local":
+            return common + (
+                "Default to a conservative roster and low coordination complexity unless the payload strongly justifies expansion.",
+                "Prefer fewer, clearer specs over ambitious but collision-prone specialization.",
+            )
+        if profile.tier in {"elite", "strong"}:
+            return common + (
+                "You may recommend more specialized agents when coordination boundaries are explicit and useful.",
+                "Balance implementation speed with review and validation roles instead of brute-force parallelism.",
+            )
+        return common + (
+            "Keep the roster disciplined and easy to coordinate.",
+        )
+    return ()
+
+
+def _worker_task_biases(task: Task, profile: PromptProfile) -> tuple[str, ...]:
+    combined = " ".join(filter(None, [task.title, task.goal, task.scope])).lower()
+    is_fix = any(token in combined for token in ("fix", "correct", "repair", "implement", "update", "change", "patch"))
+    is_validation = any(token in combined for token in ("reproduce", "validate", "verification", "handoff", "test", "inspect"))
+    common = ("Let the repo evidence drive the decision, not the model's desire to sound accomplished.",)
+    if is_fix:
+        if profile.tier == "weak_local":
+            return common + (
+                "Default to the narrowest plausible edit, ideally one file, unless the evidence clearly requires more.",
+                "Name the exact failing path in your own reasoning and avoid speculative cleanup.",
+            )
+        if profile.tier in {"elite", "strong"}:
+            return common + (
+                "Default to a narrow fix, but permit multi-file edits when they are the smallest honest solution.",
+                "Use surrounding context to avoid partial fixes that only look neat from a distance.",
+            )
+        return common + (
+            "Prefer a small, honest fix over broad cleanup.",
+        )
+    if is_validation:
+        return common + (
+            "Do not claim file changes for reproduce, inspect, or validation work unless the task explicitly requires an edit.",
+            "Bias toward crisp evidence capture: what was run, what failed, and what that implies next.",
+        )
+    return common + (
+        "Keep the execution path straightforward and evidence-based.",
+    )
+
+
+def manager_system_prompt(project: Project, *, provider: str | None = None, model: str | None = None, reasoning_effort: str | None = None) -> str:
+    profile_block = prompt_profile_block(provider=provider, model=model, reasoning_effort=reasoning_effort, audience="manager")
     return f"""You are the Manager AI for Codex Mission Control.
 
 Project name: {project.name}
@@ -148,6 +349,8 @@ Responsibilities:
 - Decide the next action for finished workers.
 - Prioritize usability, speed, and quality.
 - Never claim a project is done unless validation was performed or explicitly marked as not run.
+
+{profile_block}
 
 When you reply with structured content, keep it concise and machine-friendly.
 """
@@ -171,9 +374,16 @@ def worker_task_prompt(
     docs_path: str,
     plan_markdown: str | None = None,
     context_pack_markdown: str | None = None,
+    *,
+    provider: str | None = None,
+    model: str | None = None,
+    reasoning_effort: str | None = None,
 ) -> str:
     context = project_context_block(project, docs_path, plan_markdown)
     context_pack_section = f"\nRelevant context pack:\n{context_pack_markdown}\n" if context_pack_markdown else ""
+    profile = build_prompt_profile(provider=provider, model=model, reasoning_effort=reasoning_effort)
+    profile_block = prompt_profile_block(provider=provider, model=model, reasoning_effort=reasoning_effort, audience="worker")
+    worker_bias_block = "\n".join(f"- {rule}" for rule in _worker_task_biases(task, profile))
     return f"""You are a Codex worker agent operating under Codex Mission Control.
 
 Task ID: {task.id}
@@ -202,6 +412,11 @@ Requirements:
 - Prefer the smallest coherent set of changes.
 - Do not claim testing was run if it was not run.
 
+{profile_block}
+
+Task-specific execution biases:
+{worker_bias_block}
+
 Validation steps:
 {json.dumps(task.validation_steps_json, indent=2)}
 
@@ -212,7 +427,17 @@ Return only a JSON object matching the schema as your final answer.
 """
 
 
-def manager_message_prompt(project: Project, docs_path: str, user_message: str, user_name: str | None = None) -> str:
+def manager_message_prompt(
+    project: Project,
+    docs_path: str,
+    user_message: str,
+    user_name: str | None = None,
+    *,
+    provider: str | None = None,
+    model: str | None = None,
+    reasoning_effort: str | None = None,
+) -> str:
+    profile_block = prompt_profile_block(provider=provider, model=model, reasoning_effort=reasoning_effort, audience="manager")
     return f"""You are the Manager AI for the project "{project.name}".
 
 Project docs live at: {docs_path}
@@ -220,6 +445,8 @@ Call the user "{user_name or project.created_by or "Operator"}" unless they ask 
 
 The user sent this message:
 {user_message}
+
+{profile_block}
 
 Respond as the manager coordinating the project. If the message requests changes, outline the next step clearly.
 """
@@ -235,8 +462,16 @@ def manager_action_prompt(
     payload: dict,
     plan_markdown: str | None = None,
     user_name: str | None = None,
+    provider: str | None = None,
+    model: str | None = None,
+    reasoning_effort: str | None = None,
 ) -> str:
     context = project_context_block(project, docs_path, plan_markdown, user_name)
+    profile = build_prompt_profile(provider=provider, model=model, reasoning_effort=reasoning_effort)
+    profile_block = prompt_profile_block(provider=provider, model=model, reasoning_effort=reasoning_effort, audience="manager")
+    action_biases = _manager_action_biases(action, profile)
+    action_bias_block = "\n".join(f"- {rule}" for rule in action_biases)
+    task_bias_section = f"\nTask-specific decision biases:\n{action_bias_block}" if action_bias_block else ""
     return f"""You are the Manager AI for Codex Mission Control.
 
 Action: {action}
@@ -247,6 +482,8 @@ Objective:
 
 Input payload:
 {json.dumps(payload, indent=2, default=str)}
+
+{profile_block}{task_bias_section}
 
 Response rules:
 - Return only valid JSON.
@@ -269,7 +506,14 @@ def manager_interview_prompt(
     payload: dict,
     response_schema: dict,
     user_name: str | None = None,
+    provider: str | None = None,
+    model: str | None = None,
+    reasoning_effort: str | None = None,
 ) -> str:
+    profile = build_prompt_profile(provider=provider, model=model, reasoning_effort=reasoning_effort)
+    profile_block = prompt_profile_block(provider=provider, model=model, reasoning_effort=reasoning_effort, audience="manager")
+    action_bias_block = "\n".join(f"- {rule}" for rule in _manager_action_biases(action, profile))
+    task_bias_section = f"\nTask-specific decision biases:\n{action_bias_block}" if action_bias_block else ""
     return f"""You are the Manager AI for Codex Mission Control.
 
 Project: {project.name}
@@ -281,6 +525,8 @@ Objective:
 {objective}
 
 Preferred user name: {user_name or project.created_by or "Operator"}
+
+{profile_block}{task_bias_section}
 
 Interview requirements:
 - You are interviewing the user to gather project-specific requirements.
@@ -307,7 +553,14 @@ def manager_swarm_prompt(
     payload: dict,
     response_schema: dict,
     user_name: str | None = None,
+    provider: str | None = None,
+    model: str | None = None,
+    reasoning_effort: str | None = None,
 ) -> str:
+    profile = build_prompt_profile(provider=provider, model=model, reasoning_effort=reasoning_effort)
+    profile_block = prompt_profile_block(provider=provider, model=model, reasoning_effort=reasoning_effort, audience="manager")
+    action_bias_block = "\n".join(f"- {rule}" for rule in _manager_action_biases("swarm.plan", profile))
+    task_bias_section = f"\nTask-specific decision biases:\n{action_bias_block}" if action_bias_block else ""
     return f"""You are the Manager AI for Codex Mission Control.
 
 Project: {project.name}
@@ -315,6 +568,8 @@ Project idea:
 {project.idea}
 
 Preferred user name: {user_name or project.created_by or "Operator"}
+
+{profile_block}{task_bias_section}
 
 You are producing an adaptive swarm plan for this specific project.
 

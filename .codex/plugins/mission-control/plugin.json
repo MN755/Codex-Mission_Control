@@ -3,8 +3,12 @@
   "name": "mission-control",
   "display_name": "Mission Control",
   "version": "1.2.0",
-  "description": "Repo-local Codex plugin bundle for Mission Control background orchestration.",
+  "description": "Repo-local Codex plugin bundle for Mission Control headless orchestration.",
   "status": "ready",
+  "notes": [
+    "Force-quit and reopen Codex after install or update so the repo-local Mission Control plugin is loaded into the active session.",
+    "If Codex still does not show the plugin after reload, rerun `python scripts/mission-control-manage.py update` and restart Codex again."
+  ],
   "mcp": {
     "example_config": "./mcp/mission-control-mcp.local.json",
     "resources_catalog": "../../../plugins/mission-control/mcp/resources.json",

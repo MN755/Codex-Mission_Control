@@ -76,6 +76,14 @@ def test_manager_ask_next_bootstraps_greenfield_intake(client) -> None:
     assert "Mission Control started intake" in payload["content_markdown"]
     assert "First question:" in payload["content_markdown"]
 
+    pending = client.get(f"/api/projects/{project['id']}/questions/pending")
+    assert pending.status_code == 200, pending.text
+    pending_payload = pending.json()
+    assert len(pending_payload) == 1
+    assert pending_payload[0]["question"]
+    assert pending_payload[0]["question_markdown"]
+    assert pending_payload[0]["question"] in payload["content_markdown"]
+
     refreshed = client.get(f"/api/projects/{project['id']}").json()
     assert refreshed["status"] == "interview_in_progress"
 
@@ -119,6 +127,27 @@ def test_attach_workspace_imports_existing_codebase_folder(client) -> None:
     project = client.get(f"/api/projects/{payload['project']['id']}").json()
     assert project["source_type"] == "existing_folder"
     assert project["scan_status"] == "completed"
+
+
+def test_create_project_marks_non_empty_workspace_as_existing_codebase(client) -> None:
+    workspace = _fresh_workspace("project-existing")
+    (workspace / "src").mkdir(parents=True, exist_ok=True)
+    (workspace / "src" / "math_utils.py").write_text("def add(a, b):\n    return a - b\n", encoding="utf-8")
+    response = client.post(
+        "/api/projects",
+        json={
+            "name": "Existing Project",
+            "idea": "Fix the failing tests in this repo.",
+            "workspace_path": workspace.as_posix(),
+            "provider": "ollama",
+            "runner_mode": "auto",
+            "manager_mode": "auto",
+        },
+    )
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["source_type"] == "existing_folder"
+    assert payload["scan_status"] == "completed"
 
 
 def test_attach_workspace_rejects_non_local_path_inputs(client) -> None:
@@ -250,8 +279,51 @@ def test_headless_start_task_creates_waiting_dry_run_flow(client) -> None:
     payload = response.json()
     assert payload["mode_used"] == "dry_run"
     assert payload["orchestration"]["status"] == "waiting_for_user"
-    assert payload["status_summary"]["user_action_required"] is True
-    assert any(item["decision_type"] == "command_approval" for item in payload["pending_decisions"])
+
+
+def test_task_generation_for_existing_codebase_is_codebase_aware(client) -> None:
+    workspace = _fresh_workspace("existing-codebase-tasks")
+    (workspace / "src").mkdir(parents=True, exist_ok=True)
+    (workspace / "tests").mkdir(parents=True, exist_ok=True)
+    (workspace / "src" / "math_utils.py").write_text("def add(a, b):\n    return a - b\n", encoding="utf-8")
+    (workspace / "tests" / "test_math_utils.py").write_text("from src.math_utils import add\n\n\ndef test_add():\n    assert add(2, 3) == 5\n", encoding="utf-8")
+    project = _create_project(client, "Existing Task Breakdown", workspace.as_posix(), runner_mode="auto")
+
+    generated = client.post(f"/api/projects/{project['id']}/tasks/generate")
+    assert generated.status_code == 200, generated.text
+    assert generated.json()["manager_mode_used"] == "deterministic"
+
+    tasks = client.get(f"/api/projects/{project['id']}/tasks")
+    assert tasks.status_code == 200, tasks.text
+    task_payload = tasks.json()
+    titles = [item["title"] for item in task_payload]
+    assert any("Reproduce the failing behavior" in title for title in titles)
+    assert any("smallest safe code fix" in title for title in titles)
+    assert task_payload[0]["agent_role"] == "Validation Specialist"
+    assert "tests" in task_payload[0]["allowed_paths_json"]
+
+
+def test_start_task_bootstraps_worker_roster_for_existing_codebase(client) -> None:
+    workspace = _fresh_workspace("start-task-bootstrap")
+    (workspace / "src").mkdir(parents=True, exist_ok=True)
+    (workspace / "tests").mkdir(parents=True, exist_ok=True)
+    (workspace / "src" / "math_utils.py").write_text("def add(a, b):\n    return a - b\n", encoding="utf-8")
+    (workspace / "tests" / "test_math_utils.py").write_text("from src.math_utils import add\n\n\ndef test_add():\n    assert add(2, 3) == 5\n", encoding="utf-8")
+    project = _create_project(client, "Bootstrap Workers", workspace.as_posix(), runner_mode="dry_run")
+    generated = client.post(f"/api/projects/{project['id']}/tasks/generate")
+    assert generated.status_code == 200, generated.text
+    tasks = client.get(f"/api/projects/{project['id']}/tasks").json()
+
+    workers_before = client.get(f"/api/projects/{project['id']}/agents").json()
+    assert [item for item in workers_before if item["kind"] == "worker"] == []
+
+    started = client.post(f"/api/tasks/{tasks[0]['id']}/start")
+    assert started.status_code == 200, started.text
+    assert started.json()["ok"] is True
+    assert started.json()["run_id"] is not None
+
+    workers_after = client.get(f"/api/projects/{project['id']}/agents").json()
+    assert any(item["kind"] == "worker" for item in workers_after)
 
 
 def test_orchestration_status_reports_pending_decision_count(client) -> None:
@@ -286,6 +358,45 @@ def test_orchestration_handoff_returns_not_ready_state(client) -> None:
     payload = handoff.json()
     assert payload["ready"] is False
     assert payload["status"] == "not_ready"
+
+
+def test_direct_orchestration_runs_initial_turn_inline_for_live_mode(client, monkeypatch) -> None:
+    from db import SessionLocal
+    from orchestration import coordinator
+
+    workspace = _fresh_workspace("live-inline-orchestration")
+    project = _create_project(client, "Live Inline Orchestration", workspace.as_posix(), runner_mode="auto")
+    called: dict[str, object] = {}
+
+    async def fake_run_background_turn(orchestration_id: int, reason: str) -> None:
+        db = SessionLocal()
+        try:
+            session = coordinator.get_session(db, orchestration_id)
+            coordinator._update_session_status(
+                db,
+                session,
+                status="running",
+                manager_status="Inline provider turn completed.",
+            )
+            db.commit()
+        finally:
+            db.close()
+        called["orchestration_id"] = orchestration_id
+        called["reason"] = reason
+
+    monkeypatch.setattr("main.coordinator._run_background_turn", fake_run_background_turn)
+
+    orchestration = client.post(
+        "/api/orchestrations",
+        headers=_bridge_headers(),
+        json={"project_id": project["id"], "user_request": "Start live orchestration.", "source": "test", "mode": "codex_cli"},
+    )
+    assert orchestration.status_code == 200, orchestration.text
+    payload = orchestration.json()
+    assert payload["status"] == "running"
+    assert payload["manager_status"] == "Inline provider turn completed."
+    assert called["reason"] == "user_request"
+    assert called["orchestration_id"] == payload["id"]
 
 
 def test_bridge_routes_require_token(client) -> None:

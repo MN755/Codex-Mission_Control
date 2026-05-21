@@ -706,6 +706,7 @@ class ManagerQuestionRead(BaseModel):
     id: int
     project_id: int
     question: str
+    question_markdown: str | None = None
     options_json: list[dict[str, Any]] = Field(default_factory=list)
     impact: QuestionImpact
     status: QuestionStatus
@@ -2621,6 +2622,7 @@ class SystemStatusRead(BaseModel):
     selected_manager_model: str | None = None
     selected_default_worker_model: str | None = None
     available_models: list[str] = Field(default_factory=list)
+    model_advisories: list[dict[str, Any]] = Field(default_factory=list)
     provider_statuses: list[ProviderStatusRead] = Field(default_factory=list)
     mcp_servers: list[dict[str, Any]]
     configured_mcp_servers: list[dict[str, Any]] = Field(default_factory=list)

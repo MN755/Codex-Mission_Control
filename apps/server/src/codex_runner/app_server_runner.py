@@ -66,9 +66,24 @@ class AppServerCodexRunner(BaseCodexRunner):
             if process.returncode is None:
                 process.terminate()
                 await process.wait()
+            transport = getattr(process, "_transport", None)
+            if transport is not None:
+                try:
+                    transport.close()
+                except Exception:
+                    pass
 
     async def start_task(self, context: RunnerContext) -> RunnerHandle:
-        prompt = worker_task_prompt(context.project, context.agent, context.task, context.docs_path, context.plan_markdown)
+        prompt = worker_task_prompt(
+            context.project,
+            context.agent,
+            context.task,
+            context.docs_path,
+            context.plan_markdown,
+            provider=context.settings.provider,
+            model=context.settings.model,
+            reasoning_effort=context.settings.reasoning_effort,
+        )
         return await self._start_turn(context, prompt, resume=False)
 
     async def resume_or_continue(self, context: RunnerContext, message: str) -> RunnerHandle:
@@ -176,51 +191,54 @@ class AppServerCodexRunner(BaseCodexRunner):
             )
 
         thread_id: str | None = None
-        while True:
-            line = await process.stdout.readline()
-            if not line:
-                break
-            text = line.decode("utf-8", errors="ignore")
-            log_lines.append(f"< {text.rstrip()}")
-            parsed = parse_json_line(text)
-            if not parsed:
-                continue
-            state.events.append(parsed)
-            event_lines.append(str(parsed))
-            if parsed.get("id") == 1 and parsed.get("result", {}).get("thread", {}).get("id"):
-                thread_id = parsed["result"]["thread"]["id"]
-                state.session_ref = thread_id
-                await send(
-                    {
-                        "method": "turn/start",
-                        "id": 2,
-                        "params": {
-                            "threadId": thread_id,
-                            "input": app_server_input_items(prompt),
-                            "cwd": workdir,
-                            "metadata": {
-                                "provider": context.settings.provider,
-                                "model": context.settings.model or default_label(context.settings.provider),
-                                "reasoning_effort": context.settings.reasoning_effort or default_label(context.settings.provider),
+        try:
+            while True:
+                line = await process.stdout.readline()
+                if not line:
+                    break
+                text = line.decode("utf-8", errors="ignore")
+                log_lines.append(f"< {text.rstrip()}")
+                parsed = parse_json_line(text)
+                if not parsed:
+                    continue
+                state.events.append(parsed)
+                event_lines.append(str(parsed))
+                if parsed.get("id") == 1 and parsed.get("result", {}).get("thread", {}).get("id"):
+                    thread_id = parsed["result"]["thread"]["id"]
+                    state.session_ref = thread_id
+                    await send(
+                        {
+                            "method": "turn/start",
+                            "id": 2,
+                            "params": {
+                                "threadId": thread_id,
+                                "input": app_server_input_items(prompt),
+                                "cwd": workdir,
+                                "metadata": {
+                                    "provider": context.settings.provider,
+                                    "model": context.settings.model or default_label(context.settings.provider),
+                                    "reasoning_effort": context.settings.reasoning_effort or default_label(context.settings.provider),
+                                },
                             },
-                        },
-                    }
-                )
-                state.status = "working"
-            method = parsed.get("method")
-            if method == "item/completed":
-                item = parsed.get("params", {}).get("item", {})
-                if item.get("type") == "agentMessage":
-                    state.final_text = item.get("text")
-            if method == "turn/completed":
-                turn = parsed.get("params", {}).get("turn", {})
-                state.status = "done" if turn.get("status") == "completed" else "error"
-                break
-        returncode = await process.wait()
-        state.exit_code = returncode
-        if returncode != 0 and state.status not in {"done", "stopped"}:
-            state.status = "error"
-        Path(state.logs_path or "").write_text("\n".join(log_lines), encoding="utf-8")
-        Path(state.stdout_path or "").write_text("\n".join(line[2:] for line in log_lines if line.startswith("< ")), encoding="utf-8")
-        Path(state.stderr_path or "").write_text("", encoding="utf-8")
-        Path(state.event_log_path or "").write_text("\n".join(event_lines), encoding="utf-8")
+                        }
+                    )
+                    state.status = "working"
+                method = parsed.get("method")
+                if method == "item/completed":
+                    item = parsed.get("params", {}).get("item", {})
+                    if item.get("type") == "agentMessage":
+                        state.final_text = item.get("text")
+                if method == "turn/completed":
+                    turn = parsed.get("params", {}).get("turn", {})
+                    state.status = "done" if turn.get("status") == "completed" else "error"
+                    break
+            returncode = await process.wait()
+            state.exit_code = returncode
+            if returncode != 0 and state.status not in {"done", "stopped"}:
+                state.status = "error"
+            Path(state.logs_path or "").write_text("\n".join(log_lines), encoding="utf-8")
+            Path(state.stdout_path or "").write_text("\n".join(line[2:] for line in log_lines if line.startswith("< ")), encoding="utf-8")
+            Path(state.stderr_path or "").write_text("", encoding="utf-8")
+            Path(state.event_log_path or "").write_text("\n".join(event_lines), encoding="utf-8")
+        finally:
+            self.finalize_subprocess_state(state)

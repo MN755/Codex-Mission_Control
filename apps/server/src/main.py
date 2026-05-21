@@ -249,6 +249,7 @@ async def lifespan(_: FastAPI):
     try:
         yield
     finally:
+        await service.on_shutdown()
         await coordinator.on_shutdown()
         if os.environ.get("MISSION_CONTROL_SERVER_MODE") == "daemon":
             binding = resolve_backend_binding(prefer_live_metadata=False)
@@ -1177,6 +1178,7 @@ async def create_orchestration(
     _: None = Depends(_require_bridge_token),
 ) -> OrchestrationSessionRead:
     project = _get_project_or_404(db, payload.project_id)
+    run_initial_turn_inline = (payload.mode or "unknown") != "dry_run" and project.runner_mode != "dry_run"
     try:
         session = bridge_runtime_service.start_orchestration(
             db,
@@ -1186,9 +1188,17 @@ async def create_orchestration(
             orchestration_id=payload.orchestration_id,
             mode=payload.mode or "unknown",
             metadata_json=payload.metadata_json,
+            schedule_background_turn=not run_initial_turn_inline,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if run_initial_turn_inline:
+        session_record = coordinator.get_session(db, int(session["id"]))
+        db.commit()
+        await coordinator._run_background_turn(session_record.id, "user_request")
+        db.expire_all()
+        refreshed = coordinator.get_session(db, session_record.id)
+        session = coordinator._serialize_session(refreshed)
     return OrchestrationSessionRead(**session)
 
 
@@ -2456,16 +2466,30 @@ async def start_task(task_id: int, db: Session = Depends(get_db)) -> AgentAction
     task = _get_task_or_404(db, task_id)
     project = _get_project_or_404(db, task.project_id)
     workers = list(db.scalars(select(Agent).where(Agent.project_id == project.id, Agent.kind == "worker")))
-    for agent in workers:
-        if agent.status in {"idle", "waiting", "done", "stopped"} and service._agent_matches_task(agent, task):
-            if not service._dependencies_met(db, task):
-                return AgentActionResponse(ok=False, message="Task is waiting on dependencies.")
-            if not can_assign_task(agent, task, workers, service._is_git_workspace(project)):
-                task.status = "waiting_on_paths"
-                task.waiting_reason = task.waiting_reason or "Another agent owns overlapping paths."
-                return AgentActionResponse(ok=False, message=task.waiting_reason)
-            run = await service.start_agent_task(db, project, agent, task)
-            return AgentActionResponse(ok=True, message="Task started.", run_id=run.id)
+    if not workers:
+        workers = service.initialize_build_roster(db, project)
+        if not workers:
+            return AgentActionResponse(ok=False, message="No worker roster is available yet. Approve the swarm plan or initialize the build roster first.")
+    candidates = sorted(
+        [
+            agent
+            for agent in workers
+            if agent.status in {"idle", "waiting", "done", "stopped"} and service._agent_matches_task(agent, task)
+        ],
+        key=lambda agent: (service._agent_task_match_score(agent, task), -agent.id),
+        reverse=True,
+    )
+    for agent in candidates:
+        if not service._dependencies_met(db, task):
+            return AgentActionResponse(ok=False, message="Task is waiting on dependencies.")
+        if not can_assign_task(agent, task, workers, service._is_git_workspace(project)):
+            continue
+        run = await service.start_agent_task(db, project, agent, task)
+        return AgentActionResponse(ok=True, message="Task started.", run_id=run.id)
+    if candidates:
+        task.status = "waiting_on_paths"
+        task.waiting_reason = task.waiting_reason or "Another agent owns overlapping paths."
+        return AgentActionResponse(ok=False, message=task.waiting_reason)
     return AgentActionResponse(ok=False, message="No idle worker is available.")
 
 

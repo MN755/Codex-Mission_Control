@@ -1,15 +1,17 @@
 import asyncio
+import sys
 from pathlib import Path
 
 from codex_runner.base import BaseCodexRunner, RunnerContext, RunnerSettings
 from codex_runner.claude_code_runner import ClaudeCodeRunner
 from codex_runner.cli_runner import CliCodexRunner
 from codex_runner.dry_run_runner import DryRunRunner
+from codex_runner.external_adapter_runner import ExternalAdapterRunner
 from codex_runner.events import parse_json_line
 from manager import RunnerRegistry
 from models import Agent, Project, Task
 from project_settings import ResolvedRunSettings
-from system_status import detect_system_status
+from system_status import assess_model_advisories, detect_system_status
 
 
 def test_parse_json_line_handles_structured_and_raw_output() -> None:
@@ -277,3 +279,268 @@ def test_system_status_includes_provider_matrix() -> None:
     assert status["selected_provider"] == "claude_code"
     assert any(provider["provider"] == "codex" for provider in status["provider_statuses"])
     assert any(provider["provider"] == "claude_code" for provider in status["provider_statuses"])
+
+
+def test_assess_model_advisories_flags_weak_ollama_model() -> None:
+    advisories = assess_model_advisories(
+        provider="ollama",
+        manager_model="qwen2.5:7b",
+        worker_model="qwen2.5:7b",
+        available_models=["qwen2.5:7b", "gpt-oss:20b", "gemma3:12b"],
+    )
+    assert advisories
+    assert any(item["severity"] == "warning" for item in advisories)
+    assert any("weaker local model" in item["summary"] for item in advisories)
+
+
+def test_external_adapter_runner_applies_allowed_file_edits(tmp_path) -> None:
+    adapter_script = tmp_path / "adapter_apply.py"
+    adapter_script.write_text(
+        "\n".join(
+            [
+                "import json, sys",
+                "sys.stdin.read()",
+                "payload = {",
+                "  'report': {",
+                "    'agent': 'Service Flow Builder',",
+                "    'task_id': '3',",
+                "    'status': 'done',",
+                "    'summary': 'Applied the requested code fix.',",
+                "    'files_changed': [],",
+                "    'tests_run': [],",
+                "    'blockers': [],",
+                "    'risks': [],",
+                "    'recommended_next_task': 'Run focused validation.'",
+                "  },",
+                "  'edits': [",
+                "    {'path': 'src/math_utils.py', 'content': 'def add(a, b):\\n    return a + b\\n'}",
+                "  ]",
+                "}",
+                "print(json.dumps({'result': json.dumps(payload)}))",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    workspace = tmp_path / "workspace"
+    (workspace / "src").mkdir(parents=True)
+    target = workspace / "src" / "math_utils.py"
+    target.write_text("def add(a, b):\n    return a - b\n", encoding="utf-8")
+
+    async def run_test() -> None:
+        runner = ExternalAdapterRunner()
+        project = Project(id=1, name="Demo", idea="Fix tests", workspace_path=workspace.as_posix(), status="building", runner_mode="auto", manager_mode="auto")
+        agent = Agent(id=2, project_id=1, name="Worker", role="Implementation", kind="worker", status="idle", workspace_path=workspace.as_posix())
+        task = Task(
+            id=3,
+            project_id=1,
+            title="Implement the smallest safe code fix",
+            goal="Correct the broken behavior.",
+            scope="Update the src implementation.",
+            agent_role="Service Flow Builder",
+            milestone="Milestone 2",
+            allowed_paths_json=["src"],
+            forbidden_paths_json=[],
+            validation_steps_json=["Run tests"],
+            success_criteria_json=["Behavior is corrected"],
+            estimated_complexity="small",
+            dependencies_json=[],
+            status="backlog",
+            priority=20,
+        )
+        context = RunnerContext(
+            project=project,
+            agent=agent,
+            task=task,
+            docs_path=(workspace / "mission-control").as_posix(),
+            settings=RunnerSettings(
+                provider="ollama",
+                sandbox_mode="workspace-write",
+                approval_policy="on-request",
+                model="qwen2.5:7b",
+                adapter_command=sys.executable,
+                adapter_args=[adapter_script.as_posix()],
+            ),
+        )
+        handle = await runner.start_task(context)
+        for _ in range(20):
+            await asyncio.sleep(0.2)
+            if await runner.get_status(handle.id) == "done":
+                break
+        assert await runner.get_status(handle.id) == "done"
+        events = await runner.read_events(handle.id)
+        message = next(event["item"]["text"] for event in events if event.get("type") == "item.completed")
+        report = BaseCodexRunner.try_parse_report(message)
+        assert report is not None
+        assert report["files_changed"] == ["src/math_utils.py"]
+        assert target.read_text(encoding="utf-8") == "def add(a, b):\n    return a + b\n"
+
+    asyncio.run(run_test())
+
+
+def test_external_adapter_runner_rejects_out_of_scope_edits(tmp_path) -> None:
+    adapter_script = tmp_path / "adapter_reject.py"
+    adapter_script.write_text(
+        "\n".join(
+            [
+                "import json, sys",
+                "sys.stdin.read()",
+                "payload = {",
+                "  'report': {",
+                "    'agent': 'Service Flow Builder',",
+                "    'task_id': '3',",
+                "    'status': 'done',",
+                "    'summary': 'Tried to modify an out-of-scope file.',",
+                "    'files_changed': [],",
+                "    'tests_run': [],",
+                "    'blockers': [],",
+                "    'risks': [],",
+                "    'recommended_next_task': 'Review the rejected edit.'",
+                "  },",
+                "  'edits': [",
+                "    {'path': '../outside.py', 'content': 'print(1)\\n'}",
+                "  ]",
+                "}",
+                "print(json.dumps({'result': json.dumps(payload)}))",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    workspace = tmp_path / "workspace"
+    (workspace / "src").mkdir(parents=True)
+    target = workspace / "src" / "math_utils.py"
+    target.write_text("def add(a, b):\n    return a - b\n", encoding="utf-8")
+
+    async def run_test() -> None:
+        runner = ExternalAdapterRunner()
+        project = Project(id=1, name="Demo", idea="Fix tests", workspace_path=workspace.as_posix(), status="building", runner_mode="auto", manager_mode="auto")
+        agent = Agent(id=2, project_id=1, name="Worker", role="Implementation", kind="worker", status="idle", workspace_path=workspace.as_posix())
+        task = Task(
+            id=3,
+            project_id=1,
+            title="Implement the smallest safe code fix",
+            goal="Correct the broken behavior.",
+            scope="Update the src implementation.",
+            agent_role="Service Flow Builder",
+            milestone="Milestone 2",
+            allowed_paths_json=["src"],
+            forbidden_paths_json=[],
+            validation_steps_json=["Run tests"],
+            success_criteria_json=["Behavior is corrected"],
+            estimated_complexity="small",
+            dependencies_json=[],
+            status="backlog",
+            priority=20,
+        )
+        context = RunnerContext(
+            project=project,
+            agent=agent,
+            task=task,
+            docs_path=(workspace / "mission-control").as_posix(),
+            settings=RunnerSettings(
+                provider="ollama",
+                sandbox_mode="workspace-write",
+                approval_policy="on-request",
+                model="qwen2.5:7b",
+                adapter_command=sys.executable,
+                adapter_args=[adapter_script.as_posix()],
+            ),
+        )
+        handle = await runner.start_task(context)
+        for _ in range(20):
+            await asyncio.sleep(0.2)
+            if await runner.get_status(handle.id) in {"done", "needs_review"}:
+                break
+        assert await runner.get_status(handle.id) == "needs_review"
+        events = await runner.read_events(handle.id)
+        message = next(event["item"]["text"] for event in events if event.get("type") == "item.completed")
+        report = BaseCodexRunner.try_parse_report(message)
+        assert report is not None
+        assert report["status"] == "needs_review"
+        assert any("Rejected edit outside" in risk for risk in report["risks"])
+        assert target.read_text(encoding="utf-8") == "def add(a, b):\n    return a - b\n"
+
+    asyncio.run(run_test())
+
+
+def test_external_adapter_runner_rejects_no_op_edits(tmp_path) -> None:
+    adapter_script = tmp_path / "adapter_noop.py"
+    adapter_script.write_text(
+        "\n".join(
+            [
+                "import json, sys",
+                "sys.stdin.read()",
+                "payload = {",
+                "  'report': {",
+                "    'agent': 'Service Flow Builder',",
+                "    'task_id': '3',",
+                "    'status': 'done',",
+                "    'summary': 'Fixed the implementation.',",
+                "    'files_changed': ['src/math_utils.py'],",
+                "    'tests_run': [],",
+                "    'blockers': [],",
+                "    'risks': [],",
+                "    'recommended_next_task': 'Run focused validation.'",
+                "  },",
+                "  'edits': [",
+                "    {'path': 'src/math_utils.py', 'content': 'def add(a, b):\\n    return a - b\\n'}",
+                "  ]",
+                "}",
+                "print(json.dumps({'result': json.dumps(payload)}))",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    workspace = tmp_path / "workspace"
+    (workspace / "src").mkdir(parents=True)
+    target = workspace / "src" / "math_utils.py"
+    target.write_text("def add(a, b):\n    return a - b\n", encoding="utf-8")
+
+    async def run_test() -> None:
+        runner = ExternalAdapterRunner()
+        project = Project(id=1, name="Demo", idea="Fix tests", workspace_path=workspace.as_posix(), status="building", runner_mode="auto", manager_mode="auto")
+        agent = Agent(id=2, project_id=1, name="Worker", role="Implementation", kind="worker", status="idle", workspace_path=workspace.as_posix())
+        task = Task(
+            id=3,
+            project_id=1,
+            title="Implement the smallest safe code fix",
+            goal="Correct the broken behavior.",
+            scope="Update the src implementation.",
+            agent_role="Service Flow Builder",
+            milestone="Milestone 2",
+            allowed_paths_json=["src"],
+            forbidden_paths_json=[],
+            validation_steps_json=["Run tests"],
+            success_criteria_json=["Behavior is corrected"],
+            estimated_complexity="small",
+            dependencies_json=[],
+            status="backlog",
+            priority=20,
+        )
+        context = RunnerContext(
+            project=project,
+            agent=agent,
+            task=task,
+            docs_path=(workspace / "mission-control").as_posix(),
+            settings=RunnerSettings(
+                provider="ollama",
+                sandbox_mode="workspace-write",
+                approval_policy="on-request",
+                model="qwen2.5:7b",
+                adapter_command=sys.executable,
+                adapter_args=[adapter_script.as_posix()],
+            ),
+        )
+        handle = await runner.start_task(context)
+        for _ in range(20):
+            await asyncio.sleep(0.2)
+            if await runner.get_status(handle.id) in {"done", "needs_review"}:
+                break
+        assert await runner.get_status(handle.id) == "needs_review"
+        events = await runner.read_events(handle.id)
+        message = next(event["item"]["text"] for event in events if event.get("type") == "item.completed")
+        report = BaseCodexRunner.try_parse_report(message)
+        assert report is not None
+        assert any("Rejected no-op edit" in risk for risk in report["risks"])
+        assert target.read_text(encoding="utf-8") == "def add(a, b):\n    return a - b\n"
+
+    asyncio.run(run_test())

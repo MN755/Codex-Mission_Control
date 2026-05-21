@@ -724,6 +724,7 @@ class BridgeRuntimeService:
             )
         pending = self.get_pending_decisions(db, project=project, orchestration=orchestration)
         current_action = await service.get_project_action(db, project)
+        system_status = await service.get_system_status(db, project)
         health = service.get_project_health(db, project)
         handoff = service.get_project_handoff_summary(db, project)
         active_agents = list(
@@ -745,6 +746,11 @@ class BridgeRuntimeService:
             current_work.append(str(current_action["message"]))
         waiting = [f"{item['title']}: {item['message']}" if item.get("message") else item["title"] for item in pending]
         blockers = list(dict.fromkeys([*list(current_action.get("message") and [str(current_action["message"])] or []), *list(health.get("reasons") or [])]))
+        model_advisories = [
+            str(item.get("summary") or "").strip()
+            for item in list(system_status.get("model_advisories") or [])
+            if str(item.get("summary") or "").strip()
+        ]
         swarm_plan = service.get_swarm_plan(db, project)
         swarm_summary = "Not planned"
         if swarm_plan:
@@ -771,6 +777,7 @@ class BridgeRuntimeService:
             current_blockers=blockers[:5],
             handoff_readiness=str(handoff.get("status") or "not_ready"),
             active_agent_count=len([agent for agent in active_agents if agent.status in ACTIVE_AGENT_STATUSES]),
+            model_advisories=model_advisories[:3],
         )
 
     async def happy_path_demo(

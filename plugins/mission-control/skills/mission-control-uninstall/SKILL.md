@@ -21,6 +21,7 @@ python scripts/mission-control-manage.py uninstall
 - Remove synced `mission-control*` skills from Codex home.
 - Remove the managed `mcp_servers."mission-control"` config block.
 - Stop the local Mission Control daemon when safe, unless the user asks to keep it running.
+- Tell the user that already-open Codex or Claude sessions may still show stale Mission Control plugin or MCP state until the app is force-quit and reopened.
 - Never require the standalone UI.
 
 ## Safety constraints

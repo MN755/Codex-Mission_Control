@@ -94,6 +94,21 @@ class BaseCodexRunner(ABC):
         log_path.parent.mkdir(parents=True, exist_ok=True)
 
     @staticmethod
+    def finalize_subprocess_state(state: Any) -> None:
+        process = getattr(state, "process", None)
+        if process is not None:
+            transport = getattr(process, "_transport", None)
+            if transport is not None:
+                try:
+                    transport.close()
+                except Exception:
+                    pass
+        if hasattr(state, "process"):
+            state.process = None
+        if hasattr(state, "reader_task"):
+            state.reader_task = None
+
+    @staticmethod
     def try_parse_json_payload(text: str | None) -> tuple[dict[str, Any] | None, bool]:
         if not text:
             return None, False

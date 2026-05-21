@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import re
 import subprocess
@@ -452,9 +453,91 @@ class MissionControlService:
         self.events = EventService()
         self.runners = RunnerRegistry()
         self.active_monitors: dict[int, asyncio.Task] = {}
+        self.run_input_snapshots: dict[int, dict[str, str]] = {}
+
+    async def on_shutdown(self) -> None:
+        active = list(self.active_monitors.values())
+        self.active_monitors.clear()
+        for task in active:
+            task.cancel()
+        if active:
+            await asyncio.gather(*active, return_exceptions=True)
 
     def _project_docs_dir(self, project: Project) -> Path:
         return Path(project.workspace_path) / "mission-control"
+
+    def _task_workspace_snapshot(self, project: Project, task: Task | None) -> dict[str, str]:
+        root = Path(project.workspace_path)
+        if not root.exists():
+            return {}
+        allowed_paths = list(task.allowed_paths_json or []) if task else []
+        if not allowed_paths:
+            allowed_paths = ["."]
+        ignored = {"__pycache__", ".git", "node_modules", ".venv", "venv", "mission-control"}
+        snapshot: dict[str, str] = {}
+        captured = 0
+        for relative in allowed_paths:
+            candidate = (root / relative).resolve() if relative not in {"", "."} else root.resolve()
+            if not str(candidate).startswith(str(root.resolve())) or not candidate.exists():
+                continue
+            files = [candidate] if candidate.is_file() else [path for path in candidate.rglob("*") if path.is_file()]
+            for file_path in files:
+                if any(part in ignored for part in file_path.parts):
+                    continue
+                rel_path = file_path.relative_to(root).as_posix()
+                try:
+                    digest = hashlib.sha1(file_path.read_bytes()).hexdigest()
+                except OSError:
+                    continue
+                snapshot[rel_path] = digest
+                captured += 1
+                if captured >= 250:
+                    return snapshot
+        return snapshot
+
+    def _task_expects_file_changes(self, task: Task | None) -> bool:
+        if task is None:
+            return False
+        text = " ".join(filter(None, [task.title, task.goal, task.scope])).lower()
+        tokens = {token for token in re.split(r"[^a-z0-9]+", text) if token}
+        edit_markers = {"fix", "implement", "edit", "change", "update", "build", "write", "correct"}
+        non_edit_markers = {"reproduce", "validate", "validation", "handoff", "review", "document"}
+        return bool(tokens & edit_markers) and not bool(tokens & non_edit_markers)
+
+    def _verify_worker_report_evidence(self, project: Project, task: Task | None, report: WorkerReport, before_snapshot: dict[str, str] | None) -> WorkerReport:
+        if task is None or report.status not in {"done", "needs_review"}:
+            return report
+        before = before_snapshot or {}
+        after = self._task_workspace_snapshot(project, task)
+        changed_paths = sorted(
+            {
+                *[path for path, digest in after.items() if before.get(path) != digest],
+                *[path for path in before if path not in after],
+            }
+        )
+        verified_claims = [
+            path
+            for path in report.files_changed
+            if path in changed_paths or any(changed.endswith(path) or path.endswith(changed) for changed in changed_paths)
+        ]
+        if report.files_changed and verified_claims != list(report.files_changed):
+            report = report.model_copy(update={"files_changed": verified_claims})
+        if self._task_expects_file_changes(task) and not changed_paths:
+            risks = list(report.risks or [])
+            warning = "Mission Control could not verify any workspace file changes for this run."
+            if warning not in risks:
+                risks.append(warning)
+            return report.model_copy(
+                update={
+                    "status": "needs_review",
+                    "summary": f"{report.summary} Mission Control could not verify any workspace file changes for this claimed implementation step.",
+                    "files_changed": [],
+                    "risks": risks,
+                }
+            )
+        if changed_paths and not report.files_changed and self._task_expects_file_changes(task):
+            report = report.model_copy(update={"files_changed": changed_paths[:20]})
+        return report
 
     def _ensure_project_workspace(self, project: Project) -> Path:
         docs_dir = self._project_docs_dir(project)
@@ -5263,11 +5346,25 @@ class MissionControlService:
         }
 
     def _serialize_question(self, question: ManagerQuestion) -> dict[str, Any]:
+        question_markdown = question.question
+        options = list(question.options_json or [])
+        if options:
+            rendered_options = []
+            for option in options:
+                label = str(option.get("label") or option.get("id") or "").strip()
+                description = str(option.get("description") or "").strip()
+                if label and description:
+                    rendered_options.append(f"- **{label}**: {description}")
+                elif label:
+                    rendered_options.append(f"- **{label}**")
+            if rendered_options:
+                question_markdown = "\n".join([question.question, "", "### Options", *rendered_options])
         return {
             "id": question.id,
             "project_id": question.project_id,
             "question": question.question,
-            "options_json": list(question.options_json or []),
+            "question_markdown": question_markdown,
+            "options_json": options,
             "impact": question.impact,
             "status": question.status,
             "selected_option_id": question.selected_option_id,
@@ -5303,23 +5400,44 @@ class MissionControlService:
         if markdown:
             return markdown
 
+        request_payload = payload.get("request")
+        if not isinstance(request_payload, dict):
+            request_payload = {}
+
+        def _first_value(*keys: str, source: dict[str, Any] | None = None) -> Any:
+            target = source if source is not None else payload
+            for key in keys:
+                if key not in target:
+                    continue
+                value = target.get(key)
+                if value is None:
+                    continue
+                if isinstance(value, str) and not value.strip():
+                    continue
+                return value
+            return None
+
         lines: list[str] = []
-        title = str(payload.get("title") or "").strip()
-        project_name = str(payload.get("project") or payload.get("project_name") or "").strip()
+        title = str(_first_value("title") or "").strip()
+        project_name = str(_first_value("project", "project_name", "projectName") or "").strip()
         if title:
             lines.append(f"## {title}")
         elif project_name:
             lines.append(f"## Mission Control Manager: {project_name}")
 
-        status = str(payload.get("status") or "").strip()
+        status = str(_first_value("status") or _first_value("status", source=request_payload) or "").strip()
         if status:
             lines.extend(["", f"**Status:** {status.replace('_', ' ')}"])
 
-        summary = str(payload.get("summary") or "").strip()
+        summary = str(
+            _first_value("summary", "description", "message")
+            or _first_value("summary", "description", source=request_payload)
+            or ""
+        ).strip()
         if summary:
             lines.extend(["", summary])
 
-        message_payload = payload.get("message")
+        message_payload = _first_value("message")
         if isinstance(message_payload, dict):
             content = str(message_payload.get("content") or "").strip()
             if content:
@@ -5341,13 +5459,46 @@ class MissionControlService:
             if rendered:
                 lines.extend(["", f"### {title_text}", *rendered])
 
-        _append_section("Next steps", payload.get("next_steps"))
-        _append_section("Questions", payload.get("questions"), key="question")
-        _append_section("Blockers", payload.get("blockers"), key="summary")
-        _append_section("Risks", payload.get("risks"), key="summary")
+        _append_section("Next steps", _first_value("next_steps", "nextSteps") or _first_value("next_steps", "nextSteps", source=request_payload))
+        _append_section("Questions", _first_value("questions") or _first_value("questions", source=request_payload), key="question")
+        _append_section("Blockers", _first_value("blockers") or _first_value("blockers", source=request_payload), key="summary")
+        _append_section("Risks", _first_value("risks") or _first_value("risks", source=request_payload), key="summary")
 
         normalized = "\n".join(lines).strip()
-        return normalized or reply
+        return self._sanitize_provider_markdown(normalized or reply)
+
+    @staticmethod
+    def _sanitize_provider_markdown(text: str) -> str:
+        if not text:
+            return text
+
+        def _is_echo_payload(line: str) -> bool:
+            compact = line.strip()
+            if not compact:
+                return False
+            if compact.startswith(("{", "[")) and any(token in compact for token in ("'from'", '"from"', "'content'", '"content"')):
+                return True
+            return False
+
+        cleaned_lines: list[str] = []
+        previous_normalized = ""
+        for raw_line in text.splitlines():
+            line = raw_line.rstrip()
+            stripped = line.strip()
+            if _is_echo_payload(stripped):
+                continue
+            stripped = re.sub(r"^(Understood|Certainly|Absolutely|Got it)[,!\s]+(?:Operator|user)?[.!:\s-]*", "", stripped, flags=re.IGNORECASE)
+            line = stripped if stripped else ""
+            normalized_line = re.sub(r"\s+", " ", stripped.lower()).strip(":.- ")
+            if normalized_line and normalized_line == previous_normalized:
+                continue
+            if normalized_line:
+                previous_normalized = normalized_line
+            cleaned_lines.append(line)
+
+        sanitized = "\n".join(cleaned_lines)
+        sanitized = re.sub(r"\n{3,}", "\n\n", sanitized).strip()
+        return sanitized or text.strip()
 
     def _interview_question_mirrors(self, db: Session, project: Project, session: InterviewSession) -> list[ManagerQuestion]:
         questions = list(
@@ -6957,6 +7108,7 @@ class MissionControlService:
         session.questions_asked += created
         session.question_count = session.question_budget
         db.flush()
+        db.expire(session, ["questions"])
         return created
 
     def _complete_interview_session(
@@ -7306,6 +7458,7 @@ class MissionControlService:
             context["revision_note"] = revision_note
         if scale_hint:
             context["scale_hint"] = scale_hint
+        swarm_settings = resolve_manager_settings(project, self._project_settings(db, project))
         payload, manager_mode_used = await self._resolve_manager_model(
             db,
             project,
@@ -7320,6 +7473,9 @@ class MissionControlService:
                 payload=context,
                 response_schema=MANAGER_SWARM_PLAN_SCHEMA,
                 user_name=self._preferred_user_name(db, project),
+                provider=swarm_settings.provider,
+                model=swarm_settings.effective_model_label,
+                reasoning_effort=swarm_settings.effective_reasoning_label,
             ),
         )
         sanitized = self._sanitize_swarm_plan_payload(project, preferences, manifest, payload, fallback_payload)
@@ -7583,6 +7739,120 @@ class MissionControlService:
                     ],
                     tasks=tasks,
                 )
+        if project.source_type != "idea":
+            root = Path(project.source_path or project.workspace_path)
+            top_level_names = {item.name.lower() for item in root.iterdir()} if root.exists() else set()
+            has_tests = any(name in {"tests", "test"} for name in top_level_names)
+            primary_code_path = next((name for name in ["src", "app", "lib", "package", "server"] if name in top_level_names), "src")
+            docs_path = "mission-control"
+            request_text = " ".join(filter(None, [project.idea, project.latest_activity or ""])).lower()
+            focused_on_tests = has_tests or "test" in request_text or "failing" in request_text or "fix" in request_text
+            tasks = (
+                [
+                    ManagerTaskItem(
+                        title="Reproduce the failing behavior and isolate the smallest broken path",
+                        goal="Confirm the current failure locally and identify the narrowest code path that needs a fix.",
+                        scope="Inspect the existing repo, run focused validation, and capture the failure without widening scope.",
+                        agent_role="Validation Specialist",
+                        milestone="Milestone 1 - Reproduce the problem",
+                        priority=10,
+                        allowed_paths=["tests", primary_code_path],
+                        forbidden_paths=[],
+                        validation_steps=["Run the narrowest relevant test command", "Record the observed failure honestly"],
+                        success_criteria=["The current failure is reproduced or clearly explained", "The suspected failing path is narrowed down"],
+                        estimated_complexity="small",
+                        dependencies=[],
+                        status="backlog",
+                    ),
+                    ManagerTaskItem(
+                        title="Implement the smallest safe code fix",
+                        goal="Correct the confirmed failing behavior with the least invasive code change.",
+                        scope="Update only the implementation paths needed for the validated failure and avoid opportunistic refactors.",
+                        agent_role="Service Flow Builder",
+                        milestone="Milestone 2 - Fix the code",
+                        priority=20,
+                        allowed_paths=[primary_code_path],
+                        forbidden_paths=["docs", docs_path],
+                        validation_steps=["Keep the change scoped to the validated failure", "Note any assumptions that remain"],
+                        success_criteria=["The implementation matches the expected behavior", "The diff stays narrowly scoped"],
+                        estimated_complexity="small",
+                        dependencies=[1],
+                        status="backlog",
+                    ),
+                    ManagerTaskItem(
+                        title="Re-run focused validation and prepare an honest handoff",
+                        goal="Verify the fix outcome and leave truthful run instructions, limitations, and next steps.",
+                        scope="Run the relevant checks again, update project notes if needed, and prepare the handoff evidence.",
+                        agent_role="Validation Specialist",
+                        milestone="Milestone 3 - Validate and hand off",
+                        priority=30,
+                        allowed_paths=["tests", primary_code_path, "docs", docs_path],
+                        forbidden_paths=[],
+                        validation_steps=["Re-run the focused validation command", "Record pass/fail results and remaining limitations"],
+                        success_criteria=["Validation evidence is recorded truthfully", "The handoff explains exactly what changed and how to verify it"],
+                        estimated_complexity="small",
+                        dependencies=[2],
+                        status="backlog",
+                    ),
+                ]
+                if focused_on_tests
+                else [
+                    ManagerTaskItem(
+                        title="Map the current codebase and confirm the first useful implementation slice",
+                        goal="Understand the repo shape well enough to choose the smallest safe improvement slice.",
+                        scope="Inspect the codebase, identify the main execution path, and define the first concrete build task.",
+                        agent_role="Execution Planner",
+                        milestone="Milestone 1 - Map the codebase",
+                        priority=10,
+                        allowed_paths=[primary_code_path, "tests", "docs"],
+                        forbidden_paths=[],
+                        validation_steps=["Identify the main entry path", "List the first safe implementation slice"],
+                        success_criteria=["The next implementation step is explicit", "Repo ownership is clear enough to proceed"],
+                        estimated_complexity="small",
+                        dependencies=[],
+                        status="backlog",
+                    ),
+                    ManagerTaskItem(
+                        title="Implement the first safe code improvement",
+                        goal="Complete the smallest useful implementation slice for the current codebase.",
+                        scope="Edit only the paths needed for the chosen slice and avoid broad cleanup.",
+                        agent_role="Service Flow Builder",
+                        milestone="Milestone 2 - Implement the slice",
+                        priority=20,
+                        allowed_paths=[primary_code_path],
+                        forbidden_paths=["docs", docs_path],
+                        validation_steps=["Keep the implementation scoped", "Record what still needs validation"],
+                        success_criteria=["The chosen slice is implemented", "Scope creep stays contained"],
+                        estimated_complexity="medium",
+                        dependencies=[1],
+                        status="backlog",
+                    ),
+                    ManagerTaskItem(
+                        title="Validate the slice and prepare handoff notes",
+                        goal="Confirm the outcome and document what to run, what changed, and what remains.",
+                        scope="Run focused validation, capture evidence, and prepare the operator handoff.",
+                        agent_role="Validation Specialist",
+                        milestone="Milestone 3 - Validate and hand off",
+                        priority=30,
+                        allowed_paths=["tests", primary_code_path, "docs", docs_path],
+                        forbidden_paths=[],
+                        validation_steps=["Run the most relevant validation step", "Record limitations and next steps"],
+                        success_criteria=["Validation evidence is available", "The handoff is actionable"],
+                        estimated_complexity="small",
+                        dependencies=[2],
+                        status="backlog",
+                    ),
+                ]
+            )
+            return ManagerTaskDecomposition(
+                summary_markdown="Generated a codebase-aware task breakdown that starts from the current repo instead of inventing a generic product roadmap.",
+                milestones=[
+                    "Milestone 1 - Reproduce or map the current behavior",
+                    "Milestone 2 - Implement the smallest safe fix or slice",
+                    "Milestone 3 - Validate and hand off",
+                ],
+                tasks=tasks,
+            )
         items = []
         for payload in build_initial_tasks(project):
             items.append(
@@ -7776,6 +8046,9 @@ class MissionControlService:
                     payload=payload,
                     plan_markdown=latest_plan.content_markdown if latest_plan else None,
                     user_name=self._preferred_user_name(db, project),
+                    provider=resolved_settings.provider,
+                    model=resolved_settings.effective_model_label,
+                    reasoning_effort=resolved_settings.effective_reasoning_label,
                 )
                 manager_agent.status = "working"
                 self._cache_agent_run_profile(manager_agent, resolved_settings, runner_type=runner.runner_type, action=action_name)
@@ -7851,7 +8124,7 @@ class MissionControlService:
         adapter_command_override: str | None = None,
         adapter_args_override: list[str] | None = None,
     ) -> dict[str, Any]:
-        from system_status import detect_system_status
+        from system_status import assess_model_advisories, detect_system_status
         from startup import startup_service
         from runtime_paths import diagnostics_root
 
@@ -7909,6 +8182,12 @@ class MissionControlService:
             status["selected_provider_label"] = provider_label(settings.provider)
             status["selected_manager_model"] = settings.manager_model
             status["selected_default_worker_model"] = settings.default_worker_model
+            status["model_advisories"] = assess_model_advisories(
+                provider=settings.provider,
+                manager_model=settings.manager_model,
+                worker_model=settings.default_worker_model,
+                available_models=list(status.get("available_models", [])),
+            )
             resolved = resolve_manager_settings(project, settings)
             status["effective_runner_mode"] = await self.runners.effective_mode(resolved)
         else:
@@ -8222,12 +8501,72 @@ class MissionControlService:
             for skill in status["local_skills"]
         ]
 
+    def _workspace_has_user_files(self, workspace_path: str) -> bool:
+        root = Path(workspace_path)
+        try:
+            entries = list(root.iterdir())
+        except OSError:
+            return False
+        ignored = {
+            ".git",
+            ".hg",
+            ".svn",
+            ".DS_Store",
+            "Thumbs.db",
+            "__pycache__",
+            "node_modules",
+            ".venv",
+            "venv",
+            "mission-control",
+        }
+        return any(entry.name not in ignored for entry in entries)
+
+    def _prime_workspace_context(self, db: Session, project: Project) -> None:
+        if project.source_type == "idea":
+            return
+        if project.scan_status == "completed" and project.codebase_map and project.codebase_understanding:
+            return
+        try:
+            codebase_map, understanding, agents_status, safety = import_service.initial_scan(db, project)
+        except ValueError:
+            project.scan_status = "failed"
+            return
+        self.events.publish(
+            db,
+            project.id,
+            "codebase_scan_completed",
+            {"project_id": project.id, "scan_depth": codebase_map.scan_depth, "codebase_size": codebase_map.codebase_size},
+        )
+        self.events.publish(
+            db,
+            project.id,
+            "codebase_understanding_created",
+            {
+                "project_id": project.id,
+                "generation_mode": understanding.generation_mode,
+                "recommended_interview_mode": understanding.recommended_interview_mode,
+            },
+        )
+        self.events.publish(
+            db,
+            project.id,
+            "agents_md_detected",
+            {"project_id": project.id, "has_agents_md": agents_status.has_agents_md, "recommended_action": agents_status.recommended_action},
+        )
+        self.events.publish(
+            db,
+            project.id,
+            "import_safety_updated",
+            {"project_id": project.id, "write_permission_status": safety.write_permission_status},
+        )
+
     def recent_diagnostic_reports(self) -> list[dict[str, Any]]:
         return list_diagnostic_reports()
 
     def create_project(self, db: Session, *, name: str, idea: str, workspace_path: str, provider: str, runner_mode: str, manager_mode: str) -> Project:
         profile = self._app_profile(db)
         selected_provider = normalize_provider(provider or profile.selected_provider)
+        has_existing_files = self._workspace_has_user_files(workspace_path)
         project = Project(
             name=name,
             slug=self._slugify(name),
@@ -8241,6 +8580,8 @@ class MissionControlService:
             last_opened_at=utc_now(),
             latest_activity=idea.strip().splitlines()[0][:180] if idea.strip() else None,
             handoff_status="not_ready",
+            source_type="existing_folder" if has_existing_files else "idea",
+            source_path=workspace_path if has_existing_files else None,
         )
         db.add(project)
         db.flush()
@@ -8274,6 +8615,7 @@ class MissionControlService:
         )
         db.add(manager_agent)
         db.flush()
+        self._prime_workspace_context(db, project)
         playbook_service.suggest_playbook(db, project, persist=True)
         validation_coverage_service.recompute(db, project)
         self.events.publish(db, project.id, "project.created", {"project_id": project.id, "name": project.name})
@@ -8728,6 +9070,7 @@ class MissionControlService:
                 "used_categories": sorted(self._used_interview_categories(session)),
             }
         )
+        interview_settings = resolve_manager_settings(project, self._project_settings(db, project))
         prompt_override = manager_interview_prompt(
             project,
             action=action_name,
@@ -8735,6 +9078,9 @@ class MissionControlService:
             payload=prompt_payload,
             response_schema=MANAGER_INTERVIEW_SCHEMA,
             user_name=self._preferred_user_name(db, project),
+            provider=interview_settings.provider,
+            model=interview_settings.effective_model_label,
+            reasoning_effort=interview_settings.effective_reasoning_label,
         )
         turn, mode_used = await self._resolve_manager_model(
             db,
@@ -9000,6 +9346,13 @@ class MissionControlService:
 
     async def generate_tasks(self, db: Session, project: Project) -> tuple[list[Task], str]:
         latest_plan = self._latest_plan(db, project.id)
+        if latest_plan is None and project.source_type != "idea":
+            self._prime_workspace_context(db, project)
+            decomposition = self._deterministic_task_decomposition(db, project, latest_plan)
+            tasks = self._upsert_tasks_from_decomposition(db, project, decomposition)
+            self.events.publish(db, project.id, "tasks.generated", {"count": len(tasks), "manager_mode_used": "deterministic"})
+            self._write_task_board_doc(db, project)
+            return tasks, "deterministic"
         decomposition, manager_mode_used = await self._resolve_manager_model(
             db,
             project,
@@ -9025,10 +9378,11 @@ class MissionControlService:
         index_map: dict[int, Task] = {}
         for index, item in enumerate(decomposition.tasks, start=1):
             task = existing.get(item.title)
+            created = task is None
             if task is None:
                 task = Task(project_id=project.id, title=item.title, goal=item.goal, scope=item.scope)
                 db.add(task)
-            if task.status in {"backlog", "assigned", "waiting_on_paths"}:
+            if created or task.status in {"backlog", "assigned", "waiting_on_paths"}:
                 task.goal = item.goal
                 task.scope = item.scope
                 task.agent_role = item.agent_role
@@ -9086,30 +9440,58 @@ class MissionControlService:
             )
         return latest_plan
 
-    def _agent_matches_task(self, agent: Agent, task: Task) -> bool:
+    def _agent_task_match_score(self, agent: Agent, task: Task) -> int:
         if agent.kind != "worker":
-            return False
+            return 0
         if not task.agent_role:
-            return True
+            return 50
         agent_name = agent.name.lower()
         agent_role = agent.role.lower()
         agent_archetype = (agent.archetype or "").lower()
         task_role = task.agent_role.lower()
+        allowed_paths = {path.lower() for path in (task.allowed_paths_json or [])}
         if task_role in agent_name or task_role in agent_role or task_role in agent_archetype:
-            return True
+            return 100
         if "validation" in task_role:
-            return "validation" in agent_role or agent_archetype in {"test", "reviewer", "release_handoff"}
+            if "validation" in agent_role or agent_archetype in {"test", "reviewer", "release_handoff"}:
+                return 95
+            if agent_archetype in {"backend", "feature"} or "backend" in agent_role:
+                return 75
+            if agent_archetype == "planner":
+                return 65
         if "docs" in task_role or "handoff" in task_role:
-            return agent_archetype in {"docs", "release_handoff", "reviewer"} or "docs" in agent_role
+            if agent_archetype in {"docs", "release_handoff", "reviewer"} or "docs" in agent_role:
+                return 90
+            if agent_archetype == "planner":
+                return 55
         if "security" in task_role:
-            return agent_archetype == "security"
+            return 90 if agent_archetype == "security" else 0
         if "review" in task_role:
-            return agent_archetype == "reviewer" or "review" in agent_role
+            return 90 if agent_archetype == "reviewer" or "review" in agent_role else 0
         if "secondary" in task_role:
-            return "secondary" in agent_role or "agent b" in agent_name
+            return 80 if "secondary" in agent_role or "agent b" in agent_name else 0
         if "primary" in task_role:
-            return "primary" in agent_role or "agent a" in agent_name
-        return task_role in agent_role or task_role in agent_name
+            return 80 if "primary" in agent_role or "agent a" in agent_name else 0
+        if task_role in agent_role or task_role in agent_name:
+            return 85
+        if allowed_paths & {"src", "app", "lib", "server", "package"}:
+            if agent_archetype in {"backend", "feature"} or "backend" in agent_role:
+                return 70
+            if agent_archetype == "planner":
+                return 55
+        if allowed_paths & {"tests", "test"}:
+            if agent_archetype in {"test", "reviewer"}:
+                return 80
+            if agent_archetype in {"backend", "planner"}:
+                return 60
+        if allowed_paths & {"docs", "mission-control"} and (agent_archetype in {"docs", "release_handoff"} or "docs" in agent_role):
+            return 70
+        if allowed_paths & {"ui", "frontend"} and (agent_archetype == "frontend" or "frontend" in agent_role):
+            return 70
+        return 0
+
+    def _agent_matches_task(self, agent: Agent, task: Task) -> bool:
+        return self._agent_task_match_score(agent, task) > 0
 
     def _dependencies_met(self, db: Session, task: Task) -> bool:
         if not task.dependencies_json:
@@ -9285,64 +9667,74 @@ class MissionControlService:
                 "effective_settings": resolved_run_settings_payload(resolved_settings),
             },
         )
+        self.run_input_snapshots[run.id] = self._task_workspace_snapshot(project, task)
         self.active_monitors[run.id] = asyncio.create_task(self._monitor_run(run.id))
         return run
 
     async def _monitor_run(self, run_id: int) -> None:
         from db import session_scope
 
-        while True:
-            await asyncio.sleep(0.6)
-            with session_scope() as db:
-                run = db.get(AgentRun, run_id)
-                if not run:
-                    return
-                agent = db.get(Agent, run.agent_id)
-                if not agent:
-                    return
-                project = db.get(Project, agent.project_id)
-                if not project:
-                    return
-                runner = await self.runners.get_runner(run.runner_type)
-                events = await runner.read_events(run.process_ref or "")
-                for event in events:
-                    self.events.publish(db, project.id, f"runner.{event.get('type', 'unknown')}", {"agent_id": agent.id, "task_id": run.task_id, "event": event})
-                    if event.get("type") == "thread.started":
-                        agent.session_ref = event.get("thread_id")
-                    if event.get("type") == "turn.started":
-                        agent.status = "working"
-                        run.status = "working"
-                    effective_settings = event.get("effective_settings")
-                    if isinstance(effective_settings, dict):
-                        run.effective_settings_json = effective_settings
-                        provider_name = str(effective_settings.get("provider") or settings_summary(self._project_settings(db, project)).get("provider") or "codex")
-                        agent.active_model = str(effective_settings.get("model") or agent.active_model or default_label(provider_name))
-                        agent.active_reasoning_effort = str(effective_settings.get("reasoning_effort") or agent.active_reasoning_effort or default_label(provider_name))
-                        agent.active_runner_type = run.runner_type
-                    item = event.get("item")
-                    if isinstance(item, dict) and item.get("type") == "agent_message":
-                        report = runner.try_parse_report(item.get("text"))
-                        if report:
-                            run.report_json = report
-                    if event.get("type") in {"turn.completed", "turn.failed", "error"}:
-                        run.status = await runner.get_status(run.process_ref or "")
-                status = await runner.get_status(run.process_ref or "")
-                if hasattr(runner, "runs") and run.process_ref in getattr(runner, "runs"):
-                    state = getattr(runner, "runs")[run.process_ref]
-                    run.exit_code = getattr(state, "exit_code", None)
-                    if getattr(state, "session_ref", None) and not agent.session_ref:
-                        agent.session_ref = state.session_ref
-                if status in {"done", "error", "blocked", "needs_review", "stopped"}:
-                    await self._finalize_run(db, project, agent, run, status)
-                    return
+        try:
+            while True:
+                await asyncio.sleep(0.6)
+                with session_scope() as db:
+                    run = db.get(AgentRun, run_id)
+                    if not run:
+                        return
+                    agent = db.get(Agent, run.agent_id)
+                    if not agent:
+                        return
+                    project = db.get(Project, agent.project_id)
+                    if not project:
+                        return
+                    runner = await self.runners.get_runner(run.runner_type)
+                    events = await runner.read_events(run.process_ref or "")
+                    for event in events:
+                        self.events.publish_isolated(
+                            project.id,
+                            f"runner.{event.get('type', 'unknown')}",
+                            {"agent_id": agent.id, "task_id": run.task_id, "event": event},
+                        )
+                        if event.get("type") == "thread.started":
+                            agent.session_ref = event.get("thread_id")
+                        if event.get("type") == "turn.started":
+                            agent.status = "working"
+                            run.status = "working"
+                        effective_settings = event.get("effective_settings")
+                        if isinstance(effective_settings, dict):
+                            run.effective_settings_json = effective_settings
+                            provider_name = str(effective_settings.get("provider") or settings_summary(self._project_settings(db, project)).get("provider") or "codex")
+                            agent.active_model = str(effective_settings.get("model") or agent.active_model or default_label(provider_name))
+                            agent.active_reasoning_effort = str(effective_settings.get("reasoning_effort") or agent.active_reasoning_effort or default_label(provider_name))
+                            agent.active_runner_type = run.runner_type
+                        item = event.get("item")
+                        if isinstance(item, dict) and item.get("type") == "agent_message":
+                            report = runner.try_parse_report(item.get("text"))
+                            if report:
+                                run.report_json = report
+                        if event.get("type") in {"turn.completed", "turn.failed", "error"}:
+                            run.status = await runner.get_status(run.process_ref or "")
+                    status = await runner.get_status(run.process_ref or "")
+                    if hasattr(runner, "runs") and run.process_ref in getattr(runner, "runs"):
+                        state = getattr(runner, "runs")[run.process_ref]
+                        run.exit_code = getattr(state, "exit_code", None)
+                        if getattr(state, "session_ref", None) and not agent.session_ref:
+                            agent.session_ref = state.session_ref
+                    if status in {"done", "error", "blocked", "needs_review", "stopped"}:
+                        await self._finalize_run(db, project, agent, run, status)
+                        return
+        finally:
+            self.active_monitors.pop(run_id, None)
 
     async def _finalize_run(self, db: Session, project: Project, agent: Agent, run: AgentRun, status: str) -> None:
         task = db.get(Task, run.task_id) if run.task_id else None
         run.finished_at = utc_now()
         if task:
             report = self._build_synthetic_worker_report(agent, task, status, run.report_json)
+            report = self._verify_worker_report_evidence(project, task, report, self.run_input_snapshots.pop(run.id, None))
             await self.ingest_worker_report(db, run, report)
             return
+        self.run_input_snapshots.pop(run.id, None)
         agent.status = "waiting"
         agent.current_action = None
         run.status = status
@@ -9633,6 +10025,9 @@ class MissionControlService:
                     project.docs_path or str(self._project_docs_dir(project)),
                     message,
                     user_name=self._preferred_user_name(db, project),
+                    provider=resolved_settings.provider,
+                    model=resolved_settings.effective_model_label,
+                    reasoning_effort=resolved_settings.effective_reasoning_label,
                 ),
             )
             manager_agent.status = "idle"
@@ -9811,6 +10206,29 @@ class MissionControlService:
                 self._record_interview_questions(db, session, normalized_questions, question_source="fallback_generated")
                 self._refresh_interview_session_state(session, project=project)
                 pending_questions = self._pending_interview_questions(session)
+        if not pending_questions and session.status == "in_progress":
+            explicit_question = InterviewTurnQuestion(
+                question="What is the first usable outcome you want this project to deliver?",
+                why="The manager needs a concrete first slice before it can plan tasks or route agents.",
+                category="product goal",
+                impact="high",
+                options=[
+                    {"id": "local_prototype", "label": "A local prototype", "description": "Prove the core workflow locally before widening scope."},
+                    {"id": "working_bug_fix", "label": "A working bug fix", "description": "Target one clearly broken behavior and make it reliable first."},
+                    {"id": "usable_cli_command", "label": "A usable CLI command", "description": "Ship one command that already feels worth using."},
+                    {"id": "small_web_flow", "label": "A small web flow", "description": "Deliver one narrow browser flow that actually works end to end."},
+                ],
+                allow_custom_answer=True,
+                affects=["success criteria", "MVP definition", "validation priorities"],
+            )
+            normalized_questions = self._normalize_interview_questions(session, [explicit_question], allow_repeated_categories=True)
+            if normalized_questions:
+                self._record_interview_questions(db, session, normalized_questions, question_source="fallback_generated")
+                self._refresh_interview_session_state(session, project=project)
+                pending_questions = self._pending_interview_questions(session)
+        if not pending_questions:
+            db.expire(session, ["questions"])
+            pending_questions = self._pending_interview_questions(session)
         if not pending_questions:
             project.status = "interview_in_progress"
             return ManagerWorkerDecision(

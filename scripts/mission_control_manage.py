@@ -601,6 +601,14 @@ def _install_or_update(
 
 def _build_markdown(action: str, payload: dict[str, Any]) -> str:
     reload_info = payload.get("reload_guidance") or {}
+    marketplace_sync = payload.get("marketplace_sync") or {}
+    codex_sync = payload.get("codex_sync") or {}
+    codex_config = payload.get("codex_config") or {}
+    claude_assets = payload.get("claude_assets") or {}
+    bootstrap = payload.get("bootstrap") or {}
+    install_report = bootstrap.get("install_report", bootstrap)
+    plugin_display_name = codex_sync.get("plugin_display_name") or marketplace_sync.get("plugin_display_name") or "Mission Control"
+    plugin_id = marketplace_sync.get("plugin_id", "mission-control@local")
     lines = [
         "## Mission Control Workflow",
         "",
@@ -616,20 +624,16 @@ def _build_markdown(action: str, payload: dict[str, Any]) -> str:
         "- Claude: `/mission-control-install`, `/mission-control-update`, `/mission-control-uninstall`",
     ]
     if action in {"install", "update"}:
-        codex_sync = payload.get("codex_sync") or {}
-        codex_config = payload.get("codex_config") or {}
-        bootstrap = payload.get("bootstrap") or {}
-        install_report = bootstrap.get("install_report", bootstrap)
         lines.extend(
             [
                 "",
                 "### Setup",
-                f"- Local plugin marketplace: {(payload.get('marketplace_sync') or {}).get('status')}",
+                f"- Local plugin marketplace: {marketplace_sync.get('status')}",
                 f"- Plugin sync: {codex_sync.get('status')}",
-                f"- Codex plugin: {codex_sync.get('plugin_display_name', 'Mission Control')} ({codex_sync.get('plugin_name', 'mission-control')})",
-                f"- Plugin id: {(payload.get('marketplace_sync') or {}).get('plugin_id', 'mission-control@local')}",
+                f"- Codex plugin: {plugin_display_name} ({codex_sync.get('plugin_name', 'mission-control')})",
+                f"- Plugin id: {plugin_id}",
                 f"- Codex MCP registration: {codex_config.get('status')}",
-                f"- Claude assets: {(payload.get('claude_assets') or {}).get('status')}",
+                f"- Claude assets: {claude_assets.get('status')}",
                 f"- Bootstrap: {bootstrap.get('status')}",
             ]
         )
@@ -644,7 +648,23 @@ def _build_markdown(action: str, payload: dict[str, Any]) -> str:
                 "",
                 "### Before use",
                 f"- {reload_info.get('message')}",
-                f"- After the reload, Codex should show `{codex_sync.get('plugin_display_name', 'Mission Control')}` as an available plugin instead of only exposing loose Mission Control skills.",
+                f"- After the reload, Codex should show `{plugin_display_name}` as an available plugin instead of only exposing loose Mission Control skills.",
+            ]
+        )
+        lines.extend(
+            [
+                "",
+                "### After reload verify",
+                f"- Open the Codex plugin picker and confirm `{plugin_display_name}` appears as the plugin entry, not just `mission-control*` skills.",
+                f"- In Claude Code, approve the project MCP server from `.mcp.json` if Claude prompts for it, then rerun the Mission Control command.",
+                f"- If Codex still does not show `{plugin_display_name}`, rerun `python scripts/mission-control-manage.py update` and restart Codex again before blaming the plugin bundle.",
+                f"- If the bridge still looks degraded, run `python scripts/mission-control-manage.py update --json` and inspect the bootstrap and runner sections instead of guessing.",
+                "",
+                "### Installed bridge assets",
+                f"- Local marketplace path: {(marketplace_sync.get('marketplace_path') or 'not written')}",
+                f"- Local plugin staging path: {(marketplace_sync.get('plugin_destination') or 'not staged')}",
+                f"- Codex plugin bundle path: {(codex_sync.get('plugin_destination') or 'not synced')}",
+                f"- Codex config path: {(codex_config.get('config_path') or 'not managed')}",
             ]
         )
     else:
@@ -661,7 +681,14 @@ def _build_markdown(action: str, payload: dict[str, Any]) -> str:
         )
         if payload.get("stop_daemon"):
             lines.append(f"- Daemon stop: {payload['stop_daemon'].get('status')}")
-        lines.extend(["", "### After uninstall", f"- {reload_info.get('message')}"])
+        lines.extend(
+            [
+                "",
+                "### After uninstall",
+                f"- {reload_info.get('message')}",
+                "- If Codex or Claude still shows Mission Control in the current session, force-quit and reopen the app to clear stale cached plugin or MCP state.",
+            ]
+        )
     return "\n".join(lines)
 
 

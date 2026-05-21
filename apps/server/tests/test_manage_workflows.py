@@ -195,6 +195,33 @@ def test_run_management_workflow_install_reports_reload_requirement(monkeypatch,
     assert payload["reload_guidance"]["claude"] is True
     assert "Force-quit and reopen Codex and Claude Code" in payload["codex_chat_markdown"]
     assert "Codex should show `Mission Control` as an available plugin" in payload["codex_chat_markdown"]
+    assert "Open the Codex plugin picker" in payload["codex_chat_markdown"]
+    assert "approve the project MCP server from `.mcp.json`" in payload["codex_chat_markdown"]
+    assert "rerun `python scripts/mission-control-manage.py update`" in payload["codex_chat_markdown"]
+
+
+def test_run_management_workflow_uninstall_mentions_reopen_for_stale_state(monkeypatch, tmp_path) -> None:
+    module = _load_manage_module()
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir(parents=True, exist_ok=True)
+    codex_home = tmp_path / ".codex"
+    agents_home = tmp_path / ".agents"
+
+    monkeypatch.setattr(module, "resolve_repo_root", lambda **kwargs: repo_root)
+    monkeypatch.setattr(module, "resolve_codex_home", lambda override=None: codex_home)
+    monkeypatch.setattr(module, "resolve_agents_home", lambda override=None: agents_home)
+    monkeypatch.setattr(module, "resolve_python_command", lambda explicit=None: sys.executable)
+    monkeypatch.setattr(module, "run_stop_daemon", lambda repo_root: {"status": "ready", "message": "stopped"})
+    monkeypatch.setattr(module, "uninstall_codex_bundle", lambda *args, **kwargs: {"plugin_removed": True, "removed_skill_count": 2, "config": {"status": "removed"}, "status": "ready"})
+    monkeypatch.setattr(module, "remove_local_plugin_marketplace", lambda *args, **kwargs: {"status": "ready", "plugin_removed": True, "marketplace_changed": True})
+    monkeypatch.setattr(module, "detect_claude_assets", lambda repo_root: {"status": "ready", "missing": [], "slash_commands": []})
+
+    payload = module.run_management_workflow(action="uninstall", dry_run=False)
+
+    assert payload["status"] == "ready"
+    assert payload["reload_guidance"]["required"] is False
+    assert "stale cached plugin or MCP state" in payload["codex_chat_markdown"]
+    assert "force-quit and reopen the app" in payload["codex_chat_markdown"]
 
 
 def test_packaged_plugin_manifest_is_ready_for_codex_sync() -> None:
@@ -205,6 +232,9 @@ def test_packaged_plugin_manifest_is_ready_for_codex_sync() -> None:
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     assert manifest["name"] == "mission-control"
     assert manifest["interface"]["displayName"] == "Mission Control"
+    assert "approvals" in manifest["interface"]["shortDescription"].lower()
+    assert "manager" in manifest["interface"]["longDescription"].lower()
+    assert "diagnose the failing tests" in " ".join(manifest["interface"]["defaultPrompt"]).lower()
     assert manifest["version"]
     assert (plugin_root / "assets" / "icon.svg").exists()
     assert manifest["skills"] == "./skills/"

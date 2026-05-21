@@ -45,6 +45,10 @@ def test_claude_code_project_assets_exist_and_are_bridge_oriented() -> None:
         if filename in {"mission-control-install.md", "mission-control-update.md"}:
             assert "force-quit and reopen Claude Code and Codex" in text
             assert "Mission Control` as an available plugin" in text
+            assert "approve the project MCP server from `.mcp.json`" in text
+            assert "rerun `python scripts/mission-control-manage.py update`" in text
+        if filename == "mission-control-uninstall.md":
+            assert "stale Mission Control plugin or MCP state" in text
 
 
 def test_claude_code_mcp_wrapper_is_importable() -> None:

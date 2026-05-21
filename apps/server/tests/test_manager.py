@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 
 from conftest import sample_workspace
 from manager import MissionControlService
@@ -195,3 +196,97 @@ def test_worker_settings_normalizes_legacy_external_adapter_to_custom() -> None:
         assert worker_settings.adapter_args == ["adapter.py", "--json"]
     finally:
         db.close()
+
+
+def test_format_provider_manager_reply_normalizes_nested_request_payload() -> None:
+    formatted = MissionControlService()._format_provider_manager_reply(
+        json.dumps(
+            {
+                "projectName": "Round 1 Greenfield",
+                "request": {
+                    "description": "Turn the project idea into a usable first slice.",
+                    "status": "received",
+                    "nextSteps": [
+                        "Clarify the first usable outcome.",
+                        "Confirm the preferred runtime.",
+                    ],
+                },
+            }
+        )
+    )
+
+    assert "## Mission Control Manager: Round 1 Greenfield" in formatted
+    assert "**Status:** received" in formatted
+    assert "Turn the project idea into a usable first slice." in formatted
+    assert "- Clarify the first usable outcome." in formatted
+
+
+def test_format_provider_manager_reply_strips_echo_payload_and_chatty_preamble() -> None:
+    formatted = MissionControlService()._sanitize_provider_markdown(
+        "\n".join(
+            [
+                "## Mission Control Manager: Demo",
+                "",
+                "{'from': 'Operator', 'content': 'We want a local-first CLI notes app.'}",
+                "",
+                "Understood, Operator. We want a local-first CLI notes app.",
+                "We want a local-first CLI notes app.",
+            ]
+        )
+    )
+
+    assert "{'from': 'Operator'" not in formatted
+    assert "Understood, Operator" not in formatted
+    assert formatted.count("We want a local-first CLI notes app.") == 1
+
+
+def test_verify_worker_report_evidence_downgrades_unverified_fix_claim(tmp_path) -> None:
+    service = MissionControlService()
+    workspace = tmp_path / "repo"
+    (workspace / "src").mkdir(parents=True)
+    target = workspace / "src" / "math_utils.py"
+    target.write_text("def add(a, b):\n    return a - b\n", encoding="utf-8")
+    project = Project(
+        name="Evidence Demo",
+        idea="Fix the failing tests.",
+        workspace_path=workspace.as_posix(),
+        status="building",
+        runner_mode="auto",
+        manager_mode="auto",
+        source_type="existing_folder",
+        source_path=workspace.as_posix(),
+    )
+    task = Task(
+        project_id=1,
+        title="Implement the smallest safe code fix",
+        goal="Correct the broken math behavior.",
+        scope="Update the implementation only.",
+        agent_role="Service Flow Builder",
+        milestone="Milestone 2 - Fix the code",
+        allowed_paths_json=["src"],
+        forbidden_paths_json=[],
+        validation_steps_json=["Keep the change scoped"],
+        success_criteria_json=["The implementation is corrected"],
+        estimated_complexity="small",
+        dependencies_json=[],
+        status="working",
+        priority=20,
+    )
+    before = service._task_workspace_snapshot(project, task)
+    report = WorkerReport(
+        agent="Service Flow Builder",
+        task_id="2",
+        status="done",
+        summary="Fixed confirmed failing behavior with minimal changes.",
+        files_changed=["src/math_utils.py"],
+        tests_run=[],
+        blockers=[],
+        risks=[],
+        recommended_next_task="Re-run focused validation",
+    )
+
+    verified = service._verify_worker_report_evidence(project, task, report, before)
+
+    assert verified.status == "needs_review"
+    assert verified.files_changed == []
+    assert "could not verify any workspace file changes" in verified.summary.lower()

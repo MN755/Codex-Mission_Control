@@ -85,7 +85,16 @@ class CliCodexRunner(BaseCodexRunner):
         self.last_login_status = (stdout or stderr).decode("utf-8", errors="ignore").strip() or "Unavailable"
 
     async def start_task(self, context: RunnerContext) -> RunnerHandle:
-        prompt = worker_task_prompt(context.project, context.agent, context.task, context.docs_path, context.plan_markdown)
+        prompt = worker_task_prompt(
+            context.project,
+            context.agent,
+            context.task,
+            context.docs_path,
+            context.plan_markdown,
+            provider=context.settings.provider,
+            model=context.settings.model,
+            reasoning_effort=context.settings.reasoning_effort,
+        )
         return await self._start_process(context, prompt, resume=False)
 
     async def resume_or_continue(self, context: RunnerContext, message: str) -> RunnerHandle:
@@ -182,52 +191,55 @@ class CliCodexRunner(BaseCodexRunner):
     async def _consume_process(self, run_id: str) -> None:
         state = self.runs[run_id]
         assert state.process is not None
-        stdout = state.process.stdout
-        stderr = state.process.stderr
-        log_lines: list[str] = []
-        stdout_lines: list[str] = []
-        stderr_lines: list[str] = []
-        event_lines: list[str] = []
-        if stdout is not None:
-            while True:
-                line = await stdout.readline()
-                if not line:
-                    break
-                text = line.decode("utf-8", errors="ignore")
-                stdout_lines.append(text.rstrip())
-                log_lines.append(text.rstrip())
-                parsed = parse_json_line(text)
-                if not parsed:
-                    continue
-                event_lines.append(json.dumps(parsed))
-                event_type = parsed.get("type", "unknown")
-                if event_type == "thread.started":
-                    state.session_ref = parsed.get("thread_id")
-                if event_type == "turn.started":
-                    state.status = "working"
-                    parsed["effective_settings"] = state.effective_settings
-                if event_type == "turn.completed":
-                    state.status = "done"
-                if event_type == "turn.failed" or event_type == "error":
-                    state.status = "error"
-                item = parsed.get("item")
-                if isinstance(item, dict) and item.get("type") == "agent_message":
-                    state.final_text = item.get("text")
-                state.events.append(parsed)
-        stderr_text = ""
-        if stderr is not None:
-            stderr_text = (await stderr.read()).decode("utf-8", errors="ignore")
-            if stderr_text.strip():
-                stderr_lines.append(stderr_text.strip())
-                log_lines.append(stderr_text.strip())
+        try:
+            stdout = state.process.stdout
+            stderr = state.process.stderr
+            log_lines: list[str] = []
+            stdout_lines: list[str] = []
+            stderr_lines: list[str] = []
+            event_lines: list[str] = []
+            if stdout is not None:
+                while True:
+                    line = await stdout.readline()
+                    if not line:
+                        break
+                    text = line.decode("utf-8", errors="ignore")
+                    stdout_lines.append(text.rstrip())
+                    log_lines.append(text.rstrip())
+                    parsed = parse_json_line(text)
+                    if not parsed:
+                        continue
+                    event_lines.append(json.dumps(parsed))
+                    event_type = parsed.get("type", "unknown")
+                    if event_type == "thread.started":
+                        state.session_ref = parsed.get("thread_id")
+                    if event_type == "turn.started":
+                        state.status = "working"
+                        parsed["effective_settings"] = state.effective_settings
+                    if event_type == "turn.completed":
+                        state.status = "done"
+                    if event_type == "turn.failed" or event_type == "error":
+                        state.status = "error"
+                    item = parsed.get("item")
+                    if isinstance(item, dict) and item.get("type") == "agent_message":
+                        state.final_text = item.get("text")
+                    state.events.append(parsed)
+            stderr_text = ""
+            if stderr is not None:
+                stderr_text = (await stderr.read()).decode("utf-8", errors="ignore")
+                if stderr_text.strip():
+                    stderr_lines.append(stderr_text.strip())
+                    log_lines.append(stderr_text.strip())
 
-        returncode = await state.process.wait()
-        state.exit_code = returncode
-        if state.status == "starting":
-            state.status = "done" if returncode == 0 else "error"
-        if returncode != 0 and state.status != "stopped":
-            state.status = "error"
-        Path(state.logs_path or "").write_text("\n".join(log_lines), encoding="utf-8")
-        Path(state.stdout_path or "").write_text("\n".join(stdout_lines), encoding="utf-8")
-        Path(state.stderr_path or "").write_text("\n".join(stderr_lines), encoding="utf-8")
-        Path(state.event_log_path or "").write_text("\n".join(event_lines), encoding="utf-8")
+            returncode = await state.process.wait()
+            state.exit_code = returncode
+            if state.status == "starting":
+                state.status = "done" if returncode == 0 else "error"
+            if returncode != 0 and state.status != "stopped":
+                state.status = "error"
+            Path(state.logs_path or "").write_text("\n".join(log_lines), encoding="utf-8")
+            Path(state.stdout_path or "").write_text("\n".join(stdout_lines), encoding="utf-8")
+            Path(state.stderr_path or "").write_text("\n".join(stderr_lines), encoding="utf-8")
+            Path(state.event_log_path or "").write_text("\n".join(event_lines), encoding="utf-8")
+        finally:
+            self.finalize_subprocess_state(state)

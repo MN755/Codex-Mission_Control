@@ -343,6 +343,94 @@ def detect_custom_status(adapter_command: str | None = None, adapter_args: list[
     }
 
 
+def _recommended_local_coding_models(available_models: list[str] | None = None) -> list[str]:
+    candidates = [str(item) for item in (available_models or []) if str(item).strip()]
+    preferred_order = [
+        "gpt-oss:20b",
+        "codestral",
+        "qwen2.5-coder:14b",
+        "qwen2.5-coder:7b",
+        "deepseek-coder",
+        "codellama:13b",
+        "deepseek-r1:8b",
+        "gemma3:12b",
+    ]
+    matches: list[str] = []
+    lowered = [(item, item.lower()) for item in candidates]
+    for preferred in preferred_order:
+        for original, text in lowered:
+            if preferred in text and original not in matches:
+                matches.append(original)
+    return matches[:4]
+
+
+def assess_model_advisories(
+    *,
+    provider: str,
+    manager_model: str | None = None,
+    worker_model: str | None = None,
+    available_models: list[str] | None = None,
+) -> list[dict[str, Any]]:
+    normalized_provider = normalize_provider(provider)
+    advisories: list[dict[str, Any]] = []
+
+    def add(role: str, model: str, severity: str, summary: str, recommendation: str | None = None) -> None:
+        advisories.append(
+            {
+                "role": role,
+                "provider": normalized_provider,
+                "model": model,
+                "severity": severity,
+                "summary": summary,
+                "recommendation": recommendation,
+            }
+        )
+
+    for role, raw_model in (("manager", manager_model), ("worker", worker_model)):
+        model = str(raw_model or "").strip()
+        if not model:
+            continue
+        lowered = model.lower()
+        if normalized_provider == "ollama":
+            stronger_local = _recommended_local_coding_models(available_models)
+            stronger_text = ", ".join(stronger_local) if stronger_local else "qwen2.5-coder:14b, codestral, gpt-oss:20b, or gemma3:12b"
+            if any(token in lowered for token in ("qwen2.5:7b", "llama3", "gemma3:latest", "deepseek-r1:latest", "deepseek-r1:8b")):
+                add(
+                    role,
+                    model,
+                    "warning",
+                    f"{role.title()} model `{model}` is a weaker local model and often underperforms on code-edit turns or valid `edits[]` generation.",
+                    f"Prefer a stronger local coding model such as {stronger_text}.",
+                )
+            elif any(token in lowered for token in ("qwen2.5-coder:7b", "codellama", "gemma3")):
+                add(
+                    role,
+                    model,
+                    "info",
+                    f"{role.title()} model `{model}` is usable but may still struggle on multi-step patch generation.",
+                    f"If Mission Control stalls on edit quality, upgrade to {stronger_text}.",
+                )
+        elif normalized_provider == "codex":
+            if "mini" in lowered:
+                add(
+                    role,
+                    model,
+                    "info",
+                    f"{role.title()} model `{model}` is a compact Codex model. It is fine for lighter coordination but weaker for harder code planning or patch generation.",
+                    "Use a stronger Codex model for deeper planning or code-edit turns when quality matters more than speed.",
+                )
+        elif normalized_provider == "claude_code":
+            if "haiku" in lowered:
+                add(
+                    role,
+                    model,
+                    "warning",
+                    f"{role.title()} model `{model}` is a lighter Claude model and may underperform on deeper coding or orchestration work.",
+                    "Prefer Sonnet or Opus for harder Mission Control runs.",
+                )
+    return advisories
+
+
 def detect_provider_statuses(adapter_command: str | None = None, ollama_endpoint: str | None = None, adapter_args: list[str] | None = None) -> list[dict[str, Any]]:
     return [
         detect_codex_status(),
@@ -370,6 +458,10 @@ def detect_system_status(
     provider_lookup = {entry["provider"]: entry for entry in provider_statuses}
     selected = provider_lookup.get(normalized_provider, provider_lookup["codex"])
     codex = provider_lookup["codex"]
+    advisories = assess_model_advisories(
+        provider=normalized_provider,
+        available_models=list(selected.get("available_models", [])),
+    )
     notes = list(dict.fromkeys(selected.get("notes", []) + codex.get("notes", [])))
     return {
         "selected_provider": normalized_provider,
@@ -402,6 +494,7 @@ def detect_system_status(
         "selected_manager_model": None,
         "selected_default_worker_model": None,
         "available_models": list(selected.get("available_models", [])),
+        "model_advisories": advisories,
         "provider_statuses": provider_statuses,
         "mcp_servers": list(codex.get("mcp_servers", [])),
         "configured_mcp_servers": list(codex.get("configured_mcp_servers", [])),

@@ -36,6 +36,8 @@ Only fall back to `scripts/install-mission-control-plugin.ps1` or `.sh` when the
 5. Let the unified workflow run headless bootstrap, daemon verification, bridge verification, and Ollama/Codex runner reporting.
 6. Tell the user to force-quit and reopen Codex and Claude Code before they try to use Mission Control, because plugin and MCP changes are not loaded into already-open app sessions.
 7. Tell the user that after the reload Codex should show `Mission Control` as an available plugin, not only as standalone Mission Control skills.
+8. Tell the user to approve the project MCP server from `.mcp.json` if Claude Code prompts for it after reload.
+9. If Codex still does not show the plugin after reload, tell the user to rerun `python scripts/mission-control-manage.py update` and restart Codex again before falling back to skill-only workarounds.
 
 ## Mission Control calls
 
@@ -58,6 +60,7 @@ Endpoints:
 - Report install status as `ready`, `degraded`, or `failed`.
 - Show ready runners, unavailable runners, daemon status, MCP status, Ollama readiness, and the next Codex prompt.
 - Include the exact install, update, and uninstall one-command invocations.
+- Explain how the user should verify that Codex loaded the real plugin and Claude loaded the project MCP server.
 - State clearly that the dashboard is optional and not required for setup.
 
 ## Approval behavior

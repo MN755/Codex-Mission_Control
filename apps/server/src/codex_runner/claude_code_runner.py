@@ -68,7 +68,16 @@ class ClaudeCodeRunner(BaseCodexRunner):
         return process.returncode == 0
 
     async def start_task(self, context: RunnerContext) -> RunnerHandle:
-        prompt = worker_task_prompt(context.project, context.agent, context.task, context.docs_path, context.plan_markdown)
+        prompt = worker_task_prompt(
+            context.project,
+            context.agent,
+            context.task,
+            context.docs_path,
+            context.plan_markdown,
+            provider=context.settings.provider,
+            model=context.settings.model,
+            reasoning_effort=context.settings.reasoning_effort,
+        )
         return await self._start_process(context, prompt, resume=False)
 
     async def resume_or_continue(self, context: RunnerContext, message: str) -> RunnerHandle:
@@ -166,57 +175,60 @@ class ClaudeCodeRunner(BaseCodexRunner):
     async def _consume_process(self, run_id: str) -> None:
         state = self.runs[run_id]
         assert state.process is not None
-        stdout_bytes, stderr_bytes = await state.process.communicate()
-        state.exit_code = state.process.returncode
-        stdout_text = stdout_bytes.decode("utf-8", errors="ignore").strip()
-        stderr_text = stderr_bytes.decode("utf-8", errors="ignore").strip()
-        parsed, repaired = self.try_parse_json_payload(stdout_text)
-        if parsed:
-            session_ref = parsed.get("session_id") or parsed.get("sessionId")
-            if isinstance(session_ref, str) and session_ref:
-                state.session_ref = session_ref
-            result_text = parsed.get("result")
-            if not isinstance(result_text, str):
-                result_text = json.dumps(parsed)
-            state.final_text = result_text
-            state.status = "done" if state.exit_code == 0 else "error"
-            state.events.append(
-                {
-                    "type": "item.completed",
-                    "item": {"type": "agent_message", "text": result_text},
-                    "effective_settings": state.effective_settings,
-                    "repaired_json": repaired,
-                }
-            )
-            state.events.append({"type": "turn.completed" if state.status == "done" else "turn.failed"})
-        else:
-            state.final_text = stdout_text or stderr_text or "Claude Code returned no output."
-            state.status = "done" if state.exit_code == 0 else "error"
-            state.events.append(
-                {
-                    "type": "item.completed",
-                    "item": {"type": "agent_message", "text": state.final_text},
-                    "effective_settings": state.effective_settings,
-                }
-            )
-            state.events.append({"type": "turn.completed" if state.status == "done" else "turn.failed"})
+        try:
+            stdout_bytes, stderr_bytes = await state.process.communicate()
+            state.exit_code = state.process.returncode
+            stdout_text = stdout_bytes.decode("utf-8", errors="ignore").strip()
+            stderr_text = stderr_bytes.decode("utf-8", errors="ignore").strip()
+            parsed, repaired = self.try_parse_json_payload(stdout_text)
+            if parsed:
+                session_ref = parsed.get("session_id") or parsed.get("sessionId")
+                if isinstance(session_ref, str) and session_ref:
+                    state.session_ref = session_ref
+                result_text = parsed.get("result")
+                if not isinstance(result_text, str):
+                    result_text = json.dumps(parsed)
+                state.final_text = result_text
+                state.status = "done" if state.exit_code == 0 else "error"
+                state.events.append(
+                    {
+                        "type": "item.completed",
+                        "item": {"type": "agent_message", "text": result_text},
+                        "effective_settings": state.effective_settings,
+                        "repaired_json": repaired,
+                    }
+                )
+                state.events.append({"type": "turn.completed" if state.status == "done" else "turn.failed"})
+            else:
+                state.final_text = stdout_text or stderr_text or "Claude Code returned no output."
+                state.status = "done" if state.exit_code == 0 else "error"
+                state.events.append(
+                    {
+                        "type": "item.completed",
+                        "item": {"type": "agent_message", "text": state.final_text},
+                        "effective_settings": state.effective_settings,
+                    }
+                )
+                state.events.append({"type": "turn.completed" if state.status == "done" else "turn.failed"})
 
-        Path(state.logs_path or "").write_text(
-            "\n".join(
-                [
-                    f"command: {' '.join(self.build_exec_args_placeholder(state.effective_settings))}",
-                    "",
-                    stdout_text,
-                    "",
-                    stderr_text,
-                ]
-            ).strip()
-            + "\n",
-            encoding="utf-8",
-        )
-        Path(state.stdout_path or "").write_text(stdout_text, encoding="utf-8")
-        Path(state.stderr_path or "").write_text(stderr_text, encoding="utf-8")
-        Path(state.event_log_path or "").write_text("\n".join(json.dumps(event) for event in state.events), encoding="utf-8")
+            Path(state.logs_path or "").write_text(
+                "\n".join(
+                    [
+                        f"command: {' '.join(self.build_exec_args_placeholder(state.effective_settings))}",
+                        "",
+                        stdout_text,
+                        "",
+                        stderr_text,
+                    ]
+                ).strip()
+                + "\n",
+                encoding="utf-8",
+            )
+            Path(state.stdout_path or "").write_text(stdout_text, encoding="utf-8")
+            Path(state.stderr_path or "").write_text(stderr_text, encoding="utf-8")
+            Path(state.event_log_path or "").write_text("\n".join(json.dumps(event) for event in state.events), encoding="utf-8")
+        finally:
+            self.finalize_subprocess_state(state)
 
     @staticmethod
     def build_exec_args_placeholder(effective_settings: dict[str, Any]) -> list[str]:

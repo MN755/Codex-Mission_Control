@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from collections.abc import AsyncGenerator
 
 from sqlalchemy import select
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
-from db import SessionLocal
+from db import SessionLocal, session_scope
 from models import AppEvent, ProjectEvent
 
 
@@ -32,6 +34,20 @@ class EventService:
         db.add(event)
         db.flush()
         return event
+
+    def publish_isolated(self, project_id: int, event_type: str, payload: dict, *, retries: int = 5, delay_seconds: float = 0.05) -> bool:
+        for attempt in range(retries):
+            try:
+                with session_scope() as db:
+                    self.publish(db, project_id, event_type, payload)
+                return True
+            except OperationalError as exc:
+                if "database is locked" not in str(exc).lower():
+                    raise
+                if attempt >= retries - 1:
+                    return False
+                time.sleep(delay_seconds * (attempt + 1))
+        return False
 
     def list_app_events(self, db: Session, after_id: int | None = None) -> list[AppEvent]:
         query = select(AppEvent).order_by(AppEvent.id.asc())

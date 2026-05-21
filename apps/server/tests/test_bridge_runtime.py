@@ -54,10 +54,12 @@ def test_bridge_formatter_status_summary_shape() -> None:
         next_expected_step="Resume the runner once approval is answered.",
         risk_level="medium",
         created_at=utc_now(),
+        model_advisories=["Worker model `qwen2.5:7b` is a weaker local model and often underperforms on code-edit turns."],
     )
     assert payload["message_type"] == "blocked"
     assert payload["user_action_required"] is True
     assert "## Mission Control Status" in payload["fallback_markdown"]
+    assert "### Model advisories" in payload["fallback_markdown"]
     assert "### Waiting on you" in payload["fallback_markdown"]
 
 

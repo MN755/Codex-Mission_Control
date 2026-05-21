@@ -38,6 +38,8 @@ Only fall back to platform wrappers such as `scripts/install-mission-control-plu
 5. Let the unified workflow run the headless bootstrap and report daemon, MCP, runner, and Ollama readiness.
 6. Tell the user to force-quit and reopen Codex and Claude Code before they try to use Mission Control, because plugin and MCP changes are not loaded into already-open app sessions.
 7. Tell the user that after the reload Codex should show `Mission Control` as an available plugin, not only as standalone Mission Control skills.
+8. Tell the user to approve the project MCP server from `.mcp.json` if Claude Code prompts for it after reload.
+9. If Codex still does not show the plugin after reload, tell the user to rerun `python scripts/mission-control-manage.py update` and restart Codex again before falling back to skill-only workarounds.
 
 ## What to report to the user
 
@@ -47,6 +49,7 @@ Only fall back to platform wrappers such as `scripts/install-mission-control-plu
 - Whether Ollama local support is reachable and ready now.
 - Whether the daemon is running and localhost-only.
 - Whether the MCP bridge assets and skill package are present.
+- How the user should verify that Codex loaded the real plugin and Claude loaded the project MCP server.
 - The exact one-command install, update, and uninstall commands.
 
 ## Safety constraints

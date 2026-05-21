@@ -97,7 +97,20 @@ class DryRunRunner(BaseCodexRunner):
 
     async def _simulate_task(self, run_id: str, context: RunnerContext) -> None:
         state = self.runs[run_id]
-        prompt_preview = worker_task_prompt(context.project, context.agent, context.task, context.docs_path, context.plan_markdown) if context.task else ""
+        prompt_preview = (
+            worker_task_prompt(
+                context.project,
+                context.agent,
+                context.task,
+                context.docs_path,
+                context.plan_markdown,
+                provider=context.settings.provider,
+                model=context.settings.model,
+                reasoning_effort=context.settings.reasoning_effort,
+            )
+            if context.task
+            else ""
+        )
         Path(state.logs_path or "").write_text(prompt_preview, encoding="utf-8")
         state.events.append({"type": "thread.started", "thread_id": run_id})
         await asyncio.sleep(0.4)

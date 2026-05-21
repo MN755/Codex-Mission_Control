@@ -228,11 +228,13 @@ def format_status_summary_message(
     current_blockers: list[str] | None = None,
     handoff_readiness: str | None = None,
     active_agent_count: int | None = None,
+    model_advisories: list[str] | None = None,
 ) -> dict[str, Any]:
     blockers = [compact_text(item, fallback="") for item in list(current_blockers or []) if compact_text(item, fallback="")]
     work_lines = bullet_lines(current_work, empty_message="No active work is recorded right now.")
     if blockers:
         work_lines.extend([f"- Blocker: {item}" for item in blockers[:3]])
+    advisory_lines = bullet_lines(model_advisories or [], empty_message="No model advisories right now.")
     lines = [
         "## Mission Control Status",
         "",
@@ -249,6 +251,8 @@ def format_status_summary_message(
     if active_agent_count is not None:
         lines.append(f"**Active agents:** {active_agent_count}")
     lines.extend(section("Current work", work_lines))
+    if model_advisories:
+        lines.extend(section("Model advisories", advisory_lines))
     lines.extend(section("Waiting on you", bullet_lines(waiting_on_you, empty_message="Nothing pending from the user right now.")))
     lines.extend(["", "### Next expected step", compact_text(next_expected_step)])
 
@@ -280,6 +284,7 @@ def format_status_summary_message(
             "current_blockers": blockers,
             "handoff_readiness": handoff_readiness,
             "active_agent_count": active_agent_count,
+            "model_advisories": list(model_advisories or []),
             "orchestration_status": orchestration_status,
         },
         fallback_markdown=join_markdown(lines),

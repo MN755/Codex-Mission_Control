@@ -13,5 +13,7 @@ Workflow:
    - any remaining user actions
 6. Tell the user to force-quit and reopen Claude Code and Codex before trying to use Mission Control, because MCP and plugin changes are not live until the host app reloads them.
 7. Tell the user that after the reload Codex should show `Mission Control` as an available plugin, not just as standalone Mission Control skills.
+8. Tell the user to approve the project MCP server from `.mcp.json` if Claude Code prompts for it after reload.
+9. If Codex still does not show the plugin after reload, tell the user to rerun `python scripts/mission-control-manage.py update` and restart Codex again instead of acting like skills-only mode is close enough.
 
 Do not require the standalone UI.

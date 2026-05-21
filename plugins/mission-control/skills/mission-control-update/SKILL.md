@@ -23,6 +23,8 @@ python scripts/mission-control-manage.py update
 - Rerun headless repair/bootstrap and report daemon, bridge, runner, and Ollama readiness.
 - Tell the user to force-quit and reopen Codex and Claude Code before they try to use Mission Control, because plugin and MCP changes are not loaded into already-open app sessions.
 - Tell the user that after the reload Codex should show `Mission Control` as an available plugin, not only as standalone Mission Control skills.
+- Tell the user to approve the project MCP server from `.mcp.json` if Claude Code prompts for it after reload.
+- If Codex still does not show the plugin after reload, tell the user to rerun `python scripts/mission-control-manage.py update` and restart Codex again instead of acting like skills-only mode is enough.
 
 ## Safety constraints
 

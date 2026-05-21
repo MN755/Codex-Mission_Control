@@ -3,11 +3,12 @@
   "name": "mission-control",
   "display_name": "Mission Control",
   "version": "1.2.0",
-  "description": "Codex bridge package for using Codex Mission Control as the orchestration layer from Codex desktop.",
+  "description": "Codex bridge package for using Mission Control as the headless orchestration layer from Codex desktop.",
   "status": "ready",
   "notes": [
     "This plugin bundle is the canonical Mission Control package synced into Codex home during install and update workflows.",
-    "Reload Codex after install or update so the Mission Control plugin is loaded into the active app session."
+    "Force-quit and reopen Codex after install or update so the Mission Control plugin is loaded into the active app session.",
+    "If Codex still does not show the Mission Control plugin after reload, rerun `python scripts/mission-control-manage.py update` and restart Codex again before falling back to skills-only troubleshooting."
   ],
   "skills": [
     "mission-control-orchestrate",
