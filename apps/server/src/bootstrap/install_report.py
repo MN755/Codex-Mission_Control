@@ -59,12 +59,17 @@ def choose_next_codex_prompt(configured_runners: list[str]) -> str:
 def compose_install_markdown(report: dict[str, Any]) -> str:
     ready_runners = ", ".join(report.get("configured_runners", [])) or "None"
     unavailable_runners = ", ".join(report.get("unavailable_runners", [])) or "None"
+    environment = report.get("environment") or {}
+    daemon_status = environment.get("daemon_status") if isinstance(environment, dict) else {}
+    subsystem_status = report.get("subsystem_status") or {}
+    discovered_installs = list(report.get("discovered_installs") or [])
     lines = [
         "## Mission Control Headless Setup",
         "",
         f"**Status:** {_status_text(str(report['status']))}",
         f"**Daemon:** {_component_text(str(report['daemon_status']))}",
         f"**MCP bridge:** {_component_text(str(report['mcp_status']))}",
+        f"**Active repo root:** {daemon_status.get('repo_root') or report.get('install_path')}",
         f"**Ready runners:** {ready_runners}",
         f"**Needs setup:** {unavailable_runners}",
         "**API providers:** Not auto-enabled unless already configured outside Mission Control.",
@@ -72,6 +77,16 @@ def compose_install_markdown(report: dict[str, Any]) -> str:
         "### You can now say",
         f"\"{report['next_codex_prompt']}\"",
     ]
+    if subsystem_status:
+        lines.extend(["", "### Subsystem status"])
+        lines.extend(f"- **{label}:** {_component_text(str(status))}" for label, status in subsystem_status.items())
+    if len(discovered_installs) > 1:
+        lines.extend(["", "### Other installs found"])
+        lines.extend(
+            f"- `{item.get('kind')}` at `{item.get('path')}`"
+            for item in discovered_installs
+            if str(item.get("path") or "") != str(report.get("active_repo_root") or "")
+        )
     if report.get("user_actions_required"):
         lines.extend(["", "### User actions required"])
         lines.extend(f"- {item}" for item in report["user_actions_required"])
@@ -98,6 +113,10 @@ def build_install_report(
         for check in health.get("checks", [])
         if check.get("status") in {"degraded", "unknown"} and check.get("summary")
     )
+    environment = environment or {}
+    discovered_installs = list(environment.get("discovered_installs") or [])
+    if len(discovered_installs) > 1:
+        warnings.append("Multiple Mission Control installs were detected. Confirm which checkout should own the active daemon and Codex MCP registration.")
     daemon_status = _component_status(health, "mission_control_daemon_reachable")
     mcp_status = _component_status(health, "mcp_server_reachable")
     live_runners = [probe for probe in probes if probe["runner_id"] != "dry_run" and probe["configured"]]
@@ -111,10 +130,18 @@ def build_install_report(
         "status": status,
         "install_path": str(headless_config["install_path"]),
         "runtime_path": str(headless_config["runtime_path"]),
+        "active_repo_root": str((environment or {}).get("daemon_status", {}).get("repo_root") or headless_config["install_path"]),
         "daemon_status": daemon_status,
         "mcp_status": mcp_status,
+        "subsystem_status": {
+            "Backend": daemon_status,
+            "Bridge": mcp_status,
+            "Codex host": _component_status(health, "codex_login_status_detectable"),
+            "Optional UI": _component_status(health, "dashboard_optional_status"),
+        },
         "configured_runners": configured_runners,
         "unavailable_runners": unavailable_runners,
+        "discovered_installs": discovered_installs,
         "user_actions_required": _dedupe(probe_actions + health_actions),
         "warnings": _dedupe(warnings),
         "next_codex_prompt": choose_next_codex_prompt(configured_runners),

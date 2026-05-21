@@ -1,10 +1,10 @@
 {
-  "manifest_format": "provisional-placeholder",
+  "manifest_format": "codex-plugin-placeholder-v1",
   "name": "mission-control",
   "display_name": "Mission Control",
   "version": "1.2.0",
   "description": "Repo-local Codex plugin bundle for Mission Control background orchestration.",
-  "status": "draft",
+  "status": "ready",
   "mcp": {
     "example_config": "./mcp/mission-control-mcp.local.json",
     "resources_catalog": "../../../plugins/mission-control/mcp/resources.json",
@@ -13,6 +13,8 @@
   "skills": [
     "mission-control-bridge",
     "mission-control-install-from-github",
+    "mission-control-update",
+    "mission-control-uninstall",
     "mission-control-autowire-providers",
     "mission-control-subagent-burst",
     "mission-control-codebase-intake-burst",

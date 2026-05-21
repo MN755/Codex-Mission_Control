@@ -11,6 +11,8 @@ def test_new_install_routes_to_first_time_setup(client) -> None:
     payload = response.json()
     assert payload["mode"] == "first_time"
     assert payload["overall_status"] == "ready"
+    assert payload["backend_ready"] is True
+    assert payload["onboarding_complete"] is False
     assert payload["recommended_route"] == "/setup"
     assert payload["first_run_completed"] is False
 
@@ -33,6 +35,8 @@ def test_complete_first_run_persists_and_routes_to_dashboard(client) -> None:
     assert status.status_code == 200
     payload = status.json()
     assert payload["mode"] == "regular"
+    assert payload["backend_ready"] is True
+    assert payload["onboarding_complete"] is True
     assert payload["recommended_route"] == "/dashboard"
     assert payload["first_run_completed"] is True
 
@@ -46,6 +50,7 @@ def test_required_check_failure_returns_error(monkeypatch, client) -> None:
     payload = client.post("/api/startup/check", json={"attempt_number": 1, "include_optional_checks": True}).json()
     assert payload["mode"] == "error"
     assert payload["overall_status"] == "error"
+    assert payload["backend_ready"] is False
     assert payload["error_code"] == "MC-STORAGE-DB-UNAVAILABLE-001"
     assert payload["recommended_route"] == "/startup-error"
 

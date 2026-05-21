@@ -659,7 +659,7 @@ class BridgeRuntimeService:
                 "interview_mode": interview_mode,
                 "headless_entrypoint": "start_task",
             },
-            schedule_background_turn=resolved_mode != "dry_run",
+            schedule_background_turn=False,
         )
         orchestration = db.get(OrchestrationSession, int(orchestration_payload["id"]))
         if orchestration is None:
@@ -681,6 +681,16 @@ class BridgeRuntimeService:
                 create_pending_decision=create_pending_decision,
             )
         else:
+            await coordinator._run_background_turn(orchestration.id, "user_request")
+            db.expire_all()
+            orchestration = db.get(OrchestrationSession, int(orchestration_payload["id"]))
+            if orchestration is None:
+                raise self._error(
+                    "MC-ORCH-START-FAILED-001",
+                    detail="Mission Control lost the orchestration session after the initial background turn.",
+                    breakpoint="orchestration.create",
+                    project_id=project.id,
+                )
             pending = self.get_pending_decisions(db, project=project, orchestration=orchestration)
         status_summary = await self.get_status_summary(db, project=project, orchestration=orchestration)
         if attached is not None:

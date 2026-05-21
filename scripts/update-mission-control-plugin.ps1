@@ -29,7 +29,7 @@ if (-not (Test-Path $manageScript)) {
   throw "Manage script not found: $manageScript"
 }
 
-$arguments = @($manageScript, "install", "--repo-url", $RepoUrl)
+$arguments = @($manageScript, "update", "--repo-url", $RepoUrl)
 if ($InstallDir) { $arguments += @("--install-dir", $InstallDir) }
 if ($CodexHome) { $arguments += @("--codex-home", $CodexHome) }
 if ($DryRun) { $arguments += "--dry-run" }
@@ -39,5 +39,5 @@ if ($PythonCommand) { $arguments += @("--python-command", $PythonCommand) }
 if ($DaemonHost) { $arguments += @("--daemon-host", $DaemonHost) }
 if ($PSBoundParameters.ContainsKey("DaemonPort")) { $arguments += @("--daemon-port", $DaemonPort) }
 
-Write-Host "[Mission Control] Running unified install workflow"
+Write-Host "[Mission Control] Running unified update workflow"
 & $pythonPath @arguments

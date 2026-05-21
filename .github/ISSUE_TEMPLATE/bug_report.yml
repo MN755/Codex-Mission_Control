@@ -1,0 +1,108 @@
+name: Bug report
+description: Report a defect in Mission Control runtime, bridge, runners, packaging, or related workflows.
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Report the failure with evidence. "It broke" is not a bug report; it's a mood.
+
+        Keep secrets redacted. Include commands, logs, and payloads only if they are safe to share.
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      description: Pick the part of Mission Control that is actually failing.
+      options:
+        - Daemon or runtime
+        - MCP bridge or plugin tools
+        - Headless orchestration
+        - Pending decisions or approvals
+        - Codex CLI runner
+        - Claude CLI runner
+        - Ollama or local model runner
+        - Packaging or install scripts
+        - Release or CI
+        - Documentation
+        - Other
+    validations:
+      required: true
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Platform
+      options:
+        - Windows
+        - macOS
+        - Linux
+        - Multiple
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Mission Control version
+      description: Release tag, branch, or commit SHA.
+      placeholder: "v1.2.0 or 4b5fd82"
+    validations:
+      required: true
+  - type: textarea
+    id: summary
+    attributes:
+      label: What happened?
+      description: Concisely describe the failure.
+      placeholder: "The daemon started on 8010, but /api/system/status still reported 8000."
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect instead?
+      placeholder: "System status should report the effective backend port and the active daemon state."
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Reproduction steps
+      description: Give the smallest sequence that reproduces the problem.
+      placeholder: |
+        1. Start the daemon with ...
+        2. Attach workspace ...
+        3. Call ...
+        4. Observe ...
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Logs, payloads, or screenshots
+      description: Paste only redacted, relevant evidence.
+      render: shell
+      placeholder: |
+        GET /api/health => {"status":"ok"}
+        GET /api/system/status => {"backend_port":8000,...}
+    validations:
+      required: false
+  - type: textarea
+    id: validation
+    attributes:
+      label: What have you already tried?
+      description: Mention any diagnostics, commands, or fixes you already attempted.
+      placeholder: |
+        - Restarted daemon
+        - Verified launcher config
+        - Retested with a clean workspace
+    validations:
+      required: false
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Confirmation
+      options:
+        - label: I redacted secrets, tokens, and private keys from anything I pasted.
+          required: true
+        - label: I checked the existing issues and this does not look like a duplicate.
+          required: true

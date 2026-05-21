@@ -10,7 +10,7 @@ from urllib.request import urlopen
 from sqlalchemy import text
 
 from config import REPO_ROOT, RUNTIME_ROOT, get_codex_home
-from daemon_state import daemon_dashboard_url, read_daemon_metadata, resolve_backend_binding
+from daemon_state import daemon_dashboard_url, daemon_identity_snapshot, read_daemon_metadata, resolve_backend_binding
 from db import engine
 from errors import MissionControlError, derive_health_status, format_health_check_item
 from manager import service
@@ -37,6 +37,11 @@ REQUIRED_LOCAL_SKILLS = [
 LOCAL_HOSTS = {"127.0.0.1", "localhost", "::1"}
 PASSING_MCP_STATUSES = {"connected", "running", "healthy", "ok", "ready"}
 FAILING_MCP_STATUSES = {"error", "disconnected", "failed", "broken", "unreachable"}
+OVERALL_DEGRADED_CHECK_KEYS = {
+    "daemon_identity_confirmed",
+    "codex_login_status_detectable",
+    "localhost_only_binding",
+}
 
 
 def _utc_now() -> datetime:
@@ -96,27 +101,42 @@ def _find_mission_control_mcp_server(servers: list[dict[str, Any]]) -> dict[str,
     return None
 
 
+def _component_state(checks: list[dict[str, Any]], keys: list[str]) -> str:
+    relevant = [check for check in checks if check.get("key") in keys]
+    if any(check.get("status") == "broken" and check.get("critical") for check in relevant):
+        return "broken"
+    if any(check.get("status") in {"degraded", "unknown"} for check in relevant):
+        return "degraded"
+    return "ready"
+
+
 async def mission_control_plugin_health() -> dict[str, Any]:
     codex = detect_codex_status()
     metadata = read_daemon_metadata()
+    identity = daemon_identity_snapshot()
     backend_binding = resolve_backend_binding()
     dashboard_url = daemon_dashboard_url()
-    daemon_host = str(backend_binding.get("host") or "")
-    daemon_port = int(backend_binding.get("port") or 0)
-    daemon_mode = str(backend_binding.get("mode") or "unknown")
+    daemon_host = str(backend_binding.get("host") or identity.get("host") or "")
+    daemon_port = int(backend_binding.get("port") or identity.get("port") or 0)
+    identity_mode = str(identity.get("mode") or "unknown")
+    daemon_mode = str(backend_binding.get("mode") or identity_mode or "unknown")
     daemon_url = f"http://{daemon_host}:{daemon_port}/api/health" if daemon_host and daemon_port else ""
     daemon_ok, daemon_probe = _probe_url(daemon_url) if daemon_url else (False, "no_target")
     dashboard_ok, dashboard_probe = _probe_url(dashboard_url)
 
     checks: list[dict[str, Any]] = []
 
-    daemon_error = None
+    daemon_error: MissionControlError | None = None
+    daemon_status = "ready"
+    daemon_summary = "Mission Control daemon health endpoint responded successfully."
     if not daemon_ok:
         daemon_error = MissionControlError(
             code="MC-DAEMON-NOT-RUNNING-001",
             breakpoint="daemon.health_check",
             safe_details={"host": daemon_host or None, "port": daemon_port or None, "probe": daemon_probe},
         )
+        daemon_status = derive_health_status(daemon_error, critical=True)
+        daemon_summary = daemon_error.detail or f"Mission Control daemon health probe failed at {daemon_url or 'unknown target'} ({daemon_probe})."
     elif daemon_mode != "daemon":
         daemon_error = MissionControlError(
             code="MC-DAEMON-HEALTH-FAILED-001",
@@ -127,44 +147,72 @@ async def mission_control_plugin_health() -> dict[str, Any]:
             user_action_required=False,
             safe_details={"host": daemon_host or None, "port": daemon_port or None, "mode": daemon_mode},
         )
+        daemon_status = "degraded"
+        daemon_summary = daemon_error.detail or daemon_summary
+    elif str(metadata.get("status") or "") == "stale":
+        daemon_status = "degraded"
+        daemon_summary = "Mission Control daemon is reachable, but daemon metadata is stale and should be refreshed."
     checks.append(
         _check(
             check_id="mission_control_daemon_reachable",
             label="Mission Control daemon reachable",
-            status="ready" if daemon_error is None else derive_health_status(daemon_error, critical=True),
-            summary=(
-                "Mission Control daemon health endpoint responded successfully."
-                if daemon_error is None
-                else (
-                    daemon_error.detail
-                    if daemon_error.detail
-                    else f"Mission Control daemon health probe failed at {daemon_url or 'unknown target'} ({daemon_probe})."
-                )
-            ),
+            status=daemon_status,
+            summary=daemon_summary,
             critical=True,
             fix=None if daemon_error is None else daemon_error.recommended_fix,
             commands=[
                 f".\\scripts\\start-mission-control-daemon.ps1 -BackendPort {daemon_port}",
                 f"Invoke-WebRequest http://{daemon_host}:{daemon_port}/api/health",
+                f"Invoke-WebRequest http://{daemon_host}:{daemon_port}/api/diagnostics/identity",
             ],
             details={
                 "host": daemon_host,
                 "port": daemon_port,
                 "mode": daemon_mode,
+                "identity_mode": identity_mode,
                 "binding_source": backend_binding.get("source"),
                 "metadata_status": metadata.get("status"),
+                "stored_metadata_status": metadata.get("stored_status"),
+                "repo_root": identity.get("repo_root"),
+                "runtime_root": identity.get("runtime_root"),
+                "launcher_root": identity.get("launcher_root"),
             },
             error=daemon_error,
         )
     )
 
-    mcp_servers = list(codex.get("mcp_servers", []))
-    mission_server = _find_mission_control_mcp_server(mcp_servers)
-    if mission_server is None:
+    identity_status = "ready"
+    identity_summary = "Daemon identity matches the current Mission Control checkout and runtime roots."
+    if str(identity.get("repo_root") or "") != str(REPO_ROOT):
+        identity_status = "broken"
+        identity_summary = "The reachable daemon belongs to a different Mission Control checkout than the current repository."
+    elif str(metadata.get("status") or "") in {"missing", "stale"}:
+        identity_status = "degraded"
+        identity_summary = "The daemon is reachable, but persisted daemon metadata is missing or stale."
+    checks.append(
+        _check(
+            check_id="daemon_identity_confirmed",
+            label="Daemon identity confirmed",
+            status=identity_status,
+            summary=identity_summary,
+            critical=True,
+            fix=None if identity_status == "ready" else "Restart the daemon from this repository checkout so runtime metadata matches the live backend.",
+            commands=[f"Invoke-WebRequest http://{daemon_host}:{daemon_port}/api/diagnostics/identity"],
+            details=identity,
+        )
+    )
+
+    live_mcp_servers = list(codex.get("mcp_servers", []))
+    configured_mcp_servers = list(codex.get("configured_mcp_servers", []))
+    mission_server = _find_mission_control_mcp_server(live_mcp_servers)
+    configured_server = _find_mission_control_mcp_server(configured_mcp_servers)
+    codex_cli_detected = bool(codex.get("cli_detected"))
+    cli_execution_available = bool(codex.get("cli_execution_available"))
+    if mission_server is None and configured_server is None:
         bridge_error = MissionControlError(
             code="MC-MCP-BRIDGE-MISSING-001",
             breakpoint="mcp.start",
-            safe_details={"mcp_server_count": len(mcp_servers)},
+            safe_details={"mcp_server_count": len(live_mcp_servers)},
         )
         checks.append(
             _check(
@@ -175,46 +223,63 @@ async def mission_control_plugin_health() -> dict[str, Any]:
                 critical=True,
                 fix=bridge_error.recommended_fix,
                 commands=["codex mcp list --json", "Get-Content plugins\\mission-control\\mcp\\mission-control-mcp.example.json"],
+                details={"configured_mcp_servers": configured_mcp_servers, "live_mcp_servers": live_mcp_servers},
                 error=bridge_error,
             )
         )
     else:
-        raw_status = str(mission_server.get("status") or mission_server.get("connection_status") or "").strip().lower()
+        bridge_status = "ready"
+        bridge_summary = "Mission Control MCP server is configured and reports a healthy connection state."
+        bridge_fix: str | None = None
         bridge_error = None
-        if raw_status in PASSING_MCP_STATUSES:
-            state = "ready"
-            summary = "Mission Control MCP server is configured and reports a healthy connection state."
-        elif raw_status in FAILING_MCP_STATUSES:
-            bridge_error = MissionControlError(
-                code="MC-MCP-HANDSHAKE-FAILED-001",
-                detail=f"Mission Control MCP server is configured but reports '{raw_status}'.",
-                breakpoint="mcp.handshake",
-                safe_details={"reported_status": raw_status},
-            )
-            state = derive_health_status(bridge_error, critical=True)
-            summary = bridge_error.detail
+        if mission_server is not None:
+            raw_status = str(mission_server.get("status") or mission_server.get("connection_status") or "").strip().lower()
+            if raw_status in FAILING_MCP_STATUSES:
+                bridge_error = MissionControlError(
+                    code="MC-MCP-HANDSHAKE-FAILED-001",
+                    detail=f"Mission Control MCP server is configured but reports '{raw_status}'.",
+                    breakpoint="mcp.handshake",
+                    safe_details={"reported_status": raw_status},
+                )
+                bridge_status = derive_health_status(bridge_error, critical=True)
+                bridge_summary = bridge_error.detail or bridge_summary
+                bridge_fix = bridge_error.recommended_fix
+            elif raw_status not in PASSING_MCP_STATUSES:
+                bridge_status = "unknown"
+                bridge_summary = "Mission Control MCP server is configured, but Codex did not expose a definitive live reachability state."
+                bridge_fix = "Verify the MCP bridge command and reload Codex MCP configuration."
+        elif configured_server is not None and not cli_execution_available and codex_cli_detected:
+            bridge_status = "degraded"
+            bridge_summary = "Mission Control is configured in Codex config, but this runtime could not inspect live MCP loading."
+            bridge_fix = "Reload Codex and verify the Mission Control MCP server from the app host, or use a runtime that can execute the Codex CLI."
         else:
-            state = "unknown"
-            summary = "Mission Control MCP server is configured, but Codex does not expose a definitive live reachability state."
+            bridge_status = "degraded"
+            bridge_summary = "Mission Control is configured in Codex config, but it was not discovered in the live Codex MCP server list."
+            bridge_fix = "Reload Codex so it loads the updated Mission Control MCP registration, then verify the live MCP server list again."
         checks.append(
             _check(
                 check_id="mcp_server_reachable",
                 label="MCP server reachable",
-                status=state,
-                summary=summary,
+                status=bridge_status,
+                summary=bridge_summary,
                 critical=True,
-                fix=None if state == "ready" else (bridge_error.recommended_fix if bridge_error is not None else "Verify the MCP bridge command and reload Codex MCP configuration."),
+                fix=bridge_fix,
                 commands=["codex mcp list --json"],
-                details={"server": mission_server},
+                details={
+                    "configured_server": configured_server,
+                    "live_server": mission_server,
+                    "mcp_state": codex.get("mcp_state"),
+                },
                 error=bridge_error,
             )
         )
+        server_for_counts = mission_server or configured_server or {}
         for key, label in [
             ("tools", "MCP tools registered"),
             ("resources", "MCP resources registered"),
             ("prompts", "MCP prompts registered"),
         ]:
-            raw_value = mission_server.get(key)
+            raw_value = server_for_counts.get(key)
             count: int | None = None
             if isinstance(raw_value, list):
                 count = len(raw_value)
@@ -241,11 +306,15 @@ async def mission_control_plugin_health() -> dict[str, Any]:
             )
 
     missing_plugin_files = [str(path.relative_to(REPO_ROOT)) for path in REQUIRED_PLUGIN_FILES if not path.exists()]
-    package_error = MissionControlError(
-        code="MC-PLUGIN-PACKAGE-INVALID-001",
-        breakpoint="plugin.package_validate",
-        safe_details={"missing_files": missing_plugin_files},
-    ) if missing_plugin_files else None
+    package_error = (
+        MissionControlError(
+            code="MC-PLUGIN-PACKAGE-INVALID-001",
+            breakpoint="plugin.package_validate",
+            safe_details={"missing_files": missing_plugin_files},
+        )
+        if missing_plugin_files
+        else None
+    )
     checks.append(
         _check(
             check_id="plugin_package_exists",
@@ -261,11 +330,15 @@ async def mission_control_plugin_health() -> dict[str, Any]:
     )
 
     missing_skill_files = [str(path.relative_to(REPO_ROOT)) for path in [*REQUIRED_PLUGIN_SKILLS, *REQUIRED_LOCAL_SKILLS] if not path.exists()]
-    skill_error = MissionControlError(
-        code="MC-PLUGIN-SKILL-MISSING-001",
-        breakpoint="plugin.skill_discovery",
-        safe_details={"missing_files": missing_skill_files},
-    ) if missing_skill_files else None
+    skill_error = (
+        MissionControlError(
+            code="MC-PLUGIN-SKILL-MISSING-001",
+            breakpoint="plugin.skill_discovery",
+            safe_details={"missing_files": missing_skill_files},
+        )
+        if missing_skill_files
+        else None
+    )
     checks.append(
         _check(
             check_id="skill_files_exist",
@@ -282,22 +355,47 @@ async def mission_control_plugin_health() -> dict[str, Any]:
         )
     )
 
-    codex_cli_error = None if codex.get("cli_detected") else MissionControlError(
-        code="MC-CODEX-CLI-MISSING-001",
-        breakpoint="codex_cli.detect",
-        safe_details={"cli_version": codex.get("cli_version")},
-    )
+    codex_cli_error = None
+    codex_cli_status = "ready"
+    codex_cli_summary = "Codex CLI path is available."
+    if not codex_cli_detected:
+        codex_cli_error = MissionControlError(
+            code="MC-CODEX-CLI-MISSING-001",
+            breakpoint="codex_cli.detect",
+            safe_details={"cli_version": codex.get("cli_version"), "cli_path": codex.get("cli_path")},
+        )
+        codex_cli_status = derive_health_status(codex_cli_error, critical=True)
+        codex_cli_summary = codex_cli_error.detail or codex_cli_summary
     checks.append(
         _check(
             check_id="codex_cli_detected",
             label="Codex CLI detected",
-            status="ready" if codex_cli_error is None else derive_health_status(codex_cli_error, critical=True),
-            summary="Codex CLI is available." if codex_cli_error is None else codex_cli_error.detail,
+            status=codex_cli_status,
+            summary=codex_cli_summary,
             critical=True,
             fix=None if codex_cli_error is None else codex_cli_error.recommended_fix,
             commands=["codex --version"],
-            details={"cli_version": codex.get("cli_version")},
+            details={"cli_version": codex.get("cli_version"), "cli_path": codex.get("cli_path")},
             error=codex_cli_error,
+        )
+    )
+
+    execution_status = "ready" if cli_execution_available else ("unknown" if codex_cli_detected else "broken")
+    execution_summary = "Codex CLI can be executed from the current runtime." if cli_execution_available else (
+        "Codex CLI path exists, but direct execution is unavailable from the current runtime."
+        if codex_cli_detected
+        else "Codex CLI is not available from the current runtime."
+    )
+    checks.append(
+        _check(
+            check_id="codex_cli_execution_available",
+            label="Codex CLI execution available",
+            status=execution_status,
+            summary=execution_summary,
+            critical=False,
+            fix=None if cli_execution_available else "Use config-based and backend-based validation when the current runtime cannot execute codex.exe directly.",
+            commands=["codex --version", "codex login status", "codex mcp list --json"],
+            details={"cli_path": codex.get("cli_path"), "cli_path_exists": codex.get("cli_path_exists")},
         )
     )
 
@@ -357,7 +455,7 @@ async def mission_control_plugin_health() -> dict[str, Any]:
                 check_id="runner_registry_available",
                 label="Runner registry available",
                 status=derive_health_status(runner_error, critical=True),
-                summary=runner_error.detail,
+                summary=runner_error.detail or "Runner registry lookup failed.",
                 critical=True,
                 fix=runner_error.recommended_fix,
                 commands=["python -m pytest apps/server/tests/test_runners.py"],
@@ -454,9 +552,7 @@ async def mission_control_plugin_health() -> dict[str, Any]:
             check_id="localhost_only_binding",
             label="Localhost-only binding",
             status="ready" if binding_error is None else derive_health_status(binding_error, critical=False),
-            summary="Mission Control appears to be bound to localhost-only addresses."
-            if binding_error is None
-            else binding_error.detail,
+            summary="Mission Control appears to be bound to localhost-only addresses." if binding_error is None else binding_error.detail,
             critical=False,
             fix=None if binding_error is None else binding_error.recommended_fix,
             commands=["Get-Content scripts\\mission-control.config.json"],
@@ -465,23 +561,39 @@ async def mission_control_plugin_health() -> dict[str, Any]:
         )
     )
 
-    if any(check["status"] == "broken" and check["critical"] for check in checks):
+    overall_degraded = any(check["status"] == "broken" and check["critical"] for check in checks)
+    if overall_degraded:
         overall = "broken"
-    elif any(check["status"] == "degraded" for check in checks):
+    elif any(check["status"] in {"degraded", "unknown"} and check["critical"] for check in checks):
+        overall = "degraded"
+    elif any(check["key"] in OVERALL_DEGRADED_CHECK_KEYS and check["status"] in {"degraded", "unknown"} for check in checks):
         overall = "degraded"
     else:
         overall = "ready"
 
     recommended_next_steps = list(
-        dict.fromkeys(check["recommended_fix"] for check in checks if check.get("recommended_fix") and check["status"] in {"broken", "degraded"})
+        dict.fromkeys(check["recommended_fix"] for check in checks if check.get("recommended_fix") and check["status"] in {"broken", "degraded", "unknown"})
     )
     safe_commands = list(
         dict.fromkeys(command for check in checks if check["status"] in {"broken", "degraded", "unknown"} for command in check.get("commands", []))
     )
+
+    backend_ready = _component_state(
+        checks,
+        ["mission_control_daemon_reachable", "daemon_identity_confirmed", "runtime_directory_writable", "sqlite_db_reachable", "runner_registry_available"],
+    )
+    bridge_ready = _component_state(checks, ["mcp_server_reachable", "plugin_package_exists", "skill_files_exist"])
+    codex_ready = _component_state(checks, ["codex_cli_detected", "codex_cli_execution_available", "codex_login_status_detectable"])
+    optional_ui_ready = _component_state(checks, ["dashboard_optional_status"])
+
     markdown_lines = [
         "## Plugin Health Doctor",
         "",
         f"**Overall status:** {overall}",
+        f"**Backend ready:** {backend_ready}",
+        f"**Bridge ready:** {bridge_ready}",
+        f"**Codex host ready:** {codex_ready}",
+        f"**Optional UI:** {optional_ui_ready}",
         "",
         "### Checks",
     ]
@@ -503,5 +615,8 @@ async def mission_control_plugin_health() -> dict[str, Any]:
         "notes": [
             "Plugin health checks are read-only and never return daemon tokens, API keys, or secret file contents.",
             f"Detected Codex home: {get_codex_home()}",
+            f"Active repo root: {identity.get('repo_root')}",
+            f"Launcher root: {identity.get('launcher_root')}",
+            f"Runtime root: {identity.get('runtime_root')}",
         ],
     }

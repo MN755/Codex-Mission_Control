@@ -45,12 +45,14 @@ class StartupCoordinator:
         return {
             "mode": "regular",
             "first_run_completed": bool(profile.first_run_completed or profile.onboarding_completed),
+            "onboarding_complete": bool(profile.first_run_completed or profile.onboarding_completed),
             "setup_version_completed": profile.setup_version_completed,
             "current_setup_version": CURRENT_SETUP_VERSION,
             "install_id": install_id,
             "startup_attempt": attempt,
             "max_startup_attempts": MAX_STARTUP_ATTEMPTS,
             "overall_status": "starting",
+            "backend_ready": False,
             "checks": [],
             "recommended_route": "/startup",
             "error_code": None,
@@ -181,7 +183,7 @@ class StartupCoordinator:
             "codex_cli",
             required=False,
             status="passed" if status["cli_detected"] else "failed",
-            summary=status["cli_version"] or "Codex CLI was not detected on PATH.",
+            summary=status["cli_version"] or ("Codex CLI path was detected." if status["cli_detected"] else "Codex CLI was not detected on PATH."),
             error=None
             if status["cli_detected"]
             else MissionControlError(code="MC-CODEX-CLI-MISSING-001", breakpoint="codex_cli.detect"),
@@ -296,6 +298,7 @@ class StartupCoordinator:
             primary = required_failures[0]
             payload["mode"] = "error"
             payload["overall_status"] = "error"
+            payload["backend_ready"] = False
             payload["recommended_route"] = "/startup-error"
             payload["error_code"] = primary["error_code"] or "MC-UNKNOWN-UNEXPECTED-001"
             payload["error_summary"] = primary["summary"]
@@ -317,6 +320,7 @@ class StartupCoordinator:
             db.flush()
             return payload
 
+        payload["backend_ready"] = True
         if degraded_checks and include_optional_checks:
             payload["mode"] = "degraded"
             payload["overall_status"] = "degraded"

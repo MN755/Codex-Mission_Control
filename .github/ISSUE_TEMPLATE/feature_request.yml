@@ -1,0 +1,58 @@
+name: Feature request
+description: Propose a new capability or workflow improvement for Mission Control.
+title: "[Feature]: "
+labels:
+  - enhancement
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Propose the problem, not just the shiny object. Mission Control already has enough ways to become a kitchen sink.
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem are you trying to solve?
+      placeholder: "Users can start headless orchestration, but there is no one-command authenticated local probe for daemon diagnostics."
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      placeholder: "Add a small helper command that reads the local daemon token and probes status safely."
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      placeholder: "Manual curl with token file works, but it is too easy to get wrong."
+    validations:
+      required: false
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: List the conditions that would make this request actually done.
+      placeholder: |
+        - command exists
+        - works on Windows, macOS, and Linux
+        - does not expose secrets
+    validations:
+      required: true
+  - type: dropdown
+    id: scope
+    attributes:
+      label: Primary area
+      options:
+        - Headless runtime
+        - MCP bridge or plugin
+        - Runners
+        - Diagnostics
+        - Security
+        - Documentation
+        - Release engineering
+        - Optional UI
+        - Other
+    validations:
+      required: true

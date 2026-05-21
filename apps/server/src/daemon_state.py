@@ -3,9 +3,14 @@ from __future__ import annotations
 import json
 import os
 import secrets
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+if os.name == "nt":
+    from ctypes import byref, windll
+    from ctypes.wintypes import DWORD
 
 from config import (
     DAEMON_METADATA_PATH,
@@ -54,11 +59,49 @@ def process_is_running(pid: Any) -> bool:
         return False
     if resolved_pid == os.getpid():
         return True
+    if os.name == "nt":
+        process_query_limited_information = 0x1000
+        still_active = 259
+        handle = windll.kernel32.OpenProcess(process_query_limited_information, False, resolved_pid)
+        if not handle:
+            return False
+        try:
+            exit_code = DWORD()
+            if not windll.kernel32.GetExitCodeProcess(handle, byref(exit_code)):
+                return False
+            return exit_code.value == still_active
+        finally:
+            windll.kernel32.CloseHandle(handle)
     try:
         os.kill(resolved_pid, 0)
     except OSError:
         return False
     return True
+
+
+def _write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
+    ensure_runtime_dirs()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+    encoded = json.dumps(payload, indent=2)
+    last_error: OSError | None = None
+    try:
+        for attempt in range(3):
+            try:
+                temp_path.write_text(encoded, encoding="utf-8")
+                os.replace(temp_path, path)
+                return
+            except OSError as exc:
+                last_error = exc
+                time.sleep(0.05 * (attempt + 1))
+        if last_error is not None:
+            raise last_error
+    finally:
+        try:
+            if temp_path.exists():
+                temp_path.unlink()
+        except OSError:
+            pass
 
 
 def ensure_daemon_token() -> str:
@@ -104,7 +147,7 @@ def write_daemon_metadata(
     }
     if last_error:
         payload["last_error"] = last_error
-    DAEMON_METADATA_PATH.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    _write_json_atomic(DAEMON_METADATA_PATH, payload)
     return payload
 
 
@@ -153,7 +196,10 @@ def read_daemon_metadata(*, validate_liveness: bool = True) -> dict[str, Any]:
         payload = json.loads(DAEMON_METADATA_PATH.read_text(encoding="utf-8"))
     except json.JSONDecodeError:
         payload = {}
-    payload.setdefault("status", "ok")
+    stored_status = str(payload.get("status") or "ok")
+    payload["stored_status"] = stored_status
+    payload["metadata_status"] = stored_status
+    payload["status"] = stored_status
     payload.setdefault("mode", os.environ.get("MISSION_CONTROL_SERVER_MODE", "web"))
     payload.setdefault("host", default_host)
     payload["port"] = _parse_port(payload.get("port"), default_port)
@@ -165,7 +211,7 @@ def read_daemon_metadata(*, validate_liveness: bool = True) -> dict[str, Any]:
     pid_running = process_is_running(payload.get("pid"))
     payload["pid_running"] = pid_running
     if validate_liveness:
-        if payload.get("pid") and not pid_running:
+        if payload.get("pid") and not pid_running and stored_status not in {"stopped", "failed"}:
             payload["status"] = "stale"
             payload["liveness"] = "dead_pid"
         else:
@@ -226,3 +272,27 @@ def daemon_dashboard_url(project_id: int | None = None) -> str:
     if project_id is not None:
         return f"http://{host}:{port}/projects/{project_id}"
     return f"http://{host}:{port}/dashboard"
+
+
+def daemon_identity_snapshot() -> dict[str, Any]:
+    binding = resolve_backend_binding(prefer_live_metadata=False)
+    metadata = read_daemon_metadata(validate_liveness=True)
+    host = str(binding["host"])
+    port = int(binding["port"])
+    return {
+        "status": "ok",
+        "mode": str(binding.get("mode") or "unknown"),
+        "host": host,
+        "port": port,
+        "base_url": f"http://{host}:{port}",
+        "binding_source": str(binding.get("source") or "unknown"),
+        "repo_root": str(REPO_ROOT),
+        "runtime_root": str(RUNTIME_ROOT),
+        "launcher_root": str(LAUNCHER_ROOT),
+        "metadata_status": str(metadata.get("status") or "unknown"),
+        "stored_metadata_status": str(metadata.get("stored_status") or metadata.get("status") or "unknown"),
+        "pid": int(metadata.get("pid") or 0),
+        "pid_running": bool(metadata.get("pid_running")),
+        "started_at": metadata.get("started_at"),
+        "token_required": True,
+    }

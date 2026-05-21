@@ -1,0 +1,77 @@
+name: Headless runtime regression
+description: Report a regression in the Codex-chat -> MCP -> daemon -> Manager workflow.
+title: "[Regression]: "
+labels:
+  - regression
+  - headless
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this when a previously working headless flow stopped working.
+
+        This project is headless-first. If the standalone UI is broken but the bridge and daemon are fine, file a normal bug instead of pretending the dashboard is the product center.
+  - type: input
+    id: baseline
+    attributes:
+      label: Last known good version or commit
+      placeholder: "v1.2.0-beta.1 or 97c78f0"
+    validations:
+      required: true
+  - type: input
+    id: current
+    attributes:
+      label: First known bad version or commit
+      placeholder: "v1.2.0 or main@HEAD"
+    validations:
+      required: true
+  - type: dropdown
+    id: flow
+    attributes:
+      label: Failing flow
+      options:
+        - Attach workspace
+        - Start task
+        - Pending decision relay
+        - Status summary or event digest
+        - Handoff summary
+        - Runner detection
+        - Runner execution
+        - MCP tool discovery
+        - Plugin install or uninstall
+        - Safe mode or recovery
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: user_request
+    attributes:
+      label: User request that triggered the regression
+      description: Paste the prompt or equivalent workflow request.
+      placeholder: '"Use Mission Control for this repo and fix the failing tests."'
+    validations:
+      required: true
+  - type: textarea
+    id: regression_details
+    attributes:
+      label: What regressed?
+      placeholder: "The system used to create a pending command approval and now stalls with no decision."
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Evidence
+      description: Include redacted status summaries, event digests, errors, or logs.
+      render: shell
+    validations:
+      required: false
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Confirmation
+      options:
+        - label: I confirmed this is a regression, not just a new unsupported scenario.
+          required: true
+        - label: I redacted secrets from logs and payloads.
+          required: true

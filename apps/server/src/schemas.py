@@ -1213,6 +1213,9 @@ class DaemonStatusRead(BaseModel):
     active_orchestrations: int = 0
     runner_inventory: list[RunnerAvailabilityRead] = Field(default_factory=list)
     dashboard_url: str
+    repo_root: str | None = None
+    runtime_root: str | None = None
+    launcher_root: str | None = None
     notes: list[str] = Field(default_factory=list)
 
 
@@ -2378,12 +2381,14 @@ class StartupCheckRead(BaseModel):
 class StartupStatusRead(BaseModel):
     mode: StartupMode
     first_run_completed: bool
+    onboarding_complete: bool = False
     setup_version_completed: str | None = None
     current_setup_version: str
     install_id: str
     startup_attempt: int
     max_startup_attempts: int
     overall_status: StartupOverallStatus
+    backend_ready: bool = False
     checks: list[StartupCheckRead] = Field(default_factory=list)
     recommended_route: str
     error_code: str | None = None
@@ -2554,6 +2559,9 @@ class ProviderStatusRead(BaseModel):
     provider: ProviderId
     label: str
     cli_detected: bool
+    cli_path: str | None = None
+    cli_path_exists: bool = False
+    cli_execution_available: bool = False
     cli_version: str | None
     authenticated: bool
     auth_mode: str | None
@@ -2585,6 +2593,9 @@ class SystemStatusRead(BaseModel):
     selected_provider: ProviderId = "codex"
     selected_provider_label: str
     cli_detected: bool
+    cli_path: str | None = None
+    cli_path_exists: bool = False
+    cli_execution_available: bool = False
     cli_version: str | None
     login_status: str
     auth_mode: str | None
@@ -2596,8 +2607,12 @@ class SystemStatusRead(BaseModel):
     dry_run_available: bool
     runtime_directory: str
     diagnostics_directory: str | None = None
+    repo_root: str | None = None
+    launcher_root: str | None = None
+    plugin_source_root: str | None = None
     backend_host: str = "127.0.0.1"
     backend_port: int
+    backend_base_url: str | None = None
     configured_backend_port: int | None = None
     backend_binding_source: str | None = None
     frontend_port: int | None
@@ -2608,6 +2623,8 @@ class SystemStatusRead(BaseModel):
     available_models: list[str] = Field(default_factory=list)
     provider_statuses: list[ProviderStatusRead] = Field(default_factory=list)
     mcp_servers: list[dict[str, Any]]
+    configured_mcp_servers: list[dict[str, Any]] = Field(default_factory=list)
+    mcp_state: dict[str, Any] = Field(default_factory=dict)
     configured_plugins: list[str]
     local_skills: list[str]
     current_auth_job: AuthJobRead | None = None

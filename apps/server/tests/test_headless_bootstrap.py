@@ -319,6 +319,12 @@ def test_scripts_and_headless_skills_exist() -> None:
     script_paths = [
         ROOT / "scripts" / "install-mission-control-plugin.ps1",
         ROOT / "scripts" / "install-mission-control-plugin.bat",
+        ROOT / "scripts" / "install-mission-control-plugin.sh",
+        ROOT / "scripts" / "mission-control-manage.py",
+        ROOT / "scripts" / "mission_control_manage.py",
+        ROOT / "scripts" / "update-mission-control-plugin.ps1",
+        ROOT / "scripts" / "update-mission-control-plugin.bat",
+        ROOT / "scripts" / "update-mission-control-plugin.sh",
         ROOT / "scripts" / "uninstall-mission-control-plugin.ps1",
         ROOT / "scripts" / "uninstall-mission-control-plugin.bat",
         ROOT / "scripts" / "uninstall-mission-control-plugin.sh",
@@ -334,9 +340,13 @@ def test_scripts_and_headless_skills_exist() -> None:
 
     skill_paths = [
         ROOT / ".codex" / "skills" / "mission-control-install-from-github" / "SKILL.md",
+        ROOT / ".codex" / "skills" / "mission-control-update" / "SKILL.md",
+        ROOT / ".codex" / "skills" / "mission-control-uninstall" / "SKILL.md",
         ROOT / ".codex" / "skills" / "mission-control-autowire-providers" / "SKILL.md",
         ROOT / ".codex" / "skills" / "mission-control-headless-health" / "SKILL.md",
         ROOT / "plugins" / "mission-control" / "skills" / "mission-control-install-from-github" / "SKILL.md",
+        ROOT / "plugins" / "mission-control" / "skills" / "mission-control-update" / "SKILL.md",
+        ROOT / "plugins" / "mission-control" / "skills" / "mission-control-uninstall" / "SKILL.md",
         ROOT / "plugins" / "mission-control" / "skills" / "mission-control-autowire-providers" / "SKILL.md",
         ROOT / "plugins" / "mission-control" / "skills" / "mission-control-headless-health" / "SKILL.md",
     ]

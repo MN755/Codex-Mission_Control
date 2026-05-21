@@ -8,8 +8,8 @@ from typing import Any
 from bootstrap.dependency_probe import probe_core_tools
 from bootstrap.headless_config import headless_config_path
 from bootstrap.secret_redaction import redact_bootstrap_text, redact_bootstrap_value
-from config import DEFAULT_BACKEND_PORT, REPO_ROOT, RUNTIME_ROOT, get_codex_home, load_launcher_config
-from daemon_state import read_daemon_metadata, resolve_backend_binding
+from config import APP_SUPPORT_ROOT, DEFAULT_BACKEND_PORT, REPO_ROOT, RUNTIME_ROOT, get_codex_home, load_launcher_config
+from daemon_state import daemon_identity_snapshot, read_daemon_metadata, resolve_backend_binding
 
 
 PLUGIN_ROOT = REPO_ROOT / "plugins" / "mission-control"
@@ -72,6 +72,41 @@ def _skill_paths() -> list[str]:
     return unique
 
 
+def _discover_install_candidates() -> list[dict[str, Any]]:
+    candidates = [
+        ("workspace_repo", REPO_ROOT),
+        ("app_support_root", APP_SUPPORT_ROOT),
+        ("codex_plugin_home", get_codex_home() / "plugins" / "mission-control"),
+    ]
+    if platform.system() == "Windows":
+        candidates.append(("legacy_windows_appdata", Path.home() / "AppData" / "Local" / "MissionControl"))
+    discovered: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for kind, path in candidates:
+        try:
+            resolved = path.resolve()
+        except OSError:
+            resolved = path
+        text = str(resolved)
+        if text in seen or not resolved.exists():
+            continue
+        seen.add(text)
+        markers = {
+            "server_runtime": (resolved / "apps" / "server" / "src" / "main.py").exists(),
+            "launcher_script": (resolved / "scripts" / "start-mission-control-daemon.ps1").exists()
+            or (resolved / "scripts" / "start-mission-control-daemon.sh").exists(),
+            "plugin_manifest": (resolved / "plugin.json").exists() or (resolved / "plugins" / "mission-control" / "plugin.json").exists(),
+        }
+        discovered.append(
+            {
+                "kind": kind,
+                "path": _normalize_path_text(resolved),
+                "markers": markers,
+            }
+        )
+    return discovered
+
+
 def probe_environment(
     *,
     workspace_path: str | None = None,
@@ -81,6 +116,7 @@ def probe_environment(
     launcher_config = load_launcher_config()
     metadata = read_daemon_metadata()
     backend_binding = resolve_backend_binding()
+    daemon_identity = daemon_identity_snapshot()
     runtime_root = Path(runtime_path).expanduser().resolve() if runtime_path else RUNTIME_ROOT
     install_root = Path(install_path).expanduser().resolve() if install_path else REPO_ROOT
     plugin_paths = _plugin_paths()
@@ -93,6 +129,9 @@ def probe_environment(
         "metadata_present": bool(metadata),
         "metadata_status": str(metadata.get("status") or "unknown"),
         "pid_running": bool(metadata.get("pid_running")),
+        "repo_root": _normalize_path_text(daemon_identity.get("repo_root") or REPO_ROOT),
+        "runtime_root": _normalize_path_text(daemon_identity.get("runtime_root") or runtime_root),
+        "launcher_root": _normalize_path_text(daemon_identity.get("launcher_root") or APP_SUPPORT_ROOT),
     }
     mcp_status = {
         "transport": "stdio",
@@ -111,6 +150,7 @@ def probe_environment(
         "core_tools": probe_core_tools(),
         "plugin_paths": plugin_paths,
         "skill_paths": skill_paths,
+        "discovered_installs": _discover_install_candidates(),
         "daemon_status": daemon_status,
         "mcp_status": mcp_status,
         "mission_control": {

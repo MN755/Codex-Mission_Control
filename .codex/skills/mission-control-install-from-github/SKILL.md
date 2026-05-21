@@ -19,21 +19,35 @@ Use this skill when the user wants Codex to install, repair, or validate Mission
 - The user wants a headless-only setup.
 - The user wants a repair pass for the daemon, MCP bridge, skills, or plugin package.
 
+## One-command workflow
+
+Use exactly one command as the primary install path:
+
+```text
+python scripts/mission-control-manage.py install
+```
+
+Only fall back to platform wrappers such as `scripts/install-mission-control-plugin.ps1` or `.sh` when the user specifically wants a shell-native entrypoint.
+
 ## Tool and script sequence
 
-1. Prefer `scripts/install-mission-control-plugin.ps1` for Windows installs.
-2. Use `scripts/mission-control-bootstrap.py` for dry-run, repair, or JSON reporting.
-3. Start or verify the daemon with `scripts/start-mission-control-daemon.ps1`.
-4. Verify bridge health with `scripts/mission-control-headless-health.ps1`.
-5. Validate MCP bridge assets with `scripts/start-mission-control-mcp.ps1`.
+1. Use `scripts/mission-control-manage.py install` as the primary workflow.
+2. Let the unified workflow install Python packages for `apps/server` and `apps/mcp-server` unless the user explicitly asks to skip that setup.
+3. Let the unified workflow sync the Codex plugin bundle and `mission-control*` skills into Codex home.
+4. Let the unified workflow write or update the managed `mcp_servers."mission-control"` Codex config entry.
+5. Let the unified workflow run the headless bootstrap and report daemon, MCP, runner, and Ollama readiness.
+6. Tell the user to force-quit and reopen Codex and Claude Code before they try to use Mission Control, because plugin and MCP changes are not loaded into already-open app sessions.
+7. Tell the user that after the reload Codex should show `Mission Control` as an available plugin, not only as standalone Mission Control skills.
 
 ## What to report to the user
 
 - Install status: ready, degraded, or failed.
 - Which runners are ready now.
 - Which runners still need user login or external config.
+- Whether Ollama local support is reachable and ready now.
 - Whether the daemon is running and localhost-only.
 - Whether the MCP bridge assets and skill package are present.
+- The exact one-command install, update, and uninstall commands.
 
 ## Safety constraints
 

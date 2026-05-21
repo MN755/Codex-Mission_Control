@@ -124,9 +124,37 @@ sys.exit(0 if ok else 1)
 PY
 }
 
+identity_matches() {
+  "${PYTHON_BIN}" - <<'PY' "${HOST}" "${PORT}" "${REPO_ROOT}"
+import json, sys, urllib.request
+
+host, port_text, repo_root = sys.argv[1:]
+url = f"http://{host}:{int(port_text)}/api/diagnostics/identity"
+try:
+    with urllib.request.urlopen(url, timeout=2) as response:
+        payload = json.loads(response.read().decode("utf-8", errors="ignore"))
+except Exception:
+    sys.exit(1)
+if str(payload.get("host")) != host:
+    sys.exit(1)
+if int(payload.get("port") or 0) != int(port_text):
+    sys.exit(1)
+if str(payload.get("mode")) != "daemon":
+    sys.exit(1)
+repo_value = str(payload.get("repo_root") or "")
+if repo_value and repo_value != repo_root:
+    sys.exit(1)
+sys.exit(0)
+PY
+}
+
 if health_check "${HEALTH_URL}"; then
-  echo "[Mission Control] Daemon already healthy at ${HEALTH_URL}"
-  exit 0
+  if identity_matches; then
+    echo "[Mission Control] Daemon already healthy at ${HEALTH_URL}"
+    exit 0
+  fi
+  echo "Port ${PORT} is serving a healthy HTTP process, but it is not the expected Mission Control daemon for this repository." >&2
+  exit 1
 fi
 
 if "${PYTHON_BIN}" - <<'PY' "${HOST}" "${PORT}"
@@ -194,34 +222,9 @@ if ! health_check "${HEALTH_URL}"; then
   exit 1
 fi
 
-if [[ -f "${METADATA_PATH}" ]]; then
-  if ! "${PYTHON_BIN}" - <<'PY' "${METADATA_PATH}" "${REPO_ROOT}" "${HOST}" "${PORT}" "${DAEMON_PID}"
-import json, sys
-metadata_path, repo_root, host, port_text, pid_text = sys.argv[1:]
-port = int(port_text)
-pid = int(pid_text)
-try:
-    with open(metadata_path, "r", encoding="utf-8") as handle:
-        payload = json.load(handle)
-except Exception:
-    sys.exit(1)
-if str(payload.get("host")) != host:
-    sys.exit(1)
-if int(payload.get("port") or 0) != port:
-    sys.exit(1)
-if str(payload.get("mode")) != "daemon":
-    sys.exit(1)
-repo_value = str(payload.get("repo_root") or "")
-if repo_value and repo_value != repo_root:
-    sys.exit(1)
-if int(payload.get("pid") or 0) != pid:
-    sys.exit(1)
-sys.exit(0)
-PY
-  then
-    echo "Mission Control daemon answered health checks, but daemon metadata did not validate the expected repo/host/port identity." >&2
-    exit 1
-  fi
+if ! identity_matches; then
+  echo "Mission Control daemon answered health checks, but daemon identity did not validate the expected repo/host/port." >&2
+  exit 1
 fi
 
 echo "[Mission Control] Daemon started on PID ${DAEMON_PID} at ${HEALTH_URL}"

@@ -33,12 +33,18 @@ def test_claude_code_project_assets_exist_and_are_bridge_oriented() -> None:
         "mission-control-handoff.md": "mission_control_get_handoff_summary",
         "mission-control-resume.md": "mission_control_resume",
         "mission-control-safe-mode.md": "mission_control_enable_safe_mode",
+        "mission-control-install.md": "python scripts/mission-control-manage.py install",
+        "mission-control-update.md": "python scripts/mission-control-manage.py update",
+        "mission-control-uninstall.md": "python scripts/mission-control-manage.py uninstall",
     }
     for filename, tool_name in expected_commands.items():
         command_path = commands_root / filename
         assert command_path.exists(), f"Missing Claude command: {command_path}"
         text = command_path.read_text(encoding="utf-8")
         assert tool_name in text
+        if filename in {"mission-control-install.md", "mission-control-update.md"}:
+            assert "force-quit and reopen Claude Code and Codex" in text
+            assert "Mission Control` as an available plugin" in text
 
 
 def test_claude_code_mcp_wrapper_is_importable() -> None:

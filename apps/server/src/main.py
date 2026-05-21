@@ -20,7 +20,7 @@ from config import frontend_dist_root
 from context_packs import context_pack_service
 from db import get_db, init_db
 from diagnostics import open_folder
-from daemon_state import read_daemon_token, resolve_backend_binding, update_daemon_metadata_status
+from daemon_state import daemon_identity_snapshot, read_daemon_token, resolve_backend_binding, update_daemon_metadata_status
 from errors import MissionControlError, as_mission_control_error, format_problem_details
 from imported_codebase import import_service
 from intelligence import reputation_service, scope_creep_service
@@ -474,6 +474,11 @@ async def _enrich_attach_with_status_summary(db: Session, attached: dict[str, An
 @app.get("/api/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
+
+
+@app.get("/api/diagnostics/identity")
+def daemon_identity() -> dict[str, Any]:
+    return daemon_identity_snapshot()
 
 
 @app.get("/api/plugin/health", response_model=PluginHealthSummaryRead)

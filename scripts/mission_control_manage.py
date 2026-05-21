@@ -1,0 +1,591 @@
+from __future__ import annotations
+
+import argparse
+import asyncio
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+from typing import Any
+
+
+MANAGED_BLOCK_START = "# >>> mission-control managed >>>"
+MANAGED_BLOCK_END = "# <<< mission-control managed <<<"
+DEFAULT_REPO_URL = "https://github.com/MN755/Codex-Mission_Control"
+
+
+def looks_like_repo(path: Path) -> bool:
+    return (path / "apps" / "server" / "src").exists() and (path / "README.md").exists()
+
+
+def discover_repo_root() -> Path:
+    candidate = Path(__file__).resolve().parents[1]
+    if looks_like_repo(candidate):
+        return candidate
+    raise FileNotFoundError("Could not resolve the Mission Control repository root from the current script location.")
+
+
+def resolve_repo_root(*, install_dir: str | None = None, repo_url: str = DEFAULT_REPO_URL) -> Path:
+    if install_dir:
+        target = Path(install_dir).expanduser().resolve()
+        if looks_like_repo(target):
+            return target
+        if target.exists() and not looks_like_repo(target):
+            raise FileNotFoundError(f"Install target '{target}' exists but does not look like a Mission Control checkout.")
+        git = shutil.which("git")
+        if not git:
+            raise FileNotFoundError("git is required to clone Mission Control into a new install directory.")
+        completed = subprocess.run(
+            [git, "clone", repo_url, str(target)],
+            capture_output=True,
+            text=True,
+            timeout=300,
+            check=False,
+        )
+        if completed.returncode != 0:
+            output = completed.stdout.strip() or completed.stderr.strip()
+            raise RuntimeError(output or f"git clone failed with exit code {completed.returncode}.")
+        if not looks_like_repo(target):
+            raise FileNotFoundError(f"Cloned install target '{target}' is missing expected Mission Control files.")
+        return target
+    return discover_repo_root()
+
+
+def resolve_codex_home(override: str | None = None) -> Path:
+    if override:
+        return Path(override).expanduser().resolve()
+    env_home = os.environ.get("CODEX_HOME")
+    if env_home:
+        return Path(env_home).expanduser().resolve()
+    return Path.home().joinpath(".codex").resolve()
+
+
+def resolve_python_command(explicit: str | None = None) -> str:
+    if explicit:
+        return str(Path(explicit).expanduser().resolve())
+    executable = Path(sys.executable).resolve()
+    if executable.exists():
+        return str(executable)
+    for name in ("python", "python3", "py"):
+        command = shutil.which(name)
+        if command:
+            return command
+    raise FileNotFoundError("Python was not found on PATH.")
+
+
+def _posix_text(path: Path | str) -> str:
+    return str(path).replace("\\", "/")
+
+
+def _toml_escape(value: str) -> str:
+    return value.replace("\\", "\\\\").replace('"', '\\"')
+
+
+def _copy_tree(source: Path, destination: Path, *, dry_run: bool) -> int:
+    if not source.exists():
+        return 0
+    if dry_run:
+        return sum(1 for path in source.rglob("*") if path.is_file())
+    shutil.copytree(source, destination, dirs_exist_ok=True)
+    return sum(1 for path in destination.rglob("*") if path.is_file())
+
+
+def _plugin_source_root(repo_root: Path) -> Path:
+    packaged = repo_root / "plugins" / "mission-control"
+    return packaged if packaged.exists() else (repo_root / ".codex" / "plugins" / "mission-control")
+
+
+def _read_plugin_manifest(plugin_root: Path) -> dict[str, Any]:
+    manifest_path = plugin_root / "plugin.json"
+    if not manifest_path.exists():
+        return {
+            "status": "missing",
+            "manifest_path": str(manifest_path),
+        }
+    try:
+        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        return {
+            "status": "invalid",
+            "manifest_path": str(manifest_path),
+            "error": str(exc),
+        }
+    return {
+        "status": "ready",
+        "manifest_path": str(manifest_path),
+        "name": payload.get("name"),
+        "display_name": payload.get("display_name") or payload.get("name"),
+        "version": payload.get("version"),
+    }
+
+
+def _skill_source_root(repo_root: Path) -> Path:
+    return repo_root / ".codex" / "skills"
+
+
+def sync_codex_bundle(repo_root: Path, codex_home: Path, *, dry_run: bool = False) -> dict[str, Any]:
+    plugin_source = _plugin_source_root(repo_root)
+    plugin_destination = codex_home / "plugins" / "mission-control"
+    skills_source_root = _skill_source_root(repo_root)
+    skills_destination_root = codex_home / "skills"
+    copied_skills: list[str] = []
+    plugin_manifest = _read_plugin_manifest(plugin_source)
+
+    plugin_files_copied = _copy_tree(plugin_source, plugin_destination, dry_run=dry_run)
+    if skills_source_root.exists():
+        for skill_dir in sorted(path for path in skills_source_root.iterdir() if path.is_dir() and path.name.startswith("mission-control")):
+            copied_skills.append(skill_dir.name)
+            _copy_tree(skill_dir, skills_destination_root / skill_dir.name, dry_run=dry_run)
+
+    return {
+        "codex_home": str(codex_home),
+        "plugin_source": str(plugin_source),
+        "plugin_destination": str(plugin_destination),
+        "plugin_files_copied": plugin_files_copied,
+        "plugin_manifest": plugin_manifest,
+        "plugin_name": plugin_manifest.get("name") or "mission-control",
+        "plugin_display_name": plugin_manifest.get("display_name") or "Mission Control",
+        "skills_copied": copied_skills,
+        "skill_count": len(copied_skills),
+        "status": "ready",
+        "dry_run": dry_run,
+    }
+
+
+def reload_guidance(action: str) -> dict[str, Any]:
+    requires_reload = action in {"install", "update"}
+    return {
+        "required": requires_reload,
+        "codex": requires_reload,
+        "claude": requires_reload,
+        "message": (
+            "Force-quit and reopen Codex and Claude Code before trying to use Mission Control so the updated plugin, MCP registration, and command assets are actually loaded."
+            if requires_reload
+            else "No app reload is required for uninstall, but already-open Codex or Claude chats may still show stale plugin or tool state until the app is reopened."
+        ),
+    }
+
+
+def build_codex_mcp_block(repo_root: Path, python_command: str, *, backend_host: str = "127.0.0.1", backend_port: int = 8010) -> str:
+    repo_text = _toml_escape(_posix_text(repo_root.resolve()))
+    python_text = _toml_escape(_posix_text(Path(python_command).resolve() if Path(python_command).exists() else python_command))
+    host_text = _toml_escape(backend_host)
+    return "\n".join(
+        [
+            MANAGED_BLOCK_START,
+            '[mcp_servers."mission-control"]',
+            f'command = "{python_text}"',
+            'args = ["scripts/serve-mission-control-mcp.py"]',
+            f'cwd = "{repo_text}"',
+            f'env = {{ MISSION_CONTROL_REPO_ROOT = "{repo_text}", MISSION_CONTROL_PYTHON = "{python_text}", MISSION_CONTROL_BACKEND_HOST = "{host_text}", MISSION_CONTROL_BACKEND_PORT = "{backend_port}" }}',
+            MANAGED_BLOCK_END,
+        ]
+    )
+
+
+def strip_mission_control_config(text: str) -> tuple[str, bool]:
+    updated = text.replace("\r\n", "\n")
+    changed = False
+    managed_pattern = re.compile(
+        rf"(?ms)^\s*{re.escape(MANAGED_BLOCK_START)}\n.*?^\s*{re.escape(MANAGED_BLOCK_END)}\s*\n?"
+    )
+    updated, managed_count = managed_pattern.subn("", updated)
+    changed = changed or managed_count > 0
+
+    server_pattern = re.compile(
+        r'(?ms)^\[mcp_servers\."mission-control"\]\n(?:^(?!\[).*(?:\n|$))*'
+    )
+    updated, server_count = server_pattern.subn("", updated)
+    changed = changed or server_count > 0
+
+    updated = re.sub(r"\n{3,}", "\n\n", updated).strip()
+    if updated:
+        updated = f"{updated}\n"
+    return updated, changed
+
+
+def upsert_codex_config(
+    codex_home: Path,
+    repo_root: Path,
+    python_command: str,
+    *,
+    backend_host: str = "127.0.0.1",
+    backend_port: int = 8010,
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    config_path = codex_home / "config.toml"
+    existing = config_path.read_text(encoding="utf-8", errors="ignore") if config_path.exists() else ""
+    stripped, removed = strip_mission_control_config(existing)
+    block = build_codex_mcp_block(repo_root, python_command, backend_host=backend_host, backend_port=backend_port)
+    new_text = f"{stripped.rstrip()}\n\n{block}\n" if stripped.strip() else f"{block}\n"
+    changed = new_text != existing.replace("\r\n", "\n")
+    if not dry_run:
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        config_path.write_text(new_text, encoding="utf-8")
+    return {
+        "config_path": str(config_path),
+        "status": "updated" if changed or removed else "unchanged",
+        "changed": changed or removed,
+        "dry_run": dry_run,
+        "managed_block_present": True,
+    }
+
+
+def remove_codex_config_registration(codex_home: Path, *, dry_run: bool = False) -> dict[str, Any]:
+    config_path = codex_home / "config.toml"
+    if not config_path.exists():
+        return {
+            "config_path": str(config_path),
+            "status": "missing",
+            "changed": False,
+            "dry_run": dry_run,
+        }
+    existing = config_path.read_text(encoding="utf-8", errors="ignore")
+    stripped, changed = strip_mission_control_config(existing)
+    if changed and not dry_run:
+        config_path.write_text(stripped, encoding="utf-8")
+    return {
+        "config_path": str(config_path),
+        "status": "removed" if changed else "unchanged",
+        "changed": changed,
+        "dry_run": dry_run,
+    }
+
+
+def uninstall_codex_bundle(codex_home: Path, *, dry_run: bool = False) -> dict[str, Any]:
+    plugin_path = codex_home / "plugins" / "mission-control"
+    skills_root = codex_home / "skills"
+    removed_skills: list[str] = []
+    plugin_removed = False
+
+    if plugin_path.exists():
+        plugin_removed = True
+        if not dry_run:
+            shutil.rmtree(plugin_path)
+    if skills_root.exists():
+        for skill_dir in sorted(path for path in skills_root.iterdir() if path.is_dir() and path.name.startswith("mission-control")):
+            removed_skills.append(skill_dir.name)
+            if not dry_run:
+                shutil.rmtree(skill_dir)
+    config_result = remove_codex_config_registration(codex_home, dry_run=dry_run)
+    return {
+        "codex_home": str(codex_home),
+        "plugin_path": str(plugin_path),
+        "plugin_removed": plugin_removed,
+        "removed_skills": removed_skills,
+        "removed_skill_count": len(removed_skills),
+        "config": config_result,
+        "status": "ready" if plugin_removed or removed_skills or config_result["changed"] else "not_installed",
+        "dry_run": dry_run,
+    }
+
+
+def ensure_python_packages(repo_root: Path, python_command: str, *, dry_run: bool = False, skip: bool = False) -> list[dict[str, Any]]:
+    steps = [
+        ("backend", repo_root / "apps" / "server", [python_command, "-m", "pip", "install", "-e", ".[dev]"]),
+        ("mcp_server", repo_root / "apps" / "mcp-server", [python_command, "-m", "pip", "install", "-e", "."]),
+    ]
+    results: list[dict[str, Any]] = []
+    for name, cwd, command in steps:
+        if skip:
+            results.append({"name": name, "status": "skipped", "command": command, "cwd": str(cwd)})
+            continue
+        if dry_run:
+            results.append({"name": name, "status": "dry_run", "command": command, "cwd": str(cwd)})
+            continue
+        completed = subprocess.run(command, cwd=cwd, capture_output=True, text=True, timeout=600, check=False)
+        output = completed.stdout.strip() or completed.stderr.strip()
+        results.append(
+            {
+                "name": name,
+                "status": "ready" if completed.returncode == 0 else "failed",
+                "command": command,
+                "cwd": str(cwd),
+                "output": output[-4000:],
+                "returncode": completed.returncode,
+            }
+        )
+        if completed.returncode != 0:
+            raise RuntimeError(output or f"{name} dependency installation failed with exit code {completed.returncode}.")
+    return results
+
+
+def run_bootstrap(
+    repo_root: Path,
+    python_command: str,
+    *,
+    action: str,
+    dry_run: bool = False,
+    daemon_host: str | None = None,
+    daemon_port: int | None = None,
+) -> dict[str, Any]:
+    script = repo_root / "scripts" / "mission-control-bootstrap.py"
+    command = [python_command, str(script), "--install-path", str(repo_root), "--headless-only", "--json"]
+    if dry_run:
+        command.append("--dry-run")
+    elif action == "update":
+        command.append("--repair")
+    if daemon_host:
+        command.extend(["--daemon-host", daemon_host])
+    if daemon_port is not None:
+        command.extend(["--daemon-port", str(daemon_port)])
+    completed = subprocess.run(command, capture_output=True, text=True, timeout=600, check=False)
+    output = completed.stdout.strip() or completed.stderr.strip()
+    payload: dict[str, Any]
+    try:
+        payload = json.loads(output) if output else {}
+    except json.JSONDecodeError:
+        payload = {
+            "status": "failed" if completed.returncode != 0 else "degraded",
+            "raw_output": output,
+            "codex_chat_markdown": output,
+        }
+    payload["command"] = command
+    payload["returncode"] = completed.returncode
+    return payload
+
+
+def run_stop_daemon(repo_root: Path) -> dict[str, Any]:
+    script_path = repo_root / "scripts" / "stop-mission-control-daemon.ps1"
+    if not script_path.exists():
+        return {"status": "missing", "message": f"Stop script not found: {script_path}"}
+    powershell = "powershell.exe" if os.name == "nt" else "pwsh"
+    completed = subprocess.run(
+        [powershell, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(script_path)],
+        capture_output=True,
+        text=True,
+        timeout=120,
+        check=False,
+    )
+    output = completed.stdout.strip() or completed.stderr.strip()
+    return {
+        "status": "ready" if completed.returncode == 0 else "degraded",
+        "returncode": completed.returncode,
+        "message": output or "Daemon stop completed.",
+    }
+
+
+def detect_claude_assets(repo_root: Path) -> dict[str, Any]:
+    required = [
+        repo_root / ".mcp.json",
+        repo_root / "CLAUDE.md",
+        repo_root / ".claude" / "commands" / "mission-control-install.md",
+        repo_root / ".claude" / "commands" / "mission-control-update.md",
+        repo_root / ".claude" / "commands" / "mission-control-uninstall.md",
+    ]
+    missing = [str(path.relative_to(repo_root)) for path in required if not path.exists()]
+    return {
+        "status": "ready" if not missing else "degraded",
+        "missing": missing,
+        "slash_commands": [
+            "/mission-control-install",
+            "/mission-control-update",
+            "/mission-control-uninstall",
+        ],
+    }
+
+
+def _install_or_update(
+    *,
+    action: str,
+    repo_root: Path,
+    codex_home: Path,
+    python_command: str,
+    dry_run: bool,
+    skip_python_setup: bool,
+    skip_codex_sync: bool,
+    daemon_host: str | None,
+    daemon_port: int | None,
+) -> dict[str, Any]:
+    dependency_setup = ensure_python_packages(repo_root, python_command, dry_run=dry_run, skip=skip_python_setup)
+    sync_result = {"status": "skipped"} if skip_codex_sync else sync_codex_bundle(repo_root, codex_home, dry_run=dry_run)
+    config_result = {"status": "skipped"} if skip_codex_sync else upsert_codex_config(
+        codex_home,
+        repo_root,
+        python_command,
+        backend_host=daemon_host or "127.0.0.1",
+        backend_port=daemon_port or 8010,
+        dry_run=dry_run,
+    )
+    bootstrap_result = run_bootstrap(
+        repo_root,
+        python_command,
+        action=action,
+        dry_run=dry_run,
+        daemon_host=daemon_host,
+        daemon_port=daemon_port,
+    )
+    return {
+        "dependency_setup": dependency_setup,
+        "codex_sync": sync_result,
+        "codex_config": config_result,
+        "bootstrap": bootstrap_result,
+    }
+
+
+def _build_markdown(action: str, payload: dict[str, Any]) -> str:
+    reload_info = payload.get("reload_guidance") or {}
+    lines = [
+        "## Mission Control Workflow",
+        "",
+        f"**Action:** {action}",
+        f"**Repo root:** {payload['repo_root']}",
+        f"**Codex home:** {payload['codex_home']}",
+        f"**Status:** {payload['status']}",
+        "",
+        "### Chat commands",
+        "- Codex: `python scripts/mission-control-manage.py install`",
+        "- Update: `python scripts/mission-control-manage.py update`",
+        "- Uninstall: `python scripts/mission-control-manage.py uninstall`",
+        "- Claude: `/mission-control-install`, `/mission-control-update`, `/mission-control-uninstall`",
+    ]
+    if action in {"install", "update"}:
+        codex_sync = payload.get("codex_sync") or {}
+        codex_config = payload.get("codex_config") or {}
+        bootstrap = payload.get("bootstrap") or {}
+        install_report = bootstrap.get("install_report", bootstrap)
+        lines.extend(
+            [
+                "",
+                "### Setup",
+                f"- Plugin sync: {codex_sync.get('status')}",
+                f"- Codex plugin: {codex_sync.get('plugin_display_name', 'Mission Control')} ({codex_sync.get('plugin_name', 'mission-control')})",
+                f"- Codex MCP registration: {codex_config.get('status')}",
+                f"- Claude assets: {(payload.get('claude_assets') or {}).get('status')}",
+                f"- Bootstrap: {bootstrap.get('status')}",
+            ]
+        )
+        if install_report.get("configured_runners"):
+            lines.append(f"- Ready runners: {', '.join(install_report['configured_runners'])}")
+        if install_report.get("unavailable_runners"):
+            lines.append(f"- Needs user action: {', '.join(install_report['unavailable_runners'])}")
+        if install_report.get("user_actions_required"):
+            lines.extend(["", "### User actions required", *[f"- {item}" for item in install_report["user_actions_required"]]])
+        lines.extend(
+            [
+                "",
+                "### Before use",
+                f"- {reload_info.get('message')}",
+                f"- After the reload, Codex should show `{codex_sync.get('plugin_display_name', 'Mission Control')}` as an available plugin instead of only exposing loose Mission Control skills.",
+            ]
+        )
+    else:
+        uninstall_result = payload.get("uninstall") or {}
+        lines.extend(
+            [
+                "",
+                "### Cleanup",
+                f"- Plugin removed: {'yes' if uninstall_result.get('plugin_removed') else 'no'}",
+                f"- Skills removed: {uninstall_result.get('removed_skill_count', 0)}",
+                f"- Codex config cleanup: {(uninstall_result.get('config') or {}).get('status')}",
+            ]
+        )
+        if payload.get("stop_daemon"):
+            lines.append(f"- Daemon stop: {payload['stop_daemon'].get('status')}")
+        lines.extend(["", "### After uninstall", f"- {reload_info.get('message')}"])
+    return "\n".join(lines)
+
+
+def run_management_workflow(
+    *,
+    action: str,
+    repo_url: str = DEFAULT_REPO_URL,
+    install_dir: str | None = None,
+    codex_home_override: str | None = None,
+    python_command_override: str | None = None,
+    dry_run: bool = False,
+    skip_python_setup: bool = False,
+    skip_codex_sync: bool = False,
+    stop_daemon: bool = True,
+    daemon_host: str | None = None,
+    daemon_port: int | None = None,
+) -> dict[str, Any]:
+    repo_root = resolve_repo_root(install_dir=install_dir, repo_url=repo_url)
+    codex_home = resolve_codex_home(codex_home_override)
+    python_command = resolve_python_command(python_command_override)
+    payload: dict[str, Any] = {
+        "action": action,
+        "repo_root": str(repo_root),
+        "codex_home": str(codex_home),
+        "python_command": python_command,
+        "dry_run": dry_run,
+        "reload_guidance": reload_guidance(action),
+    }
+
+    if action in {"install", "update"}:
+        payload.update(
+            _install_or_update(
+                action=action,
+                repo_root=repo_root,
+                codex_home=codex_home,
+                python_command=python_command,
+                dry_run=dry_run,
+                skip_python_setup=skip_python_setup,
+                skip_codex_sync=skip_codex_sync,
+                daemon_host=daemon_host,
+                daemon_port=daemon_port,
+            )
+        )
+        payload["claude_assets"] = detect_claude_assets(repo_root)
+        bootstrap = payload.get("bootstrap") or {}
+        status = str(bootstrap.get("status") or "degraded")
+        if status not in {"ready", "degraded"}:
+            status = "failed"
+        payload["status"] = status
+    elif action == "uninstall":
+        if stop_daemon and not dry_run:
+            payload["stop_daemon"] = run_stop_daemon(repo_root)
+        payload["uninstall"] = uninstall_codex_bundle(codex_home, dry_run=dry_run)
+        payload["claude_assets"] = detect_claude_assets(repo_root)
+        payload["status"] = "ready"
+    else:
+        raise ValueError(f"Unsupported action: {action}")
+
+    payload["codex_chat_markdown"] = _build_markdown(action, payload)
+    return payload
+
+
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Install, update, or uninstall Mission Control bridge assets.")
+    parser.add_argument("action", choices=["install", "update", "uninstall"])
+    parser.add_argument("--repo-url", default=DEFAULT_REPO_URL)
+    parser.add_argument("--install-dir", default=None)
+    parser.add_argument("--codex-home", default=None)
+    parser.add_argument("--python-command", default=None)
+    parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--skip-python-setup", action="store_true")
+    parser.add_argument("--skip-codex-sync", action="store_true")
+    parser.add_argument("--no-stop-daemon", action="store_true")
+    parser.add_argument("--daemon-host", default=None)
+    parser.add_argument("--daemon-port", type=int, default=None)
+    parser.add_argument("--json", action="store_true")
+    return parser.parse_args(argv)
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = parse_args(argv)
+    payload = run_management_workflow(
+        action=args.action,
+        repo_url=args.repo_url,
+        install_dir=args.install_dir,
+        codex_home_override=args.codex_home,
+        python_command_override=args.python_command,
+        dry_run=args.dry_run,
+        skip_python_setup=args.skip_python_setup,
+        skip_codex_sync=args.skip_codex_sync,
+        stop_daemon=not args.no_stop_daemon,
+        daemon_host=args.daemon_host,
+        daemon_port=args.daemon_port,
+    )
+    if args.json:
+        print(json.dumps(payload, indent=2, default=str))
+    else:
+        print(payload["codex_chat_markdown"])
+    return 0 if payload["status"] in {"ready", "degraded"} else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

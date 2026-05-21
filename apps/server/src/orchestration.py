@@ -474,6 +474,10 @@ class OrchestrationCoordinator:
             self._record_event(db, session, "orchestration_request_appended", {"source": source})
         db.flush()
         if schedule_background_turn:
+            session.status = "planning"
+            session.manager_status = "Mission Control queued the first background turn."
+            session.updated_at = utc_now()
+            db.flush()
             self._schedule_background_turn(session.id, "user_request")
         return session
 
@@ -940,6 +944,9 @@ class OrchestrationCoordinator:
             "active_orchestrations": active_count,
             "runner_inventory": await service.runners.inventory(),
             "dashboard_url": daemon_dashboard_url(),
+            "repo_root": str(metadata.get("repo_root") or ""),
+            "runtime_root": str(metadata.get("runtime_root") or ""),
+            "launcher_root": str(metadata.get("launcher_root") or ""),
             "notes": [
                 "Mission Control daemon endpoints are localhost-only and bridge-token guarded.",
                 f"Backend binding source: {binding.get('source')}.",

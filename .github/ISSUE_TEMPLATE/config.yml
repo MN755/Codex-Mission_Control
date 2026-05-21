@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Mission Control troubleshooting docs
+    url: https://github.com/MN755/Codex-Mission_Control/tree/main/docs
+    about: Check the repo docs for daemon, MCP bridge, runner, and headless troubleshooting guidance before filing an issue.

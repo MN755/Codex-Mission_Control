@@ -99,8 +99,44 @@ class MissionControlDaemonClient:
         except Exception:
             return False
 
+    def _daemon_identity(self) -> dict[str, Any] | None:
+        try:
+            with httpx.Client(timeout=2.0) as client:
+                response = client.get(f"{self.base_url}/api/diagnostics/identity")
+            if response.status_code >= 400:
+                return None
+            payload = response.json()
+            return payload if isinstance(payload, dict) else None
+        except Exception:
+            return None
+
+    def _validate_running_daemon_identity(self) -> None:
+        identity = self._daemon_identity()
+        if not identity:
+            return
+        expected_repo = str(self.repo_root)
+        actual_repo = str(identity.get("repo_root") or "")
+        actual_port = int(identity.get("port") or 0)
+        actual_mode = str(identity.get("mode") or "unknown")
+        if actual_repo and actual_repo != expected_repo:
+            raise RuntimeError(
+                "Mission Control daemon is healthy, but the current port belongs to a different repository checkout. "
+                f"expected_repo_root={expected_repo} actual_repo_root={actual_repo} configured_base_url={self.base_url}."
+            )
+        if actual_port and actual_port != self._configured_port:
+            raise RuntimeError(
+                "Mission Control daemon is healthy, but it reported a different effective port than the current launcher config. "
+                f"configured_port={self._configured_port} actual_port={actual_port} configured_base_url={self.base_url}."
+            )
+        if actual_mode != "daemon":
+            raise RuntimeError(
+                "Mission Control backend is reachable, but it is not running in daemon mode. "
+                f"configured_base_url={self.base_url} actual_mode={actual_mode}."
+            )
+
     def ensure_daemon_running(self) -> None:
         if self._healthcheck():
+            self._validate_running_daemon_identity()
             return
         if self._port_in_use():
             parsed = urlparse(self.base_url)
@@ -109,6 +145,7 @@ class MissionControlDaemonClient:
             raise RuntimeError(
                 "Mission Control daemon port is already in use but the health check failed. "
                 f"configured_base_url={self.base_url} configured_host={effective_host} configured_port={effective_port}. "
+                f"expected_repo_root={self.repo_root}. "
                 "Likely causes: stale launcher config, another localhost service on the same port, or a dead Mission Control process with stale metadata."
             )
         self._launcher_root.mkdir(parents=True, exist_ok=True)
@@ -128,6 +165,7 @@ class MissionControlDaemonClient:
         deadline = time.time() + self.timeout
         while time.time() < deadline:
             if self._healthcheck():
+                self._validate_running_daemon_identity()
                 return
             time.sleep(0.5)
         raise RuntimeError("Mission Control daemon did not become healthy in time.")
@@ -169,7 +207,7 @@ class MissionControlDaemonClient:
         return self._request("GET", "/api/daemon/status", requires_token=False)
 
     def plugin_health(self) -> dict[str, Any]:
-        return self._request("GET", "/api/orchestrations/plugin-health", requires_token=False)
+        return self._request("GET", "/api/orchestrations/plugin-health", requires_token=True)
 
     def plugin_health_summary(self) -> dict[str, Any]:
         return self.plugin_health()

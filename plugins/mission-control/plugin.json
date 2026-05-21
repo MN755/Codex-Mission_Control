@@ -1,13 +1,13 @@
 {
-  "manifest_format": "provisional-placeholder",
+  "manifest_format": "codex-plugin-placeholder-v1",
   "name": "mission-control",
   "display_name": "Mission Control",
   "version": "1.2.0",
   "description": "Codex bridge package for using Codex Mission Control as the orchestration layer from Codex desktop.",
-  "status": "draft",
+  "status": "ready",
   "notes": [
-    "This file is a packaging placeholder, not a claim about the final Codex plugin manifest schema.",
-    "Update field names and install hooks once the target plugin schema is finalized."
+    "This plugin bundle is the canonical Mission Control package synced into Codex home during install and update workflows.",
+    "Reload Codex after install or update so the Mission Control plugin is loaded into the active app session."
   ],
   "skills": [
     "mission-control-orchestrate",
@@ -54,6 +54,8 @@
     "mission-control-api-provider-mode",
     "mission-control-plugin-health",
     "mission-control-install-from-github",
+    "mission-control-update",
+    "mission-control-uninstall",
     "mission-control-autowire-providers",
     "mission-control-headless-health",
     "mission-control-event-digest",

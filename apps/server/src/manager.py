@@ -5281,6 +5281,154 @@ class MissionControlService:
             "metadata_json": question.metadata_json,
         }
 
+    @staticmethod
+    def _normalize_report_datetime(value: datetime | None) -> datetime | None:
+        if value is None:
+            return None
+        if value.tzinfo is None:
+            return value.replace(tzinfo=timezone.utc)
+        return value.astimezone(timezone.utc)
+
+    def _format_provider_manager_reply(self, reply: str) -> str:
+        text = (reply or "").strip()
+        if not text:
+            return reply
+        try:
+            payload = json.loads(text)
+        except json.JSONDecodeError:
+            return reply
+        if not isinstance(payload, dict):
+            return reply
+        markdown = str(payload.get("reply_markdown") or "").strip()
+        if markdown:
+            return markdown
+
+        lines: list[str] = []
+        title = str(payload.get("title") or "").strip()
+        project_name = str(payload.get("project") or payload.get("project_name") or "").strip()
+        if title:
+            lines.append(f"## {title}")
+        elif project_name:
+            lines.append(f"## Mission Control Manager: {project_name}")
+
+        status = str(payload.get("status") or "").strip()
+        if status:
+            lines.extend(["", f"**Status:** {status.replace('_', ' ')}"])
+
+        summary = str(payload.get("summary") or "").strip()
+        if summary:
+            lines.extend(["", summary])
+
+        message_payload = payload.get("message")
+        if isinstance(message_payload, dict):
+            content = str(message_payload.get("content") or "").strip()
+            if content:
+                lines.extend(["", content])
+        elif isinstance(message_payload, str) and message_payload.strip():
+            lines.extend(["", message_payload.strip()])
+
+        def _append_section(title_text: str, items: Any, *, key: str = "description") -> None:
+            if not isinstance(items, list):
+                return
+            rendered: list[str] = []
+            for item in items[:6]:
+                if isinstance(item, dict):
+                    value = str(item.get(key) or item.get("summary") or item.get("title") or item.get("question") or "").strip()
+                else:
+                    value = str(item).strip()
+                if value:
+                    rendered.append(f"- {value}")
+            if rendered:
+                lines.extend(["", f"### {title_text}", *rendered])
+
+        _append_section("Next steps", payload.get("next_steps"))
+        _append_section("Questions", payload.get("questions"), key="question")
+        _append_section("Blockers", payload.get("blockers"), key="summary")
+        _append_section("Risks", payload.get("risks"), key="summary")
+
+        normalized = "\n".join(lines).strip()
+        return normalized or reply
+
+    def _interview_question_mirrors(self, db: Session, project: Project, session: InterviewSession) -> list[ManagerQuestion]:
+        questions = list(
+            db.scalars(
+                select(ManagerQuestion)
+                .where(ManagerQuestion.project_id == project.id)
+                .order_by(ManagerQuestion.created_at.asc(), ManagerQuestion.id.asc())
+            )
+        )
+        return [
+            question
+            for question in questions
+            if isinstance(question.metadata_json, dict)
+            and question.metadata_json.get("question_type") == "interview"
+            and int(question.metadata_json.get("interview_session_id") or 0) == session.id
+        ]
+
+    def _resolve_interview_question_mirrors(self, db: Session, project: Project, session: InterviewSession, *, reason: str) -> None:
+        for mirror in self._interview_question_mirrors(db, project, session):
+            if mirror.status != "pending":
+                continue
+            mirror.status = "auto_decided"
+            mirror.selected_option_id = "superseded"
+            mirror.selected_text = reason
+            mirror.resolved_at = utc_now()
+        self._publish_workspace_state(db, project.id)
+
+    def _sync_interview_question_mirror(self, db: Session, project: Project, session: InterviewSession) -> ManagerQuestion | None:
+        pending_questions = self._pending_interview_questions(session)
+        pending_question = pending_questions[0] if pending_questions else None
+        mirrors = self._interview_question_mirrors(db, project, session)
+        active_mirror = next((mirror for mirror in mirrors if mirror.status == "pending"), None)
+
+        if pending_question is None:
+            self._resolve_interview_question_mirrors(
+                db,
+                project,
+                session,
+                reason="Interview moved forward without a pending intake question.",
+            )
+            return None
+
+        metadata_json = {
+            "question_type": "interview",
+            "interview_session_id": session.id,
+            "interview_question_id": pending_question.id,
+        }
+        if active_mirror is None:
+            active_mirror = self._create_question(
+                db,
+                project,
+                question=pending_question.question,
+                options_json=list(pending_question.options_json or []),
+                impact=pending_question.impact,
+                manager_recommendation=None,
+                related_task_id=None,
+                related_agent_id=None,
+                metadata_json=metadata_json,
+            )
+        else:
+            active_mirror.question = pending_question.question
+            active_mirror.options_json = list(pending_question.options_json or [])
+            active_mirror.impact = pending_question.impact
+            active_mirror.manager_recommendation = None
+            active_mirror.status = "pending"
+            active_mirror.selected_option_id = None
+            active_mirror.selected_text = None
+            active_mirror.resolved_at = None
+            active_mirror.metadata_json = metadata_json
+
+        for mirror in mirrors:
+            if mirror.id == active_mirror.id or mirror.status != "pending":
+                continue
+            mirror.status = "auto_decided"
+            mirror.selected_option_id = "superseded"
+            mirror.selected_text = "Superseded by a newer interview question."
+            mirror.resolved_at = utc_now()
+
+        self._publish_workspace_state(db, project.id)
+        return active_mirror
+
     def _serialize_approval(self, approval: ApprovalRequest) -> dict[str, Any]:
         return {
             "id": approval.id,
@@ -6838,6 +6986,12 @@ class MissionControlService:
         )
         if stopped_early:
             self.events.publish(db, project.id, "interview.stopped_early", {"session_id": session.id, "stop_reason": stop_reason})
+        self._resolve_interview_question_mirrors(
+            db,
+            project,
+            session,
+            reason="Interview completed and no pending intake question remains.",
+        )
         return session
 
     def _apply_interview_turn(
@@ -6854,6 +7008,7 @@ class MissionControlService:
         normalized_questions = self._normalize_interview_questions(session, turn.next_questions)
         created_count = self._record_interview_questions(db, session, normalized_questions, question_source=question_source) if normalized_questions else 0
         self._refresh_interview_session_state(session, project=project)
+        self._sync_interview_question_mirror(db, project, session)
         self.events.publish(
             db,
             project.id,
@@ -8213,6 +8368,9 @@ class MissionControlService:
 
     def list_pending_questions(self, db: Session, project: Project) -> list[dict[str, Any]]:
         self._auto_decide_due_questions(db, project)
+        session = self._latest_session(db, project.id)
+        if session is not None and session.status == "in_progress":
+            self._sync_interview_question_mirror(db, project, session)
         questions = list(
             db.scalars(
                 select(ManagerQuestion)
@@ -8344,6 +8502,28 @@ class MissionControlService:
             raise ValueError("Question not found in this project")
         if question.status != "pending":
             return question
+        metadata = question.metadata_json if isinstance(question.metadata_json, dict) else {}
+        if metadata.get("question_type") == "interview":
+            session_id = int(metadata.get("interview_session_id") or 0)
+            interview_question_id = int(metadata.get("interview_question_id") or 0)
+            session = db.get(InterviewSession, session_id) if session_id else None
+            if session is not None and interview_question_id:
+                self.answer_interview(
+                    db,
+                    session,
+                    interview_question_id,
+                    option_id,
+                    selected_text,
+                    project_id=question.project_id,
+                    sync_question_mirrors=False,
+                )
+                project = db.get(Project, question.project_id)
+                resolved = self._resolve_question(db, question, option_id=option_id, selected_text=selected_text, status="answered")
+                if project is not None:
+                    refreshed_session = db.get(InterviewSession, session_id)
+                    if refreshed_session is not None and refreshed_session.status == "in_progress":
+                        self._sync_interview_question_mirror(db, project, refreshed_session)
+                return resolved
         return self._resolve_question(db, question, option_id=option_id, selected_text=selected_text, status="answered")
 
     def auto_decide_question(self, db: Session, question_id: int) -> ManagerQuestion:
@@ -8651,6 +8831,7 @@ class MissionControlService:
         *,
         custom_answer: str | None = None,
         project_id: int | None = None,
+        sync_question_mirrors: bool = True,
     ) -> InterviewSession:
         question = db.get(InterviewQuestion, question_id)
         if not question or question.session_id != session.id:
@@ -8706,6 +8887,8 @@ class MissionControlService:
                 stop_reason=session.stop_reason or "Question budget reached.",
                 stopped_early=False,
             )
+        elif sync_question_mirrors:
+            self._sync_interview_question_mirror(db, project, session)
 
         self.events.publish(
             db,
@@ -9196,8 +9379,10 @@ class MissionControlService:
         self._release_reservations(db, project.id, task_id=task.id if task else None, agent_id=agent.id)
         agent.status = "waiting"
         duration_seconds = None
-        if run.started_at and run.finished_at:
-            duration_seconds = max(0, int((run.finished_at - run.started_at).total_seconds()))
+        started_at = self._normalize_report_datetime(run.started_at)
+        finished_at = self._normalize_report_datetime(run.finished_at)
+        if started_at and finished_at:
+            duration_seconds = max(0, int((finished_at - started_at).total_seconds()))
         outcome = {
             "done": "success",
             "needs_review": "needs_review",
@@ -9460,6 +9645,7 @@ class MissionControlService:
             elif last_payload:
                 reply = str(last_payload.get("text", ""))
             if reply:
+                reply = self._format_provider_manager_reply(reply)
                 self.events.publish(
                     db,
                     project.id,
@@ -9644,6 +9830,7 @@ class MissionControlService:
             )
 
         first_question = pending_questions[0]
+        self._sync_interview_question_mirror(db, project, session)
         return ManagerWorkerDecision(
             decision_type="escalate_to_user",
             summary_markdown=self._manager_interview_prompt_markdown(project, session, first_question),

@@ -28,3 +28,4 @@ apps/desktop/codex_mission_control_desktop.egg-info/
 apps/desktop/*.spec
 *.AppImage
 tmp_remote_probe/
+/Tests/

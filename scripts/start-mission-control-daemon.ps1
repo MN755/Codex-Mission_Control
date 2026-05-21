@@ -267,7 +267,36 @@ function Test-BackendHealthy {
   }
 }
 
+function Get-DaemonIdentity {
+  $identityUrl = "http://${effectiveHost}:${effectiveBackendPort}/api/diagnostics/identity"
+  try {
+    $response = Invoke-WebRequest -Uri $identityUrl -UseBasicParsing -TimeoutSec 2
+    if ($response.StatusCode -ne 200) {
+      return $null
+    }
+    return ($response.Content | ConvertFrom-Json)
+  } catch {
+    return $null
+  }
+}
+
 function Test-ExpectedDaemon {
+  $identity = Get-DaemonIdentity
+  if ($identity) {
+    if ([string]$identity.host -ne $effectiveHost) {
+      return $false
+    }
+    if ([int]$identity.port -ne $effectiveBackendPort) {
+      return $false
+    }
+    if ([string]$identity.mode -ne "daemon") {
+      return $false
+    }
+    if ($identity.repo_root -and ([string]$identity.repo_root -ne $repoRoot)) {
+      return $false
+    }
+    return $true
+  }
   $metadata = Get-DaemonMetadata
   if (-not $metadata) {
     return $false

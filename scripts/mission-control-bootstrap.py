@@ -17,8 +17,11 @@ def _discover_repo_root() -> Path:
 
 def _configure_import_path(repo_root: Path) -> None:
     server_src = repo_root / "apps" / "server" / "src"
+    mcp_src = repo_root / "apps" / "mcp-server" / "src"
     if str(server_src) not in sys.path:
         sys.path.insert(0, str(server_src))
+    if str(mcp_src) not in sys.path:
+        sys.path.insert(0, str(mcp_src))
 
 
 def _json_dump(payload: dict[str, Any]) -> str:
@@ -57,7 +60,7 @@ def _wait_for_backend(base_url: str, *, timeout: float = 20.0) -> bool:
     return False
 
 
-def _mcp_check(repo_root: Path) -> dict[str, Any]:
+def _mcp_check(repo_root: Path, *, base_url: str) -> dict[str, Any]:
     plugin_manifest = repo_root / "plugins" / "mission-control" / "plugin.json"
     example_config = repo_root / "plugins" / "mission-control" / "mcp" / "mission-control-mcp.example.json"
     repo_local_bundle = repo_root / ".codex" / "plugins" / "mission-control" / "plugin.json"
@@ -80,18 +83,36 @@ def _mcp_check(repo_root: Path) -> dict[str, Any]:
         "recommended_codex_mcp_command": "python -m mission_control_mcp_server",
         "notes": [
             "Mission Control MCP uses stdio and is normally launched by Codex, not as a standalone public service.",
-            "This check validates local bridge assets instead of pretending a long-lived TCP listener is required.",
+            "This check validates local bridge assets and attempts one protected Mission Control MCP tool call.",
         ],
     }
+    try:
+        from mission_control_mcp_server.server import MissionControlMcpServer
+
+        server = MissionControlMcpServer(base_url=base_url)
+        tool_result = server.call_tool("mission_control_plugin_health", {})
+        payload["authenticated_tool_call"] = {
+            "status": "ready",
+            "summary": "Protected Mission Control MCP tool call succeeded.",
+            "result_preview": tool_result.get("structuredContent", {}),
+        }
+    except Exception as exc:  # noqa: BLE001
+        payload["authenticated_tool_call"] = {
+            "status": "degraded",
+            "summary": f"Protected Mission Control MCP tool call failed: {type(exc).__name__}: {exc}",
+        }
+        if payload["status"] == "ready":
+            payload["status"] = "degraded"
     payload["codex_chat_markdown"] = "\n".join(
         [
             "## Mission Control MCP Bridge Check",
             "",
-            f"**Status:** {status.title()}",
+            f"**Status:** {str(payload['status']).title()}",
             f"**Plugin manifest:** {'Present' if plugin_manifest.exists() else 'Missing'}",
             f"**Repo-local plugin bundle:** {'Present' if repo_local_bundle.exists() else 'Missing'}",
             f"**MCP package entrypoint:** {'Present' if mcp_package.exists() else 'Missing'}",
             f"**Local skills path:** {'Present' if local_skills.exists() else 'Missing'}",
+            f"**Protected tool call:** {payload['authenticated_tool_call']['status'].title()}",
         ]
     )
     return payload
@@ -142,9 +163,18 @@ def main() -> int:
     base_url = f"http://{host}:{port}"
 
     if args.mcp_check_only:
-        payload = _mcp_check(repo_root)
+        daemon_message = None
+        if not args.dry_run:
+            started, daemon_message = _start_daemon(repo_root, host=host, port=port)
+            if not started:
+                print(daemon_message)
+            elif not _wait_for_backend(base_url):
+                print(f"Mission Control daemon did not answer health checks at {base_url}.")
+        payload = _mcp_check(repo_root, base_url=base_url)
+        if daemon_message:
+            payload["daemon_start_message"] = daemon_message
         _print_payload(payload, as_json=args.json)
-        return 0 if payload["status"] == "ready" else 1
+        return 0 if payload["status"] == "ready" and payload.get("authenticated_tool_call", {}).get("status") == "ready" else 1
 
     if args.health_check_only:
         payload = asyncio.run(get_headless_health())

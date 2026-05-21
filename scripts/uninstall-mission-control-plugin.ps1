@@ -1,7 +1,8 @@
 param(
   [string]$CodexHome = "",
   [switch]$DryRun,
-  [switch]$Json
+  [switch]$Json,
+  [switch]$NoStopDaemon
 )
 
 Set-StrictMode -Version Latest
@@ -18,14 +19,15 @@ function Get-PythonCommand {
 }
 
 $pythonPath = Get-PythonCommand
-$scriptPath = Join-Path $PSScriptRoot "uninstall-mission-control-plugin.py"
+$scriptPath = Join-Path $PSScriptRoot "mission-control-manage.py"
 if (-not (Test-Path $scriptPath)) {
-  throw "Uninstall script not found: $scriptPath"
+  throw "Manage script not found: $scriptPath"
 }
 
-$arguments = @($scriptPath)
+$arguments = @($scriptPath, "uninstall")
 if ($CodexHome) { $arguments += @("--codex-home", $CodexHome) }
 if ($DryRun) { $arguments += "--dry-run" }
 if ($Json) { $arguments += "--json" }
+if ($NoStopDaemon) { $arguments += "--no-stop-daemon" }
 
 & $pythonPath @arguments
