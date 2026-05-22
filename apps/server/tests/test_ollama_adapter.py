@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 
 
-ADAPTER_PATH = Path(__file__).resolve().parents[3] / "Tests" / "ollama_adapter.py"
+ADAPTER_PATH = Path(__file__).resolve().parents[3] / "scripts" / "ollama_adapter.py"
 SPEC = importlib.util.spec_from_file_location("mission_control_ollama_adapter", ADAPTER_PATH)
 assert SPEC and SPEC.loader
 ollama_adapter = importlib.util.module_from_spec(SPEC)
