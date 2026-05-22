@@ -326,6 +326,52 @@ def test_run_management_workflow_codex_smoke_reports_ready_state(monkeypatch, tm
     assert "What this proves" in payload["codex_chat_markdown"]
 
 
+def test_run_management_workflow_codex_smoke_stays_ready_when_bootstrap_is_only_degraded(monkeypatch, tmp_path) -> None:
+    module = _load_manage_module()
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir(parents=True, exist_ok=True)
+    codex_home = tmp_path / ".codex"
+    agents_home = tmp_path / ".agents"
+
+    monkeypatch.setattr(module, "resolve_repo_root", lambda **kwargs: repo_root)
+    monkeypatch.setattr(module, "resolve_codex_home", lambda override=None: codex_home)
+    monkeypatch.setattr(module, "resolve_agents_home", lambda override=None: agents_home)
+    monkeypatch.setattr(module, "resolve_python_command", lambda explicit=None: sys.executable)
+    monkeypatch.setattr(module, "detect_claude_assets", lambda repo_root: {"status": "ready", "missing": [], "slash_commands": []})
+    monkeypatch.setattr(module, "run_bootstrap", lambda *args, **kwargs: {"status": "degraded"})
+    monkeypatch.setattr(
+        module,
+        "_load_server_module",
+        lambda repo_root, module_name: type(
+            "FakeSystemStatus",
+            (),
+            {
+                "detect_codex_status": staticmethod(
+                    lambda: {
+                        "cli_detected": True,
+                        "cli_path": "C:/tools/codex.exe",
+                        "cli_execution_available": True,
+                        "authenticated": True,
+                        "login_status": "Logged in via ChatGPT.",
+                        "mcp_state": {
+                            "mission_control": {
+                                "configured": True,
+                                "app_loaded": True,
+                            }
+                        },
+                    }
+                )
+            },
+        )(),
+    )
+
+    payload = module.run_management_workflow(action="codex-smoke", dry_run=False)
+
+    assert payload["status"] == "ready"
+    assert payload["smoke_runnable"] is True
+    assert payload["bootstrap"]["status"] == "degraded"
+
+
 def test_run_management_workflow_codex_restart_smoke_reports_detached_job(monkeypatch, tmp_path) -> None:
     module = _load_manage_module()
     repo_root = tmp_path / "repo"
@@ -357,6 +403,74 @@ def test_run_management_workflow_codex_restart_smoke_reports_detached_job(monkey
     assert payload["reload_guidance"]["codex"] is True
     assert "Codex will be force-quit." in payload["codex_chat_markdown"]
     assert "Suggested resume minutes: 3" in payload["codex_chat_markdown"]
+
+
+def test_run_management_workflow_codex_restart_smoke_status_reports_last_artifact(monkeypatch, tmp_path) -> None:
+    module = _load_manage_module()
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir(parents=True, exist_ok=True)
+    codex_home = tmp_path / ".codex"
+    agents_home = tmp_path / ".agents"
+
+    monkeypatch.setattr(module, "resolve_repo_root", lambda **kwargs: repo_root)
+    monkeypatch.setattr(module, "resolve_codex_home", lambda override=None: codex_home)
+    monkeypatch.setattr(module, "resolve_agents_home", lambda override=None: agents_home)
+    monkeypatch.setattr(module, "resolve_python_command", lambda explicit=None: sys.executable)
+    monkeypatch.setattr(
+        module,
+        "load_codex_restart_smoke_status",
+        lambda repo_root: {
+            "status": "ready",
+            "summary": "Restart smoke completed with status ready.",
+            "results_path": str(repo_root / ".runtime" / "codex-restart-smoke" / "latest.json"),
+            "log_path": str(repo_root / ".runtime" / "codex-restart-smoke" / "latest.log"),
+            "artifact": {
+                "status": "ready",
+                "smoke": {
+                    "smoke_checks": [
+                        {
+                            "label": "Codex CLI execution available",
+                            "state": "ready",
+                            "summary": "Codex CLI can be executed from this runtime.",
+                        }
+                    ]
+                },
+            },
+        },
+    )
+
+    payload = module.run_management_workflow(action="codex-restart-smoke-status", dry_run=False)
+
+    assert payload["status"] == "ready"
+    assert payload["restart_smoke_status"]["status"] == "ready"
+    assert "### Restart smoke status" in payload["codex_chat_markdown"]
+    assert "Codex CLI execution available: ready" in payload["codex_chat_markdown"]
+
+
+def test_main_allows_missing_restart_smoke_status(monkeypatch, tmp_path, capsys) -> None:
+    module = _load_manage_module()
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir(parents=True, exist_ok=True)
+    codex_home = tmp_path / ".codex"
+    agents_home = tmp_path / ".agents"
+
+    monkeypatch.setattr(module, "resolve_repo_root", lambda **kwargs: repo_root)
+    monkeypatch.setattr(module, "resolve_codex_home", lambda override=None: codex_home)
+    monkeypatch.setattr(module, "resolve_agents_home", lambda override=None: agents_home)
+    monkeypatch.setattr(module, "resolve_python_command", lambda explicit=None: sys.executable)
+    monkeypatch.setattr(
+        module,
+        "load_codex_restart_smoke_status",
+        lambda repo_root: {
+            "status": "missing",
+            "summary": "No restart smoke result artifact exists yet.",
+            "results_path": str(repo_root / ".runtime" / "codex-restart-smoke" / "latest.json"),
+            "log_path": str(repo_root / ".runtime" / "codex-restart-smoke" / "latest.log"),
+        },
+    )
+
+    assert module.main(["codex-restart-smoke-status", "--json"]) == 0
+    assert "No restart smoke result artifact exists yet." in capsys.readouterr().out
 
 
 def test_packaged_plugin_manifest_is_ready_for_codex_sync() -> None:

@@ -304,6 +304,13 @@ def sync_codex_bundle(repo_root: Path, codex_home: Path, *, dry_run: bool = Fals
 
 
 def reload_guidance(action: str) -> dict[str, Any]:
+    if action == "codex-restart-smoke-status":
+        return {
+            "required": False,
+            "codex": False,
+            "claude": False,
+            "message": "No app reload is required just to read the latest restart smoke results.",
+        }
     requires_reload = action in {"install", "update"}
     if action == "codex-restart-smoke":
         return {
@@ -669,7 +676,7 @@ def run_codex_smoke(repo_root: Path, python_command: str, *, bootstrap: dict[str
         reasons.append("Mission Control MCP is not configured in Codex config.")
     if bootstrap_status not in {"ready", "degraded"}:
         reasons.append("Mission Control bootstrap did not complete cleanly.")
-    smoke_status = "ready" if runnable and bootstrap_status == "ready" else "degraded"
+    smoke_status = "ready" if runnable else "degraded"
     return {
         "codex_status": codex_status,
         "smoke_checks": smoke_checks,
@@ -733,6 +740,43 @@ def launch_codex_restart_smoke(
         "launch_wait_seconds": launch_wait_seconds,
         "recommended_resume_minutes": max(2, int((launch_wait_seconds + 95) / 60) + 1),
         "command": command,
+    }
+
+
+def load_codex_restart_smoke_status(repo_root: Path) -> dict[str, Any]:
+    results_path = repo_root / ".runtime" / "codex-restart-smoke" / "latest.json"
+    log_path = repo_root / ".runtime" / "codex-restart-smoke" / "latest.log"
+    if not results_path.exists():
+        return {
+            "status": "missing",
+            "results_path": str(results_path),
+            "log_path": str(log_path),
+            "summary": "No restart smoke result artifact exists yet.",
+        }
+    try:
+        payload = json.loads(results_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        return {
+            "status": "failed",
+            "results_path": str(results_path),
+            "log_path": str(log_path),
+            "summary": f"Restart smoke artifact could not be parsed: {exc}",
+        }
+
+    smoke = payload.get("smoke") if isinstance(payload, dict) else None
+    smoke_status = None
+    if isinstance(smoke, dict):
+        smoke_status = smoke.get("status")
+    return {
+        "status": str(payload.get("status") or smoke_status or "unknown"),
+        "results_path": str(results_path),
+        "log_path": str(log_path),
+        "artifact": payload,
+        "summary": (
+            f"Restart smoke completed with status {payload.get('status') or smoke_status or 'unknown'}."
+            if isinstance(payload, dict)
+            else "Restart smoke artifact loaded."
+        ),
     }
 
 
@@ -912,6 +956,31 @@ def _build_markdown(action: str, payload: dict[str, Any]) -> str:
                 "- If you want me to survive the app restart, pair this command with a heartbeat on this thread so I wake back up after the wait window instead of dying with dignity in silence.",
             ]
         )
+    elif action == "codex-restart-smoke-status":
+        restart_status = payload.get("restart_smoke_status") or {}
+        artifact = restart_status.get("artifact") or {}
+        smoke = artifact.get("smoke") if isinstance(artifact, dict) else {}
+        smoke = smoke if isinstance(smoke, dict) else {}
+        smoke_checks = list((smoke or {}).get("smoke_checks") or [])
+        lines.extend(
+            [
+                "",
+                "### Restart smoke status",
+                f"- Status: {restart_status.get('status')}",
+                f"- Summary: {restart_status.get('summary')}",
+                f"- Results path: {restart_status.get('results_path')}",
+                f"- Log path: {restart_status.get('log_path')}",
+            ]
+        )
+        if smoke_checks:
+            lines.extend(["", "### Checks"])
+            lines.extend(
+                f"- {item.get('label')}: {item.get('state')} - {item.get('summary')}"
+                for item in smoke_checks
+            )
+        if smoke.get("smoke_reasons"):
+            lines.extend(["", "### Remaining issues"])
+            lines.extend(f"- {reason}" for reason in smoke["smoke_reasons"])
     else:
         uninstall_result = payload.get("uninstall") or {}
         lines.extend(
@@ -1009,6 +1078,10 @@ def run_management_workflow(
         )
         payload["restart_smoke"] = launched
         payload["status"] = "ready"
+    elif action == "codex-restart-smoke-status":
+        restart_status = load_codex_restart_smoke_status(repo_root)
+        payload["restart_smoke_status"] = restart_status
+        payload["status"] = str(restart_status.get("status") or "unknown")
     elif action == "uninstall":
         if stop_daemon and not dry_run:
             payload["stop_daemon"] = run_stop_daemon(repo_root)
@@ -1025,7 +1098,7 @@ def run_management_workflow(
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Install, update, uninstall, or smoke-test Mission Control bridge assets.")
-    parser.add_argument("action", choices=["install", "update", "uninstall", "codex-smoke", "codex-restart-smoke"])
+    parser.add_argument("action", choices=["install", "update", "uninstall", "codex-smoke", "codex-restart-smoke", "codex-restart-smoke-status"])
     parser.add_argument("--repo-url", default=DEFAULT_REPO_URL)
     parser.add_argument("--install-dir", default=None)
     parser.add_argument("--codex-home", default=None)
@@ -1063,7 +1136,10 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(payload, indent=2, default=str))
     else:
         print(payload["codex_chat_markdown"])
-    return 0 if payload["status"] in {"ready", "degraded"} else 1
+    acceptable_statuses = {"ready", "degraded"}
+    if args.action == "codex-restart-smoke-status":
+        acceptable_statuses.add("missing")
+    return 0 if payload["status"] in acceptable_statuses else 1
 
 
 if __name__ == "__main__":
