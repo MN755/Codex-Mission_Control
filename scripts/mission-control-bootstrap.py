@@ -87,9 +87,11 @@ def _mcp_check(repo_root: Path, *, base_url: str) -> dict[str, Any]:
         ],
     }
     try:
+        from mission_control_mcp_server.client import MissionControlDaemonClient
         from mission_control_mcp_server.server import MissionControlMcpServer
 
-        server = MissionControlMcpServer(base_url=base_url)
+        client = MissionControlDaemonClient(base_url=base_url)
+        server = MissionControlMcpServer(client=client)
         tool_result = server.call_tool("mission_control_plugin_health", {})
         payload["authenticated_tool_call"] = {
             "status": "ready",

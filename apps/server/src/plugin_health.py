@@ -232,6 +232,8 @@ async def mission_control_plugin_health() -> dict[str, Any]:
         bridge_summary = "Mission Control MCP server is configured and reports a healthy connection state."
         bridge_fix: str | None = None
         bridge_error = None
+        mcp_state = (codex.get("mcp_state") or {}).get("mission_control") or {}
+        app_loaded = mcp_state.get("app_loaded")
         if mission_server is not None:
             raw_status = str(mission_server.get("status") or mission_server.get("connection_status") or "").strip().lower()
             if raw_status in FAILING_MCP_STATUSES:
@@ -244,10 +246,18 @@ async def mission_control_plugin_health() -> dict[str, Any]:
                 bridge_status = derive_health_status(bridge_error, critical=True)
                 bridge_summary = bridge_error.detail or bridge_summary
                 bridge_fix = bridge_error.recommended_fix
+            elif app_loaded is True:
+                bridge_status = "ready"
+                bridge_summary = "Mission Control MCP server is configured and was discovered in the live Codex MCP server list."
+                bridge_fix = None
             elif raw_status not in PASSING_MCP_STATUSES:
                 bridge_status = "unknown"
                 bridge_summary = "Mission Control MCP server is configured, but Codex did not expose a definitive live reachability state."
                 bridge_fix = "Verify the MCP bridge command and reload Codex MCP configuration."
+        elif app_loaded is True:
+            bridge_status = "ready"
+            bridge_summary = "Mission Control MCP server is configured and was discovered in the live Codex MCP server list."
+            bridge_fix = None
         elif configured_server is not None and not cli_execution_available and codex_cli_detected:
             bridge_status = "degraded"
             bridge_summary = "Mission Control is configured in Codex config, but this runtime could not inspect live MCP loading."
@@ -292,6 +302,9 @@ async def mission_control_plugin_health() -> dict[str, Any]:
             if count is not None:
                 state = "ready" if count > 0 else "degraded"
                 summary = f"Mission Control MCP server reports {count} {key}."
+            elif app_loaded is True:
+                state = "ready"
+                summary = f"Mission Control MCP server is live-loaded, but Codex did not expose {label.lower()} counts."
             checks.append(
                 _check(
                     check_id=f"mcp_{key}_registered",

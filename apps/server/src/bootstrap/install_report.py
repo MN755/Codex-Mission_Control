@@ -103,7 +103,8 @@ def _build_readiness_matrix(
             summary=str(login_check.get("summary") or "Codex host observability is limited in this runtime."),
         ),
     ]
-    install_count = len(discovered_installs)
+    conflicting_installs = [item for item in discovered_installs if (item.get("markers") or {}).get("install_conflict")]
+    install_count = len(conflicting_installs)
     if install_count > 1:
         items.append(
             _readiness_item(
@@ -139,6 +140,7 @@ def compose_install_markdown(report: dict[str, Any]) -> str:
     daemon_status = environment.get("daemon_status") if isinstance(environment, dict) else {}
     subsystem_status = report.get("subsystem_status") or {}
     discovered_installs = list(report.get("discovered_installs") or [])
+    conflicting_installs = [item for item in discovered_installs if (item.get("markers") or {}).get("install_conflict")]
     lines = [
         "## Mission Control Headless Setup",
         "",
@@ -163,11 +165,11 @@ def compose_install_markdown(report: dict[str, Any]) -> str:
     if subsystem_status:
         lines.extend(["", "### Subsystem status"])
         lines.extend(f"- **{label}:** {_component_text(str(status))}" for label, status in subsystem_status.items())
-    if len(discovered_installs) > 1:
+    if len(conflicting_installs) > 1:
         lines.extend(["", "### Other installs found"])
         lines.extend(
             f"- `{item.get('kind')}` at `{item.get('path')}`"
-            for item in discovered_installs
+            for item in conflicting_installs
             if str(item.get("path") or "") != str(report.get("active_repo_root") or "")
         )
     if report.get("user_actions_required"):
@@ -198,7 +200,8 @@ def build_install_report(
     )
     environment = environment or {}
     discovered_installs = list(environment.get("discovered_installs") or [])
-    if len(discovered_installs) > 1:
+    conflicting_installs = [item for item in discovered_installs if (item.get("markers") or {}).get("install_conflict")]
+    if len(conflicting_installs) > 1:
         warnings.append("Multiple Mission Control installs were detected. Confirm which checkout should own the active daemon and Codex MCP registration.")
     daemon_status = _component_status(health, "mission_control_daemon_reachable")
     mcp_status = _component_status(health, "mcp_server_reachable")

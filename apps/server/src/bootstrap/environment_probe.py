@@ -97,6 +97,7 @@ def _discover_install_candidates() -> list[dict[str, Any]]:
             or (resolved / "scripts" / "start-mission-control-daemon.sh").exists(),
             "plugin_manifest": (resolved / "plugin.json").exists() or (resolved / "plugins" / "mission-control" / "plugin.json").exists(),
         }
+        markers["install_conflict"] = bool(markers["server_runtime"] and markers["launcher_script"])
         discovered.append(
             {
                 "kind": kind,

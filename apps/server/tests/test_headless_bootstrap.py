@@ -39,6 +39,34 @@ def test_environment_probe_handles_missing_tools_and_redacts_secret_like_entries
     assert payload["core_tools"]["git"]["detected"] is False
 
 
+def test_environment_probe_marks_only_real_checkout_conflicts(monkeypatch, tmp_path) -> None:
+    workspace_repo = tmp_path / "repo"
+    workspace_repo.mkdir(parents=True, exist_ok=True)
+    (workspace_repo / "apps" / "server" / "src" / "main.py").parent.mkdir(parents=True, exist_ok=True)
+    (workspace_repo / "apps" / "server" / "src" / "main.py").write_text("app", encoding="utf-8")
+    (workspace_repo / "scripts" / "start-mission-control-daemon.ps1").parent.mkdir(parents=True, exist_ok=True)
+    (workspace_repo / "scripts" / "start-mission-control-daemon.ps1").write_text("start", encoding="utf-8")
+    (workspace_repo / "plugins" / "mission-control" / "plugin.json").parent.mkdir(parents=True, exist_ok=True)
+    (workspace_repo / "plugins" / "mission-control" / "plugin.json").write_text("{}", encoding="utf-8")
+
+    app_support = tmp_path / "app-support"
+    app_support.mkdir(parents=True, exist_ok=True)
+    codex_plugin_home = tmp_path / ".codex" / "plugins" / "mission-control"
+    codex_plugin_home.mkdir(parents=True, exist_ok=True)
+    (codex_plugin_home / "plugin.json").write_text("{}", encoding="utf-8")
+
+    monkeypatch.setattr("bootstrap.environment_probe.REPO_ROOT", workspace_repo)
+    monkeypatch.setattr("bootstrap.environment_probe.APP_SUPPORT_ROOT", app_support)
+    monkeypatch.setattr("bootstrap.environment_probe.get_codex_home", lambda: tmp_path / ".codex")
+
+    discovered = probe_environment(workspace_path=str(workspace_repo))["discovered_installs"]
+    by_kind = {item["kind"]: item for item in discovered}
+
+    assert by_kind["workspace_repo"]["markers"]["install_conflict"] is True
+    assert by_kind["app_support_root"]["markers"]["install_conflict"] is False
+    assert by_kind["codex_plugin_home"]["markers"]["install_conflict"] is False
+
+
 def test_dry_run_runner_is_always_available() -> None:
     probe = probe_dry_run()
     assert probe["available"] is True
