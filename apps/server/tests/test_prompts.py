@@ -91,6 +91,35 @@ def test_manager_swarm_prompt_adds_conservative_biases_for_weak_model() -> None:
     assert "Avoid duplicate specialists unless their path ownership or mission is clearly different." in prompt
 
 
+def test_manager_action_prompt_adds_existing_repo_biases_without_becoming_rigid() -> None:
+    project = Project(
+        name="Prompt Demo",
+        idea="Fix a real codebase safely",
+        workspace_path=sample_workspace("prompt-existing"),
+        status="building",
+        runner_mode="auto",
+        manager_mode="auto",
+        source_type="existing_folder",
+        source_path=sample_workspace("prompt-existing"),
+    )
+
+    prompt = manager_action_prompt(
+        project,
+        docs_path=f"{project.workspace_path}/mission-control",
+        action="plan.generate",
+        objective="Generate a repair-oriented plan.",
+        response_schema={"summary_markdown": "string"},
+        payload={"goal": "Stabilize the existing repo."},
+        user_name="Operator",
+        provider="ollama",
+        model="qwen2.5:7b",
+        reasoning_effort="medium",
+    )
+
+    assert "Treat the repository as real inherited state." in prompt
+    assert "Bias toward targeted repair, validation, and subsystem ownership" in prompt
+
+
 def test_worker_task_prompt_includes_weak_model_guardrails() -> None:
     project = Project(name="Prompt Demo", idea="Fix a failing function", workspace_path=sample_workspace("prompt-worker"), status="building", runner_mode="auto", manager_mode="auto")
     agent = Agent(project_id=1, name="Worker", role="Implementation", kind="worker", status="idle", workspace_path=project.workspace_path)
@@ -160,3 +189,47 @@ def test_worker_task_prompt_adds_validation_biases_for_non_edit_task() -> None:
 
     assert "Do not claim file changes for reproduce, inspect, or validation work unless the task explicitly requires an edit." in prompt
     assert "Bias toward crisp evidence capture" in prompt
+
+
+def test_worker_task_prompt_adds_project_state_biases_for_single_path_fix() -> None:
+    project = Project(
+        name="Prompt Demo",
+        idea="Fix a narrow existing code path",
+        workspace_path=sample_workspace("prompt-single-path"),
+        status="building",
+        runner_mode="auto",
+        manager_mode="auto",
+        source_type="existing_folder",
+        source_path=sample_workspace("prompt-single-path"),
+    )
+    agent = Agent(project_id=1, name="Worker", role="Implementation", kind="worker", status="idle", workspace_path=project.workspace_path)
+    task = Task(
+        id=4,
+        project_id=1,
+        title="Implement a narrow fix",
+        goal="Correct one broken implementation path.",
+        scope="Touch only the service implementation.",
+        agent_role="Implementation",
+        milestone="Milestone 1",
+        allowed_paths_json=["src/service"],
+        forbidden_paths_json=["tests"],
+        validation_steps_json=["Run the focused test command"],
+        success_criteria_json=["The broken path is corrected"],
+        estimated_complexity="small",
+        dependencies_json=[],
+        status="backlog",
+        priority=10,
+    )
+
+    prompt = worker_task_prompt(
+        project,
+        agent,
+        task,
+        docs_path=f"{project.workspace_path}/mission-control",
+        provider="ollama",
+        model="qwen2.5:7b",
+        reasoning_effort="medium",
+    )
+
+    assert "Treat the repository as real inherited state." in prompt
+    assert "Path ownership is intentionally narrow here." in prompt

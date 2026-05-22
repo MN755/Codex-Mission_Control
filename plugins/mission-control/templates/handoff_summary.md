@@ -2,10 +2,10 @@
 
 `Project:` {{PROJECT_NAME}}  
 `Status:` {{HANDOFF_STATUS}}  
-`Evidence:` {{EVIDENCE_STATUS}}  
+`Evidence State:` {{EVIDENCE_STATUS}}  
 `Dry Run:` {{DRY_RUN}}
 
-`What Changed`
+`Verified Or Claimed Changes`
 - {{CHANGE_ONE}}
 - {{CHANGE_TWO}}
 
@@ -13,7 +13,7 @@
 - {{RUN_STEP_ONE}}
 - {{RUN_STEP_TWO}}
 
-`Limitations`
+`Known Limits Or Review Gaps`
 - {{LIMITATION_ONE}}
 - {{LIMITATION_TWO}}
 

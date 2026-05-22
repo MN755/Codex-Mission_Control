@@ -49,6 +49,82 @@ def _component_text(status: str) -> str:
     return mapping.get(status, status.replace("_", " ").title())
 
 
+def _lookup_check(health: dict[str, Any], key: str) -> dict[str, Any] | None:
+    for check in health.get("checks", []):
+        if check.get("key") == key:
+            return check
+    return None
+
+
+def _readiness_item(*, key: str, label: str, state: str, summary: str) -> dict[str, str]:
+    return {
+        "key": key,
+        "label": label,
+        "state": state,
+        "summary": summary,
+    }
+
+
+def _build_readiness_matrix(
+    *,
+    health: dict[str, Any],
+    daemon_status: str,
+    mcp_status: str,
+    codex_host_status: str,
+    discovered_installs: list[dict[str, Any]],
+) -> list[dict[str, str]]:
+    daemon_check = _lookup_check(health, "mission_control_daemon_reachable") or {}
+    bridge_check = _lookup_check(health, "mcp_server_reachable") or {}
+    login_check = _lookup_check(health, "codex_login_status_detectable") or {}
+    identity_check = _lookup_check(health, "daemon_identity_confirmed") or {}
+    items = [
+        _readiness_item(
+            key="backend_daemon",
+            label="Backend daemon reachable",
+            state=daemon_status,
+            summary=str(daemon_check.get("summary") or "Mission Control backend reachability was not verified."),
+        ),
+        _readiness_item(
+            key="daemon_identity",
+            label="Active checkout owns the daemon",
+            state=str(identity_check.get("status") or "unknown"),
+            summary=str(identity_check.get("summary") or "Daemon identity was not verified."),
+        ),
+        _readiness_item(
+            key="mcp_bridge",
+            label="MCP bridge callable",
+            state=mcp_status,
+            summary=str(bridge_check.get("summary") or "Mission Control MCP bridge state is unknown."),
+        ),
+        _readiness_item(
+            key="codex_host",
+            label="Codex host visibility",
+            state=codex_host_status,
+            summary=str(login_check.get("summary") or "Codex host observability is limited in this runtime."),
+        ),
+    ]
+    install_count = len(discovered_installs)
+    if install_count > 1:
+        items.append(
+            _readiness_item(
+                key="multiple_installs",
+                label="Multiple installs reconciled",
+                state="degraded",
+                summary="More than one Mission Control install was detected. Confirm which checkout should own the daemon and Codex registration.",
+            )
+        )
+    else:
+        items.append(
+            _readiness_item(
+                key="multiple_installs",
+                label="Multiple installs reconciled",
+                state="ready",
+                summary="No competing Mission Control install ownership was detected.",
+            )
+        )
+    return items
+
+
 def choose_next_codex_prompt(configured_runners: list[str]) -> str:
     normalized = {item.lower() for item in configured_runners}
     if normalized <= {"dry-run"}:
@@ -77,6 +153,13 @@ def compose_install_markdown(report: dict[str, Any]) -> str:
         "### You can now say",
         f"\"{report['next_codex_prompt']}\"",
     ]
+    readiness_matrix = list(report.get("readiness_matrix") or [])
+    if readiness_matrix:
+        lines.extend(["", "### Operational readiness"])
+        lines.extend(
+            f"- **{item.get('label')}:** {_component_text(str(item.get('state') or 'unknown'))}. {item.get('summary')}"
+            for item in readiness_matrix
+        )
     if subsystem_status:
         lines.extend(["", "### Subsystem status"])
         lines.extend(f"- **{label}:** {_component_text(str(status))}" for label, status in subsystem_status.items())
@@ -119,6 +202,14 @@ def build_install_report(
         warnings.append("Multiple Mission Control installs were detected. Confirm which checkout should own the active daemon and Codex MCP registration.")
     daemon_status = _component_status(health, "mission_control_daemon_reachable")
     mcp_status = _component_status(health, "mcp_server_reachable")
+    codex_host_status = _component_status(health, "codex_login_status_detectable")
+    readiness_matrix = _build_readiness_matrix(
+        health=health,
+        daemon_status=daemon_status,
+        mcp_status=mcp_status,
+        codex_host_status=codex_host_status,
+        discovered_installs=discovered_installs,
+    )
     live_runners = [probe for probe in probes if probe["runner_id"] != "dry_run" and probe["configured"]]
     if health.get("status") == "broken" and not live_runners:
         status = "failed"
@@ -136,9 +227,10 @@ def build_install_report(
         "subsystem_status": {
             "Backend": daemon_status,
             "Bridge": mcp_status,
-            "Codex host": _component_status(health, "codex_login_status_detectable"),
+            "Codex host": codex_host_status,
             "Optional UI": _component_status(health, "dashboard_optional_status"),
         },
+        "readiness_matrix": readiness_matrix,
         "configured_runners": configured_runners,
         "unavailable_runners": unavailable_runners,
         "discovered_installs": discovered_installs,

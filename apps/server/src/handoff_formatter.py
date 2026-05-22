@@ -21,12 +21,16 @@ def build_handoff_markdown(
     status_label = handoff_status
     if dry_run:
         status_label += " (dry-run)"
+    review_state = "Review required" if handoff_status == "needs_review" or missing_evidence else "No extra review gate recorded"
+    evidence_state = "Verified" if evidence_level in {"high", "complete", "verified"} and not missing_evidence else "Partial / claimed"
 
     lines = [
         f"## {title}",
         "",
         f"**Status:** {status_label}",
         f"**Confidence / evidence:** {confidence_level} / {evidence_level}",
+        f"**Evidence state:** {evidence_state}",
+        f"**Review state:** {review_state}",
     ]
     if dry_run:
         lines.append("**Dry-run:** This summary is based on simulated execution and recorded dry-run evidence only.")
@@ -40,7 +44,7 @@ def build_handoff_markdown(
         )
     )
     if missing_evidence:
-        lines.extend(section("Evidence warnings", bullet_lines(missing_evidence, empty_message="No evidence warnings.")))
+        lines.extend(section("Needs review before trust", bullet_lines(missing_evidence, empty_message="No evidence warnings.")))
     lines.extend(
         section(
             "Known limitations",

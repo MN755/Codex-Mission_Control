@@ -43,7 +43,7 @@ def test_bridge_formatter_status_summary_shape() -> None:
         project_id=1,
         orchestration_id=2,
         title="Mission Control status",
-        summary="Manager is waiting on an approval.",
+        summary="**Status:** Manager is waiting on an approval.",
         project_name="Bridge Demo",
         manager_status="Waiting for approval",
         mode="dry_run / deterministic",
@@ -59,6 +59,8 @@ def test_bridge_formatter_status_summary_shape() -> None:
     assert payload["message_type"] == "blocked"
     assert payload["user_action_required"] is True
     assert "## Mission Control Status" in payload["fallback_markdown"]
+    assert "**What Mission Control is doing:** Status: Manager is waiting on an approval." in payload["fallback_markdown"]
+    assert "### What is blocking progress" not in payload["fallback_markdown"]
     assert "### Model advisories" in payload["fallback_markdown"]
     assert "### Waiting on you" in payload["fallback_markdown"]
 
@@ -105,7 +107,7 @@ def test_bridge_formatter_command_and_tool_approval_payloads() -> None:
     assert command["source_type"] == "security"
     assert command["message_type"] == "approval_request"
     assert "**Command:** `python -m pytest`" in command["fallback_markdown"]
-    assert "### Options" in command["fallback_markdown"]
+    assert "### Choose one" in command["fallback_markdown"]
     assert tool["source_type"] == "security"
     assert tool["machine_payload_json"]["tool_name"] == "mission_control_get_status"
 
@@ -154,8 +156,11 @@ def test_bridge_formatter_manager_question_handoff_and_redaction() -> None:
     )
     assert question["message_type"] == "manager_question"
     assert "**Question:**" in question["fallback_markdown"]
+    assert "### Why this blocks progress" in question["fallback_markdown"]
+    assert "### Choose one" in question["fallback_markdown"]
     assert handoff["user_action_required"] is True
     assert "Validation / evidence" in handoff["fallback_markdown"]
+    assert "Review state" in handoff["fallback_markdown"]
     assert diagnostic["redaction_status"] == "redacted"
     assert "sk-proj-secret-value" not in diagnostic["summary"]
     assert "super-secret-token" not in diagnostic["fallback_markdown"]

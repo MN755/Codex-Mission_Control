@@ -131,7 +131,7 @@ from schemas import (
 )
 from swarm import AGENT_ARCHETYPE_CATALOG, SWARM_RISK_LEVELS
 from simulation import simulation_service
-from task_board import build_initial_tasks, can_assign_task, conflicting_agents
+from task_board import build_initial_tasks, can_assign_task, conflicting_agents, paths_conflict
 from tool_catalog import TOOL_CATALOG, catalog_with_permissions
 from validation_coverage import validation_coverage_service
 from widget_catalog import (
@@ -5746,11 +5746,53 @@ class MissionControlService:
             return "Coordination risk is high enough that path ownership and review gates matter."
         return None
 
+    def _swarm_spec_status_summary(self, specs: list[SwarmAgentSpec]) -> dict[str, int]:
+        summary: dict[str, int] = {}
+        for spec in specs:
+            summary[spec.status] = summary.get(spec.status, 0) + 1
+        return summary
+
+    def _swarm_launch_readiness(
+        self,
+        db: Session,
+        project: Project,
+        plan: SwarmPlan,
+        specs: list[SwarmAgentSpec],
+    ) -> tuple[dict[str, Any], str | None, str | None]:
+        simulation = simulation_service.latest_simulation(db, project)
+        if simulation is None or simulation.swarm_plan_id != plan.id:
+            simulation = simulation_service.simulate_launch(db, project, plan)
+        launch_order = list(simulation.recommended_launch_order_json or [])
+        next_launch = next((item for item in launch_order if str(item.get("status")) == "launch"), None)
+        next_wait = next((item for item in launch_order if str(item.get("status")) == "wait"), None)
+        if next_launch is not None:
+            wave_label = f"Launch next: {next_launch.get('name')}"
+            next_step = "Spawn the current launch-ready wave before waking deferred specialists."
+        elif next_wait is not None:
+            wave_label = f"Deferred wave: {next_wait.get('spawn_phase') or 'later phase'}"
+            next_step = "Clear the current bottleneck or finish the earlier wave before expanding the swarm."
+        else:
+            wave_label = "No launch recommendation"
+            next_step = "Revise the swarm plan before spawning more workers."
+        readiness = {
+            "safe_to_launch_count": simulation.safe_to_launch_count,
+            "should_wait_count": simulation.should_wait_count,
+            "needs_user_approval_count": simulation.needs_user_approval_count,
+            "conflict_warnings": list(simulation.conflict_warnings_json or []),
+            "bottlenecks": list(simulation.bottlenecks_json or []),
+            "recommended_launch_order": launch_order,
+            "immediate_specs": len([spec for spec in specs if spec.status in {"planned", "spawned"}]),
+            "deferred_specs": len([spec for spec in specs if spec.status == "deferred"]),
+        }
+        return readiness, wave_label, next_step
+
     def _serialize_swarm_plan(self, db: Session, project: Project, plan: SwarmPlan | None) -> dict[str, Any] | None:
         if plan is None:
             return None
         preferences = self._swarm_preferences(project)
         specs = self._swarm_specs_for_plan(db, plan.id)
+        spec_status_summary = self._swarm_spec_status_summary(specs)
+        launch_readiness, recommended_wave_label, recommended_next_step = self._swarm_launch_readiness(db, project, plan, specs)
         active_agent_count = db.scalar(
             select(func.count(Agent.id)).where(
                 Agent.project_id == project.id,
@@ -5782,6 +5824,10 @@ class MissionControlService:
             "current_bottleneck": next(iter(plan.expected_bottlenecks_json or []), None),
             "dynamic_spawning_enabled": preferences.allow_dynamic_spawning,
             "dynamic_retirement_enabled": preferences.allow_dynamic_retirement,
+            "spec_status_summary": spec_status_summary,
+            "launch_readiness": launch_readiness,
+            "recommended_wave_label": recommended_wave_label,
+            "recommended_next_step": recommended_next_step,
             "specs": [self._serialize_swarm_spec(spec) for spec in specs],
         }
 
@@ -9577,8 +9623,25 @@ class MissionControlService:
             {"task_id": task.id, "blocking_agents": [other.id for other in blockers], "reason": task.waiting_reason},
         )
 
+    def _candidate_task_score(self, db: Session, project: Project, agent: Agent, task: Task) -> tuple[int, int, int, int]:
+        role_match = 1 if self._agent_matches_task(agent, task) else 0
+        dependency_ready = 1 if self._dependencies_met(db, task) else 0
+        path_overlap = 0
+        if task.allowed_paths_json and agent.locked_paths_json:
+            path_overlap = 1 if paths_conflict(agent.locked_paths_json, task.allowed_paths_json) else 0
+        review_bias = 1 if agent.archetype in {"reviewer", "test", "security"} and task.status == "needs_review" else 0
+        waiting_penalty = 1 if task.status == "waiting_on_paths" else 0
+        return (
+            role_match,
+            dependency_ready,
+            review_bias - waiting_penalty,
+            -int(task.priority or 0) + path_overlap,
+        )
+
     def _find_next_safe_task(self, db: Session, project: Project, agent: Agent) -> Task | None:
         workers = list(db.scalars(select(Agent).where(Agent.project_id == project.id, Agent.kind == "worker").order_by(Agent.id.asc())))
+        candidates: list[tuple[tuple[int, int, int, int], Task]] = []
+        blocked_by_paths: list[Task] = []
         for task in db.scalars(select(Task).where(Task.project_id == project.id).order_by(Task.priority.asc(), Task.id.asc())):
             if task.id == agent.current_task_id:
                 continue
@@ -9589,8 +9652,49 @@ class MissionControlService:
             if not self._dependencies_met(db, task):
                 continue
             if can_assign_task(agent, task, workers, self._is_git_workspace(project)):
-                return task
+                candidates.append((self._candidate_task_score(db, project, agent, task), task))
+            else:
+                blocked_by_paths.append(task)
+        if candidates:
+            candidates.sort(key=lambda item: item[0], reverse=True)
+            return candidates[0][1]
+        for task in blocked_by_paths:
+            self._set_waiting_on_paths(db, project, task, workers)
         return None
+
+    def _activate_ready_deferred_specs(self, db: Session, project: Project) -> int:
+        plan = self._current_swarm_plan_record(db, project.id)
+        if plan is None or plan.status not in {"approved", "active"}:
+            return 0
+        specs = self._swarm_specs_for_plan(db, plan.id)
+        completed_task_count = int(
+            db.scalar(select(func.count(Task.id)).where(Task.project_id == project.id, Task.status == "done"))
+            or 0
+        )
+        changed = 0
+        for spec in specs:
+            if spec.status != "deferred":
+                continue
+            phase = str(spec.spawn_phase or "")
+            if phase in {"after_architecture", "after_path_mapping"} and completed_task_count >= 1:
+                spec.status = "planned"
+                changed += 1
+            elif phase in {"after_first_slice", "after_backend_stabilizes", "after_subsystem_progress"} and completed_task_count >= 2:
+                spec.status = "planned"
+                changed += 1
+            elif phase == "validation" and completed_task_count >= 3:
+                spec.status = "planned"
+                changed += 1
+        if changed:
+            self._record_swarm_event(
+                db,
+                project,
+                event_type="strategy_changed",
+                message=f"Mission Control activated {changed} deferred swarm spec(s) after upstream progress unblocked them.",
+                swarm_plan_id=plan.id,
+                metadata_json={"activated_deferred_specs": changed},
+            )
+        return changed
 
     async def start_idle_agents(self, db: Session, project: Project) -> None:
         if project.status == "paused":
@@ -9598,6 +9702,7 @@ class MissionControlService:
         workers = list(db.scalars(select(Agent).where(Agent.project_id == project.id, Agent.kind == "worker").order_by(Agent.id.asc())))
         tasks = list(db.scalars(select(Task).where(Task.project_id == project.id).order_by(Task.priority.asc(), Task.id.asc())))
         is_git_workspace = self._is_git_workspace(project)
+        self._activate_ready_deferred_specs(db, project)
         for task in tasks:
             if task.status in TASK_STARTABLE_STATUSES and not self._dependencies_met(db, task):
                 task.status = "assigned"
@@ -9605,15 +9710,16 @@ class MissionControlService:
         for agent in workers:
             if agent.status not in {"idle", "waiting", "done", "stopped"}:
                 continue
+            candidate = self._find_next_safe_task(db, project, agent)
+            if candidate is not None:
+                await self.start_agent_task(db, project, agent, candidate)
+                continue
             for task in tasks:
-                if task.status not in TASK_STARTABLE_STATUSES:
-                    continue
-                if not self._agent_matches_task(agent, task) or not self._dependencies_met(db, task):
-                    continue
-                if can_assign_task(agent, task, workers, is_git_workspace):
-                    await self.start_agent_task(db, project, agent, task)
+                if task.status in TASK_STARTABLE_STATUSES and self._agent_matches_task(agent, task) and self._dependencies_met(db, task) and not can_assign_task(agent, task, workers, is_git_workspace):
+                    self._set_waiting_on_paths(db, project, task, workers)
+                    agent.status = "waiting"
+                    agent.current_action = "Waiting for another worker to release overlapping path ownership."
                     break
-                self._set_waiting_on_paths(db, project, task, workers)
 
     async def start_agent_task(self, db: Session, project: Project, agent: Agent, task: Task) -> AgentRun:
         settings_record = self._project_settings(db, project)

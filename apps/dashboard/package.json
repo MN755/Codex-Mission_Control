@@ -1,7 +1,7 @@
 {
   "name": "codex-mission-control-dashboard",
   "private": true,
-  "version": "1.2.0",
+  "version": "1.3.0-beta.1",
   "type": "module",
   "scripts": {
     "dev": "vite --config vite.config.mjs",

@@ -179,9 +179,14 @@ def test_run_management_workflow_install_reports_reload_requirement(monkeypatch,
         lambda *args, **kwargs: {
             "status": "ready",
             "install_report": {
+                "active_repo_root": str(repo_root),
                 "configured_runners": ["Dry-run", "Ollama"],
                 "unavailable_runners": [],
                 "user_actions_required": [],
+                "readiness_matrix": [
+                    {"label": "Backend daemon reachable", "state": "ready", "summary": "Daemon answered locally."},
+                    {"label": "MCP bridge callable", "state": "degraded", "summary": "Codex reload still required."},
+                ],
             },
         },
     )
@@ -198,6 +203,8 @@ def test_run_management_workflow_install_reports_reload_requirement(monkeypatch,
     assert "Open the Codex plugin picker" in payload["codex_chat_markdown"]
     assert "approve the project MCP server from `.mcp.json`" in payload["codex_chat_markdown"]
     assert "rerun `python scripts/mission-control-manage.py update`" in payload["codex_chat_markdown"]
+    assert "### Operational readiness" in payload["codex_chat_markdown"]
+    assert "Backend daemon reachable: ready - Daemon answered locally." in payload["codex_chat_markdown"]
 
 
 def test_run_management_workflow_uninstall_mentions_reopen_for_stale_state(monkeypatch, tmp_path) -> None:
@@ -238,6 +245,9 @@ def test_packaged_plugin_manifest_is_ready_for_codex_sync() -> None:
     assert manifest["version"]
     assert (plugin_root / "assets" / "icon.svg").exists()
     assert manifest["skills"] == "./skills/"
+
+    catalog_manifest = json.loads((ROOT / "plugins" / "mission-control" / "plugin.json").read_text(encoding="utf-8"))
+    assert catalog_manifest["manifest_format"] == "codex-plugin-v1"
 
     for skill_name in ("mission-control-install-from-github", "mission-control-update", "mission-control-uninstall"):
         assert (plugin_root / "skills" / skill_name / "SKILL.md").exists()

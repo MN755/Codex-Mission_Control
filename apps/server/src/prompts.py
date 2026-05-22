@@ -301,6 +301,33 @@ def _manager_action_biases(action: str, profile: PromptProfile) -> tuple[str, ..
     return ()
 
 
+def _project_state_biases(project: Project, *, action: str | None = None, task: Task | None = None) -> tuple[str, ...]:
+    normalized_action = (action or "").strip().lower()
+    biases: list[str] = []
+    if project.source_type == "existing_folder":
+        biases.extend(
+            [
+                "Treat the repository as real inherited state. Prefer diagnosis, bounded change, and evidence over reinvention.",
+                "Assume hidden constraints exist in the current codebase unless the task evidence proves otherwise.",
+            ]
+        )
+        if normalized_action in {"tasks.decompose", "plan.generate", "swarm.plan"}:
+            biases.append("Bias toward targeted repair, validation, and subsystem ownership before broad greenfield-style expansion.")
+    elif project.source_type == "idea":
+        biases.extend(
+            [
+                "Treat the workspace as a fresh build unless the payload says otherwise.",
+                "Bias toward outcome clarity, first slice viability, and avoiding fake complexity.",
+            ]
+        )
+    if task is not None and task.allowed_paths_json:
+        if len(task.allowed_paths_json) == 1:
+            biases.append(f"Path ownership is intentionally narrow here. Default to that single area: {task.allowed_paths_json[0]}.")
+        else:
+            biases.append("Multiple paths are allowed, but that is permission, not a quota. Use only the paths the fix actually needs.")
+    return tuple(biases)
+
+
 def _worker_task_biases(task: Task, profile: PromptProfile) -> tuple[str, ...]:
     combined = " ".join(filter(None, [task.title, task.goal, task.scope])).lower()
     is_fix = any(token in combined for token in ("fix", "correct", "repair", "implement", "update", "change", "patch"))
@@ -384,6 +411,7 @@ def worker_task_prompt(
     profile = build_prompt_profile(provider=provider, model=model, reasoning_effort=reasoning_effort)
     profile_block = prompt_profile_block(provider=provider, model=model, reasoning_effort=reasoning_effort, audience="worker")
     worker_bias_block = "\n".join(f"- {rule}" for rule in _worker_task_biases(task, profile))
+    state_bias_block = "\n".join(f"- {rule}" for rule in _project_state_biases(project, task=task))
     return f"""You are a Codex worker agent operating under Codex Mission Control.
 
 Task ID: {task.id}
@@ -416,6 +444,9 @@ Requirements:
 
 Task-specific execution biases:
 {worker_bias_block}
+
+Project-state biases:
+{state_bias_block}
 
 Validation steps:
 {json.dumps(task.validation_steps_json, indent=2)}
@@ -470,7 +501,8 @@ def manager_action_prompt(
     profile = build_prompt_profile(provider=provider, model=model, reasoning_effort=reasoning_effort)
     profile_block = prompt_profile_block(provider=provider, model=model, reasoning_effort=reasoning_effort, audience="manager")
     action_biases = _manager_action_biases(action, profile)
-    action_bias_block = "\n".join(f"- {rule}" for rule in action_biases)
+    state_biases = _project_state_biases(project, action=action)
+    action_bias_block = "\n".join(f"- {rule}" for rule in [*action_biases, *state_biases])
     task_bias_section = f"\nTask-specific decision biases:\n{action_bias_block}" if action_bias_block else ""
     return f"""You are the Manager AI for Codex Mission Control.
 
@@ -512,7 +544,7 @@ def manager_interview_prompt(
 ) -> str:
     profile = build_prompt_profile(provider=provider, model=model, reasoning_effort=reasoning_effort)
     profile_block = prompt_profile_block(provider=provider, model=model, reasoning_effort=reasoning_effort, audience="manager")
-    action_bias_block = "\n".join(f"- {rule}" for rule in _manager_action_biases(action, profile))
+    action_bias_block = "\n".join(f"- {rule}" for rule in [*_manager_action_biases(action, profile), *_project_state_biases(project, action=action)])
     task_bias_section = f"\nTask-specific decision biases:\n{action_bias_block}" if action_bias_block else ""
     return f"""You are the Manager AI for Codex Mission Control.
 
@@ -559,7 +591,7 @@ def manager_swarm_prompt(
 ) -> str:
     profile = build_prompt_profile(provider=provider, model=model, reasoning_effort=reasoning_effort)
     profile_block = prompt_profile_block(provider=provider, model=model, reasoning_effort=reasoning_effort, audience="manager")
-    action_bias_block = "\n".join(f"- {rule}" for rule in _manager_action_biases("swarm.plan", profile))
+    action_bias_block = "\n".join(f"- {rule}" for rule in [*_manager_action_biases("swarm.plan", profile), *_project_state_biases(project, action="swarm.plan")])
     task_bias_section = f"\nTask-specific decision biases:\n{action_bias_block}" if action_bias_block else ""
     return f"""You are the Manager AI for Codex Mission Control.
 

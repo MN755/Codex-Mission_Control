@@ -641,6 +641,15 @@ def _build_markdown(action: str, payload: dict[str, Any]) -> str:
             lines.append(f"- Ready runners: {', '.join(install_report['configured_runners'])}")
         if install_report.get("unavailable_runners"):
             lines.append(f"- Needs user action: {', '.join(install_report['unavailable_runners'])}")
+        if install_report.get("active_repo_root"):
+            lines.append(f"- Active backend repo root: {install_report['active_repo_root']}")
+        readiness_matrix = list(install_report.get("readiness_matrix") or [])
+        if readiness_matrix:
+            lines.extend(["", "### Operational readiness"])
+            lines.extend(
+                f"- {item.get('label')}: {item.get('state')} - {item.get('summary')}"
+                for item in readiness_matrix
+            )
         if install_report.get("user_actions_required"):
             lines.extend(["", "### User actions required", *[f"- {item}" for item in install_report["user_actions_required"]]])
         lines.extend(

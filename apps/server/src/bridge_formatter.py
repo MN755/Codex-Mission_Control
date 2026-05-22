@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from datetime import datetime
 from typing import Any
 
@@ -14,6 +15,17 @@ from security.redaction import redact_text, redact_value
 
 def _redaction_status(*, original: dict[str, Any], redacted: dict[str, Any]) -> str:
     return "redacted" if json.dumps(original, default=str, sort_keys=True) != json.dumps(redacted, default=str, sort_keys=True) else "clean"
+
+
+def _plain_bridge_summary(value: str | None, *, fallback: str) -> str:
+    text = compact_text(value, fallback="")
+    if not text:
+        return fallback
+    text = re.sub(r"^#+\s*", "", text)
+    text = text.replace("**", "").replace("`", "")
+    text = re.sub(r"\s*[-*]\s+", " ", text)
+    text = re.sub(r"\s{2,}", " ", text).strip()
+    return text or fallback
 
 
 def _make_bridge_message(
@@ -176,13 +188,20 @@ def format_pending_decision_message(
             "### Proposed subagents",
         ]
         lines.extend(bullet_lines(subagents, empty_message="No subagents were listed."))
-        lines.extend(section("Options", option_lines(options)))
+        lines.extend(section("Choose one", option_lines(options)))
     else:
         lines = [f"## {decision['title']}", ""]
         lines.extend(_decision_header_lines(decision_type=decision_type, risk=risk, reason=reason, payload=payload, requesting_agent=requesting_agent))
+        lines.extend(
+            [
+                "",
+                "### Why this blocks progress",
+                compact_reason(reason, max_sentences=3) or "Mission Control cannot take the next safe step until this decision is answered.",
+            ]
+        )
         if decision.get("recommended_option"):
             lines.extend(["", f"**Recommended option:** `{decision['recommended_option']}`"])
-        lines.extend(section("Options", option_lines(options)))
+        lines.extend(section("Choose one", option_lines(options)))
 
     return _make_bridge_message(
         message_id=f"decision-{decision['id']}",
@@ -235,21 +254,24 @@ def format_status_summary_message(
     if blockers:
         work_lines.extend([f"- Blocker: {item}" for item in blockers[:3]])
     advisory_lines = bullet_lines(model_advisories or [], empty_message="No model advisories right now.")
+    progress_state = _plain_bridge_summary(orchestration_status or manager_status, fallback="unknown")
+    top_summary = _plain_bridge_summary(summary or manager_status, fallback="Mission Control is tracking the project.")
     lines = [
         "## Mission Control Status",
         "",
         f"**Project:** {project_name}",
-        f"**Manager:** {compact_text(manager_status)}",
-        f"**Mode:** {mode}",
-        f"**Swarm:** {swarm}",
+        f"**What Mission Control is doing:** {top_summary}",
+        f"**Current state:** {progress_state}",
+        f"**Swarm posture:** {swarm}",
+        f"**Execution mode:** {mode}",
         f"**User action needed:** {user_action_needed}",
     ]
-    if orchestration_status:
-        lines.append(f"**Orchestration:** {orchestration_status}")
     if handoff_readiness:
-        lines.append(f"**Handoff:** {handoff_readiness}")
+        lines.append(f"**Handoff readiness:** {handoff_readiness}")
     if active_agent_count is not None:
         lines.append(f"**Active agents:** {active_agent_count}")
+    if blockers:
+        lines.extend(section("What is blocking progress", bullet_lines(blockers, empty_message="No blockers are recorded right now.")))
     lines.extend(section("Current work", work_lines))
     if model_advisories:
         lines.extend(section("Model advisories", advisory_lines))

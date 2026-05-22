@@ -83,6 +83,10 @@ def conflicting_agents(task: Task, other_agents: list[Agent]) -> list[Agent]:
 def can_assign_task(agent: Agent, task: Task, other_agents: list[Agent], is_git_workspace: bool) -> bool:
     if task.status not in {"backlog", "assigned", "waiting_on_paths"}:
         return False
-    if is_git_workspace:
+    conflicts = [other for other in conflicting_agents(task, other_agents) if other.id != agent.id]
+    if not conflicts:
         return True
-    return not any(other.id != agent.id for other in conflicting_agents(task, other_agents))
+    # Git workspaces still need path safety. Multiple branches do not magically make
+    # overlapping edits coordination-free when Mission Control is trying to hand off
+    # a coherent background build.
+    return False

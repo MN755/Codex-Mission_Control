@@ -5,9 +5,10 @@
 
 {{TITLE}}
 
+`Why Mission Control Is Blocked`
 {{MESSAGE}}
 
-`Options`
+`Choose One`
 - {{OPTION_ONE}}
 - {{OPTION_TWO}}
 - {{OPTION_THREE}}

@@ -658,6 +658,10 @@ class SwarmPlanRead(BaseModel):
     current_bottleneck: str | None = None
     dynamic_spawning_enabled: bool = True
     dynamic_retirement_enabled: bool = True
+    spec_status_summary: dict[str, int] = Field(default_factory=dict)
+    launch_readiness: dict[str, Any] = Field(default_factory=dict)
+    recommended_wave_label: str | None = None
+    recommended_next_step: str | None = None
     specs: list[SwarmAgentSpecRead] = Field(default_factory=list)
 
 
@@ -2759,10 +2763,14 @@ class InstallReportRead(BaseModel):
     status: HeadlessSetupStatus
     install_path: str
     runtime_path: str
+    active_repo_root: str | None = None
     daemon_status: str
     mcp_status: str
+    subsystem_status: dict[str, str] = Field(default_factory=dict)
+    readiness_matrix: list[dict[str, Any]] = Field(default_factory=list)
     configured_runners: list[str] = Field(default_factory=list)
     unavailable_runners: list[str] = Field(default_factory=list)
+    discovered_installs: list[dict[str, Any]] = Field(default_factory=list)
     user_actions_required: list[str] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
     next_codex_prompt: str

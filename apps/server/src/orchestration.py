@@ -23,6 +23,7 @@ from models import (
     PendingDecision,
     Project,
     ProjectEvent,
+    Task,
     utc_now,
 )
 from security.path_validation import PathValidationError, resolve_local_path
@@ -863,12 +864,21 @@ class OrchestrationCoordinator:
             if decision.status == "pending" and decision.risk_level in {"high", "critical"}
         )
         handoff = service.get_project_handoff_summary(db, project)
+        derived_status, derived_manager_status = self._derive_runtime_state(
+            db,
+            session,
+            project,
+            pending,
+            handoff_status=handoff["status"],
+            current_action=current_action,
+            manager_fallback=session.manager_status,
+        )
         return {
             "orchestration_id": session.id,
             "project_id": project.id,
             "project_name": project.name,
-            "orchestration_status": session.status,
-            "manager_status": session.manager_status,
+            "orchestration_status": derived_status,
+            "manager_status": derived_manager_status,
             "current_phase": project.latest_milestone or project.status,
             "active_agents": active_agents,
             "pending_decisions_count": len([decision for decision in pending if decision.status == "pending"]),
@@ -896,6 +906,62 @@ class OrchestrationCoordinator:
         if project.status == "paused":
             return "Resume the project to continue background orchestration."
         return "Mission Control Manager will continue routing the next safe background step."
+
+    def _derive_runtime_state(
+        self,
+        db: Session,
+        session: OrchestrationSession,
+        project: Project,
+        pending: Sequence[PendingDecision],
+        *,
+        handoff_status: str,
+        current_action: dict[str, Any] | None = None,
+        manager_fallback: str | None = None,
+    ) -> tuple[str, str]:
+        if any(decision.status == "pending" for decision in pending):
+            return "waiting_for_user", "Mission Control is waiting for a user decision before it can continue."
+        if project.status == "paused":
+            return "paused", "Mission Control is paused until the project is resumed."
+        if handoff_status in {"ready", "needs_review"} and project.handoff_status == "ready":
+            return "completed", "Mission Control finished this orchestration and produced a handoff."
+        active_workers = int(
+            db.scalar(
+                select(func.count(Agent.id)).where(
+                    Agent.project_id == project.id,
+                    Agent.kind == "worker",
+                    Agent.status.in_(["starting", "working"]),
+                )
+            )
+            or 0
+        )
+        runnable_tasks = list(
+            db.scalars(
+                select(Task).where(
+                    Task.project_id == project.id,
+                    Task.status.in_(["backlog", "assigned", "waiting_on_paths", "needs_review"]),
+                )
+            )
+        )
+        open_task_count = int(
+            db.scalar(
+                select(func.count(Task.id)).where(
+                    Task.project_id == project.id,
+                    Task.status.in_(["backlog", "assigned", "working", "waiting_on_paths", "needs_review"]),
+                )
+            )
+            or 0
+        )
+        if active_workers > 0:
+            return "running", manager_fallback or session.manager_status or "Mission Control has active workers in flight."
+        if any(task.status == "waiting_on_paths" for task in runnable_tasks):
+            return "planning", "Mission Control is waiting for overlapping path ownership to clear before launching the next worker."
+        if current_action and current_action.get("type") in {"blocker", "degraded", "paused"} and current_action.get("message"):
+            return "planning", str(current_action["message"])
+        if any(service._dependencies_met(db, task) for task in runnable_tasks):
+            return "planning", "Mission Control has runnable work queued and is routing the next safe background step."
+        if open_task_count > 0:
+            return "planning", "Mission Control still has open work, but nothing is safely runnable yet."
+        return "planning", manager_fallback or "Mission Control is wrapping evidence and preparing the next status update."
 
     def get_handoff(self, db: Session, session: OrchestrationSession) -> dict[str, Any]:
         project = db.get(Project, session.project_id)
@@ -985,32 +1051,26 @@ class OrchestrationCoordinator:
             else:
                 manager_message = await service.manager_ask_next(db, project)
             pending = self.sync_pending_decisions(db, session)
-            if any(decision.status == "pending" for decision in pending):
-                self._update_session_status(
-                    db,
-                    session,
-                    status="waiting_for_user",
-                    manager_status="Mission Control is waiting for a user decision before it can continue.",
-                )
-            else:
-                handoff = service.get_project_handoff_summary(db, project)
-                if handoff["status"] in {"ready", "needs_review"} and project.handoff_status == "ready":
-                    self._update_session_status(
-                        db,
-                        session,
-                        status="completed",
-                        manager_status="Mission Control finished this orchestration and produced a handoff.",
-                        completed=True,
-                    )
-                    self._record_event(db, session, "handoff_ready", {"status": handoff["status"]})
-                else:
-                    reply = manager_message.get("message", {}).get("content_markdown") if manager_message else None
-                    self._update_session_status(
-                        db,
-                        session,
-                        status="running",
-                        manager_status=(reply or "Mission Control is continuing in the background.")[:240],
-                    )
+            handoff = service.get_project_handoff_summary(db, project)
+            reply = manager_message.get("message", {}).get("content_markdown") if manager_message else None
+            derived_status, derived_manager_status = self._derive_runtime_state(
+                db,
+                session,
+                project,
+                pending,
+                handoff_status=handoff["status"],
+                current_action=await service.get_project_action(db, project),
+                manager_fallback=(reply or "Mission Control is continuing in the background.")[:240],
+            )
+            self._update_session_status(
+                db,
+                session,
+                status=derived_status,
+                manager_status=derived_manager_status,
+                completed=derived_status == "completed",
+            )
+            if derived_status == "completed":
+                self._record_event(db, session, "handoff_ready", {"status": handoff["status"]})
             self._record_event(
                 db,
                 session,

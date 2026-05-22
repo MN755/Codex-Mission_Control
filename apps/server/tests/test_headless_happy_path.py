@@ -142,7 +142,7 @@ def test_headless_happy_path_acceptance(client) -> None:
     assert approval_payload["message_type"] == "approval_request"
     assert "##" in approval_payload["fallback_markdown"]
     assert "**Command:**" in approval_payload["fallback_markdown"]
-    assert "### Options" in approval_payload["fallback_markdown"]
+    assert "### Choose one" in approval_payload["fallback_markdown"]
 
     answered = client.post(
         f"/api/decisions/{approval['id']}/answer",
