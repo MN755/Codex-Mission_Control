@@ -231,6 +231,101 @@ def test_run_management_workflow_uninstall_mentions_reopen_for_stale_state(monke
     assert "force-quit and reopen the app" in payload["codex_chat_markdown"]
 
 
+def test_run_management_workflow_codex_smoke_reports_runtime_limit(monkeypatch, tmp_path) -> None:
+    module = _load_manage_module()
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir(parents=True, exist_ok=True)
+    codex_home = tmp_path / ".codex"
+    agents_home = tmp_path / ".agents"
+
+    monkeypatch.setattr(module, "resolve_repo_root", lambda **kwargs: repo_root)
+    monkeypatch.setattr(module, "resolve_codex_home", lambda override=None: codex_home)
+    monkeypatch.setattr(module, "resolve_agents_home", lambda override=None: agents_home)
+    monkeypatch.setattr(module, "resolve_python_command", lambda explicit=None: sys.executable)
+    monkeypatch.setattr(module, "detect_claude_assets", lambda repo_root: {"status": "ready", "missing": [], "slash_commands": []})
+    monkeypatch.setattr(module, "run_bootstrap", lambda *args, **kwargs: {"status": "ready"})
+    monkeypatch.setattr(
+        module,
+        "_load_server_module",
+        lambda repo_root, module_name: type(
+            "FakeSystemStatus",
+            (),
+            {
+                "detect_codex_status": staticmethod(
+                    lambda: {
+                        "cli_detected": True,
+                        "cli_path": "C:/tools/codex.exe",
+                        "cli_execution_available": False,
+                        "authenticated": False,
+                        "login_status": "CLI path found, but login status could not be queried from this runtime.",
+                        "mcp_state": {
+                            "mission_control": {
+                                "configured": True,
+                                "app_loaded": None,
+                            }
+                        },
+                    }
+                )
+            },
+        )(),
+    )
+
+    payload = module.run_management_workflow(action="codex-smoke", dry_run=False)
+
+    assert payload["status"] == "degraded"
+    assert payload["smoke_runnable"] is False
+    assert "codex-smoke --json" in payload["recommended_command"]
+    assert "Codex CLI execution available: degraded" in payload["codex_chat_markdown"]
+    assert "current runtime cannot execute it directly" in payload["codex_chat_markdown"]
+
+
+def test_run_management_workflow_codex_smoke_reports_ready_state(monkeypatch, tmp_path) -> None:
+    module = _load_manage_module()
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir(parents=True, exist_ok=True)
+    codex_home = tmp_path / ".codex"
+    agents_home = tmp_path / ".agents"
+
+    monkeypatch.setattr(module, "resolve_repo_root", lambda **kwargs: repo_root)
+    monkeypatch.setattr(module, "resolve_codex_home", lambda override=None: codex_home)
+    monkeypatch.setattr(module, "resolve_agents_home", lambda override=None: agents_home)
+    monkeypatch.setattr(module, "resolve_python_command", lambda explicit=None: sys.executable)
+    monkeypatch.setattr(module, "detect_claude_assets", lambda repo_root: {"status": "ready", "missing": [], "slash_commands": []})
+    monkeypatch.setattr(module, "run_bootstrap", lambda *args, **kwargs: {"status": "ready"})
+    monkeypatch.setattr(
+        module,
+        "_load_server_module",
+        lambda repo_root, module_name: type(
+            "FakeSystemStatus",
+            (),
+            {
+                "detect_codex_status": staticmethod(
+                    lambda: {
+                        "cli_detected": True,
+                        "cli_path": "C:/tools/codex.exe",
+                        "cli_execution_available": True,
+                        "authenticated": True,
+                        "login_status": "Logged in via ChatGPT.",
+                        "mcp_state": {
+                            "mission_control": {
+                                "configured": True,
+                                "app_loaded": True,
+                            }
+                        },
+                    }
+                )
+            },
+        )(),
+    )
+
+    payload = module.run_management_workflow(action="codex-smoke", dry_run=False)
+
+    assert payload["status"] == "ready"
+    assert payload["smoke_runnable"] is True
+    assert "Mission Control was discovered in the live Codex MCP server list." in payload["codex_chat_markdown"]
+    assert "What this proves" in payload["codex_chat_markdown"]
+
+
 def test_packaged_plugin_manifest_is_ready_for_codex_sync() -> None:
     plugin_root = ROOT / "plugins" / "mission-control"
     manifest_path = plugin_root / ".codex-plugin" / "plugin.json"

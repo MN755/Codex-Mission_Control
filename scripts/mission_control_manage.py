@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import importlib.util
 import json
 import os
 import re
@@ -304,6 +305,13 @@ def sync_codex_bundle(repo_root: Path, codex_home: Path, *, dry_run: bool = Fals
 
 def reload_guidance(action: str) -> dict[str, Any]:
     requires_reload = action in {"install", "update"}
+    if action == "codex-smoke":
+        return {
+            "required": False,
+            "codex": False,
+            "claude": False,
+            "message": "No app reload is required just to run the Codex CLI smoke test.",
+        }
     return {
         "required": requires_reload,
         "codex": requires_reload,
@@ -557,6 +565,114 @@ def detect_claude_assets(repo_root: Path) -> dict[str, Any]:
     }
 
 
+def _load_server_module(repo_root: Path, module_name: str) -> Any:
+    src_root = repo_root / "apps" / "server" / "src"
+    module_path = src_root / f"{module_name}.py"
+    if not module_path.exists():
+        raise FileNotFoundError(f"Server module not found: {module_path}")
+    spec = importlib.util.spec_from_file_location(module_name, module_path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"Could not load spec for {module_name}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules.setdefault(module_name, module)
+    existing_path = list(sys.path)
+    try:
+        sys.path.insert(0, str(src_root))
+        spec.loader.exec_module(module)
+    finally:
+        sys.path[:] = existing_path
+    return module
+
+
+def _safe_state(ok: bool) -> str:
+    return "ready" if ok else "degraded"
+
+
+def _codex_smoke_checks(codex_status: dict[str, Any]) -> list[dict[str, Any]]:
+    mcp_state = dict(codex_status.get("mcp_state") or {}).get("mission_control") or {}
+    configured = bool(mcp_state.get("configured"))
+    app_loaded = mcp_state.get("app_loaded")
+    app_loaded_known = app_loaded is not None
+    checks = [
+        {
+            "label": "Codex CLI detected",
+            "state": _safe_state(bool(codex_status.get("cli_detected"))),
+            "summary": "Codex CLI path was found." if codex_status.get("cli_detected") else "Codex CLI path was not found.",
+        },
+        {
+            "label": "Codex CLI execution available",
+            "state": _safe_state(bool(codex_status.get("cli_execution_available"))),
+            "summary": (
+                "Codex CLI can be executed from this runtime."
+                if codex_status.get("cli_execution_available")
+                else "Codex CLI path exists, but this runtime cannot execute it directly."
+            ),
+        },
+        {
+            "label": "Codex login detectable",
+            "state": _safe_state(bool(codex_status.get("authenticated"))),
+            "summary": str(codex_status.get("login_status") or "Login state unavailable."),
+        },
+        {
+            "label": "Mission Control MCP configured",
+            "state": _safe_state(configured),
+            "summary": (
+                "Mission Control MCP registration exists in Codex config."
+                if configured
+                else "Mission Control MCP registration was not found in Codex config."
+            ),
+        },
+        {
+            "label": "Mission Control MCP live discovery",
+            "state": "ready" if app_loaded is True else "degraded",
+            "summary": (
+                "Mission Control was discovered in the live Codex MCP server list."
+                if app_loaded is True
+                else (
+                    "Live MCP discovery is unavailable from this runtime, so only config-based verification was possible."
+                    if not app_loaded_known
+                    else "Mission Control is configured, but it was not discovered in the live Codex MCP server list."
+                )
+            ),
+        },
+    ]
+    return checks
+
+
+def run_codex_smoke(repo_root: Path, python_command: str, *, bootstrap: dict[str, Any]) -> dict[str, Any]:
+    system_status = _load_server_module(repo_root, "system_status")
+    codex_status = dict(system_status.detect_codex_status())
+    smoke_checks = _codex_smoke_checks(codex_status)
+    bootstrap_status = str(bootstrap.get("status") or "degraded")
+    runnable = (
+        bool(codex_status.get("cli_detected"))
+        and bool(codex_status.get("cli_execution_available"))
+        and bool(codex_status.get("authenticated"))
+        and bool(((codex_status.get("mcp_state") or {}).get("mission_control") or {}).get("configured"))
+    )
+    reasons: list[str] = []
+    if not codex_status.get("cli_detected"):
+        reasons.append("Codex CLI was not detected.")
+    elif not codex_status.get("cli_execution_available"):
+        reasons.append("Codex CLI exists, but the current runtime cannot execute it directly.")
+    if not codex_status.get("authenticated"):
+        reasons.append("Codex login status is not confirmed as authenticated.")
+    mcp_state = ((codex_status.get("mcp_state") or {}).get("mission_control") or {})
+    if not mcp_state.get("configured"):
+        reasons.append("Mission Control MCP is not configured in Codex config.")
+    if bootstrap_status not in {"ready", "degraded"}:
+        reasons.append("Mission Control bootstrap did not complete cleanly.")
+    smoke_status = "ready" if runnable and bootstrap_status == "ready" else "degraded"
+    return {
+        "codex_status": codex_status,
+        "smoke_checks": smoke_checks,
+        "smoke_runnable": runnable,
+        "smoke_status": smoke_status,
+        "smoke_reasons": reasons,
+        "recommended_command": f"{python_command} scripts/mission-control-manage.py codex-smoke --json",
+    }
+
+
 def _install_or_update(
     *,
     action: str,
@@ -621,6 +737,7 @@ def _build_markdown(action: str, payload: dict[str, Any]) -> str:
         "- Codex: `python scripts/mission-control-manage.py install`",
         "- Update: `python scripts/mission-control-manage.py update`",
         "- Uninstall: `python scripts/mission-control-manage.py uninstall`",
+        "- Codex smoke: `python scripts/mission-control-manage.py codex-smoke --json`",
         "- Claude: `/mission-control-install`, `/mission-control-update`, `/mission-control-uninstall`",
     ]
     if action in {"install", "update"}:
@@ -674,6 +791,39 @@ def _build_markdown(action: str, payload: dict[str, Any]) -> str:
                 f"- Local plugin staging path: {(marketplace_sync.get('plugin_destination') or 'not staged')}",
                 f"- Codex plugin bundle path: {(codex_sync.get('plugin_destination') or 'not synced')}",
                 f"- Codex config path: {(codex_config.get('config_path') or 'not managed')}",
+            ]
+        )
+    elif action == "codex-smoke":
+        codex_status = payload.get("codex_status") or {}
+        smoke_checks = list(payload.get("smoke_checks") or [])
+        reasons = list(payload.get("smoke_reasons") or [])
+        lines.extend(
+            [
+                "",
+                "### Codex CLI smoke",
+                f"- Bootstrap: {(payload.get('bootstrap') or {}).get('status')}",
+                f"- Codex CLI path: {codex_status.get('cli_path') or 'not found'}",
+                f"- CLI execution available: {'yes' if codex_status.get('cli_execution_available') else 'no'}",
+                f"- Authenticated: {'yes' if codex_status.get('authenticated') else 'no'}",
+                f"- Recommended repeat command: `{payload.get('recommended_command')}`",
+            ]
+        )
+        if smoke_checks:
+            lines.extend(["", "### Checks"])
+            lines.extend(
+                f"- {item.get('label')}: {item.get('state')} - {item.get('summary')}"
+                for item in smoke_checks
+            )
+        if reasons:
+            lines.extend(["", "### Why this is still degraded"])
+            lines.extend(f"- {reason}" for reason in reasons)
+        lines.extend(
+            [
+                "",
+                "### What this proves",
+                "- Mission Control can verify Codex CLI presence, auth posture, MCP registration, and runtime executability in one pass.",
+                "- If `CLI execution available` is `no`, this is a runtime limitation of the current host session, not silent guesswork.",
+                "- Rerun this command after a Codex reinstall, app reload, or environment change instead of hand-checking five different places like a caveman with a checklist.",
             ]
         )
     else:
@@ -751,6 +901,19 @@ def run_management_workflow(
         if status not in {"ready", "degraded"}:
             status = "failed"
         payload["status"] = status
+    elif action == "codex-smoke":
+        bootstrap = run_bootstrap(
+            repo_root,
+            python_command,
+            action="update",
+            dry_run=dry_run,
+            daemon_host=daemon_host,
+            daemon_port=daemon_port,
+        )
+        payload["bootstrap"] = bootstrap
+        payload["claude_assets"] = detect_claude_assets(repo_root)
+        payload.update(run_codex_smoke(repo_root, python_command, bootstrap=bootstrap))
+        payload["status"] = payload.get("smoke_status", "degraded")
     elif action == "uninstall":
         if stop_daemon and not dry_run:
             payload["stop_daemon"] = run_stop_daemon(repo_root)
@@ -766,8 +929,8 @@ def run_management_workflow(
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Install, update, or uninstall Mission Control bridge assets.")
-    parser.add_argument("action", choices=["install", "update", "uninstall"])
+    parser = argparse.ArgumentParser(description="Install, update, uninstall, or smoke-test Mission Control bridge assets.")
+    parser.add_argument("action", choices=["install", "update", "uninstall", "codex-smoke"])
     parser.add_argument("--repo-url", default=DEFAULT_REPO_URL)
     parser.add_argument("--install-dir", default=None)
     parser.add_argument("--codex-home", default=None)
