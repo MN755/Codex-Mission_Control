@@ -305,6 +305,13 @@ def sync_codex_bundle(repo_root: Path, codex_home: Path, *, dry_run: bool = Fals
 
 def reload_guidance(action: str) -> dict[str, Any]:
     requires_reload = action in {"install", "update"}
+    if action == "codex-restart-smoke":
+        return {
+            "required": False,
+            "codex": True,
+            "claude": False,
+            "message": "This workflow force-quits and relaunches Codex for you, then runs the Codex CLI smoke checks in the background.",
+        }
     if action == "codex-smoke":
         return {
             "required": False,
@@ -673,6 +680,62 @@ def run_codex_smoke(repo_root: Path, python_command: str, *, bootstrap: dict[str
     }
 
 
+def launch_codex_restart_smoke(
+    repo_root: Path,
+    python_command: str,
+    *,
+    launch_wait_seconds: int = 25,
+) -> dict[str, Any]:
+    script_path = repo_root / "scripts" / "restart-codex-and-smoke.ps1"
+    if not script_path.exists():
+        raise FileNotFoundError(f"Restart script not found: {script_path}")
+    job_root = repo_root / ".runtime" / "codex-restart-smoke"
+    job_root.mkdir(parents=True, exist_ok=True)
+    results_path = job_root / "latest.json"
+    log_path = job_root / "latest.log"
+    powershell = shutil.which("powershell.exe") or "powershell.exe"
+    command = [
+        powershell,
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        str(script_path),
+        "-RepoRoot",
+        str(repo_root),
+        "-PythonCommand",
+        python_command,
+        "-ResultsPath",
+        str(results_path),
+        "-LogPath",
+        str(log_path),
+        "-LaunchWaitSeconds",
+        str(launch_wait_seconds),
+    ]
+    creationflags = 0
+    if os.name == "nt":
+        creationflags = 0x00000008 | 0x00000200 | 0x08000000
+    process = subprocess.Popen(
+        command,
+        cwd=repo_root,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        stdin=subprocess.DEVNULL,
+        close_fds=True,
+        creationflags=creationflags,
+    )
+    return {
+        "status": "launched",
+        "launcher_pid": process.pid,
+        "script_path": str(script_path),
+        "results_path": str(results_path),
+        "log_path": str(log_path),
+        "launch_wait_seconds": launch_wait_seconds,
+        "recommended_resume_minutes": max(2, int((launch_wait_seconds + 95) / 60) + 1),
+        "command": command,
+    }
+
+
 def _install_or_update(
     *,
     action: str,
@@ -738,6 +801,7 @@ def _build_markdown(action: str, payload: dict[str, Any]) -> str:
         "- Update: `python scripts/mission-control-manage.py update`",
         "- Uninstall: `python scripts/mission-control-manage.py uninstall`",
         "- Codex smoke: `python scripts/mission-control-manage.py codex-smoke --json`",
+        "- Codex restart smoke: `python scripts/mission-control-manage.py codex-restart-smoke --json`",
         "- Claude: `/mission-control-install`, `/mission-control-update`, `/mission-control-uninstall`",
     ]
     if action in {"install", "update"}:
@@ -826,6 +890,28 @@ def _build_markdown(action: str, payload: dict[str, Any]) -> str:
                 "- Rerun this command after a Codex reinstall, app reload, or environment change instead of hand-checking five different places like a caveman with a checklist.",
             ]
         )
+    elif action == "codex-restart-smoke":
+        restart_smoke = payload.get("restart_smoke") or {}
+        lines.extend(
+            [
+                "",
+                "### Restart job launched",
+                f"- Launcher PID: {restart_smoke.get('launcher_pid')}",
+                f"- Results path: {restart_smoke.get('results_path')}",
+                f"- Log path: {restart_smoke.get('log_path')}",
+                f"- Launch wait seconds: {restart_smoke.get('launch_wait_seconds')}",
+                f"- Suggested resume minutes: {restart_smoke.get('recommended_resume_minutes')}",
+                "",
+                "### What happens next",
+                "- Codex will be force-quit.",
+                "- Codex will be relaunched by the local CLI.",
+                "- After the launch wait, Mission Control will run the Codex CLI smoke test and write the JSON result artifact.",
+                "",
+                "### Resume",
+                f"- Read the results file at `{restart_smoke.get('results_path')}` after the restart window, or wake this thread back up and I can continue from there.",
+                "- If you want me to survive the app restart, pair this command with a heartbeat on this thread so I wake back up after the wait window instead of dying with dignity in silence.",
+            ]
+        )
     else:
         uninstall_result = payload.get("uninstall") or {}
         lines.extend(
@@ -865,6 +951,7 @@ def run_management_workflow(
     stop_daemon: bool = True,
     daemon_host: str | None = None,
     daemon_port: int | None = None,
+    launch_wait_seconds: int = 25,
 ) -> dict[str, Any]:
     repo_root = resolve_repo_root(install_dir=install_dir, repo_url=repo_url)
     codex_home = resolve_codex_home(codex_home_override)
@@ -914,6 +1001,14 @@ def run_management_workflow(
         payload["claude_assets"] = detect_claude_assets(repo_root)
         payload.update(run_codex_smoke(repo_root, python_command, bootstrap=bootstrap))
         payload["status"] = payload.get("smoke_status", "degraded")
+    elif action == "codex-restart-smoke":
+        launched = launch_codex_restart_smoke(
+            repo_root,
+            python_command,
+            launch_wait_seconds=launch_wait_seconds,
+        )
+        payload["restart_smoke"] = launched
+        payload["status"] = "ready"
     elif action == "uninstall":
         if stop_daemon and not dry_run:
             payload["stop_daemon"] = run_stop_daemon(repo_root)
@@ -930,7 +1025,7 @@ def run_management_workflow(
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Install, update, uninstall, or smoke-test Mission Control bridge assets.")
-    parser.add_argument("action", choices=["install", "update", "uninstall", "codex-smoke"])
+    parser.add_argument("action", choices=["install", "update", "uninstall", "codex-smoke", "codex-restart-smoke"])
     parser.add_argument("--repo-url", default=DEFAULT_REPO_URL)
     parser.add_argument("--install-dir", default=None)
     parser.add_argument("--codex-home", default=None)
@@ -942,6 +1037,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--no-stop-daemon", action="store_true")
     parser.add_argument("--daemon-host", default=None)
     parser.add_argument("--daemon-port", type=int, default=None)
+    parser.add_argument("--launch-wait-seconds", type=int, default=25)
     parser.add_argument("--json", action="store_true")
     return parser.parse_args(argv)
 
@@ -961,6 +1057,7 @@ def main(argv: list[str] | None = None) -> int:
         stop_daemon=not args.no_stop_daemon,
         daemon_host=args.daemon_host,
         daemon_port=args.daemon_port,
+        launch_wait_seconds=args.launch_wait_seconds,
     )
     if args.json:
         print(json.dumps(payload, indent=2, default=str))

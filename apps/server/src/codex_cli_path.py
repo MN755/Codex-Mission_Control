@@ -33,24 +33,32 @@ def codex_command_path() -> str | None:
         if Path(explicit).is_file():
             return explicit
 
-    for candidate in ("codex", "codex.cmd", "codex.exe", "codex.ps1", "codex.bat"):
-        resolved = shutil.which(candidate)
-        if resolved:
-            return str(Path(resolved).resolve())
-
     if platform.system().lower() != "windows":
+        for candidate in ("codex", "codex.cmd", "codex.exe", "codex.ps1", "codex.bat"):
+            resolved = shutil.which(candidate)
+            if resolved:
+                return str(Path(resolved).resolve())
         return None
 
     home = Path.home()
     local_app_data = Path(os.environ.get("LOCALAPPDATA") or (home / "AppData" / "Local"))
     temp_root = Path(os.environ.get("TEMP") or os.environ.get("TMP") or "")
     candidate_files = [
-        local_app_data / "Microsoft" / "WindowsApps" / "codex.exe",
-        local_app_data / "Programs" / "Codex" / "codex.exe",
+        local_app_data / "OpenAI" / "Codex" / "bin" / "codex.exe",
+        local_app_data / "OpenAI" / "Codex" / "bin" / "codex.cmd",
         local_app_data / "Programs" / "OpenAI Codex" / "codex.exe",
+        local_app_data / "Programs" / "Codex" / "codex.exe",
+        local_app_data / "Microsoft" / "WindowsApps" / "codex.exe",
         home / ".local" / "bin" / "codex",
         home / ".local" / "bin" / "codex.exe",
     ]
+    versioned_bin_root = local_app_data / "OpenAI" / "Codex" / "bin"
+    if versioned_bin_root.exists():
+        versioned_entries = sorted(
+            (path / "codex.exe" for path in versioned_bin_root.iterdir() if path.is_dir()),
+            reverse=True,
+        )
+        candidate_files.extend(versioned_entries)
     if temp_root:
         candidate_files.extend(
             [
@@ -65,4 +73,9 @@ def codex_command_path() -> str | None:
                 return str(candidate.resolve())
             except OSError:
                 return str(candidate)
+
+    for candidate in ("codex", "codex.cmd", "codex.exe", "codex.ps1", "codex.bat"):
+        resolved = shutil.which(candidate)
+        if resolved:
+            return str(Path(resolved).resolve())
     return None

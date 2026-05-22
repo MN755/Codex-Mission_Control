@@ -326,6 +326,39 @@ def test_run_management_workflow_codex_smoke_reports_ready_state(monkeypatch, tm
     assert "What this proves" in payload["codex_chat_markdown"]
 
 
+def test_run_management_workflow_codex_restart_smoke_reports_detached_job(monkeypatch, tmp_path) -> None:
+    module = _load_manage_module()
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir(parents=True, exist_ok=True)
+    codex_home = tmp_path / ".codex"
+    agents_home = tmp_path / ".agents"
+
+    monkeypatch.setattr(module, "resolve_repo_root", lambda **kwargs: repo_root)
+    monkeypatch.setattr(module, "resolve_codex_home", lambda override=None: codex_home)
+    monkeypatch.setattr(module, "resolve_agents_home", lambda override=None: agents_home)
+    monkeypatch.setattr(module, "resolve_python_command", lambda explicit=None: sys.executable)
+    monkeypatch.setattr(
+        module,
+        "launch_codex_restart_smoke",
+        lambda repo_root, python_command, launch_wait_seconds=25: {
+            "status": "launched",
+            "launcher_pid": 4242,
+            "results_path": str(repo_root / ".runtime" / "codex-restart-smoke" / "latest.json"),
+            "log_path": str(repo_root / ".runtime" / "codex-restart-smoke" / "latest.log"),
+            "launch_wait_seconds": launch_wait_seconds,
+            "recommended_resume_minutes": 3,
+        },
+    )
+
+    payload = module.run_management_workflow(action="codex-restart-smoke", dry_run=False, launch_wait_seconds=30)
+
+    assert payload["status"] == "ready"
+    assert payload["restart_smoke"]["launcher_pid"] == 4242
+    assert payload["reload_guidance"]["codex"] is True
+    assert "Codex will be force-quit." in payload["codex_chat_markdown"]
+    assert "Suggested resume minutes: 3" in payload["codex_chat_markdown"]
+
+
 def test_packaged_plugin_manifest_is_ready_for_codex_sync() -> None:
     plugin_root = ROOT / "plugins" / "mission-control"
     manifest_path = plugin_root / ".codex-plugin" / "plugin.json"

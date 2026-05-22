@@ -74,6 +74,25 @@ def test_codex_command_path_prefers_explicit_env_override(monkeypatch, tmp_path)
     assert resolved == str(fake_cli.resolve())
 
 
+def test_codex_command_path_prefers_openai_appdata_binary_over_windowsapps_alias(monkeypatch, tmp_path) -> None:
+    local_app_data = tmp_path / "AppData" / "Local"
+    preferred = local_app_data / "OpenAI" / "Codex" / "bin" / "codex.exe"
+    fallback = local_app_data / "Microsoft" / "WindowsApps" / "codex.exe"
+    preferred.parent.mkdir(parents=True, exist_ok=True)
+    fallback.parent.mkdir(parents=True, exist_ok=True)
+    preferred.write_text("", encoding="utf-8")
+    fallback.write_text("", encoding="utf-8")
+
+    monkeypatch.delenv("MISSION_CONTROL_CODEX_PATH", raising=False)
+    monkeypatch.delenv("CODEX_CLI_PATH", raising=False)
+    monkeypatch.setenv("LOCALAPPDATA", str(local_app_data))
+    monkeypatch.setattr("codex_cli_path.platform.system", lambda: "Windows")
+    monkeypatch.setattr("codex_cli_path.shutil.which", lambda name: str(fallback))
+
+    resolved = codex_command_path()
+    assert resolved == str(preferred.resolve())
+
+
 def test_update_daemon_metadata_status_preserves_started_at(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr("daemon_state.DAEMON_METADATA_PATH", tmp_path / "daemon.json")
     monkeypatch.setattr("daemon_state.RUNTIME_ROOT", tmp_path / "runtime")
