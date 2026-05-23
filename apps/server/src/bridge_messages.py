@@ -744,6 +744,13 @@ class BridgeRuntimeService:
                 current_work.append(f"{agent.name}: {agent.current_action or agent.status}")
         if current_action.get("type") not in {"no_action", None} and current_action.get("message"):
             current_work.append(str(current_action["message"]))
+        background_runtime: dict[str, Any] = {}
+        if orchestration is not None:
+            background_runtime = coordinator._background_runtime_snapshot(orchestration.id, metadata=dict(orchestration.metadata_json or {}))
+            if background_runtime.get("retry_scheduled"):
+                current_work.append("Mission Control queued a retry after a recoverable background error.")
+            elif background_runtime.get("turn_active"):
+                current_work.append("Mission Control is actively running a background manager turn.")
         waiting = [f"{item['title']}: {item['message']}" if item.get("message") else item["title"] for item in pending]
         blockers = list(dict.fromkeys([*list(current_action.get("message") and [str(current_action["message"])] or []), *list(health.get("reasons") or [])]))
         model_advisories = [

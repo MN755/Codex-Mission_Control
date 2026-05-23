@@ -479,6 +479,7 @@ async def mission_control_plugin_health() -> dict[str, Any]:
             severity="warning",
             safe_details={"runner_types": []},
         )
+        non_dry_runners = [item for item in runner_inventory if item.get("runner_type") != "dry_run" and item.get("availability")]
         checks.append(
             _check(
                 check_id="runner_registry_available",
@@ -490,6 +491,22 @@ async def mission_control_plugin_health() -> dict[str, Any]:
                 commands=["python -m pytest apps/server/tests/test_runners.py"],
                 details={"runner_types": [item.get("runner_type") for item in runner_inventory]},
                 error=runner_error,
+            )
+        )
+        checks.append(
+            _check(
+                check_id="runner_execution_quality",
+                label="Runner execution quality",
+                status="ready" if non_dry_runners else "degraded",
+                summary=(
+                    "At least one real coding runner is available for worker execution."
+                    if non_dry_runners
+                    else "Only dry-run execution is currently available; Mission Control can plan, but real code edits need Codex CLI, Claude CLI, Ollama, or an API runner."
+                ),
+                critical=False,
+                fix=None if non_dry_runners else "Configure at least one real runner before expecting autonomous edits.",
+                commands=["python scripts/mission-control-manage.py status --json"],
+                details={"ready_runner_types": [item.get("runner_type") for item in non_dry_runners]},
             )
         )
     except Exception as exc:

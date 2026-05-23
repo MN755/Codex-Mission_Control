@@ -133,6 +133,20 @@ def choose_next_codex_prompt(configured_runners: list[str]) -> str:
     return "Use Mission Control for this repo and fix the failing tests."
 
 
+def _operator_recommendations(report: dict[str, Any]) -> list[str]:
+    recommendations: list[str] = []
+    if str(report.get("daemon_status")) != "ready":
+        recommendations.append("Start or repair the Mission Control daemon before launching manager-led work.")
+    if str(report.get("mcp_status")) != "ready":
+        recommendations.append("Reload Codex or Claude Code after install so the MCP bridge and plugin bundle are loaded.")
+    configured = {str(item).lower() for item in report.get("configured_runners", [])}
+    if configured <= {"dry-run"}:
+        recommendations.append("Configure Codex CLI, Claude CLI, Ollama, or an API runner before expecting real file edits.")
+    if report.get("warnings"):
+        recommendations.append("Review degraded health warnings before starting long-running orchestration.")
+    return _dedupe(recommendations)
+
+
 def compose_install_markdown(report: dict[str, Any]) -> str:
     ready_runners = ", ".join(report.get("configured_runners", [])) or "None"
     unavailable_runners = ", ".join(report.get("unavailable_runners", [])) or "None"
@@ -175,6 +189,9 @@ def compose_install_markdown(report: dict[str, Any]) -> str:
     if report.get("user_actions_required"):
         lines.extend(["", "### User actions required"])
         lines.extend(f"- {item}" for item in report["user_actions_required"])
+    if report.get("operator_recommendations"):
+        lines.extend(["", "### Operator recommendations"])
+        lines.extend(f"- {item}" for item in report["operator_recommendations"])
     if report.get("warnings"):
         lines.extend(["", "### Warnings"])
         lines.extend(f"- {item}" for item in report["warnings"])
@@ -304,5 +321,6 @@ def build_install_report(
             if probe.get("code")
         ],
     }
+    report["operator_recommendations"] = _operator_recommendations(report)
     report["codex_chat_markdown"] = compose_install_markdown(report)
     return redact_bootstrap_value(report)

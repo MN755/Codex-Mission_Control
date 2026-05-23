@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import asyncio
 from pathlib import Path
 
 from conftest import sample_workspace, wait_for
@@ -44,6 +45,23 @@ def test_daemon_status_reports_runner_inventory(client) -> None:
     assert payload["status"] == "ok"
     assert payload["token_configured"] is True
     assert any(item["runner_type"] == "dry_run" and item["availability"] for item in payload["runner_inventory"])
+    assert "background_runtime" in payload
+    assert "active_background_turns" in payload
+    assert "retrying_orchestrations" in payload
+
+
+def test_background_retries_are_tracked_and_shutdown_cancels() -> None:
+    from orchestration import coordinator
+
+    async def run_test() -> None:
+        coordinator._schedule_background_retry(999999, "retry_after_error", 30.0)
+        snapshot = coordinator._background_runtime_snapshot(999999)
+        assert snapshot["retry_scheduled"] is True
+        assert snapshot["delay_seconds"] == 30.0
+        await coordinator.on_shutdown()
+        assert coordinator._background_runtime_snapshot(999999)["retry_scheduled"] is False
+
+    asyncio.run(run_test())
 
 
 def test_attach_workspace_creates_new_project_for_empty_folder(client) -> None:
@@ -342,6 +360,7 @@ def test_orchestration_status_reports_pending_decision_count(client) -> None:
     assert payload["project_id"] == project["id"]
     assert payload["pending_decisions_count"] >= 1
     assert payload["user_action_required"] is True
+    assert "background_runtime" in payload
 
 
 def test_orchestration_handoff_returns_not_ready_state(client) -> None:

@@ -250,6 +250,7 @@ def test_autowire_generates_safe_headless_config_and_repair_preserves_install_id
     report = asyncio.run(autowire_headless(workspace_path=str(ROOT)))
     assert report["status"] == "degraded"
     assert report["headless_config"]["dashboard_enabled"] is False
+    assert "operator_recommendations" in report
     assert "Dry-run" in report["configured_runners"]
     assert "OpenAI API" in report["configured_runners"]
     assert "sk-proj" not in str(report)

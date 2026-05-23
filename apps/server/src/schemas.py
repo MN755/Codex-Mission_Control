@@ -1204,6 +1204,7 @@ class OrchestrationStatusRead(BaseModel):
     user_action_required: bool = False
     handoff_readiness: str = "not_ready"
     runner_inventory: list[RunnerAvailabilityRead] = Field(default_factory=list)
+    background_runtime: dict[str, Any] = Field(default_factory=dict)
 
 
 class DaemonStatusRead(BaseModel):
@@ -1217,6 +1218,9 @@ class DaemonStatusRead(BaseModel):
     token_configured: bool = False
     active_orchestrations: int = 0
     runner_inventory: list[RunnerAvailabilityRead] = Field(default_factory=list)
+    background_runtime: list[dict[str, Any]] = Field(default_factory=list)
+    retrying_orchestrations: int = 0
+    active_background_turns: int = 0
     dashboard_url: str
     repo_root: str | None = None
     runtime_root: str | None = None

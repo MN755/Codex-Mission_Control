@@ -36,6 +36,7 @@ MAX_BACKGROUND_FAILURES = 3
 class OrchestrationCoordinator:
     def __init__(self) -> None:
         self._tasks: dict[int, asyncio.Task[None]] = {}
+        self._task_metadata: dict[int, dict[str, Any]] = {}
 
     def on_startup(self) -> None:
         ensure_daemon_token()
@@ -67,6 +68,7 @@ class OrchestrationCoordinator:
     async def on_shutdown(self) -> None:
         tasks = list(self._tasks.values())
         self._tasks.clear()
+        self._task_metadata.clear()
         if not tasks:
             return
         for task in tasks:
@@ -864,6 +866,9 @@ class OrchestrationCoordinator:
             for decision in pending
             if decision.status == "pending" and decision.risk_level in {"high", "critical"}
         )
+        metadata = dict(session.metadata_json or {})
+        if metadata.get("last_background_error") and int(metadata.get("background_failure_count") or 0) > 0:
+            blockers.append(f"Last background error: {metadata['last_background_error']}")
         handoff = service.get_project_handoff_summary(db, project)
         derived_status, derived_manager_status = self._derive_runtime_state(
             db,
@@ -874,8 +879,7 @@ class OrchestrationCoordinator:
             current_action=current_action,
             manager_fallback=session.manager_status,
         )
-        background_task = self._tasks.get(session.id)
-        metadata = dict(session.metadata_json or {})
+        background_runtime = self._background_runtime_snapshot(session.id, metadata=metadata)
         return {
             "orchestration_id": session.id,
             "project_id": project.id,
@@ -895,20 +899,27 @@ class OrchestrationCoordinator:
                 for event in recent_events
             ],
             "current_blockers": blockers[:5],
-            "next_expected_action": self._next_expected_action(current_action, pending, project),
+            "next_expected_action": self._next_expected_action(current_action, pending, project, background_runtime=background_runtime),
             "user_action_required": any(decision.status == "pending" for decision in pending),
             "handoff_readiness": handoff["status"],
             "runner_inventory": await service.runners.inventory(),
-            "background_runtime": {
-                "turn_active": bool(background_task and not background_task.done()),
-                "failure_count": int(metadata.get("background_failure_count") or 0),
-                "last_error": metadata.get("last_background_error"),
-            },
+            "background_runtime": background_runtime,
         }
 
-    def _next_expected_action(self, current_action: dict[str, Any], decisions: Sequence[PendingDecision], project: Project) -> str:
+    def _next_expected_action(
+        self,
+        current_action: dict[str, Any],
+        decisions: Sequence[PendingDecision],
+        project: Project,
+        *,
+        background_runtime: dict[str, Any] | None = None,
+    ) -> str:
         if any(decision.status == "pending" for decision in decisions):
             return "Waiting for the user to answer a Mission Control decision."
+        if background_runtime and background_runtime.get("retry_scheduled"):
+            return "Mission Control queued a retry after a recoverable background error."
+        if background_runtime and background_runtime.get("turn_active"):
+            return "Mission Control is actively running a background manager turn."
         if current_action.get("type") == "handoff_ready":
             return "Generate or review the final Mission Control handoff."
         if project.status == "paused":
@@ -1017,6 +1028,9 @@ class OrchestrationCoordinator:
             "token_configured": ensure_daemon_token() is not None,
             "active_orchestrations": active_count,
             "runner_inventory": await service.runners.inventory(),
+            "background_runtime": self._all_background_runtime_snapshots(),
+            "retrying_orchestrations": sum(1 for item in self._all_background_runtime_snapshots() if item.get("retry_scheduled")),
+            "active_background_turns": sum(1 for item in self._all_background_runtime_snapshots() if item.get("turn_active")),
             "dashboard_url": daemon_dashboard_url(),
             "repo_root": str(metadata.get("repo_root") or ""),
             "runtime_root": str(metadata.get("runtime_root") or ""),
@@ -1032,6 +1046,12 @@ class OrchestrationCoordinator:
         task = self._tasks.get(orchestration_id)
         if task is not None and not task.done():
             return
+        self._task_metadata[orchestration_id] = {
+            "reason": reason,
+            "scheduled_at": utc_now().isoformat(),
+            "retry_scheduled": reason == "retry_after_error",
+            "delay_seconds": 0.1,
+        }
         task = asyncio.create_task(self._run_background_turn_deferred(orchestration_id, reason))
         task.add_done_callback(lambda completed, orchestration_id=orchestration_id: self._background_task_done(orchestration_id, completed))
         self._tasks[orchestration_id] = task
@@ -1039,6 +1059,7 @@ class OrchestrationCoordinator:
     def _background_task_done(self, orchestration_id: int, task: asyncio.Task[None]) -> None:
         if self._tasks.get(orchestration_id) is task:
             self._tasks.pop(orchestration_id, None)
+            self._task_metadata.pop(orchestration_id, None)
         if task.cancelled():
             return
         # Consume exceptions here. _run_background_turn records user-visible
@@ -1056,9 +1077,44 @@ class OrchestrationCoordinator:
         await asyncio.sleep(0.1)
         await self._run_background_turn(orchestration_id, reason)
 
+    def _schedule_background_retry(self, orchestration_id: int, reason: str, delay: float) -> None:
+        self._task_metadata[orchestration_id] = {
+            "reason": reason,
+            "scheduled_at": utc_now().isoformat(),
+            "retry_scheduled": True,
+            "delay_seconds": delay,
+        }
+        task = asyncio.create_task(self._run_background_turn_retry_deferred(orchestration_id, reason, delay))
+        task.add_done_callback(lambda completed, orchestration_id=orchestration_id: self._background_task_done(orchestration_id, completed))
+        self._tasks[orchestration_id] = task
+
     async def _run_background_turn_retry_deferred(self, orchestration_id: int, reason: str, delay: float) -> None:
         await asyncio.sleep(delay)
-        self._schedule_background_turn(orchestration_id, reason)
+        metadata = dict(self._task_metadata.get(orchestration_id) or {})
+        metadata["retry_scheduled"] = False
+        metadata["reason"] = reason
+        metadata["scheduled_at"] = utc_now().isoformat()
+        metadata["delay_seconds"] = 0
+        self._task_metadata[orchestration_id] = metadata
+        await self._run_background_turn(orchestration_id, reason)
+
+    def _background_runtime_snapshot(self, orchestration_id: int, *, metadata: dict[str, Any] | None = None) -> dict[str, Any]:
+        task = self._tasks.get(orchestration_id)
+        task_meta = dict(self._task_metadata.get(orchestration_id) or {})
+        session_meta = dict(metadata or {})
+        return {
+            "orchestration_id": orchestration_id,
+            "turn_active": bool(task and not task.done() and not task_meta.get("retry_scheduled")),
+            "retry_scheduled": bool(task and not task.done() and task_meta.get("retry_scheduled")),
+            "reason": task_meta.get("reason"),
+            "scheduled_at": task_meta.get("scheduled_at"),
+            "delay_seconds": task_meta.get("delay_seconds"),
+            "failure_count": int(session_meta.get("background_failure_count") or 0),
+            "last_error": session_meta.get("last_background_error"),
+        }
+
+    def _all_background_runtime_snapshots(self) -> list[dict[str, Any]]:
+        return [self._background_runtime_snapshot(orchestration_id) for orchestration_id in sorted(self._tasks)]
 
     async def _run_background_turn(self, orchestration_id: int, reason: str) -> None:
         db = SessionLocal()
@@ -1105,6 +1161,11 @@ class OrchestrationCoordinator:
             )
             if derived_status == "completed":
                 self._record_event(db, session, "handoff_ready", {"status": handoff["status"]})
+            metadata = dict(session.metadata_json or {})
+            if metadata.get("background_failure_count") or metadata.get("last_background_error"):
+                metadata["background_failure_count"] = 0
+                metadata.pop("last_background_error", None)
+                session.metadata_json = metadata
             self._record_event(
                 db,
                 session,
@@ -1141,9 +1202,7 @@ class OrchestrationCoordinator:
                         {"reason": str(exc), "failure_count": failure_count, "max_failures": MAX_BACKGROUND_FAILURES},
                     )
                     db.commit()
-                    asyncio.create_task(
-                        self._run_background_turn_retry_deferred(orchestration_id, "retry_after_error", min(2.0 * failure_count, 5.0))
-                    )
+                    self._schedule_background_retry(orchestration_id, "retry_after_error", min(2.0 * failure_count, 5.0))
                 else:
                     self._update_session_status(db, session, status="failed", manager_status=f"Mission Control background turn failed: {exc}")
                     self._record_event(db, session, "orchestration_failed", {"reason": str(exc), "failure_count": failure_count})

@@ -124,6 +124,51 @@ def test_plugin_health_treats_live_loaded_mcp_as_ready_without_count_metadata(mo
     assert "live-loaded" in by_key["mcp_tools_registered"]["summary"]
 
 
+def test_plugin_health_warns_when_only_dry_run_runner_available(monkeypatch, tmp_path) -> None:
+    async def fake_inventory() -> list[dict]:
+        return [{"runner_type": "dry_run", "availability": True}]
+
+    runtime_root = tmp_path / "runtime"
+    launcher_root = tmp_path / "launcher"
+    monkeypatch.setattr(
+        "plugin_health.detect_codex_status",
+        lambda: {
+            "cli_detected": True,
+            "cli_execution_available": True,
+            "cli_version": "codex 1.0.0",
+            "login_status": "Logged in using ChatGPT",
+            "auth_mode": "chatgpt",
+            "authenticated": True,
+            "auth_status_detectable": True,
+            "mcp_servers": [{"name": "mission-control", "status": "connected"}],
+            "configured_mcp_servers": [{"name": "mission-control"}],
+            "local_skills": [],
+        },
+    )
+    monkeypatch.setattr(
+        "plugin_health.daemon_identity_snapshot",
+        lambda: _daemon_identity(
+            repo_root=str(__import__("plugin_health").REPO_ROOT),
+            runtime_root=str(runtime_root),
+            launcher_root=str(launcher_root),
+        ),
+    )
+    monkeypatch.setattr("plugin_health.read_daemon_metadata", lambda: {"host": "127.0.0.1", "port": 8000, "mode": "daemon"})
+    monkeypatch.setattr(
+        "plugin_health.resolve_backend_binding",
+        lambda: {"host": "127.0.0.1", "port": 8000, "mode": "daemon", "source": "daemon_metadata"},
+    )
+    monkeypatch.setattr("plugin_health.daemon_dashboard_url", lambda project_id=None: "http://127.0.0.1:8000/dashboard")
+    monkeypatch.setattr("plugin_health._probe_url", lambda url, timeout=2.0: (True, "HTTP 200"))
+    monkeypatch.setattr("plugin_health.service.runners.inventory", fake_inventory)
+    monkeypatch.setattr("plugin_health.RUNTIME_ROOT", runtime_root)
+
+    payload = asyncio.run(__import__("plugin_health").mission_control_plugin_health())
+    by_key = {check["key"]: check for check in payload["checks"]}
+    assert by_key["runner_execution_quality"]["status"] == "degraded"
+    assert "real code edits" in by_key["runner_execution_quality"]["summary"]
+
+
 def test_plugin_health_uses_resolved_backend_port_in_commands(monkeypatch, tmp_path) -> None:
     async def fake_inventory() -> list[dict]:
         return [{"runner_type": "dry_run", "availability": True}]
