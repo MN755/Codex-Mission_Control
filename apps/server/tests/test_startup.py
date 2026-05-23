@@ -18,7 +18,16 @@ def test_new_install_routes_to_first_time_setup(client) -> None:
     assert payload["first_run_completed"] is False
 
 
-def test_complete_first_run_persists_and_routes_to_dashboard(client) -> None:
+def test_complete_first_run_persists_and_routes_to_dashboard(monkeypatch, client) -> None:
+    monkeypatch.setattr(
+        startup_service,
+        "_provider_optional_checks",
+        lambda profile: [
+            startup_service._check("codex_cli", required=False, status="passed", summary="Codex CLI ready."),
+            startup_service._check("codex_login", required=False, status="passed", summary="Codex login ready."),
+            startup_service._check("app_server", required=False, status="passed", summary="Codex app server ready."),
+        ],
+    )
     complete = client.post(
         "/api/startup/complete-first-run",
         json={

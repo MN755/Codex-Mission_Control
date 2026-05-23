@@ -321,13 +321,14 @@ class StartupCoordinator:
             return payload
 
         payload["backend_ready"] = True
-        if degraded_checks and include_optional_checks:
+        setup_completed = bool(profile.first_run_completed or profile.onboarding_completed)
+        if degraded_checks and include_optional_checks and setup_completed:
             payload["mode"] = "degraded"
             payload["overall_status"] = "degraded"
-            payload["recommended_route"] = "/dashboard" if profile.first_run_completed or profile.onboarding_completed else "/setup"
+            payload["recommended_route"] = "/dashboard"
             payload["error_code"] = degraded_checks[0]["error_code"]
             payload["error_summary"] = degraded_checks[0]["summary"]
-        elif profile.first_run_completed or profile.onboarding_completed:
+        elif setup_completed:
             payload["mode"] = "regular"
             payload["overall_status"] = "ready"
             payload["recommended_route"] = "/dashboard"
