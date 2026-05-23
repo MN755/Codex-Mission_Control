@@ -55,6 +55,7 @@ class CliCodexRunner(BaseCodexRunner):
                 "--version",
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                **self.quiet_subprocess_kwargs(),
             )
         except OSError:
             return False
@@ -77,6 +78,7 @@ class CliCodexRunner(BaseCodexRunner):
                 "status",
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                **self.quiet_subprocess_kwargs(),
             )
         except OSError:
             self.last_login_status = "Unavailable"
@@ -125,10 +127,16 @@ class CliCodexRunner(BaseCodexRunner):
         if cli_path is None:
             raise RuntimeError("Codex CLI resolved path is unavailable.")
         self.last_cli_path = cli_path
-        base_args = [cli_path, "exec"]
         if resume and context.agent.session_ref:
-            base_args.extend(["resume", context.agent.session_ref])
-        base_args.extend(["--json", "--skip-git-repo-check"])
+            base_args = [cli_path, "exec", "resume", "--json", "--skip-git-repo-check"]
+            if context.settings.model:
+                base_args.extend(["-m", context.settings.model])
+            if context.settings.reasoning_effort:
+                base_args.extend(["-c", f'model_reasoning_effort="{context.settings.reasoning_effort}"'])
+            base_args.extend([context.agent.session_ref, "-"])
+            return base_args
+
+        base_args = [cli_path, "exec", "--json", "--skip-git-repo-check"]
         if context.settings.sandbox_mode:
             base_args.extend(["--sandbox", context.settings.sandbox_mode])
         if context.settings.approval_policy:
@@ -173,6 +181,7 @@ class CliCodexRunner(BaseCodexRunner):
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            **self.quiet_subprocess_kwargs(),
         )
         assert state.process.stdin is not None
         state.process.stdin.write(prompt.encode("utf-8"))
