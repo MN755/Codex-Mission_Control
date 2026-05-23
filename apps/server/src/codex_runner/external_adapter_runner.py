@@ -374,6 +374,7 @@ class ExternalAdapterRunner(BaseCodexRunner):
             stderr=asyncio.subprocess.PIPE,
             cwd=workdir,
             env=env,
+            **self.quiet_subprocess_kwargs(),
         )
         assert state.process.stdin is not None
         state.process.stdin.write(prompt.encode("utf-8"))

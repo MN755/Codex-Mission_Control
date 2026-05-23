@@ -19,9 +19,13 @@ The Codex chat agent is not the Mission Control Manager. It is the bridge betwee
 
 ## Workflow
 
-1. Read codebase-map and status resources.
-2. Extract stack, structure, entry points, likely runtime path, test setup, and risky or unknown areas.
-3. Return a compact explanation and suggested next exploration.
+1. Verify the Mission Control bridge surface first:
+   - prefer named `mission_control_*` tools when exposed
+   - in Codex CLI sessions, use `codex mcp list` if needed to tell "registered" apart from "callable here"
+   - if exposure is unclear, confirm MCP registration or resource visibility before claiming understanding resources are unavailable
+2. Read codebase-map and status resources.
+3. Extract stack, structure, entry points, likely runtime path, test setup, and risky or unknown areas.
+4. Return a compact explanation and suggested next exploration.
 
 ## Mission Control calls
 
@@ -49,7 +53,7 @@ This is a read-only explanation. If the user wants edits afterward, switch back 
 
 ## Failure and fallback
 
-If codebase understanding is incomplete, say what is known, what is inferred, and what still needs a deeper Mission Control scan.
+If codebase understanding is incomplete, say what is known, what is inferred, and what still needs a deeper Mission Control scan. If the issue is partial MCP exposure rather than a missing bridge, say that precisely.
 
 ## Example invocation
 

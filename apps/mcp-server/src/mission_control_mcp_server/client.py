@@ -158,7 +158,12 @@ class MissionControlDaemonClient:
         stderr_handle = open(self._launcher_root / "daemon.stderr.log", "a", encoding="utf-8")
         kwargs: dict[str, Any] = {"cwd": str(self.repo_root), "env": env, "stdout": stdout_handle, "stderr": stderr_handle}
         if os.name == "nt":
-            kwargs["creationflags"] = getattr(subprocess, "DETACHED_PROCESS", 0) | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+            kwargs["creationflags"] = (
+                getattr(subprocess, "DETACHED_PROCESS", 0)
+                | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+                | getattr(subprocess, "CREATE_NO_WINDOW", 0)
+                | getattr(subprocess, "CREATE_BREAKAWAY_FROM_JOB", 0)
+            )
         else:
             kwargs["start_new_session"] = True
         subprocess.Popen([sys.executable, str(self._server_script)], **kwargs)

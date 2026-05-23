@@ -139,6 +139,46 @@ def _skill_source_root(repo_root: Path) -> Path:
     return repo_root / ".codex" / "skills"
 
 
+def _plugin_cache_root(codex_home: Path, plugin_name: str) -> Path:
+    return codex_home / "plugins" / "cache" / DEFAULT_MARKETPLACE_NAME / plugin_name
+
+
+def sync_codex_plugin_cache(
+    plugin_source: Path,
+    codex_home: Path,
+    plugin_manifest: dict[str, Any],
+    *,
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    plugin_name = str(plugin_manifest.get("name") or "mission-control")
+    plugin_version = str(plugin_manifest.get("version") or "dev")
+    cache_root = _plugin_cache_root(codex_home, plugin_name)
+    cache_destination = cache_root / plugin_version
+    stale_versions: list[str] = []
+
+    if cache_root.exists():
+        stale_versions = sorted(
+            path.name for path in cache_root.iterdir() if path.is_dir() and path.name != plugin_version
+        )
+
+    plugin_files_copied = _copy_tree(plugin_source, cache_destination, dry_run=dry_run)
+    if not dry_run and cache_root.exists():
+        for version_dir in cache_root.iterdir():
+            if version_dir.is_dir() and version_dir.name != plugin_version:
+                shutil.rmtree(version_dir)
+
+    return {
+        "status": "ready",
+        "cache_root": str(cache_root),
+        "cache_destination": str(cache_destination),
+        "plugin_name": plugin_name,
+        "plugin_version": plugin_version,
+        "plugin_files_copied": plugin_files_copied,
+        "stale_versions_removed": stale_versions,
+        "dry_run": dry_run,
+    }
+
+
 def _default_marketplace() -> dict[str, Any]:
     return {
         "name": DEFAULT_MARKETPLACE_NAME,
@@ -283,6 +323,7 @@ def sync_codex_bundle(repo_root: Path, codex_home: Path, *, dry_run: bool = Fals
     plugin_manifest = _read_plugin_manifest(plugin_source)
 
     plugin_files_copied = _copy_tree(plugin_source, plugin_destination, dry_run=dry_run)
+    cache_sync = sync_codex_plugin_cache(plugin_source, codex_home, plugin_manifest, dry_run=dry_run)
     if skills_source_root.exists():
         for skill_dir in sorted(path for path in skills_source_root.iterdir() if path.is_dir() and path.name.startswith("mission-control")):
             copied_skills.append(skill_dir.name)
@@ -296,6 +337,7 @@ def sync_codex_bundle(repo_root: Path, codex_home: Path, *, dry_run: bool = Fals
         "plugin_manifest": plugin_manifest,
         "plugin_name": plugin_manifest.get("name") or "mission-control",
         "plugin_display_name": plugin_manifest.get("display_name") or "Mission Control",
+        "cache_sync": cache_sync,
         "skills_copied": copied_skills,
         "skill_count": len(copied_skills),
         "status": "ready",
@@ -448,14 +490,20 @@ def remove_codex_config_registration(codex_home: Path, *, dry_run: bool = False)
 
 def uninstall_codex_bundle(codex_home: Path, *, dry_run: bool = False) -> dict[str, Any]:
     plugin_path = codex_home / "plugins" / "mission-control"
+    plugin_cache_root = _plugin_cache_root(codex_home, "mission-control")
     skills_root = codex_home / "skills"
     removed_skills: list[str] = []
     plugin_removed = False
+    cache_removed = False
 
     if plugin_path.exists():
         plugin_removed = True
         if not dry_run:
             shutil.rmtree(plugin_path)
+    if plugin_cache_root.exists():
+        cache_removed = True
+        if not dry_run:
+            shutil.rmtree(plugin_cache_root)
     if skills_root.exists():
         for skill_dir in sorted(path for path in skills_root.iterdir() if path.is_dir() and path.name.startswith("mission-control")):
             removed_skills.append(skill_dir.name)
@@ -466,10 +514,12 @@ def uninstall_codex_bundle(codex_home: Path, *, dry_run: bool = False) -> dict[s
         "codex_home": str(codex_home),
         "plugin_path": str(plugin_path),
         "plugin_removed": plugin_removed,
+        "plugin_cache_root": str(plugin_cache_root),
+        "plugin_cache_removed": cache_removed,
         "removed_skills": removed_skills,
         "removed_skill_count": len(removed_skills),
         "config": config_result,
-        "status": "ready" if plugin_removed or removed_skills or config_result["changed"] else "not_installed",
+        "status": "ready" if plugin_removed or cache_removed or removed_skills or config_result["changed"] else "not_installed",
         "dry_run": dry_run,
     }
 
@@ -523,7 +573,19 @@ def run_bootstrap(
         command.extend(["--daemon-host", daemon_host])
     if daemon_port is not None:
         command.extend(["--daemon-port", str(daemon_port)])
-    completed = subprocess.run(command, capture_output=True, text=True, timeout=600, check=False)
+    try:
+        completed = subprocess.run(command, capture_output=True, text=True, timeout=120, check=False)
+    except subprocess.TimeoutExpired as exc:
+        output = "\n".join(part for part in [exc.stdout or "", exc.stderr or ""] if part).strip()
+        return {
+            "status": "degraded",
+            "command": command,
+            "returncode": None,
+            "timed_out": True,
+            "timeout_seconds": 120,
+            "raw_output": output[-4000:],
+            "codex_chat_markdown": "Mission Control bootstrap timed out before returning a health report.",
+        }
     output = completed.stdout.strip() or completed.stderr.strip()
     payload: dict[str, Any]
     try:
@@ -602,7 +664,139 @@ def _safe_state(ok: bool) -> str:
     return "ready" if ok else "degraded"
 
 
-def _codex_smoke_checks(codex_status: dict[str, Any]) -> list[dict[str, Any]]:
+def _probe_backend_health(repo_root: Path) -> dict[str, Any]:
+    import urllib.request
+
+    try:
+        daemon_state = _load_server_module(repo_root, "daemon_state")
+        binding = daemon_state.resolve_backend_binding(prefer_live_metadata=False)
+        host = str(binding.get("host") or "127.0.0.1")
+        port = int(binding.get("port") or 8010)
+    except Exception:
+        host = "127.0.0.1"
+        port = 8010
+    url = f"http://{host}:{port}/api/health"
+    try:
+        with urllib.request.urlopen(url, timeout=3.0) as response:
+            body = response.read().decode("utf-8", errors="ignore")
+            ready = response.status == 200 and '"ok"' in body
+            return {
+                "status": "ready" if ready else "degraded",
+                "reachable": ready,
+                "summary": f"Mission Control daemon health endpoint returned HTTP {response.status}.",
+                "url": url,
+            }
+    except Exception as exc:
+        return {
+            "status": "degraded",
+            "reachable": False,
+            "summary": f"Mission Control daemon health endpoint was not reachable: {type(exc).__name__}: {exc}",
+            "url": url,
+        }
+
+
+def _probe_mission_control_mcp_stdio(codex_status: dict[str, Any]) -> dict[str, Any]:
+    mcp_state = dict(codex_status.get("mcp_state") or {}).get("mission_control") or {}
+    live_entry = dict(mcp_state.get("live_entry") or {})
+    transport = dict(live_entry.get("transport") or {})
+    command = transport.get("command")
+    args = [str(item) for item in list(transport.get("args") or [])]
+    cwd = transport.get("cwd")
+    if not command:
+        return {
+            "status": "degraded",
+            "summary": "Mission Control MCP transport details were not available for a direct stdio handshake probe.",
+            "callable": False,
+            "tool_count": 0,
+            "resource_template_count": 0,
+            "prompt_count": 0,
+        }
+    env = os.environ.copy()
+    for key, value in dict(transport.get("env") or {}).items():
+        env[str(key)] = str(value)
+    requests = [
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {"protocolVersion": "2025-03-26", "clientInfo": {"name": "mission-control-manage", "version": "1"}, "capabilities": {}},
+        },
+        {"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}},
+        {"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}},
+        {"jsonrpc": "2.0", "id": 3, "method": "resources/templates/list", "params": {}},
+        {"jsonrpc": "2.0", "id": 4, "method": "prompts/list", "params": {}},
+    ]
+    payload = "\n".join(json.dumps(item, default=str) for item in requests) + "\n"
+    try:
+        completed = subprocess.run(
+            [str(command), *args],
+            input=payload,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            cwd=cwd or None,
+            env=env,
+            timeout=20,
+            check=False,
+        )
+    except Exception as exc:
+        return {
+            "status": "degraded",
+            "summary": f"Mission Control MCP stdio handshake could not be executed: {exc}",
+            "callable": False,
+            "tool_count": 0,
+            "resource_template_count": 0,
+            "prompt_count": 0,
+        }
+    raw_lines = [line.strip() for line in completed.stdout.splitlines() if line.strip()]
+    responses: list[dict[str, Any]] = []
+    for line in raw_lines:
+        try:
+            parsed = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(parsed, dict):
+            responses.append(parsed)
+    by_id = {item.get("id"): item for item in responses if item.get("id") is not None}
+    init_response = by_id.get(1) or {}
+    tools_response = by_id.get(2) or {}
+    resources_response = by_id.get(3) or {}
+    prompts_response = by_id.get(4) or {}
+    tools = list(((tools_response.get("result") or {}).get("tools")) or [])
+    resource_templates = list(((resources_response.get("result") or {}).get("resourceTemplates")) or [])
+    prompts = list(((prompts_response.get("result") or {}).get("prompts")) or [])
+    callable_surface = bool(tools) and any(item.get("name") == "mission_control_get_status" for item in tools)
+    init_ok = "result" in init_response and not init_response.get("error")
+    if callable_surface and init_ok:
+        return {
+            "status": "ready",
+            "summary": (
+                f"Mission Control MCP stdio handshake succeeded with {len(tools)} tools, "
+                f"{len(resource_templates)} resource templates, and {len(prompts)} prompts."
+            ),
+            "callable": True,
+            "tool_count": len(tools),
+            "resource_template_count": len(resource_templates),
+            "prompt_count": len(prompts),
+            "sample_tools": [str(item.get('name')) for item in tools[:5]],
+            "returncode": completed.returncode,
+        }
+    stderr_summary = (completed.stderr or "").strip().splitlines()[:3]
+    return {
+        "status": "degraded",
+        "summary": "Mission Control MCP stdio handshake did not return a callable tool surface.",
+        "callable": False,
+        "tool_count": len(tools),
+        "resource_template_count": len(resource_templates),
+        "prompt_count": len(prompts),
+        "sample_tools": [str(item.get('name')) for item in tools[:5]],
+        "returncode": completed.returncode,
+        "stderr": stderr_summary,
+        "stdout_lines": raw_lines[:6],
+    }
+
+
+def _codex_smoke_checks(codex_status: dict[str, Any], mcp_probe: dict[str, Any], backend_probe: dict[str, Any]) -> list[dict[str, Any]]:
     mcp_state = dict(codex_status.get("mcp_state") or {}).get("mission_control") or {}
     configured = bool(mcp_state.get("configured"))
     app_loaded = mcp_state.get("app_loaded")
@@ -649,6 +843,16 @@ def _codex_smoke_checks(codex_status: dict[str, Any]) -> list[dict[str, Any]]:
                 )
             ),
         },
+        {
+            "label": "Mission Control MCP callable handshake",
+            "state": str(mcp_probe.get("status") or "degraded"),
+            "summary": str(mcp_probe.get("summary") or "Mission Control MCP stdio handshake was not probed."),
+        },
+        {
+            "label": "Mission Control daemon reachable",
+            "state": str(backend_probe.get("status") or "degraded"),
+            "summary": str(backend_probe.get("summary") or "Mission Control daemon health endpoint was not probed."),
+        },
     ]
     return checks
 
@@ -656,13 +860,22 @@ def _codex_smoke_checks(codex_status: dict[str, Any]) -> list[dict[str, Any]]:
 def run_codex_smoke(repo_root: Path, python_command: str, *, bootstrap: dict[str, Any]) -> dict[str, Any]:
     system_status = _load_server_module(repo_root, "system_status")
     codex_status = dict(system_status.detect_codex_status())
-    smoke_checks = _codex_smoke_checks(codex_status)
+    mcp_probe = _probe_mission_control_mcp_stdio(codex_status)
+    backend_probe = _probe_backend_health(repo_root)
+    mission_control_state = dict((codex_status.get("mcp_state") or {}).get("mission_control") or {})
+    mission_control_state["callable"] = bool(mcp_probe.get("callable"))
+    mission_control_state["callable_probe"] = dict(mcp_probe)
+    codex_status.setdefault("mcp_state", {})
+    codex_status["mcp_state"]["mission_control"] = mission_control_state
+    smoke_checks = _codex_smoke_checks(codex_status, mcp_probe, backend_probe)
     bootstrap_status = str(bootstrap.get("status") or "degraded")
     runnable = (
         bool(codex_status.get("cli_detected"))
         and bool(codex_status.get("cli_execution_available"))
         and bool(codex_status.get("authenticated"))
         and bool(((codex_status.get("mcp_state") or {}).get("mission_control") or {}).get("configured"))
+        and bool(mcp_probe.get("callable"))
+        and bool(backend_probe.get("reachable"))
     )
     reasons: list[str] = []
     if not codex_status.get("cli_detected"):
@@ -674,11 +887,17 @@ def run_codex_smoke(repo_root: Path, python_command: str, *, bootstrap: dict[str
     mcp_state = ((codex_status.get("mcp_state") or {}).get("mission_control") or {})
     if not mcp_state.get("configured"):
         reasons.append("Mission Control MCP is not configured in Codex config.")
+    if not mcp_probe.get("callable"):
+        reasons.append(str(mcp_probe.get("summary") or "Mission Control MCP handshake did not expose callable tools."))
+    if not backend_probe.get("reachable"):
+        reasons.append(str(backend_probe.get("summary") or "Mission Control daemon health endpoint was not reachable."))
     if bootstrap_status not in {"ready", "degraded"}:
         reasons.append("Mission Control bootstrap did not complete cleanly.")
     smoke_status = "ready" if runnable else "degraded"
     return {
         "codex_status": codex_status,
+        "mcp_stdio_probe": mcp_probe,
+        "daemon_health_probe": backend_probe,
         "smoke_checks": smoke_checks,
         "smoke_runnable": runnable,
         "smoke_status": smoke_status,

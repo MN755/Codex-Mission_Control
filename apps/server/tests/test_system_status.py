@@ -2,7 +2,19 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from system_status import detect_codex_status
+from system_status import _strip_codex_cli_noise, detect_codex_status
+
+
+def test_strip_codex_cli_noise_removes_arg0_warnings() -> None:
+    output = "\n".join(
+        [
+            "WARNING: failed to clean up stale arg0 temp dirs: Access is denied. (os error 5)",
+            'WARNING: proceeding, even though we could not update PATH: Access is denied. (os error 5) at path "C:\\\\Users\\\\mike\\\\.codex\\\\tmp\\\\arg0\\\\codex-arg0W7gELB"',
+            "Logged in using ChatGPT",
+        ]
+    )
+
+    assert _strip_codex_cli_noise(output) == "Logged in using ChatGPT"
 
 
 def test_detect_codex_status_distinguishes_present_cli_from_runtime_execution_limit(monkeypatch, tmp_path) -> None:

@@ -44,11 +44,22 @@ Use this skill when the user wants Codex to work through Mission Control for pla
 
 ## Workflow
 
-1. Identify or open the Mission Control project that matches the user request.
-2. Attach the workspace if needed, then start or continue the orchestration through `mission_control_start_task`.
-3. Poll status and pending decisions instead of guessing.
-4. Return every manager question or approval to the user exactly when it matters.
-5. Retrieve the handoff only after Mission Control reports that work is complete.
+1. Prove the Mission Control bridge surface before guessing:
+   - prefer the named `mission_control_*` tools when the session exposes them
+   - if tool exposure is unclear, verify MCP registration or resource visibility before claiming Mission Control is unavailable
+2. Identify or open the Mission Control project that matches the user request.
+3. Attach the workspace if needed, then start or continue the orchestration through `mission_control_start_task`.
+4. Poll status and pending decisions instead of guessing.
+5. Return every manager question or approval to the user exactly when it matters.
+6. Retrieve the handoff only after Mission Control reports that work is complete.
+
+## Verification rule
+
+- Do not say the Mission Control MCP surface is unavailable unless you actually verified it.
+- A stale path, a missing cache file, or a partial resource listing is not proof.
+- In Codex CLI sessions, use `codex mcp list` when needed to distinguish "server registered" from "server callable here."
+- If the MCP server is registered but the named tool surface is not exposed in the current session, say that precisely.
+- If the bridge is degraded, surface that as a bridge problem, not as if the codebase itself caused it.
 
 ## Codex chat must not do
 

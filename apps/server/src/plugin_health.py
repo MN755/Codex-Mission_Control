@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -112,8 +113,8 @@ def _component_state(checks: list[dict[str, Any]], keys: list[str]) -> str:
 
 async def mission_control_plugin_health() -> dict[str, Any]:
     codex = detect_codex_status()
-    metadata = read_daemon_metadata()
     identity = daemon_identity_snapshot()
+    metadata = read_daemon_metadata()
     backend_binding = resolve_backend_binding()
     dashboard_url = daemon_dashboard_url()
     daemon_host = str(backend_binding.get("host") or identity.get("host") or "")
@@ -121,7 +122,16 @@ async def mission_control_plugin_health() -> dict[str, Any]:
     identity_mode = str(identity.get("mode") or "unknown")
     daemon_mode = str(backend_binding.get("mode") or identity_mode or "unknown")
     daemon_url = f"http://{daemon_host}:{daemon_port}/api/health" if daemon_host and daemon_port else ""
-    daemon_ok, daemon_probe = _probe_url(daemon_url) if daemon_url else (False, "no_target")
+    in_process_daemon = (
+        os.environ.get("MISSION_CONTROL_SERVER_MODE") == "daemon"
+        and identity_mode == "daemon"
+        and str(identity.get("repo_root") or "") == str(REPO_ROOT)
+    )
+    daemon_ok, daemon_probe = (
+        (True, "in_process_daemon")
+        if in_process_daemon
+        else (_probe_url(daemon_url) if daemon_url else (False, "no_target"))
+    )
     dashboard_ok, dashboard_probe = _probe_url(dashboard_url)
 
     checks: list[dict[str, Any]] = []

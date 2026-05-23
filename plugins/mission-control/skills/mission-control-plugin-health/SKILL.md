@@ -20,8 +20,10 @@ The Codex chat agent is not the Mission Control Manager. It is the bridge betwee
 ## Workflow
 
 1. Call `mission_control_plugin_health` when available.
-2. Review status resources and summarize daemon, MCP, skills, runner registry, runtime folder, local binding, and optional dashboard state.
-3. Return a concise health report and likely next fix.
+2. If named health tools are not exposed, confirm whether the MCP server is still registered before saying the plugin is missing.
+3. In Codex CLI sessions, use `codex mcp list` when needed to distinguish a registered server from a callable bridge surface.
+4. Review status resources and summarize daemon, MCP, skills, runner registry, runtime folder, local binding, and optional dashboard state.
+5. Return a concise health report and likely next fix.
 
 ## Mission Control calls
 
@@ -50,7 +52,7 @@ Health reads are read-only. If the user wants a repair action that changes confi
 
 ## Failure and fallback
 
-If the dedicated health tool is absent, use diagnostics and status resources to produce a best-effort bridge health summary and label missing checks clearly.
+If the dedicated health tool is absent, first distinguish between plugin missing and plugin registered with only partial MCP exposure. Then use diagnostics and status resources to produce a best-effort bridge health summary and label missing checks clearly.
 
 ## Example invocation
 

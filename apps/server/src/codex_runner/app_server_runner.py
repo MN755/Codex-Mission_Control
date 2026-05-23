@@ -45,6 +45,7 @@ class AppServerCodexRunner(BaseCodexRunner):
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                **self.quiet_subprocess_kwargs(),
             )
         except OSError:
             return False
@@ -128,6 +129,7 @@ class AppServerCodexRunner(BaseCodexRunner):
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            **self.quiet_subprocess_kwargs(),
         )
         state.process = process
         state.reader_task = asyncio.create_task(self._run_protocol(run_id, context, prompt, resume))

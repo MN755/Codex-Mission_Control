@@ -256,8 +256,9 @@ def test_new_runtime_tools_dispatch_to_client() -> None:
 
 def test_resources_and_prompts_are_catalog_backed() -> None:
     server = MissionControlMcpServer(client=FakeClient())
-    resource_names = {resource["uriTemplate"] for resource in server.list_resources()}
+    resource_names = {resource["uriTemplate"] for resource in server.list_resource_templates()}
     prompt_names = {prompt["name"] for prompt in server.list_prompts()}
+    assert server.list_resources() == []
     assert resource_names == EXPECTED_RESOURCES
     assert EXPECTED_PROMPTS.issubset(prompt_names)
     prompt = server.get_prompt("continue-orchestration")

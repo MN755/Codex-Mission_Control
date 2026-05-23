@@ -276,12 +276,29 @@ def daemon_dashboard_url(project_id: int | None = None) -> str:
 
 def daemon_identity_snapshot() -> dict[str, Any]:
     binding = resolve_backend_binding(prefer_live_metadata=False)
-    metadata = read_daemon_metadata(validate_liveness=True)
     host = str(binding["host"])
     port = int(binding["port"])
+    mode = str(binding.get("mode") or "unknown")
+    if os.environ.get("MISSION_CONTROL_SERVER_MODE") == "daemon":
+        current_metadata = read_daemon_metadata(validate_liveness=False)
+        if (
+            str(current_metadata.get("status") or "") != "ok"
+            or int(current_metadata.get("pid") or 0) != os.getpid()
+            or str(current_metadata.get("host") or "") != host
+            or _parse_port(current_metadata.get("port"), port) != port
+            or str(current_metadata.get("mode") or "") != mode
+        ):
+            update_daemon_metadata_status(
+                status="ok",
+                host=host,
+                port=port,
+                pid=os.getpid(),
+                mode=mode,
+            )
+    metadata = read_daemon_metadata(validate_liveness=True)
     return {
         "status": "ok",
-        "mode": str(binding.get("mode") or "unknown"),
+        "mode": mode,
         "host": host,
         "port": port,
         "base_url": f"http://{host}:{port}",

@@ -12,3 +12,4 @@ src/mission_control_mcp_server/client.py
 src/mission_control_mcp_server/server.py
 tests/test_headless_bridge_assets.py
 tests/test_mcp_server.py
+tests/test_stdio_protocol.py

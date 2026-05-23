@@ -19,11 +19,15 @@ The Codex chat agent is not the Mission Control Manager. It is the bridge betwee
 
 ## Workflow
 
-1. Attach the workspace and import it as an existing codebase.
-2. Run or read a codebase scan.
-3. Ask the Manager to classify the request and create a targeted plan.
-4. Request write permission if Mission Control requires it.
-5. Run the orchestration and keep approvals flowing through chat.
+1. Verify the Mission Control bridge surface before declaring fallback:
+   - use the named `mission_control_*` tools when exposed
+   - in Codex CLI sessions, use `codex mcp list` if needed to tell "registered" apart from "callable here"
+   - if exposure is unclear, confirm MCP registration or resource visibility first
+2. Attach the workspace and import it as an existing codebase.
+3. Run or read a codebase scan.
+4. Ask the Manager to classify the request and create a targeted plan.
+5. Request write permission if Mission Control requires it.
+6. Run the orchestration and keep approvals flowing through chat.
 
 ## Mission Control calls
 
@@ -55,7 +59,13 @@ Write permission, risky commands, and scope expansions still need approval when 
 
 ## Failure and fallback
 
-If repo-fix workflow tooling is partial, combine import-codebase, codebase-map, and Manager-led task flows and make the narrow-fix intent explicit.
+If repo-fix workflow tooling is partial, say exactly what is partial:
+
+- bridge registered but named tools hidden in this session
+- resources visible but write path unavailable
+- bridge unavailable entirely
+
+Then combine import-codebase, codebase-map, and Manager-led task flows and make the narrow-fix intent explicit.
 
 ## Example invocation
 

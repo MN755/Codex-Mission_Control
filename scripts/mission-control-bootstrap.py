@@ -28,6 +28,12 @@ def _json_dump(payload: dict[str, Any]) -> str:
     return json.dumps(payload, indent=2, default=str)
 
 
+def _quiet_creationflags() -> int:
+    if os.name != "nt":
+        return 0
+    return getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
+
 def _start_daemon(repo_root: Path, *, host: str | None, port: int | None) -> tuple[bool, str]:
     script_path = repo_root / "scripts" / "start-mission-control-daemon.ps1"
     if not script_path.exists():
@@ -39,11 +45,18 @@ def _start_daemon(repo_root: Path, *, host: str | None, port: int | None) -> tup
     if host:
         command.extend(["-BindHost", host])
     try:
-        completed = subprocess.run(command, capture_output=True, text=True, timeout=90, check=False)
+        completed = subprocess.run(
+            command,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            timeout=90,
+            check=False,
+            creationflags=_quiet_creationflags(),
+        )
     except Exception as exc:  # noqa: BLE001
         return False, f"{type(exc).__name__}: {exc}"
-    output = completed.stdout.strip() or completed.stderr.strip()
-    return completed.returncode == 0, output or "Daemon start completed."
+    return completed.returncode == 0, "Daemon start command completed."
 
 
 def _wait_for_backend(base_url: str, *, timeout: float = 20.0) -> bool:

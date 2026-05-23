@@ -3,13 +3,18 @@ from __future__ import annotations
 import json
 
 from codex_cli_path import codex_command_path
-from daemon_state import DAEMON_METADATA_PATH, read_daemon_metadata, update_daemon_metadata_status, write_daemon_metadata
+from daemon_state import DAEMON_METADATA_PATH, daemon_identity_snapshot, read_daemon_metadata, update_daemon_metadata_status, write_daemon_metadata
 from system_status import detect_system_status
 
 
-def test_read_daemon_metadata_marks_dead_pid_as_stale(monkeypatch) -> None:
-    DAEMON_METADATA_PATH.parent.mkdir(parents=True, exist_ok=True)
-    DAEMON_METADATA_PATH.write_text(
+def test_read_daemon_metadata_marks_dead_pid_as_stale(tmp_path, monkeypatch) -> None:
+    metadata_path = tmp_path / "daemon.json"
+    monkeypatch.setattr("daemon_state.DAEMON_METADATA_PATH", metadata_path)
+    monkeypatch.setattr("daemon_state.RUNTIME_ROOT", tmp_path / "runtime")
+    monkeypatch.setattr("daemon_state.LAUNCHER_ROOT", tmp_path / "launcher")
+    monkeypatch.setattr("daemon_state.DAEMON_TOKEN_PATH", tmp_path / "runtime" / "daemon.token")
+    metadata_path.parent.mkdir(parents=True, exist_ok=True)
+    metadata_path.write_text(
         json.dumps(
             {
                 "status": "ok",
@@ -104,3 +109,33 @@ def test_update_daemon_metadata_status_preserves_started_at(tmp_path, monkeypatc
 
     assert updated["status"] == "ok"
     assert updated["started_at"] == "2026-05-19T12:00:00+00:00"
+
+
+def test_daemon_identity_snapshot_refreshes_current_daemon_metadata(tmp_path, monkeypatch) -> None:
+    metadata_path = tmp_path / "daemon.json"
+    runtime_root = tmp_path / "runtime"
+    launcher_root = tmp_path / "launcher"
+    monkeypatch.setattr("daemon_state.DAEMON_METADATA_PATH", metadata_path)
+    monkeypatch.setattr("daemon_state.RUNTIME_ROOT", runtime_root)
+    monkeypatch.setattr("daemon_state.LAUNCHER_ROOT", launcher_root)
+    monkeypatch.setattr("daemon_state.DAEMON_TOKEN_PATH", runtime_root / "daemon.token")
+    monkeypatch.setenv("MISSION_CONTROL_SERVER_MODE", "daemon")
+    monkeypatch.setenv("MISSION_CONTROL_BACKEND_HOST", "127.0.0.1")
+    monkeypatch.setenv("MISSION_CONTROL_BACKEND_PORT", "8010")
+    write_daemon_metadata(
+        host="127.0.0.1",
+        port=8010,
+        pid=999999,
+        mode="daemon",
+        status="stopped",
+        started_at="2026-05-19T12:00:00+00:00",
+    )
+
+    payload = daemon_identity_snapshot()
+    refreshed = json.loads(metadata_path.read_text(encoding="utf-8"))
+
+    assert payload["metadata_status"] == "ok"
+    assert payload["pid"] != 999999
+    assert payload["pid_running"] is True
+    assert refreshed["status"] == "ok"
+    assert refreshed["pid"] == payload["pid"]

@@ -417,6 +417,9 @@ class MissionControlMcpServer:
         return self._tools
 
     def list_resources(self) -> list[dict[str, Any]]:
+        return []
+
+    def list_resource_templates(self) -> list[dict[str, Any]]:
         return [
             {
                 "uriTemplate": entry["uri_template"],
@@ -665,7 +668,7 @@ class MissionControlMcpServer:
             ]
         }
 
-    async def handle_request(self, request: dict[str, Any]) -> dict[str, Any]:
+    async def handle_request(self, request: dict[str, Any]) -> dict[str, Any] | None:
         method = request.get("method")
         request_id = request.get("id")
         params = dict(request.get("params") or {})
@@ -674,7 +677,12 @@ class MissionControlMcpServer:
                 result = {
                     "protocolVersion": "2025-03-26",
                     "serverInfo": {"name": "mission-control", "title": "Codex Mission Control", "version": "1.3.0-beta.1"},
-                    "capabilities": {"tools": {}, "resources": {}, "prompts": {}},
+                    "capabilities": {
+                        "tools": {"listChanged": False},
+                        "resources": {"subscribe": False, "listChanged": False},
+                        "prompts": {"listChanged": False},
+                    },
+                    "instructions": "Mission Control is a daemon-backed orchestration bridge. Use the exposed tools and resources instead of inventing local orchestration state.",
                 }
             elif method == "tools/list":
                 result = {"tools": self.list_tools()}
@@ -682,6 +690,8 @@ class MissionControlMcpServer:
                 result = self.call_tool(str(params.get("name")), params.get("arguments"))
             elif method == "resources/list":
                 result = {"resources": self.list_resources()}
+            elif method == "resources/templates/list":
+                result = {"resourceTemplates": self.list_resource_templates()}
             elif method == "resources/read":
                 result = self.read_resource(str(params.get("uri")))
             elif method == "prompts/list":
@@ -690,8 +700,12 @@ class MissionControlMcpServer:
                 result = self.get_prompt(str(params.get("name")))
             elif method == "ping":
                 result = {"status": "ok"}
+            elif method == "notifications/initialized":
+                return None
             else:
                 raise RuntimeError(f"Unsupported Mission Control MCP method: {method}")
             return {"jsonrpc": "2.0", "id": request_id, "result": result}
         except Exception as exc:
+            if request_id is None and method and str(method).startswith("notifications/"):
+                return None
             return {"jsonrpc": "2.0", "id": request_id, "error": {"code": -32000, "message": str(exc)}}

@@ -19,11 +19,15 @@ The Codex chat agent is not the Mission Control Manager. It is the bridge betwee
 
 ## Workflow
 
-1. Check project status.
-2. Ask Mission Control for a `codebase_exploration` burst recommendation.
-3. Surface any approval decision in Codex chat.
-4. If approved, present the planned intake subagents and expected outputs.
-5. Ingest returned summaries so the Manager can use them later.
+1. Verify the Mission Control bridge surface first:
+   - prefer named `mission_control_*` tools when exposed
+   - in Codex CLI sessions, use `codex mcp list` if needed to tell "registered" apart from "callable here"
+   - if exposure is unclear, confirm MCP registration or resource visibility before claiming intake tooling is unavailable
+2. Check project status.
+3. Ask Mission Control for a `codebase_exploration` burst recommendation.
+4. Surface any approval decision in Codex chat.
+5. If approved, present the planned intake subagents and expected outputs.
+6. Ingest returned summaries so the Manager can use them later.
 
 ## Mission Control calls
 
@@ -53,7 +57,7 @@ If the burst exceeds the approval threshold, wait for the user's decision before
 
 ## Failure and fallback
 
-If burst planning is unavailable, fall back to the normal codebase map and understanding resources.
+If burst planning is unavailable, distinguish between true bridge loss and partial MCP exposure first. Then fall back to the normal codebase map and understanding resources.
 
 ## Example invocation
 

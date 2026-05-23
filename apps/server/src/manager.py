@@ -318,17 +318,17 @@ class RunnerRegistry:
         self._claude_cli_enabled: bool | None = None
 
     async def codex_cli_available(self) -> bool:
-        if self._codex_cli_enabled is None:
+        if self._codex_cli_enabled is not True:
             self._codex_cli_enabled = await self.runners["codex_cli"].handshake()
         return self._codex_cli_enabled
 
     async def app_server_available(self) -> bool:
-        if self._auto_app_server_enabled is None:
+        if self._auto_app_server_enabled is not True:
             self._auto_app_server_enabled = await self.runners["codex_app_server"].handshake()
         return self._auto_app_server_enabled
 
     async def claude_cli_available(self) -> bool:
-        if self._claude_cli_enabled is None:
+        if self._claude_cli_enabled is not True:
             self._claude_cli_enabled = await self.runners["claude_code_cli"].handshake()
         return self._claude_cli_enabled
 

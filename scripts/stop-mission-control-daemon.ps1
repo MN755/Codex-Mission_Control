@@ -33,6 +33,22 @@ function Get-DaemonIdentity {
   }
 }
 
+function Get-ListeningPortPid {
+  $lines = netstat -ano | Select-String ":$effectiveBackendPort"
+  foreach ($line in $lines) {
+    $text = [string]$line
+    if ($text -notmatch "\s+LISTENING\s+(\d+)\s*$") {
+      continue
+    }
+    $pidText = $Matches[1]
+    if ($text -notmatch "^\s*TCP\s+$([regex]::Escape($effectiveHost)):$effectiveBackendPort\s+") {
+      continue
+    }
+    return [int]$pidText
+  }
+  return 0
+}
+
 $identity = Get-DaemonIdentity
 $trackedPid = 0
 if ($identity -and [string]$identity.repo_root -eq $repoRoot -and [string]$identity.mode -eq "daemon") {
@@ -40,30 +56,57 @@ if ($identity -and [string]$identity.repo_root -eq $repoRoot -and [string]$ident
 }
 
 if ($trackedPid -le 0 -and -not (Test-Path $metadataPath)) {
-  Write-Host "[Mission Control] No daemon metadata found at $metadataPath"
-  exit 0
+  $portPid = Get-ListeningPortPid
+  if ($portPid -le 0) {
+    Write-Host "[Mission Control] No daemon metadata found at $metadataPath"
+    exit 0
+  }
+  if (-not ($identity -and [string]$identity.repo_root -eq $repoRoot -and [string]$identity.mode -eq "daemon")) {
+    throw "Refusing to stop PID $portPid on port $effectiveBackendPort because daemon identity could not be confirmed for this repository."
+  }
+  $trackedPid = $portPid
 }
 
 if ($trackedPid -le 0) {
   $metadata = Get-Content -Raw $metadataPath | ConvertFrom-Json
   if (-not $metadata.pid) {
     Write-Host "[Mission Control] Daemon metadata did not include a PID."
-    exit 0
+  } else {
+    $trackedPid = [int]$metadata.pid
   }
-  $trackedPid = [int]$metadata.pid
 }
 
 $process = Get-Process -Id $trackedPid -ErrorAction SilentlyContinue
 if (-not $process) {
-  Remove-Item -LiteralPath $metadataPath -Force -ErrorAction SilentlyContinue
-  Write-Host "[Mission Control] Daemon PID $trackedPid was not running."
-  exit 0
+  $portPid = Get-ListeningPortPid
+  if ($portPid -le 0) {
+    Remove-Item -LiteralPath $metadataPath -Force -ErrorAction SilentlyContinue
+    Write-Host "[Mission Control] Daemon PID $trackedPid was not running."
+    exit 0
+  }
+  if (-not ($identity -and [string]$identity.repo_root -eq $repoRoot -and [string]$identity.mode -eq "daemon")) {
+    throw "Refusing to stop PID $portPid on port $effectiveBackendPort because daemon identity could not be confirmed for this repository."
+  }
+  $trackedPid = $portPid
+  $process = Get-Process -Id $trackedPid -ErrorAction SilentlyContinue
+  if (-not $process) {
+    Remove-Item -LiteralPath $metadataPath -Force -ErrorAction SilentlyContinue
+    Write-Host "[Mission Control] Port owner PID $trackedPid was not running."
+    exit 0
+  }
 }
 
-$cim = Get-CimInstance Win32_Process -Filter "ProcessId = $trackedPid"
-$commandLine = [string]$cim.CommandLine
+$commandLine = ""
+try {
+  $cim = Get-CimInstance Win32_Process -Filter "ProcessId = $trackedPid"
+  $commandLine = [string]$cim.CommandLine
+} catch {
+  $commandLine = ""
+}
 if (-not $commandLine -or $commandLine -notlike "*$repoRoot*") {
-  throw "Refusing to stop PID $trackedPid because the command line does not match this repository."
+  if (-not ($identity -and [string]$identity.repo_root -eq $repoRoot -and [string]$identity.mode -eq "daemon" -and (Get-ListeningPortPid) -eq $trackedPid)) {
+    throw "Refusing to stop PID $trackedPid because the command line does not match this repository."
+  }
 }
 
 Stop-Process -Id $trackedPid -Force

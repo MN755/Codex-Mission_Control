@@ -60,6 +60,21 @@ def test_runner_registry_selects_claude_cli(monkeypatch) -> None:
     assert runner.runner_type == "claude_code_cli"
 
 
+def test_runner_registry_retries_negative_codex_cli_cache(monkeypatch) -> None:
+    registry = RunnerRegistry()
+    attempts = {"count": 0}
+
+    async def fake_handshake(settings=None) -> bool:
+        attempts["count"] += 1
+        return attempts["count"] >= 2
+
+    monkeypatch.setattr(registry.runners["codex_cli"], "handshake", fake_handshake)
+
+    assert asyncio.run(registry.codex_cli_available()) is False
+    assert asyncio.run(registry.codex_cli_available()) is True
+    assert attempts["count"] == 2
+
+
 def test_try_parse_json_payload_repairs_fenced_trailing_comma_json() -> None:
     payload, repaired = BaseCodexRunner.try_parse_json_payload(
         """```json
@@ -177,6 +192,50 @@ def test_cli_build_exec_args_omit_model_when_unset() -> None:
         cli_module.codex_command_path = original
     assert "-m" not in args
     assert not any("model_reasoning_effort" in value for value in args)
+
+
+def test_cli_build_exec_args_resume_uses_resume_subcommand_without_shell_flags() -> None:
+    runner = CliCodexRunner()
+    from codex_runner import cli_runner as cli_module
+
+    project = Project(id=1, name="Demo", idea="Idea", workspace_path="C:/demo", status="building", runner_mode="cli", manager_mode="auto")
+    agent = Agent(
+        id=2,
+        project_id=1,
+        name="Manager",
+        role="Project orchestration",
+        kind="manager",
+        status="idle",
+        workspace_path="C:/demo",
+        session_ref="session-123",
+    )
+    context = RunnerContext(
+        project=project,
+        agent=agent,
+        task=None,
+        docs_path="C:/demo/mission-control",
+        settings=RunnerSettings(
+            sandbox_mode="workspace-write",
+            approval_policy="on-request",
+            model="gpt-5.5",
+            reasoning_effort="high",
+        ),
+    )
+    original = cli_module.codex_command_path
+    cli_module.codex_command_path = lambda: "C:/tools/codex.exe"
+    try:
+        args = runner.build_exec_args(context, resume=True)
+    finally:
+        cli_module.codex_command_path = original
+
+    assert args[:3] == ["C:/tools/codex.exe", "exec", "resume"]
+    assert "--json" in args
+    assert "--skip-git-repo-check" in args
+    assert "-m" in args and "gpt-5.5" in args
+    assert "session-123" in args
+    assert "--sandbox" not in args
+    assert "-a" not in args
+    assert "-C" not in args
 
 
 def test_claude_build_exec_args_include_model_when_set() -> None:

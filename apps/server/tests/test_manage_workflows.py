@@ -60,7 +60,10 @@ def test_sync_codex_bundle_copies_plugin_and_mission_control_skills(tmp_path) ->
     codex_home = tmp_path / ".codex-home"
 
     (plugin_root / ".codex-plugin" / "plugin.json").parent.mkdir(parents=True, exist_ok=True)
-    (plugin_root / ".codex-plugin" / "plugin.json").write_text(json.dumps({"name": "mission-control", "display_name": "Mission Control"}), encoding="utf-8")
+    (plugin_root / ".codex-plugin" / "plugin.json").write_text(
+        json.dumps({"name": "mission-control", "display_name": "Mission Control", "version": "1.3.0-beta.1"}),
+        encoding="utf-8",
+    )
     (plugin_root / "skills" / "mission-control-install-from-github" / "SKILL.md").parent.mkdir(parents=True, exist_ok=True)
     (plugin_root / "skills" / "mission-control-install-from-github" / "SKILL.md").write_text("# plugin install", encoding="utf-8")
     (skill_root / "mission-control-install-from-github" / "SKILL.md").parent.mkdir(parents=True, exist_ok=True)
@@ -69,6 +72,9 @@ def test_sync_codex_bundle_copies_plugin_and_mission_control_skills(tmp_path) ->
     (skill_root / "mission-control-update" / "SKILL.md").write_text("# update", encoding="utf-8")
     (skill_root / "not-mission-control" / "SKILL.md").parent.mkdir(parents=True, exist_ok=True)
     (skill_root / "not-mission-control" / "SKILL.md").write_text("# ignore", encoding="utf-8")
+    stale_cache = codex_home / "plugins" / "cache" / "local" / "mission-control" / "1.2.0"
+    stale_cache.mkdir(parents=True, exist_ok=True)
+    (stale_cache / "plugin.json").write_text("{}", encoding="utf-8")
 
     payload = module.sync_codex_bundle(repo_root, codex_home, dry_run=False)
 
@@ -78,6 +84,10 @@ def test_sync_codex_bundle_copies_plugin_and_mission_control_skills(tmp_path) ->
     assert payload["plugin_display_name"] == "Mission Control"
     assert (codex_home / "plugins" / "mission-control" / ".codex-plugin" / "plugin.json").exists()
     assert (codex_home / "plugins" / "mission-control" / "skills" / "mission-control-install-from-github" / "SKILL.md").exists()
+    assert (codex_home / "plugins" / "cache" / "local" / "mission-control" / "1.3.0-beta.1" / ".codex-plugin" / "plugin.json").exists()
+    assert not (codex_home / "plugins" / "cache" / "local" / "mission-control" / "1.2.0").exists()
+    assert payload["cache_sync"]["plugin_version"] == "1.3.0-beta.1"
+    assert payload["cache_sync"]["stale_versions_removed"] == ["1.2.0"]
     assert (codex_home / "skills" / "mission-control-install-from-github" / "SKILL.md").exists()
     assert (codex_home / "skills" / "mission-control-update" / "SKILL.md").exists()
     assert not (codex_home / "skills" / "not-mission-control").exists()
@@ -120,6 +130,7 @@ def test_run_management_workflow_uninstall_cleans_bundle_and_config(monkeypatch,
     codex_home = tmp_path / ".codex"
     agents_home = tmp_path / ".agents"
     (codex_home / "plugins" / "mission-control").mkdir(parents=True, exist_ok=True)
+    (codex_home / "plugins" / "cache" / "local" / "mission-control" / "1.2.0").mkdir(parents=True, exist_ok=True)
     (codex_home / "skills" / "mission-control-status").mkdir(parents=True, exist_ok=True)
     (codex_home / "config.toml").parent.mkdir(parents=True, exist_ok=True)
     (codex_home / "config.toml").write_text(module.build_codex_mcp_block(repo_root, sys.executable), encoding="utf-8")
@@ -152,10 +163,12 @@ def test_run_management_workflow_uninstall_cleans_bundle_and_config(monkeypatch,
     assert payload["reload_guidance"]["required"] is False
     assert payload["stop_daemon"]["status"] == "ready"
     assert payload["uninstall"]["plugin_removed"] is True
+    assert payload["uninstall"]["plugin_cache_removed"] is True
     assert payload["uninstall"]["removed_skill_count"] == 1
     assert payload["marketplace_cleanup"]["plugin_removed"] is True
     assert payload["marketplace_cleanup"]["marketplace_changed"] is True
     assert '[mcp_servers."mission-control"]' not in (codex_home / "config.toml").read_text(encoding="utf-8")
+    assert not (codex_home / "plugins" / "cache" / "local" / "mission-control").exists()
 
 
 def test_run_management_workflow_install_reports_reload_requirement(monkeypatch, tmp_path) -> None:
@@ -246,6 +259,25 @@ def test_run_management_workflow_codex_smoke_reports_runtime_limit(monkeypatch, 
     monkeypatch.setattr(module, "run_bootstrap", lambda *args, **kwargs: {"status": "ready"})
     monkeypatch.setattr(
         module,
+        "_probe_backend_health",
+        lambda repo_root: {
+            "status": "ready",
+            "reachable": True,
+            "summary": "Mission Control daemon health endpoint returned HTTP 200.",
+            "url": "http://127.0.0.1:8010/api/health",
+        },
+    )
+    monkeypatch.setattr(
+        module,
+        "_probe_mission_control_mcp_stdio",
+        lambda codex_status: {
+            "status": "degraded",
+            "summary": "Mission Control MCP stdio handshake did not return a callable tool surface.",
+            "callable": False,
+        },
+    )
+    monkeypatch.setattr(
+        module,
         "_load_server_module",
         lambda repo_root, module_name: type(
             "FakeSystemStatus",
@@ -275,6 +307,7 @@ def test_run_management_workflow_codex_smoke_reports_runtime_limit(monkeypatch, 
     assert payload["status"] == "degraded"
     assert payload["smoke_runnable"] is False
     assert "codex-smoke --json" in payload["recommended_command"]
+    assert payload["mcp_stdio_probe"]["callable"] is False
     assert "Codex CLI execution available: degraded" in payload["codex_chat_markdown"]
     assert "current runtime cannot execute it directly" in payload["codex_chat_markdown"]
 
@@ -292,6 +325,28 @@ def test_run_management_workflow_codex_smoke_reports_ready_state(monkeypatch, tm
     monkeypatch.setattr(module, "resolve_python_command", lambda explicit=None: sys.executable)
     monkeypatch.setattr(module, "detect_claude_assets", lambda repo_root: {"status": "ready", "missing": [], "slash_commands": []})
     monkeypatch.setattr(module, "run_bootstrap", lambda *args, **kwargs: {"status": "ready"})
+    monkeypatch.setattr(
+        module,
+        "_probe_backend_health",
+        lambda repo_root: {
+            "status": "ready",
+            "reachable": True,
+            "summary": "Mission Control daemon health endpoint returned HTTP 200.",
+            "url": "http://127.0.0.1:8010/api/health",
+        },
+    )
+    monkeypatch.setattr(
+        module,
+        "_probe_mission_control_mcp_stdio",
+        lambda codex_status: {
+            "status": "ready",
+            "summary": "Mission Control MCP stdio handshake succeeded with 3 tools, 2 resource templates, and 1 prompt.",
+            "callable": True,
+            "tool_count": 3,
+            "resource_template_count": 2,
+            "prompt_count": 1,
+        },
+    )
     monkeypatch.setattr(
         module,
         "_load_server_module",
@@ -322,6 +377,7 @@ def test_run_management_workflow_codex_smoke_reports_ready_state(monkeypatch, tm
 
     assert payload["status"] == "ready"
     assert payload["smoke_runnable"] is True
+    assert payload["codex_status"]["mcp_state"]["mission_control"]["callable"] is True
     assert "Mission Control was discovered in the live Codex MCP server list." in payload["codex_chat_markdown"]
     assert "What this proves" in payload["codex_chat_markdown"]
 
@@ -339,6 +395,28 @@ def test_run_management_workflow_codex_smoke_stays_ready_when_bootstrap_is_only_
     monkeypatch.setattr(module, "resolve_python_command", lambda explicit=None: sys.executable)
     monkeypatch.setattr(module, "detect_claude_assets", lambda repo_root: {"status": "ready", "missing": [], "slash_commands": []})
     monkeypatch.setattr(module, "run_bootstrap", lambda *args, **kwargs: {"status": "degraded"})
+    monkeypatch.setattr(
+        module,
+        "_probe_backend_health",
+        lambda repo_root: {
+            "status": "ready",
+            "reachable": True,
+            "summary": "Mission Control daemon health endpoint returned HTTP 200.",
+            "url": "http://127.0.0.1:8010/api/health",
+        },
+    )
+    monkeypatch.setattr(
+        module,
+        "_probe_mission_control_mcp_stdio",
+        lambda codex_status: {
+            "status": "ready",
+            "summary": "Mission Control MCP stdio handshake succeeded with 3 tools, 2 resource templates, and 1 prompt.",
+            "callable": True,
+            "tool_count": 3,
+            "resource_template_count": 2,
+            "prompt_count": 1,
+        },
+    )
     monkeypatch.setattr(
         module,
         "_load_server_module",

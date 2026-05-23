@@ -31,6 +31,23 @@ def _run_command(args: list[str]) -> tuple[bool, str]:
     return completed.returncode == 0, output
 
 
+def _strip_codex_cli_noise(output: str) -> str:
+    if not output:
+        return ""
+    filtered_lines: list[str] = []
+    for raw_line in output.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        lowered = line.lower()
+        if lowered.startswith("warning: failed to clean up stale arg0 temp dirs"):
+            continue
+        if lowered.startswith("warning: proceeding, even though we could not update path"):
+            continue
+        filtered_lines.append(line)
+    return "\n".join(filtered_lines).strip()
+
+
 def _path_exists(path_text: str | None) -> bool:
     return bool(path_text and Path(path_text).exists())
 
@@ -136,6 +153,7 @@ def _detect_codex_environment() -> dict[str, Any]:
     cli_path_exists = _path_exists(cli_path)
     cli_ok, cli_output = _run_command([cli_path, "--version"]) if cli_path else (False, "")
     login_ok, login_output = _run_command([cli_path, "login", "status"]) if cli_path else (False, "")
+    login_output = _strip_codex_cli_noise(login_output)
     mcp_ok, mcp_output = _run_command([cli_path, "mcp", "list", "--json"]) if cli_path else (False, "")
     app_help_ok, app_help = _run_command([cli_path, "app-server", "--help"]) if cli_path else (False, "")
 

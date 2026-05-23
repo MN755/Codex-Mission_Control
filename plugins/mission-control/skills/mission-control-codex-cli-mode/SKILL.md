@@ -20,8 +20,10 @@ The Codex chat agent is not the Mission Control Manager. It is the bridge betwee
 ## Workflow
 
 1. Check Mission Control status for Codex CLI runner availability.
-2. Explain runner availability, login state if surfaced, and the difference between local Codex auth and API provider mode.
-3. Route any runner-policy change through Mission Control controls.
+2. If named Mission Control status tools are not exposed, confirm whether the MCP server is registered before claiming Codex CLI mode is unavailable.
+3. In Codex CLI sessions, use `codex mcp list` when needed to distinguish a registered server from a callable bridge surface.
+4. Explain runner availability, login state if surfaced, and the difference between local Codex auth and API provider mode.
+5. Route any runner-policy change through Mission Control controls.
 
 ## Mission Control calls
 
@@ -49,7 +51,7 @@ Changing runner mode may affect cost or behavior, so confirm it before requestin
 
 ## Failure and fallback
 
-If Mission Control does not expose Codex CLI status yet, mark it as expected or future and preserve the current runner choice.
+If Mission Control does not expose Codex CLI status yet, distinguish between a partial MCP exposure problem and a true status gap. Mark that precisely and preserve the current runner choice.
 
 ## Example invocation
 
