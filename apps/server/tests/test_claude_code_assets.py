@@ -79,6 +79,11 @@ def test_packaged_claude_plugin_assets_exist_and_route_through_mission_control()
         "mission-control-pr-review.md",
         "mission-control-commit-ready.md",
         "mission-control-frontend-design.md",
+        "mission-control-understand.md",
+        "mission-control-rag-design.md",
+        "mission-control-evals.md",
+        "mission-control-doc-workflow.md",
+        "mission-control-skill-builder.md",
     }
     expected_agents = {
         "code-explorer.md",
@@ -91,6 +96,11 @@ def test_packaged_claude_plugin_assets_exist_and_route_through_mission_control()
         "mcp-integrator.md",
         "docs-maintainer.md",
         "release-captain.md",
+        "knowledge-graph-builder.md",
+        "retrieval-architect.md",
+        "evals-analyst.md",
+        "document-workflow-specialist.md",
+        "skill-packager.md",
     }
 
     assert expected_commands.issubset({path.name for path in commands_root.glob("*.md")})

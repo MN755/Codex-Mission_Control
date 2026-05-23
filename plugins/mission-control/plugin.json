@@ -70,7 +70,25 @@
     "mission-control-codebase-intake-burst",
     "mission-control-review-burst",
     "mission-control-failure-diagnosis-burst",
-    "mission-control-handoff-audit-burst"
+    "mission-control-handoff-audit-burst",
+    "mission-control-skill-ecosystem-builder",
+    "mission-control-mcp-builder",
+    "mission-control-webapp-testing",
+    "mission-control-document-workflow",
+    "mission-control-brand-comms",
+    "mission-control-creative-web-artifacts",
+    "mission-control-codebase-knowledge-graph",
+    "mission-control-understand-chat",
+    "mission-control-diff-impact",
+    "mission-control-domain-map",
+    "mission-control-onboarding-tour",
+    "mission-control-knowledge-base-map",
+    "mission-control-runnable-chain-design",
+    "mission-control-rag-retrieval-design",
+    "mission-control-tool-registry",
+    "mission-control-evals-observability",
+    "mission-control-memory-state-policy",
+    "mission-control-agent-graph-workflows"
   ],
   "prompts": [
     "attach_current_workspace",
@@ -131,7 +149,13 @@
       "mission-control-plugin-health",
       "mission-control-pr-review",
       "mission-control-commit-ready",
-      "mission-control-frontend-design"
+      "mission-control-frontend-design",
+      "mission-control-understand",
+      "mission-control-rag-design",
+      "mission-control-evals",
+      "mission-control-webapp-testing",
+      "mission-control-doc-workflow",
+      "mission-control-skill-builder"
     ],
     "worker_archetypes": [
       "code-explorer",
@@ -143,7 +167,12 @@
       "code-simplifier",
       "mcp-integrator",
       "docs-maintainer",
-      "release-captain"
+      "release-captain",
+      "knowledge-graph-builder",
+      "retrieval-architect",
+      "evals-analyst",
+      "document-workflow-specialist",
+      "skill-packager"
     ]
   },
   "assets": {

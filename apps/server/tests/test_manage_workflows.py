@@ -130,12 +130,16 @@ def test_detect_claude_assets_reports_packaged_commands_and_agents() -> None:
 
     assert payload["status"] == "ready"
     assert not payload["missing"]
-    assert payload["packaged_command_count"] >= 13
-    assert payload["packaged_agent_count"] >= 10
+    assert payload["packaged_command_count"] >= 18
+    assert payload["packaged_agent_count"] >= 15
     assert "mission-control-feature-dev" in payload["packaged_commands"]
     assert "mission-control-code-review" in payload["packaged_commands"]
+    assert "mission-control-understand" in payload["packaged_commands"]
+    assert "mission-control-rag-design" in payload["packaged_commands"]
     assert "code-explorer" in payload["packaged_agents"]
     assert "security-auditor" in payload["packaged_agents"]
+    assert "knowledge-graph-builder" in payload["packaged_agents"]
+    assert "retrieval-architect" in payload["packaged_agents"]
 
 
 def test_run_management_workflow_uninstall_cleans_bundle_and_config(monkeypatch, tmp_path) -> None:

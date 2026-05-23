@@ -33,4 +33,11 @@ Bridge boundaries:
 - The MCP bridge can auto-start the local daemon when it is missing, because returning a README instead of doing the obvious would be pathetic.
 - Claude Code commands and agents are convenience surfaces; they still route work through Mission Control instead of creating an uncontrolled second manager.
 
+Built-in capability packs:
+
+- Agent Skills-style packaging: skill creation, metadata, host compatibility, and package validation.
+- Code understanding: graph-style codebase maps, grounded Q&A, diff impact, domain maps, onboarding tours, and docs knowledge maps.
+- Agent engineering: runnable-chain design, retrieval/RAG design, tool registries, evals/observability, memory/state policy, and graph workflows.
+- Practical work surfaces: MCP building, webapp testing, document workflows, brand communications, and creative web artifacts.
+
 See [docs/CODEX_PLUGIN_INSTALL.md](../../docs/CODEX_PLUGIN_INSTALL.md) for setup, [docs/CODEX_PLUGIN_MODE.md](../../docs/CODEX_PLUGIN_MODE.md) for bridge behavior, and [docs/MCP_SECURITY.md](../../docs/MCP_SECURITY.md) for localhost token and redaction rules.
