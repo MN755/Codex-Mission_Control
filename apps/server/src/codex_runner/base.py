@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import subprocess
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -46,6 +47,12 @@ class RunnerHandle:
 
 class BaseCodexRunner(ABC):
     runner_type = "base"
+
+    @staticmethod
+    def quiet_subprocess_kwargs() -> dict[str, Any]:
+        if hasattr(subprocess, "CREATE_NO_WINDOW"):
+            return {"creationflags": subprocess.CREATE_NO_WINDOW}
+        return {}
 
     @abstractmethod
     async def handshake(self, settings: RunnerSettings | None = None) -> bool:
