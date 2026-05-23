@@ -31,6 +31,10 @@ def _run_command(args: list[str]) -> tuple[bool, str]:
     return completed.returncode == 0, output
 
 
+def _url_host(host: str) -> str:
+    return f"[{host}]" if ":" in host and not host.startswith("[") else host
+
+
 def _strip_codex_cli_noise(output: str) -> str:
     if not output:
         return ""
@@ -503,7 +507,7 @@ def detect_system_status(
         "plugin_source_root": str((REPO_ROOT / "plugins" / "mission-control").resolve()),
         "backend_host": str(backend_binding["host"]),
         "backend_port": int(backend_binding["port"]),
-        "backend_base_url": f"http://{backend_binding['host']}:{int(backend_binding['port'])}",
+        "backend_base_url": f"http://{_url_host(str(backend_binding['host']))}:{int(backend_binding['port'])}",
         "configured_backend_port": int(launcher_config["backendPort"]) if launcher_config.get("backendPort") is not None else None,
         "backend_binding_source": str(backend_binding["source"]),
         "frontend_port": int(launcher_config["frontendPort"]) if launcher_config.get("frontendPort") is not None else None,

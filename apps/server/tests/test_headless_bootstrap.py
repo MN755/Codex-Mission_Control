@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 
 from bootstrap.environment_probe import probe_environment, summarize_path_entries
+from bootstrap.headless_config import build_headless_config, normalize_transport
 from bootstrap.runner_autowire import autowire_headless, get_headless_config, repair_headless
 from bootstrap.runner_probe import probe_claude_cli, probe_dry_run, probe_ollama, probe_runners, summarize_runner_status
 
@@ -259,6 +260,35 @@ def test_autowire_generates_safe_headless_config_and_repair_preserves_install_id
     assert repaired["headless_config"]["install_id"] == install_id
 
 
+def test_headless_config_rejects_unsupported_http_mcp_transport() -> None:
+    assert normalize_transport("http") == "stdio"
+    config = build_headless_config(
+        probes=[],
+        install_path=str(ROOT),
+        runtime_path=None,
+        daemon_host="127.0.0.1",
+        daemon_port=8010,
+        mcp_transport="http",
+        mcp_port=8123,
+        headless_only=True,
+    )
+    assert config["mcp_transport"] == "stdio"
+    assert config["mcp_port"] is None
+
+
+def test_get_headless_config_is_read_only(monkeypatch, tmp_path) -> None:
+    runtime_root = tmp_path / "runtime"
+    monkeypatch.setattr(
+        "bootstrap.runner_autowire.summarize_runner_status",
+        lambda: {"runners": [], "status": "degraded", "enabled_runners": [], "safe_defaults": [], "checked_at": "now"},
+    )
+
+    config = get_headless_config(runtime_path=str(runtime_root))
+
+    assert config["runtime_path"] == str(runtime_root.resolve())
+    assert not (runtime_root / "headless" / "headless.json").exists()
+
+
 def test_headless_endpoints_and_runner_status_endpoint(client, monkeypatch) -> None:
     fake_config = {
         "config_path": str(ROOT / ".runtime-test" / "headless" / "headless.json"),
@@ -358,7 +388,9 @@ def test_scripts_and_headless_skills_exist() -> None:
         ROOT / "scripts" / "uninstall-mission-control-plugin.sh",
         ROOT / "scripts" / "uninstall-mission-control-plugin.py",
         ROOT / "scripts" / "start-mission-control-daemon.ps1",
+        ROOT / "scripts" / "start-mission-control-daemon.sh",
         ROOT / "scripts" / "stop-mission-control-daemon.ps1",
+        ROOT / "scripts" / "stop-mission-control-daemon.sh",
         ROOT / "scripts" / "start-mission-control-mcp.ps1",
         ROOT / "scripts" / "mission-control-headless-health.ps1",
         ROOT / "scripts" / "mission-control-bootstrap.py",

@@ -214,7 +214,11 @@ class ExternalAdapterRunner(BaseCodexRunner):
         max_chars = 32000
         for relative in allowed:
             candidate = (root / relative).resolve() if relative not in {"", "."} else root
-            if not str(candidate).startswith(str(root)) or not candidate.exists():
+            try:
+                candidate.relative_to(root)
+            except ValueError:
+                continue
+            if not candidate.exists():
                 continue
             files = [candidate] if candidate.is_file() else sorted(path for path in candidate.rglob("*") if path.is_file())
             for file_path in files:
@@ -299,7 +303,9 @@ class ExternalAdapterRunner(BaseCodexRunner):
                 issues.append(f"Rejected edit outside allowed paths: {relative_path}")
                 continue
             target = (workspace_root / relative_path).resolve()
-            if not str(target).startswith(str(workspace_root)):
+            try:
+                target.relative_to(workspace_root)
+            except ValueError:
                 issues.append(f"Rejected edit outside workspace root: {relative_path}")
                 continue
             existing_text: str | None = None

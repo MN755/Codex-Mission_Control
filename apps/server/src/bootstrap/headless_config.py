@@ -13,6 +13,7 @@ from config import DEFAULT_BACKEND_HOST, DEFAULT_BACKEND_PORT, REPO_ROOT, RUNTIM
 HEADLESS_DIR_NAME = "headless"
 HEADLESS_FILE_NAME = "headless.json"
 LOCAL_HOSTS = {"127.0.0.1", "localhost", "::1"}
+SUPPORTED_MCP_TRANSPORTS = {"stdio", "disabled"}
 
 
 def utc_now() -> datetime:
@@ -39,7 +40,7 @@ def normalize_local_host(host: str | None) -> str:
 
 def normalize_transport(value: str | None) -> str:
     transport = (value or "stdio").strip().lower()
-    return transport if transport in {"stdio", "http", "disabled"} else "stdio"
+    return transport if transport in SUPPORTED_MCP_TRANSPORTS else "stdio"
 
 
 def read_headless_config(runtime_path: str | None = None) -> dict[str, Any] | None:
@@ -165,7 +166,7 @@ def build_headless_config(
         "daemon_host": normalize_local_host(daemon_host or str(existing.get("daemon_host") or DEFAULT_BACKEND_HOST)),
         "daemon_port": int(daemon_port or existing.get("daemon_port") or DEFAULT_BACKEND_PORT),
         "mcp_transport": transport,
-        "mcp_port": int(mcp_port) if (transport == "http" and mcp_port is not None) else existing.get("mcp_port"),
+        "mcp_port": None,
         "enabled_runners": [probe["runner_id"] for probe in probes if probe["configured"] or probe["runner_id"] == "dry_run"],
         "runner_configs": runner_configs,
         "default_runner_policy": default_runner_policy(),

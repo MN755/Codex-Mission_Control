@@ -34,16 +34,36 @@ def _quiet_creationflags() -> int:
     return getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
 
+def _url_host(host: str) -> str:
+    return f"[{host}]" if ":" in host and not host.startswith("[") else host
+
+
+def _base_url(host: str, port: int) -> str:
+    return f"http://{_url_host(host)}:{port}"
+
+
 def _start_daemon(repo_root: Path, *, host: str | None, port: int | None) -> tuple[bool, str]:
-    script_path = repo_root / "scripts" / "start-mission-control-daemon.ps1"
+    env = os.environ.copy()
+    if os.name == "nt":
+        script_path = repo_root / "scripts" / "start-mission-control-daemon.ps1"
+        if not script_path.exists():
+            return False, f"Missing daemon start script: {script_path}"
+        command = ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(script_path)]
+        if port is not None:
+            command.extend(["-BackendPort", str(port)])
+        if host:
+            command.extend(["-BindHost", host])
+    else:
+        script_path = repo_root / "scripts" / "start-mission-control-daemon.sh"
+        if not script_path.exists():
+            return False, f"Missing daemon start script: {script_path}"
+        command = ["bash", str(script_path)]
+        if port is not None:
+            env["MISSION_CONTROL_BACKEND_PORT"] = str(port)
+        if host:
+            env["MISSION_CONTROL_BACKEND_HOST"] = host
     if not script_path.exists():
         return False, f"Missing daemon start script: {script_path}"
-    powershell = "powershell.exe" if os.name == "nt" else "pwsh"
-    command = [powershell, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(script_path)]
-    if port is not None:
-        command.extend(["-BackendPort", str(port)])
-    if host:
-        command.extend(["-BindHost", host])
     try:
         completed = subprocess.run(
             command,
@@ -53,6 +73,7 @@ def _start_daemon(repo_root: Path, *, host: str | None, port: int | None) -> tup
             timeout=90,
             check=False,
             creationflags=_quiet_creationflags(),
+            env=env,
         )
     except Exception as exc:  # noqa: BLE001
         return False, f"{type(exc).__name__}: {exc}"
@@ -106,11 +127,27 @@ def _mcp_check(repo_root: Path, *, base_url: str) -> dict[str, Any]:
         client = MissionControlDaemonClient(base_url=base_url)
         server = MissionControlMcpServer(client=client)
         tool_result = server.call_tool("mission_control_plugin_health", {})
+        structured = tool_result.get("structuredContent", {}) if isinstance(tool_result, dict) else {}
+        health_status = str(structured.get("status") or "unknown").lower()
+        if health_status == "ready":
+            call_status = "ready"
+        elif health_status in {"broken", "failed"}:
+            call_status = "broken"
+        else:
+            call_status = "degraded"
         payload["authenticated_tool_call"] = {
-            "status": "ready",
-            "summary": "Protected Mission Control MCP tool call succeeded.",
-            "result_preview": tool_result.get("structuredContent", {}),
+            "status": call_status,
+            "tool_call_status": "ready",
+            "health_status": health_status,
+            "summary": (
+                "Protected Mission Control MCP tool call succeeded."
+                if call_status == "ready"
+                else f"Protected Mission Control MCP tool call succeeded, but plugin health reported {health_status}."
+            ),
+            "result_preview": structured,
         }
+        if call_status != "ready":
+            payload["status"] = "broken" if call_status == "broken" else "degraded"
     except Exception as exc:  # noqa: BLE001
         payload["authenticated_tool_call"] = {
             "status": "degraded",
@@ -175,19 +212,11 @@ def main() -> int:
 
     host = args.daemon_host or DEFAULT_BACKEND_HOST
     port = args.daemon_port or DEFAULT_BACKEND_PORT
-    base_url = f"http://{host}:{port}"
+    base_url = _base_url(host, port)
 
     if args.mcp_check_only:
-        daemon_message = None
-        if not args.dry_run:
-            started, daemon_message = _start_daemon(repo_root, host=host, port=port)
-            if not started:
-                print(daemon_message)
-            elif not _wait_for_backend(base_url):
-                print(f"Mission Control daemon did not answer health checks at {base_url}.")
         payload = _mcp_check(repo_root, base_url=base_url)
-        if daemon_message:
-            payload["daemon_start_message"] = daemon_message
+        payload["daemon_start_message"] = "Skipped. --mcp-check-only is read-only and does not start or stop the daemon."
         _print_payload(payload, as_json=args.json)
         return 0 if payload["status"] == "ready" and payload.get("authenticated_tool_call", {}).get("status") == "ready" else 1
 

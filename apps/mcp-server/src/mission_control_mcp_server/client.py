@@ -14,6 +14,19 @@ import httpx
 
 DEFAULT_BACKEND_HOST = "127.0.0.1"
 DEFAULT_BACKEND_PORT = 8010
+LOCAL_HOSTS = {"127.0.0.1", "localhost", "::1"}
+
+
+def _url_host(host: str) -> str:
+    return f"[{host}]" if ":" in host and not host.startswith("[") else host
+
+
+def _base_url(host: str, port: int) -> str:
+    return f"http://{_url_host(host)}:{port}"
+
+
+def _is_local_host(host: str | None) -> bool:
+    return bool(host and host.strip().lower() in LOCAL_HOSTS)
 
 
 class MissionControlDaemonClient:
@@ -24,7 +37,7 @@ class MissionControlDaemonClient:
         port = int(os.environ.get("MISSION_CONTROL_BACKEND_PORT", int(self.config.get("backendPort", DEFAULT_BACKEND_PORT))))
         self._configured_host = host
         self._configured_port = port
-        self.base_url = base_url or f"http://{host}:{port}"
+        self.base_url = base_url or _base_url(host, port)
         self.timeout = timeout
 
     def _discover_repo_root(self) -> Path:
@@ -38,13 +51,30 @@ class MissionControlDaemonClient:
         raise RuntimeError("Could not discover the Codex Mission Control repository root.")
 
     def _load_launcher_config(self) -> dict[str, Any]:
-        config_path = self.repo_root / "scripts" / "mission-control.config.json"
-        if not config_path.exists():
-            return {"host": DEFAULT_BACKEND_HOST, "backendPort": DEFAULT_BACKEND_PORT}
+        server_src = self.repo_root / "apps" / "server" / "src"
+        if server_src.exists() and str(server_src) not in sys.path:
+            sys.path.insert(0, str(server_src))
         try:
-            return json.loads(config_path.read_text(encoding="utf-8"))
-        except json.JSONDecodeError:
-            return {"host": DEFAULT_BACKEND_HOST, "backendPort": DEFAULT_BACKEND_PORT}
+            from config import load_launcher_config
+
+            return load_launcher_config()
+        except Exception:
+            config_path = self.repo_root / "scripts" / "mission-control.config.json"
+            if not config_path.exists():
+                return {"host": DEFAULT_BACKEND_HOST, "backendPort": DEFAULT_BACKEND_PORT}
+            try:
+                return json.loads(config_path.read_text(encoding="utf-8"))
+            except json.JSONDecodeError:
+                return {"host": DEFAULT_BACKEND_HOST, "backendPort": DEFAULT_BACKEND_PORT}
+
+    def _validate_localhost_binding(self) -> None:
+        parsed = urlparse(self.base_url)
+        host = parsed.hostname or self._configured_host
+        if not _is_local_host(host):
+            raise RuntimeError(
+                "Mission Control daemon startup is restricted to localhost bindings. "
+                f"Refusing non-local host: {host}."
+            )
 
     @property
     def _runtime_root(self) -> Path:
@@ -87,9 +117,11 @@ class MissionControlDaemonClient:
         parsed = urlparse(self.base_url)
         host = parsed.hostname or self._configured_host
         port = parsed.port or self._configured_port
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-            sock.settimeout(0.75)
-            return sock.connect_ex((host, port)) == 0
+        try:
+            with socket.create_connection((host, port), timeout=0.75):
+                return True
+        except OSError:
+            return False
 
     def _healthcheck(self) -> bool:
         try:
@@ -135,6 +167,7 @@ class MissionControlDaemonClient:
             )
 
     def ensure_daemon_running(self) -> None:
+        self._validate_localhost_binding()
         if self._healthcheck():
             self._validate_running_daemon_identity()
             return

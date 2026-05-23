@@ -9,6 +9,8 @@ from config import ensure_runtime_dirs
 from daemon_state import ensure_daemon_token, resolve_backend_binding, update_daemon_metadata_status, write_daemon_metadata
 from main import app
 
+LOCAL_HOSTS = {"127.0.0.1", "localhost", "::1"}
+
 
 def main() -> None:
     ensure_runtime_dirs()
@@ -17,6 +19,8 @@ def main() -> None:
     binding = resolve_backend_binding(prefer_live_metadata=False)
     host = str(binding["host"])
     port = int(binding["port"])
+    if host.strip().lower() not in LOCAL_HOSTS:
+        raise RuntimeError(f"Mission Control daemon must stay localhost-only. Refusing host {host!r}.")
     started_at = write_daemon_metadata(
         host=host,
         port=port,

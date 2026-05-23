@@ -55,7 +55,7 @@ def write_diagnostic_report(
 
     launcher_logs = []
     if LAUNCHER_ROOT.exists():
-        for name in ("backend.stdout.log", "frontend.stdout.log", "desktop.stdout.log"):
+        for name in ("daemon.stdout.log", "daemon.stderr.log", "backend.stdout.log", "frontend.stdout.log", "desktop.stdout.log"):
             launcher_logs.extend(_tail(LAUNCHER_ROOT / name, max_lines=10))
 
     runtime_logs = []

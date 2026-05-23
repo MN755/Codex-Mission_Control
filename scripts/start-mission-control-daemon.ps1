@@ -34,6 +34,14 @@ function Assert-LocalHost {
   }
 }
 
+function Get-UrlHost {
+  param([string]$HostValue)
+  if ($HostValue -like "*:*" -and -not $HostValue.StartsWith("[")) {
+    return "[$HostValue]"
+  }
+  return $HostValue
+}
+
 function Get-RequiredCommand {
   param([string[]]$Names)
   foreach ($name in $Names) {
@@ -258,7 +266,8 @@ function Test-TcpPortListening {
 }
 
 function Test-BackendHealthy {
-  $backendHealthUrl = "http://${effectiveHost}:${effectiveBackendPort}/api/health"
+  $urlHost = Get-UrlHost $effectiveHost
+  $backendHealthUrl = "http://${urlHost}:${effectiveBackendPort}/api/health"
   try {
     $response = Invoke-WebRequest -Uri $backendHealthUrl -UseBasicParsing -TimeoutSec 2
     return $response.StatusCode -eq 200 -and $response.Content -match '"status"\s*:\s*"ok"'
@@ -268,7 +277,8 @@ function Test-BackendHealthy {
 }
 
 function Get-DaemonIdentity {
-  $identityUrl = "http://${effectiveHost}:${effectiveBackendPort}/api/diagnostics/identity"
+  $urlHost = Get-UrlHost $effectiveHost
+  $identityUrl = "http://${urlHost}:${effectiveBackendPort}/api/diagnostics/identity"
   try {
     $response = Invoke-WebRequest -Uri $identityUrl -UseBasicParsing -TimeoutSec 2
     if ($response.StatusCode -ne 200) {
@@ -373,7 +383,8 @@ $launchInfo | ConvertTo-Json -Depth 4 | Set-Content -Path $launchLogPath -Encodi
 
 if (Test-BackendHealthy) {
   if (Test-ExpectedDaemon) {
-    Write-Host "[Mission Control] Daemon already healthy on http://${effectiveHost}:${effectiveBackendPort}"
+    $urlHost = Get-UrlHost $effectiveHost
+    Write-Host "[Mission Control] Daemon already healthy on http://${urlHost}:${effectiveBackendPort}"
     exit 0
   }
   throw "Port $effectiveBackendPort is serving a healthy HTTP process, but it is not the expected Mission Control daemon for this repository."
@@ -420,4 +431,5 @@ if (-not (Test-ExpectedDaemon)) {
   throw "Mission Control daemon answered health checks, but daemon metadata did not validate the expected repo/host/port identity."
 }
 
-Write-Host "[Mission Control] Daemon started on PID $($process.Id) at http://${effectiveHost}:${effectiveBackendPort}"
+$urlHost = Get-UrlHost $effectiveHost
+Write-Host "[Mission Control] Daemon started on PID $($process.Id) at http://${urlHost}:${effectiveBackendPort}"

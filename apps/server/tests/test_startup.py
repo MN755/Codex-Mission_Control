@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import diagnostics
 from startup import startup_service
 
 
@@ -79,6 +80,29 @@ def test_optional_selected_provider_failure_returns_degraded(monkeypatch, client
     assert payload["error_code"] == "MC-CLAUDE-CLI-MISSING-001"
 
 
+def test_codex_provider_failure_returns_degraded(monkeypatch, client) -> None:
+    client.post(
+        "/api/startup/complete-first-run",
+        json={
+            "username": "Morgan",
+            "provider": "codex",
+            "auth_mode": "chatgpt",
+            "default_runner_mode": "auto",
+        },
+    )
+    monkeypatch.setattr(
+        startup_service,
+        "_provider_optional_checks",
+        lambda profile: [
+            startup_service._check("codex_cli", required=False, status="failed", summary="Codex CLI missing.", error_code="MC-CODEX-CLI-MISSING-001")
+        ],
+    )
+    payload = client.post("/api/startup/check", json={"attempt_number": 1, "include_optional_checks": True}).json()
+    assert payload["mode"] == "degraded"
+    assert payload["overall_status"] == "degraded"
+    assert payload["error_code"] == "MC-CODEX-CLI-MISSING-001"
+
+
 def test_retry_after_three_attempts_generates_diagnostic_report(monkeypatch, client) -> None:
     monkeypatch.setattr(
         startup_service,
@@ -97,3 +121,25 @@ def test_manual_diagnostics_report_is_created(client) -> None:
     payload = report.json()
     assert Path(payload["path"]).exists()
     assert "summary" in payload
+
+
+def test_diagnostics_collects_daemon_launcher_logs(monkeypatch, tmp_path) -> None:
+    launcher = tmp_path / "launcher"
+    launcher.mkdir()
+    (launcher / "daemon.stdout.log").write_text("daemon out\n", encoding="utf-8")
+    (launcher / "daemon.stderr.log").write_text("daemon err\n", encoding="utf-8")
+    monkeypatch.setattr(diagnostics, "LAUNCHER_ROOT", launcher)
+    report_root = tmp_path / "diagnostics"
+    report_root.mkdir()
+    monkeypatch.setattr(diagnostics, "diagnostics_root", lambda: report_root)
+
+    report = diagnostics.write_diagnostic_report(
+        startup_status={"mode": "regular", "overall_status": "ready", "checks": []},
+        system_status={},
+        settings_status=None,
+        recent_errors=None,
+    )
+
+    payload = Path(report["json_path"]).read_text(encoding="utf-8")
+    assert "daemon out" in payload
+    assert "daemon err" in payload

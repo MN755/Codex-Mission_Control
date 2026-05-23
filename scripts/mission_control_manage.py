@@ -602,17 +602,14 @@ def run_bootstrap(
 
 
 def run_stop_daemon(repo_root: Path) -> dict[str, Any]:
-    script_path = repo_root / "scripts" / "stop-mission-control-daemon.ps1"
+    script_path = repo_root / "scripts" / ("stop-mission-control-daemon.ps1" if os.name == "nt" else "stop-mission-control-daemon.sh")
     if not script_path.exists():
         return {"status": "missing", "message": f"Stop script not found: {script_path}"}
-    powershell = "powershell.exe" if os.name == "nt" else "pwsh"
-    completed = subprocess.run(
-        [powershell, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(script_path)],
-        capture_output=True,
-        text=True,
-        timeout=120,
-        check=False,
-    )
+    if os.name == "nt":
+        command = ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(script_path)]
+    else:
+        command = ["bash", str(script_path)]
+    completed = subprocess.run(command, capture_output=True, text=True, timeout=120, check=False)
     output = completed.stdout.strip() or completed.stderr.strip()
     return {
         "status": "ready" if completed.returncode == 0 else "degraded",
@@ -685,6 +682,10 @@ def _safe_state(ok: bool) -> str:
     return "ready" if ok else "degraded"
 
 
+def _url_host(host: str) -> str:
+    return f"[{host}]" if ":" in host and not host.startswith("[") else host
+
+
 def _probe_backend_health(repo_root: Path) -> dict[str, Any]:
     import urllib.request
 
@@ -696,7 +697,7 @@ def _probe_backend_health(repo_root: Path) -> dict[str, Any]:
     except Exception:
         host = "127.0.0.1"
         port = 8010
-    url = f"http://{host}:{port}/api/health"
+    url = f"http://{_url_host(host)}:{port}/api/health"
     try:
         with urllib.request.urlopen(url, timeout=3.0) as response:
             body = response.read().decode("utf-8", errors="ignore")

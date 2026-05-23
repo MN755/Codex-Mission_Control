@@ -6,7 +6,7 @@ from codex_runner.base import BaseCodexRunner, RunnerContext, RunnerSettings
 from codex_runner.claude_code_runner import ClaudeCodeRunner
 from codex_runner.cli_runner import CliCodexRunner
 from codex_runner.dry_run_runner import DryRunRunner
-from codex_runner.external_adapter_runner import ExternalAdapterRunner
+from codex_runner.external_adapter_runner import ExternalAdapterRunner, ExternalAdapterRunState
 from codex_runner.events import parse_json_line
 from manager import RunnerRegistry
 from models import Agent, Project, Task
@@ -519,6 +519,27 @@ def test_external_adapter_runner_rejects_out_of_scope_edits(tmp_path) -> None:
         assert target.read_text(encoding="utf-8") == "def add(a, b):\n    return a - b\n"
 
     asyncio.run(run_test())
+
+
+def test_external_adapter_runner_rejects_sibling_prefix_workspace_escape(tmp_path) -> None:
+    workspace = tmp_path / "workspace"
+    sibling = tmp_path / "workspace-evil"
+    workspace.mkdir()
+    sibling.mkdir()
+    state = ExternalAdapterRunState(
+        workspace_path=workspace.as_posix(),
+        allowed_paths=["."],
+        forbidden_paths=[],
+    )
+
+    applied, issues = ExternalAdapterRunner()._apply_adapter_edits(
+        state,
+        [{"path": "../workspace-evil/pwned.py", "content": "print('nope')\n"}],
+    )
+
+    assert applied == []
+    assert any("outside workspace root" in issue for issue in issues)
+    assert not (sibling / "pwned.py").exists()
 
 
 def test_external_adapter_runner_rejects_no_op_edits(tmp_path) -> None:

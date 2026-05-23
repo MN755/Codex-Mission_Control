@@ -68,7 +68,6 @@ def get_headless_config(*, runtime_path: str | None = None) -> dict[str, Any]:
         headless_only=True,
         existing=None,
     )
-    write_headless_config(payload, runtime_path)
     return payload
 
 

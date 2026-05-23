@@ -16,14 +16,29 @@ if (-not $python) {
 }
 
 $bootstrapScript = Join-Path $repoRoot "scripts\mission-control-bootstrap.py"
+$configPath = Join-Path $repoRoot "scripts\mission-control.config.json"
+
+function Get-LauncherConfig {
+  if ($env:MISSION_CONTROL_LAUNCHER_CONFIG -and (Test-Path $env:MISSION_CONTROL_LAUNCHER_CONFIG)) {
+    return Get-Content -Raw $env:MISSION_CONTROL_LAUNCHER_CONFIG | ConvertFrom-Json
+  }
+  if (Test-Path $configPath) {
+    return Get-Content -Raw $configPath | ConvertFrom-Json
+  }
+  return [pscustomobject]@{
+    host = "127.0.0.1"
+    backendPort = 8010
+  }
+}
 
 if ($Serve) {
+  $launcherConfig = Get-LauncherConfig
   $env:MISSION_CONTROL_REPO_ROOT = $repoRoot
   if (-not $env:MISSION_CONTROL_BACKEND_HOST) {
-    $env:MISSION_CONTROL_BACKEND_HOST = "127.0.0.1"
+    $env:MISSION_CONTROL_BACKEND_HOST = [string]$launcherConfig.host
   }
   if (-not $env:MISSION_CONTROL_BACKEND_PORT) {
-    $env:MISSION_CONTROL_BACKEND_PORT = "8010"
+    $env:MISSION_CONTROL_BACKEND_PORT = [string]$launcherConfig.backendPort
   }
   $mcpRoot = Join-Path $repoRoot "apps\mcp-server"
   $env:PYTHONPATH = Join-Path $mcpRoot "src"

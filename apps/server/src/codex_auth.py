@@ -47,15 +47,12 @@ class CodexAuthService:
 
     def current_job(self) -> AuthJobState | None:
         if self.active_job_id is None:
-            if not self.jobs:
-                return None
-            return max(self.jobs.values(), key=lambda item: item.started_at)
+            return None
         job = self.jobs.get(self.active_job_id)
         if job is not None:
             return job
-        if not self.jobs:
-            return None
-        return max(self.jobs.values(), key=lambda item: item.started_at)
+        self.active_job_id = None
+        return None
 
     def job_payload(self, job: AuthJobState | None) -> dict[str, Any] | None:
         if job is None:

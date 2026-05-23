@@ -265,13 +265,17 @@ def resolve_backend_binding(*, prefer_live_metadata: bool = True) -> dict[str, A
     }
 
 
+def _url_host(host: str) -> str:
+    return f"[{host}]" if ":" in host and not host.startswith("[") else host
+
+
 def daemon_dashboard_url(project_id: int | None = None) -> str:
     binding = resolve_backend_binding()
     host = binding["host"]
     port = int(binding["port"])
     if project_id is not None:
-        return f"http://{host}:{port}/projects/{project_id}"
-    return f"http://{host}:{port}/dashboard"
+        return f"http://{_url_host(str(host))}:{port}/projects/{project_id}"
+    return f"http://{_url_host(str(host))}:{port}/dashboard"
 
 
 def daemon_identity_snapshot() -> dict[str, Any]:
@@ -301,7 +305,7 @@ def daemon_identity_snapshot() -> dict[str, Any]:
         "mode": mode,
         "host": host,
         "port": port,
-        "base_url": f"http://{host}:{port}",
+        "base_url": f"http://{_url_host(host)}:{port}",
         "binding_source": str(binding.get("source") or "unknown"),
         "repo_root": str(REPO_ROOT),
         "runtime_root": str(RUNTIME_ROOT),

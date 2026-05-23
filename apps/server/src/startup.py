@@ -93,7 +93,7 @@ class StartupCoordinator:
 
     def _selected_provider_failure_names(self, selected_provider: str) -> set[str]:
         mapping = {
-            "codex": set(),
+            "codex": {"codex_cli", "codex_login", "app_server"},
             "claude_code": {"claude_code"},
             "ollama": {"ollama"},
             "openai_api": {"openai_api"},

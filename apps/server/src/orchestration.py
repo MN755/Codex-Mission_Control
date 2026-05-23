@@ -30,6 +30,7 @@ from security.path_validation import PathValidationError, resolve_local_path
 
 
 ACTIVE_ORCHESTRATION_STATUSES = {"initializing", "planning", "waiting_for_user", "running", "paused"}
+MAX_BACKGROUND_FAILURES = 3
 
 
 class OrchestrationCoordinator:
@@ -873,6 +874,8 @@ class OrchestrationCoordinator:
             current_action=current_action,
             manager_fallback=session.manager_status,
         )
+        background_task = self._tasks.get(session.id)
+        metadata = dict(session.metadata_json or {})
         return {
             "orchestration_id": session.id,
             "project_id": project.id,
@@ -896,6 +899,11 @@ class OrchestrationCoordinator:
             "user_action_required": any(decision.status == "pending" for decision in pending),
             "handoff_readiness": handoff["status"],
             "runner_inventory": await service.runners.inventory(),
+            "background_runtime": {
+                "turn_active": bool(background_task and not background_task.done()),
+                "failure_count": int(metadata.get("background_failure_count") or 0),
+                "last_error": metadata.get("last_background_error"),
+            },
         }
 
     def _next_expected_action(self, current_action: dict[str, Any], decisions: Sequence[PendingDecision], project: Project) -> str:
@@ -1024,7 +1032,21 @@ class OrchestrationCoordinator:
         task = self._tasks.get(orchestration_id)
         if task is not None and not task.done():
             return
-        self._tasks[orchestration_id] = asyncio.create_task(self._run_background_turn_deferred(orchestration_id, reason))
+        task = asyncio.create_task(self._run_background_turn_deferred(orchestration_id, reason))
+        task.add_done_callback(lambda completed, orchestration_id=orchestration_id: self._background_task_done(orchestration_id, completed))
+        self._tasks[orchestration_id] = task
+
+    def _background_task_done(self, orchestration_id: int, task: asyncio.Task[None]) -> None:
+        if self._tasks.get(orchestration_id) is task:
+            self._tasks.pop(orchestration_id, None)
+        if task.cancelled():
+            return
+        # Consume exceptions here. _run_background_turn records user-visible
+        # failure/retry state, so the event loop should not emit noisy warnings.
+        try:
+            task.exception()
+        except asyncio.CancelledError:
+            return
 
     async def _run_background_turn_deferred(self, orchestration_id: int, reason: str) -> None:
         # FastAPI commits the request-scoped DB session after the handler returns.
@@ -1033,6 +1055,10 @@ class OrchestrationCoordinator:
         # on "database is locked" while answering a decision.
         await asyncio.sleep(0.1)
         await self._run_background_turn(orchestration_id, reason)
+
+    async def _run_background_turn_retry_deferred(self, orchestration_id: int, reason: str, delay: float) -> None:
+        await asyncio.sleep(delay)
+        self._schedule_background_turn(orchestration_id, reason)
 
     async def _run_background_turn(self, orchestration_id: int, reason: str) -> None:
         db = SessionLocal()
@@ -1093,10 +1119,35 @@ class OrchestrationCoordinator:
             db.rollback()
             session = db.get(OrchestrationSession, orchestration_id)
             if session is not None:
-                self._update_session_status(db, session, status="failed", manager_status=f"Mission Control background turn failed: {exc}")
-                self._record_event(db, session, "orchestration_failed", {"reason": str(exc)})
-                db.commit()
-            raise
+                metadata = dict(session.metadata_json or {})
+                failure_count = int(metadata.get("background_failure_count") or 0) + 1
+                metadata["background_failure_count"] = failure_count
+                metadata["last_background_error"] = f"{type(exc).__name__}: {exc}"[:500]
+                session.metadata_json = metadata
+                if failure_count < MAX_BACKGROUND_FAILURES:
+                    self._update_session_status(
+                        db,
+                        session,
+                        status="planning",
+                        manager_status=(
+                            "Mission Control hit a recoverable background error and queued a retry. "
+                            f"Attempt {failure_count}/{MAX_BACKGROUND_FAILURES}: {type(exc).__name__}."
+                        ),
+                    )
+                    self._record_event(
+                        db,
+                        session,
+                        "background_turn_retry_scheduled",
+                        {"reason": str(exc), "failure_count": failure_count, "max_failures": MAX_BACKGROUND_FAILURES},
+                    )
+                    db.commit()
+                    asyncio.create_task(
+                        self._run_background_turn_retry_deferred(orchestration_id, "retry_after_error", min(2.0 * failure_count, 5.0))
+                    )
+                else:
+                    self._update_session_status(db, session, status="failed", manager_status=f"Mission Control background turn failed: {exc}")
+                    self._record_event(db, session, "orchestration_failed", {"reason": str(exc), "failure_count": failure_count})
+                    db.commit()
         finally:
             db.close()
 

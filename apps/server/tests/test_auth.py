@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from codex_auth import auth_service
+from codex_auth import AuthJobState, auth_service
 from manager import service
 
 
@@ -72,3 +72,27 @@ def test_api_key_login_endpoint_starts_auth_job(monkeypatch, client) -> None:
     response = client.post("/api/system/auth/login/api-key", json={"api_key": "sk-test"})
     assert response.status_code == 200
     assert response.json()["method"] == "api_key"
+
+
+def test_completed_auth_jobs_do_not_block_new_jobs() -> None:
+    previous = auth_service.active_job_id
+    previous_jobs = dict(auth_service.jobs)
+    try:
+        auth_service.jobs = {
+            "finished": AuthJobState(
+                id="finished",
+                method="chatgpt",
+                status="succeeded",
+                started_at=datetime.now(timezone.utc),
+                finished_at=datetime.now(timezone.utc),
+                exit_code=0,
+                message="done",
+                log_path=None,
+            )
+        }
+        auth_service.active_job_id = None
+
+        assert auth_service.current_job() is None
+    finally:
+        auth_service.jobs = previous_jobs
+        auth_service.active_job_id = previous

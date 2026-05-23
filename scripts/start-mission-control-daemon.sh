@@ -90,7 +90,15 @@ PY
 fi
 
 assert_local_host "${HOST}"
-HEALTH_URL="http://${HOST}:${PORT}/api/health"
+url_host() {
+  case "$1" in
+    *:*) printf '[%s]' "$1" ;;
+    *) printf '%s' "$1" ;;
+  esac
+}
+
+URL_HOST="$(url_host "${HOST}")"
+HEALTH_URL="http://${URL_HOST}:${PORT}/api/health"
 mkdir -p "${LAUNCHER_DIR}"
 
 bootstrap_cli_paths
@@ -129,7 +137,8 @@ identity_matches() {
 import json, sys, urllib.request
 
 host, port_text, repo_root = sys.argv[1:]
-url = f"http://{host}:{int(port_text)}/api/diagnostics/identity"
+url_host = f"[{host}]" if ":" in host and not host.startswith("[") else host
+url = f"http://{url_host}:{int(port_text)}/api/diagnostics/identity"
 try:
     with urllib.request.urlopen(url, timeout=2) as response:
         payload = json.loads(response.read().decode("utf-8", errors="ignore"))
@@ -161,12 +170,11 @@ if "${PYTHON_BIN}" - <<'PY' "${HOST}" "${PORT}"
 import socket, sys
 host = sys.argv[1]
 port = int(sys.argv[2])
-sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-sock.settimeout(0.75)
 try:
-    sys.exit(0 if sock.connect_ex((host, port)) == 0 else 1)
-finally:
-    sock.close()
+    with socket.create_connection((host, port), timeout=0.75):
+        sys.exit(0)
+except OSError:
+    sys.exit(1)
 PY
 then
   echo "Port ${PORT} is already occupied on ${HOST}. Pick another backend port or stop the conflicting service first." >&2

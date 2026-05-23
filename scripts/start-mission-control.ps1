@@ -38,6 +38,14 @@ function Write-Status {
   Write-Host "[Mission Control] $Message"
 }
 
+function Get-UrlHost {
+  param([string]$HostValue)
+  if ($HostValue -like "*:*" -and -not $HostValue.StartsWith("[")) {
+    return "[$HostValue]"
+  }
+  return $HostValue
+}
+
 function Get-RequiredCommand {
   param([string[]]$Names)
   foreach ($name in $Names) {
@@ -81,7 +89,8 @@ function Test-PortOpen {
 }
 
 function Test-BackendHealthy {
-  $backendHealthUrl = "http://${effectiveHost}:${effectiveBackendPort}/api/health"
+  $urlHost = Get-UrlHost $effectiveHost
+  $backendHealthUrl = "http://${urlHost}:${effectiveBackendPort}/api/health"
   try {
     $response = Invoke-WebRequest -Uri $backendHealthUrl -UseBasicParsing -TimeoutSec 2
     return $response.StatusCode -eq 200 -and $response.Content -match '"status"\s*:\s*"ok"'
@@ -91,7 +100,8 @@ function Test-BackendHealthy {
 }
 
 function Test-FrontendHealthy {
-  $frontendUrl = "http://${effectiveHost}:${effectiveFrontendPort}"
+  $urlHost = Get-UrlHost $effectiveHost
+  $frontendUrl = "http://${urlHost}:${effectiveFrontendPort}"
   try {
     $response = Invoke-WebRequest -Uri $frontendUrl -UseBasicParsing -TimeoutSec 2
     return $response.StatusCode -ge 200 -and $response.StatusCode -lt 500
@@ -246,8 +256,9 @@ Set-Location '$repoRoot'
 function Start-WebMode {
   $pythonPath = Get-RequiredCommand -Names @("python", "py")
   $npmPath = Get-RequiredCommand -Names @("npm.cmd", "npm")
-  $backendHealthUrl = "http://${effectiveHost}:${effectiveBackendPort}/api/health"
-  $frontendUrl = "http://${effectiveHost}:${effectiveFrontendPort}"
+  $urlHost = Get-UrlHost $effectiveHost
+  $backendHealthUrl = "http://${urlHost}:${effectiveBackendPort}/api/health"
+  $frontendUrl = "http://${urlHost}:${effectiveFrontendPort}"
   $startupUrl = "${frontendUrl}/startup"
 
   $backendHealthy = Test-BackendHealthy

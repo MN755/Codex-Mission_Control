@@ -49,6 +49,32 @@ def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def _url_host(host: str) -> str:
+    return f"[{host}]" if ":" in host and not host.startswith("[") else host
+
+
+def _backend_url(host: str, port: int, path: str) -> str:
+    return f"http://{_url_host(host)}:{port}{path}"
+
+
+def _http_probe_command(url: str) -> str:
+    return f"Invoke-WebRequest {url}" if os.name == "nt" else f"curl -fsS {url}"
+
+
+def _start_daemon_command(port: int) -> str:
+    return f".\\scripts\\start-mission-control-daemon.ps1 -BackendPort {port}" if os.name == "nt" else f"./scripts/start-mission-control-daemon.sh"
+
+
+def _list_command(path: str, *, recursive: bool = False) -> str:
+    if os.name == "nt":
+        return f"Get-ChildItem {path}{' -Recurse' if recursive else ''}"
+    return f"find {path} -maxdepth 3 -type f" if recursive else f"ls -la {path}"
+
+
+def _read_command(path: str) -> str:
+    return f"Get-Content {path}" if os.name == "nt" else f"cat {path}"
+
+
 def _probe_url(url: str, *, timeout: float = 2.0) -> tuple[bool, str]:
     try:
         with urlopen(url, timeout=timeout) as response:
@@ -121,7 +147,8 @@ async def mission_control_plugin_health() -> dict[str, Any]:
     daemon_port = int(backend_binding.get("port") or identity.get("port") or 0)
     identity_mode = str(identity.get("mode") or "unknown")
     daemon_mode = str(backend_binding.get("mode") or identity_mode or "unknown")
-    daemon_url = f"http://{daemon_host}:{daemon_port}/api/health" if daemon_host and daemon_port else ""
+    daemon_url = _backend_url(daemon_host, daemon_port, "/api/health") if daemon_host and daemon_port else ""
+    identity_url = _backend_url(daemon_host, daemon_port, "/api/diagnostics/identity") if daemon_host and daemon_port else ""
     in_process_daemon = (
         os.environ.get("MISSION_CONTROL_SERVER_MODE") == "daemon"
         and identity_mode == "daemon"
@@ -171,9 +198,9 @@ async def mission_control_plugin_health() -> dict[str, Any]:
             critical=True,
             fix=None if daemon_error is None else daemon_error.recommended_fix,
             commands=[
-                f".\\scripts\\start-mission-control-daemon.ps1 -BackendPort {daemon_port}",
-                f"Invoke-WebRequest http://{daemon_host}:{daemon_port}/api/health",
-                f"Invoke-WebRequest http://{daemon_host}:{daemon_port}/api/diagnostics/identity",
+                _start_daemon_command(daemon_port),
+                _http_probe_command(daemon_url),
+                _http_probe_command(identity_url),
             ],
             details={
                 "host": daemon_host,
@@ -207,7 +234,7 @@ async def mission_control_plugin_health() -> dict[str, Any]:
             summary=identity_summary,
             critical=True,
             fix=None if identity_status == "ready" else "Restart the daemon from this repository checkout so runtime metadata matches the live backend.",
-            commands=[f"Invoke-WebRequest http://{daemon_host}:{daemon_port}/api/diagnostics/identity"],
+            commands=[_http_probe_command(identity_url)],
             details=identity,
         )
     )
@@ -232,7 +259,7 @@ async def mission_control_plugin_health() -> dict[str, Any]:
                 summary=bridge_error.detail,
                 critical=True,
                 fix=bridge_error.recommended_fix,
-                commands=["codex mcp list --json", "Get-Content plugins\\mission-control\\mcp\\mission-control-mcp.example.json"],
+                commands=["codex mcp list --json", _read_command("plugins/mission-control/mcp/mission-control-mcp.example.json")],
                 details={"configured_mcp_servers": configured_mcp_servers, "live_mcp_servers": live_mcp_servers},
                 error=bridge_error,
             )
@@ -346,7 +373,7 @@ async def mission_control_plugin_health() -> dict[str, Any]:
             summary="Mission Control plugin package files are present." if package_error is None else package_error.detail,
             critical=True,
             fix=None if package_error is None else package_error.recommended_fix,
-            commands=["Get-ChildItem plugins\\mission-control -Recurse"],
+            commands=[_list_command("plugins/mission-control", recursive=True)],
             details={"missing_files": missing_plugin_files},
             error=package_error,
         )
@@ -372,7 +399,7 @@ async def mission_control_plugin_health() -> dict[str, Any]:
             else skill_error.detail,
             critical=True,
             fix=None if skill_error is None else skill_error.recommended_fix,
-            commands=["Get-ChildItem .codex\\skills", "Get-ChildItem plugins\\mission-control\\skills -Recurse"],
+            commands=[_list_command(".codex/skills"), _list_command("plugins/mission-control/skills", recursive=True)],
             details={"missing_files": missing_skill_files},
             error=skill_error,
         )
@@ -508,7 +535,7 @@ async def mission_control_plugin_health() -> dict[str, Any]:
             summary="Mission Control runtime directory is writable." if runtime_error is None else runtime_error.detail,
             critical=True,
             fix=None if runtime_error is None else runtime_error.recommended_fix,
-            commands=["Get-ChildItem .runtime"],
+            commands=[_list_command(".runtime")],
             details={"runtime_root": str(runtime_root)},
             error=runtime_error,
         )
@@ -554,7 +581,7 @@ async def mission_control_plugin_health() -> dict[str, Any]:
             summary="Mission Control dashboard URL responded successfully." if dashboard_ok else dashboard_error.detail,
             critical=False,
             fix=None if dashboard_ok else "Start the standalone dashboard only if you specifically need it.",
-            commands=[f"Invoke-WebRequest http://{daemon_host}:{daemon_port}/dashboard"],
+            commands=[_http_probe_command(dashboard_url)],
             details={"dashboard_url": dashboard_url},
             error=dashboard_error,
         )
@@ -578,7 +605,7 @@ async def mission_control_plugin_health() -> dict[str, Any]:
             summary="Mission Control appears to be bound to localhost-only addresses." if binding_error is None else binding_error.detail,
             critical=False,
             fix=None if binding_error is None else binding_error.recommended_fix,
-            commands=["Get-Content scripts\\mission-control.config.json"],
+            commands=[_read_command("scripts/mission-control.config.json")],
             details={"daemon_host": daemon_host, "dashboard_host": dashboard_host},
             error=binding_error,
         )

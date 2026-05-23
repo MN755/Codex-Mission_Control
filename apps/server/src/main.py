@@ -16,7 +16,7 @@ from bootstrap.runner_autowire import autowire_headless, get_headless_config, ge
 from bootstrap.runner_probe import summarize_runner_status
 from capabilities import capability_service
 from codex_auth import auth_service
-from config import frontend_dist_root
+from config import DEFAULT_FRONTEND_PORT, frontend_dist_root, load_launcher_config
 from context_packs import context_pack_service
 from db import get_db, init_db
 from diagnostics import open_folder
@@ -262,11 +262,22 @@ async def lifespan(_: FastAPI):
             )
 
 
+def _url_host(host: str) -> str:
+    return f"[{host}]" if ":" in host and not host.startswith("[") else host
+
+
+def _cors_allow_origins() -> list[str]:
+    config = load_launcher_config()
+    frontend_port = int(config.get("frontendPort") or DEFAULT_FRONTEND_PORT)
+    hosts = ["localhost", "127.0.0.1", "::1"]
+    return [f"http://{_url_host(host)}:{frontend_port}" for host in hosts]
+
+
 app = FastAPI(title="Codex Mission Control Server", version="0.1.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+    allow_origins=_cors_allow_origins(),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -435,7 +446,12 @@ def _frontend_file_for_path(requested_path: str) -> Path | None:
         return index_path if index_path.exists() else None
     candidate = (dist_dir / normalized).resolve()
     dist_root = dist_dir.resolve()
-    if str(candidate).startswith(str(dist_root)) and candidate.exists() and candidate.is_file():
+    try:
+        candidate.relative_to(dist_root)
+        inside_dist = True
+    except ValueError:
+        inside_dist = False
+    if inside_dist and candidate.exists() and candidate.is_file():
         return candidate
     index_path = dist_dir / "index.html"
     return index_path if index_path.exists() else None

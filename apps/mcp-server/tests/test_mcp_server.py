@@ -3,7 +3,7 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
-from mission_control_mcp_server.client import MissionControlDaemonClient
+from mission_control_mcp_server.client import MissionControlDaemonClient, _base_url
 from mission_control_mcp_server.server import MissionControlMcpServer
 
 
@@ -43,6 +43,22 @@ EXPECTED_PROMPTS = {
     "install_from_github",
     "autowire_providers",
 }
+
+
+def test_daemon_client_brackets_ipv6_loopback_urls() -> None:
+    assert _base_url("::1", 8010) == "http://[::1]:8010"
+
+
+def test_daemon_client_rejects_non_local_spawn(monkeypatch) -> None:
+    monkeypatch.setenv("MISSION_CONTROL_BACKEND_HOST", "0.0.0.0")
+    client = MissionControlDaemonClient(base_url="http://0.0.0.0:8010", timeout=0.1)
+
+    try:
+        client.ensure_daemon_running()
+    except RuntimeError as exc:
+        assert "localhost" in str(exc).lower()
+    else:
+        raise AssertionError("Expected non-local daemon binding to be rejected.")
 
 
 class FakeClient:

@@ -476,15 +476,20 @@ class MissionControlService:
         ignored = {"__pycache__", ".git", "node_modules", ".venv", "venv", "mission-control"}
         snapshot: dict[str, str] = {}
         captured = 0
+        resolved_root = root.resolve()
         for relative in allowed_paths:
-            candidate = (root / relative).resolve() if relative not in {"", "."} else root.resolve()
-            if not str(candidate).startswith(str(root.resolve())) or not candidate.exists():
+            candidate = (resolved_root / relative).resolve() if relative not in {"", "."} else resolved_root
+            try:
+                candidate.relative_to(resolved_root)
+            except ValueError:
+                continue
+            if not candidate.exists():
                 continue
             files = [candidate] if candidate.is_file() else [path for path in candidate.rglob("*") if path.is_file()]
             for file_path in files:
                 if any(part in ignored for part in file_path.parts):
                     continue
-                rel_path = file_path.relative_to(root).as_posix()
+                rel_path = file_path.relative_to(resolved_root).as_posix()
                 try:
                     digest = hashlib.sha1(file_path.read_bytes()).hexdigest()
                 except OSError:

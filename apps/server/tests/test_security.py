@@ -123,6 +123,22 @@ def test_open_folder_restricts_to_allowed_roots() -> None:
     assert "outside the allowed locations" in blocked["message"].lower()
 
 
+def test_frontend_static_resolver_rejects_sibling_prefix_escape(monkeypatch, tmp_path) -> None:
+    import main
+
+    dist = tmp_path / "dist"
+    sibling = tmp_path / "dist-evil"
+    dist.mkdir()
+    sibling.mkdir()
+    (dist / "index.html").write_text("index", encoding="utf-8")
+    (sibling / "secret.txt").write_text("secret", encoding="utf-8")
+    monkeypatch.setattr(main, "_frontend_dist_dir", lambda: dist)
+
+    resolved = main._frontend_file_for_path("../dist-evil/secret.txt")
+
+    assert resolved == dist / "index.html"
+
+
 def test_security_policy_defaults_and_project_override(client) -> None:
     global_policy = client.get("/api/security/policy")
     assert global_policy.status_code == 200

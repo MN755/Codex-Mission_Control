@@ -20,8 +20,17 @@ $effectiveBackendPort = [int]$config.backendPort
 $launcherDir = Join-Path $repoRoot ([string]$config.launcherLogDir)
 $metadataPath = Join-Path $launcherDir "daemon.json"
 
+function Get-UrlHost {
+  param([string]$HostValue)
+  if ($HostValue -like "*:*" -and -not $HostValue.StartsWith("[")) {
+    return "[$HostValue]"
+  }
+  return $HostValue
+}
+
 function Get-DaemonIdentity {
-  $identityUrl = "http://${effectiveHost}:${effectiveBackendPort}/api/diagnostics/identity"
+  $urlHost = Get-UrlHost $effectiveHost
+  $identityUrl = "http://${urlHost}:${effectiveBackendPort}/api/diagnostics/identity"
   try {
     $response = Invoke-WebRequest -Uri $identityUrl -UseBasicParsing -TimeoutSec 2
     if ($response.StatusCode -ne 200) {

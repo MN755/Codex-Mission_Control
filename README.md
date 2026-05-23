@@ -1,5 +1,9 @@
 # Codex Mission Control
 
+<p align="center">
+  <img src="plugins/mission-control/assets/icon.svg" alt="Mission Control logo" width="96" />
+</p>
+
 Codex Mission Control is a background-running orchestration platform that lets a single Codex chat coordinate a Manager AI and multiple background coding agents.
 
 Mission Control runs as a local daemon. Codex interacts with it through a plugin and MCP bridge, reusable skills, and chat-native approval flows. The Manager AI plans work, coordinates worker agents, relays user decisions, and returns evidence-backed handoffs.
