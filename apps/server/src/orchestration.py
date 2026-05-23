@@ -1024,7 +1024,15 @@ class OrchestrationCoordinator:
         task = self._tasks.get(orchestration_id)
         if task is not None and not task.done():
             return
-        self._tasks[orchestration_id] = asyncio.create_task(self._run_background_turn(orchestration_id, reason))
+        self._tasks[orchestration_id] = asyncio.create_task(self._run_background_turn_deferred(orchestration_id, reason))
+
+    async def _run_background_turn_deferred(self, orchestration_id: int, reason: str) -> None:
+        # FastAPI commits the request-scoped DB session after the handler returns.
+        # Let that transaction close before the background turn opens its own
+        # SQLite writer, otherwise local tests and desktop installs can deadlock
+        # on "database is locked" while answering a decision.
+        await asyncio.sleep(0.1)
+        await self._run_background_turn(orchestration_id, reason)
 
     async def _run_background_turn(self, orchestration_id: int, reason: str) -> None:
         db = SessionLocal()
