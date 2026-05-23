@@ -58,6 +58,7 @@ class ClaudeCodeRunner(BaseCodexRunner):
                 "--version",
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                **self.quiet_subprocess_kwargs(),
             )
         except OSError:
             self.last_cli_version = None
@@ -157,6 +158,7 @@ class ClaudeCodeRunner(BaseCodexRunner):
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             cwd=workdir,
+            **self.quiet_subprocess_kwargs(),
         )
         assert state.process.stdin is not None
         state.process.stdin.write(prompt.encode("utf-8"))
