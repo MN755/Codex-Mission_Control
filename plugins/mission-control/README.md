@@ -4,8 +4,12 @@ This folder is the repo plugin bundle for using Codex Mission Control from Codex
 
 What is here:
 
-- `plugin.json`: provisional bundle manifest
+- `plugin.json`: canonical bundle manifest
+- `.codex-plugin/plugin.json`: Codex plugin metadata
+- `.claude-plugin/plugin.json`: Claude Code plugin metadata
 - `skills/`: Codex-facing bridge skills
+- `commands/`: Claude Code slash-command workflows
+- `agents/`: Claude Code worker archetypes that map to Mission Control lanes
 - `prompts/`: reusable Mission Control bridge prompts
 - `mcp/mission-control-mcp.example.json`: local MCP server wiring example
 - `mcp/resources.json`: safe-summary MCP resource catalog
@@ -27,5 +31,6 @@ Bridge boundaries:
 - The MCP server talks to the localhost daemon only.
 - The daemon owns orchestration state, approvals, and worker coordination.
 - The MCP bridge can auto-start the local daemon when it is missing, because returning a README instead of doing the obvious would be pathetic.
+- Claude Code commands and agents are convenience surfaces; they still route work through Mission Control instead of creating an uncontrolled second manager.
 
 See [docs/CODEX_PLUGIN_INSTALL.md](../../docs/CODEX_PLUGIN_INSTALL.md) for setup, [docs/CODEX_PLUGIN_MODE.md](../../docs/CODEX_PLUGIN_MODE.md) for bridge behavior, and [docs/MCP_SECURITY.md](../../docs/MCP_SECURITY.md) for localhost token and redaction rules.

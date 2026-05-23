@@ -51,6 +51,70 @@ def test_claude_code_project_assets_exist_and_are_bridge_oriented() -> None:
             assert "stale Mission Control plugin or MCP state" in text
 
 
+def test_packaged_claude_plugin_assets_exist_and_route_through_mission_control() -> None:
+    plugin_root = ROOT / "plugins" / "mission-control"
+    manifest_path = plugin_root / ".claude-plugin" / "plugin.json"
+    commands_root = plugin_root / "commands"
+    agents_root = plugin_root / "agents"
+
+    assert manifest_path.exists()
+    assert commands_root.exists()
+    assert agents_root.exists()
+
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert manifest["name"] == "mission-control"
+    assert "Mission Control" in manifest["description"]
+
+    expected_commands = {
+        "mission-control.md",
+        "mission-control-feature-dev.md",
+        "mission-control-code-review.md",
+        "mission-control-modernize.md",
+        "mission-control-simplify.md",
+        "mission-control-security-review.md",
+        "mission-control-session-report.md",
+        "mission-control-claude-md.md",
+        "mission-control-mcp-dev.md",
+        "mission-control-plugin-health.md",
+        "mission-control-pr-review.md",
+        "mission-control-commit-ready.md",
+        "mission-control-frontend-design.md",
+    }
+    expected_agents = {
+        "code-explorer.md",
+        "code-architect.md",
+        "code-reviewer.md",
+        "test-engineer.md",
+        "security-auditor.md",
+        "legacy-analyst.md",
+        "code-simplifier.md",
+        "mcp-integrator.md",
+        "docs-maintainer.md",
+        "release-captain.md",
+    }
+
+    assert expected_commands.issubset({path.name for path in commands_root.glob("*.md")})
+    assert expected_agents.issubset({path.name for path in agents_root.glob("*.md")})
+
+    for path in commands_root.glob("*.md"):
+        text = path.read_text(encoding="utf-8")
+        assert "Mission Control" in text
+        assert "disable-model-invocation" in text
+        assert (
+            "Mission Control is the Manager" in text
+            or "through Mission Control" in text
+            or "Ask Mission Control" in text
+            or "Run the Mission Control" in text
+            or "Use Mission Control" in text
+        )
+
+    for path in agents_root.glob("*.md"):
+        text = path.read_text(encoding="utf-8")
+        assert "name:" in text
+        assert "description:" in text
+        assert "Mission Control" in text
+
+
 def test_claude_code_mcp_wrapper_is_importable() -> None:
     module_path = ROOT / "scripts" / "serve-mission-control-mcp.py"
     spec = importlib.util.spec_from_file_location("serve_mission_control_mcp", module_path)

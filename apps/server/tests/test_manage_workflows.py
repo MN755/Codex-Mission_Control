@@ -123,6 +123,21 @@ def test_sync_local_plugin_marketplace_creates_discoverable_plugin_entry(tmp_pat
     assert any(entry["name"] == "mission-control" for entry in marketplace["plugins"])
 
 
+def test_detect_claude_assets_reports_packaged_commands_and_agents() -> None:
+    module = _load_manage_module()
+
+    payload = module.detect_claude_assets(ROOT)
+
+    assert payload["status"] == "ready"
+    assert not payload["missing"]
+    assert payload["packaged_command_count"] >= 13
+    assert payload["packaged_agent_count"] >= 10
+    assert "mission-control-feature-dev" in payload["packaged_commands"]
+    assert "mission-control-code-review" in payload["packaged_commands"]
+    assert "code-explorer" in payload["packaged_agents"]
+    assert "security-auditor" in payload["packaged_agents"]
+
+
 def test_run_management_workflow_uninstall_cleans_bundle_and_config(monkeypatch, tmp_path) -> None:
     module = _load_manage_module()
     repo_root = tmp_path / "repo"

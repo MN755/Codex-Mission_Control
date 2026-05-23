@@ -114,6 +114,38 @@
     "prompts_catalog": "./mcp/prompts.json",
     "chat_templates_dir": "./templates"
   },
+  "claude_code": {
+    "manifest": "./.claude-plugin/plugin.json",
+    "commands": "./commands/",
+    "agents": "./agents/",
+    "primary_commands": [
+      "mission-control",
+      "mission-control-feature-dev",
+      "mission-control-code-review",
+      "mission-control-modernize",
+      "mission-control-simplify",
+      "mission-control-security-review",
+      "mission-control-session-report",
+      "mission-control-claude-md",
+      "mission-control-mcp-dev",
+      "mission-control-plugin-health",
+      "mission-control-pr-review",
+      "mission-control-commit-ready",
+      "mission-control-frontend-design"
+    ],
+    "worker_archetypes": [
+      "code-explorer",
+      "code-architect",
+      "code-reviewer",
+      "test-engineer",
+      "security-auditor",
+      "legacy-analyst",
+      "code-simplifier",
+      "mcp-integrator",
+      "docs-maintainer",
+      "release-captain"
+    ]
+  },
   "assets": {
     "icon": "./assets/icon.svg"
   }

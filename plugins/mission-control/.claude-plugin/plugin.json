@@ -1,0 +1,12 @@
+{
+  "name": "mission-control",
+  "description": "Headless manager-led orchestration for Claude Code and Codex, with Mission Control owning planning, approvals, runners, handoffs, and evidence.",
+  "author": {
+    "name": "OpenAI Codex Mission Control",
+    "email": "support@openai.com",
+    "url": "https://github.com/MN755/Codex-Mission_Control"
+  },
+  "homepage": "https://github.com/MN755/Codex-Mission_Control",
+  "repository": "https://github.com/MN755/Codex-Mission_Control",
+  "license": "MIT"
+}

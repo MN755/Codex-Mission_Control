@@ -622,14 +622,30 @@ def run_stop_daemon(repo_root: Path) -> dict[str, Any]:
 
 
 def detect_claude_assets(repo_root: Path) -> dict[str, Any]:
+    plugin_root = _plugin_source_root(repo_root)
     required = [
         repo_root / ".mcp.json",
         repo_root / "CLAUDE.md",
         repo_root / ".claude" / "commands" / "mission-control-install.md",
         repo_root / ".claude" / "commands" / "mission-control-update.md",
         repo_root / ".claude" / "commands" / "mission-control-uninstall.md",
+        plugin_root / ".claude-plugin" / "plugin.json",
+        plugin_root / "commands" / "mission-control.md",
+        plugin_root / "commands" / "mission-control-feature-dev.md",
+        plugin_root / "commands" / "mission-control-code-review.md",
+        plugin_root / "commands" / "mission-control-modernize.md",
+        plugin_root / "commands" / "mission-control-security-review.md",
+        plugin_root / "agents" / "code-explorer.md",
+        plugin_root / "agents" / "code-architect.md",
+        plugin_root / "agents" / "code-reviewer.md",
+        plugin_root / "agents" / "test-engineer.md",
+        plugin_root / "agents" / "security-auditor.md",
     ]
     missing = [str(path.relative_to(repo_root)) for path in required if not path.exists()]
+    command_root = plugin_root / "commands"
+    agent_root = plugin_root / "agents"
+    packaged_commands = sorted(path.stem for path in command_root.glob("*.md")) if command_root.exists() else []
+    packaged_agents = sorted(path.stem for path in agent_root.glob("*.md")) if agent_root.exists() else []
     return {
         "status": "ready" if not missing else "degraded",
         "missing": missing,
@@ -638,6 +654,11 @@ def detect_claude_assets(repo_root: Path) -> dict[str, Any]:
             "/mission-control-update",
             "/mission-control-uninstall",
         ],
+        "plugin_manifest": str(plugin_root / ".claude-plugin" / "plugin.json"),
+        "packaged_commands": packaged_commands,
+        "packaged_agents": packaged_agents,
+        "packaged_command_count": len(packaged_commands),
+        "packaged_agent_count": len(packaged_agents),
     }
 
 
@@ -1078,6 +1099,8 @@ def _build_markdown(action: str, payload: dict[str, Any]) -> str:
                 f"- Plugin id: {plugin_id}",
                 f"- Codex MCP registration: {codex_config.get('status')}",
                 f"- Claude assets: {claude_assets.get('status')}",
+                f"- Claude plugin commands: {claude_assets.get('packaged_command_count', 0)}",
+                f"- Claude plugin agents: {claude_assets.get('packaged_agent_count', 0)}",
                 f"- Bootstrap: {bootstrap.get('status')}",
             ]
         )
