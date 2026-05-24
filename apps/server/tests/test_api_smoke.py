@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+from fastapi.testclient import TestClient
+
 from conftest import sample_workspace, wait_for
+from main import app
 
 
-def test_system_status_supports_provider_preview_overrides(client, monkeypatch) -> None:
+def test_system_status_supports_provider_preview_overrides(client, bridge_headers, monkeypatch) -> None:
     def fake_detect_ollama_status(endpoint: str | None = None) -> dict:
         return {
             "provider": "ollama",
@@ -29,6 +32,7 @@ def test_system_status_supports_provider_preview_overrides(client, monkeypatch) 
     status = client.get(
         "/api/system/status",
         params={"provider": "ollama", "provider_endpoint": "http://localhost:11434"},
+        headers=bridge_headers,
     ).json()
 
     assert status["selected_provider"] == "ollama"
@@ -36,8 +40,8 @@ def test_system_status_supports_provider_preview_overrides(client, monkeypatch) 
     assert "llama3.2:latest" in status["available_models"]
 
 
-def test_dry_run_project_flow(client) -> None:
-    profile_response = client.get("/api/profile")
+def test_dry_run_project_flow(client, bridge_headers) -> None:
+    profile_response = client.get("/api/profile", headers=bridge_headers)
     assert profile_response.status_code == 200
     assert profile_response.json()["onboarding_completed"] is False
 
@@ -49,6 +53,7 @@ def test_dry_run_project_flow(client) -> None:
             "preferred_start_mode": "guided_walkthrough",
             "onboarding_completed": True,
         },
+        headers=bridge_headers,
     )
     assert saved_profile.status_code == 200
     assert saved_profile.json()["display_name"] == "Morgan"
@@ -92,7 +97,7 @@ def test_dry_run_project_flow(client) -> None:
     assert updated_settings.json()["manager_model"] == "gpt-5.5"
     assert updated_settings.json()["provider"] == "claude_code"
 
-    status = client.get(f"/api/system/status?project_id={project_id}").json()
+    status = client.get(f"/api/system/status?project_id={project_id}", headers=bridge_headers).json()
     assert "active_runs" in status
     assert status["selected_provider"] == "claude_code"
     assert status["selected_manager_model"] == "gpt-5.5"
@@ -145,3 +150,13 @@ def test_dry_run_project_flow(client) -> None:
     assert any(event["payload_json"]["effective_settings"]["model"] in {"gpt-5.5-mini", "gpt-5.4-mini"} for event in started_events)
     reservations = client.get(f"/api/projects/{project_id}/reservations").json()
     assert isinstance(reservations, list)
+
+
+def test_privileged_headless_and_status_routes_require_token() -> None:
+    with TestClient(app) as raw_client:
+        assert raw_client.get("/api/system/status").status_code == 401
+        assert raw_client.get("/api/profile").status_code == 401
+        assert raw_client.post("/api/headless/autowire", json={}).status_code == 401
+        assert raw_client.post("/api/headless/repair", json={}).status_code == 401
+        assert raw_client.post("/api/startup/check", json={"attempt_number": 1, "include_optional_checks": True}).status_code == 401
+        assert raw_client.post("/api/startup/retry", json={"attempt_number": 1, "failed_check": "runtime_paths", "retry_mode": "full"}).status_code == 401

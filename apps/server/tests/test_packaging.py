@@ -92,3 +92,24 @@ def test_package_workflow_declares_read_only_permissions() -> None:
     workflow_text = workflow_path.read_text(encoding="utf-8")
     assert "permissions:" in workflow_text
     assert "contents: read" in workflow_text
+
+
+def test_package_workflow_smoke_tests_editable_installs_and_node24_actions() -> None:
+    workflow_path = Path(__file__).resolve().parents[3] / ".github" / "workflows" / "package-desktop.yml"
+    workflow_text = workflow_path.read_text(encoding="utf-8")
+    assert "actions/checkout@v5" in workflow_text
+    assert "actions/setup-node@v5" in workflow_text
+    assert "actions/setup-python@v6" in workflow_text
+    assert "actions/upload-artifact@v6" in workflow_text
+    assert 'python -c "import mission_control_desktop; import main"' in workflow_text
+    assert "MISSION_CONTROL_DESKTOP_SMOKE_TEST=1 mission-control-desktop" in workflow_text
+
+
+def test_launcher_scripts_use_configured_launcher_dir() -> None:
+    root = Path(__file__).resolve().parents[3]
+    start_script = (root / "scripts" / "start-mission-control.sh").read_text(encoding="utf-8")
+    stop_script = (root / "scripts" / "stop-mission-control.ps1").read_text(encoding="utf-8")
+    assert 'MISSION_CONTROL_LAUNCHER_DIR="${LAUNCHER_DIR}"' in start_script
+    assert "launcherLogDir" in start_script
+    assert "launcherLogDir" in stop_script
+    assert 'Join-Path $launcherDir "pids.json"' in stop_script

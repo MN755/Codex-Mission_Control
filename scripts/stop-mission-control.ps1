@@ -4,8 +4,16 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
-$runtimeDir = Join-Path $repoRoot ".runtime\launcher"
-$pidFile = Join-Path $runtimeDir "pids.json"
+$configPath = Join-Path $PSScriptRoot "mission-control.config.json"
+$config = if (Test-Path $configPath) {
+  Get-Content -Raw $configPath | ConvertFrom-Json
+} else {
+  [pscustomobject]@{
+    launcherLogDir = ".runtime/launcher"
+  }
+}
+$launcherDir = Join-Path $repoRoot ([string]$config.launcherLogDir)
+$pidFile = Join-Path $launcherDir "pids.json"
 
 if (-not (Test-Path $pidFile)) {
   Write-Host "No launcher PID file found at $pidFile"

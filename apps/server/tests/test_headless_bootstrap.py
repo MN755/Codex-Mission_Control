@@ -290,7 +290,7 @@ def test_get_headless_config_is_read_only(monkeypatch, tmp_path) -> None:
     assert not (runtime_root / "headless" / "headless.json").exists()
 
 
-def test_headless_endpoints_and_runner_status_endpoint(client, monkeypatch) -> None:
+def test_headless_endpoints_and_runner_status_endpoint(client, bridge_headers, monkeypatch) -> None:
     fake_config = {
         "config_path": str(ROOT / ".runtime-test" / "headless" / "headless.json"),
         "install_id": "abc123",
@@ -370,8 +370,8 @@ def test_headless_endpoints_and_runner_status_endpoint(client, monkeypatch) -> N
     assert client.get("/api/headless/health").status_code == 200
     assert client.get("/api/headless/config").status_code == 200
     assert client.get("/api/runners/status").status_code == 200
-    assert client.post("/api/headless/autowire", json={}).status_code == 200
-    assert client.post("/api/headless/repair", json={}).status_code == 200
+    assert client.post("/api/headless/autowire", json={}, headers=bridge_headers).status_code == 200
+    assert client.post("/api/headless/repair", json={}, headers=bridge_headers).status_code == 200
 
 
 def test_scripts_and_headless_skills_exist() -> None:

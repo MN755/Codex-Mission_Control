@@ -10,9 +10,6 @@ import urllib.request
 import webbrowser
 from pathlib import Path
 
-import uvicorn
-
-
 IS_FROZEN = bool(getattr(sys, "frozen", False))
 BUNDLE_ROOT = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parents[4]))
 SOURCE_REPO_ROOT = None if IS_FROZEN else Path(__file__).resolve().parents[4]
@@ -30,11 +27,8 @@ os.environ.setdefault("MISSION_CONTROL_FRONTEND_DIST", str(FRONTEND_DIST))
 if SOURCE_REPO_ROOT is not None:
     os.environ.setdefault("MISSION_CONTROL_REPO_ROOT", str(SOURCE_REPO_ROOT))
 
-from config import APP_SUPPORT_ROOT, ensure_runtime_dirs  # noqa: E402
-from main import app as fastapi_app  # noqa: E402
 
-
-def _write_launcher_metadata(port: int) -> None:
+def _write_launcher_metadata(port: int, *, app_support_root: Path) -> None:
     launcher_dir = os.environ.get("MISSION_CONTROL_LAUNCHER_DIR")
     if not launcher_dir:
         return
@@ -42,7 +36,7 @@ def _write_launcher_metadata(port: int) -> None:
     launcher_path.mkdir(parents=True, exist_ok=True)
     payload = {
         "repoRoot": str(SOURCE_REPO_ROOT) if SOURCE_REPO_ROOT is not None else None,
-        "appSupportRoot": str(APP_SUPPORT_ROOT),
+        "appSupportRoot": str(app_support_root),
         "generatedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "mode": "desktop",
         "desktop": {
@@ -73,6 +67,14 @@ def _wait_for_server(url: str, timeout_seconds: float = 20.0) -> None:
 
 
 def main() -> None:
+    if os.environ.get("MISSION_CONTROL_DESKTOP_SMOKE_TEST") == "1":
+        print("mission-control-desktop smoke ok", flush=True)
+        return
+    import uvicorn
+
+    from config import APP_SUPPORT_ROOT, ensure_runtime_dirs
+    from main import app as fastapi_app
+
     ensure_runtime_dirs()
     if not FRONTEND_DIST.exists():
         raise SystemExit(
@@ -103,7 +105,7 @@ def main() -> None:
     thread = threading.Thread(target=server.run, daemon=True)
     thread.start()
     _wait_for_server(health_url)
-    _write_launcher_metadata(port)
+    _write_launcher_metadata(port, app_support_root=APP_SUPPORT_ROOT)
 
     def _shutdown() -> None:
         server.should_exit = True

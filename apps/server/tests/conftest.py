@@ -25,6 +25,7 @@ def _cleanup_test_root() -> None:
 atexit.register(_cleanup_test_root)
 
 from config import DB_PATH
+from daemon_state import ensure_daemon_token
 from db import Base, engine, init_db
 from main import app
 from startup import startup_service
@@ -59,6 +60,11 @@ def reset_db() -> None:
 def client() -> TestClient:
     with TestClient(app) as test_client:
         yield test_client
+
+
+@pytest.fixture
+def bridge_headers() -> dict[str, str]:
+    return {"X-Mission-Control-Token": ensure_daemon_token()}
 
 
 def pytest_sessionfinish(session, exitstatus) -> None:  # type: ignore[no-untyped-def]

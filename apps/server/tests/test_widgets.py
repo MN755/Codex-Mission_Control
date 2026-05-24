@@ -55,12 +55,13 @@ def test_widget_catalog_and_default_dashboard_instances_seed(client) -> None:
         db.close()
 
 
-def test_dashboard_widget_instances_seed_from_legacy_profile_preferences(client) -> None:
+def test_dashboard_widget_instances_seed_from_legacy_profile_preferences(client, bridge_headers) -> None:
     response = client.put(
         "/api/profile",
         json={
             "dashboard_widgets_json": ["Connected Accounts", "Diagnostics Summary"],
         },
+        headers=bridge_headers,
     )
     assert response.status_code == 200
 

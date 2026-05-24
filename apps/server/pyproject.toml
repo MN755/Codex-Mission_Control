@@ -23,7 +23,46 @@ dev = [
 ]
 
 [tool.setuptools]
-py-modules = []
+package-dir = {"" = "src"}
+py-modules = [
+  "app_profile",
+  "bridge_formatter",
+  "bridge_messages",
+  "chat_markdown",
+  "claude_cli_path",
+  "codex_auth",
+  "codex_cli_path",
+  "daemon_state",
+  "db",
+  "diagnostic_formatter",
+  "diagnostics",
+  "event_digest_formatter",
+  "events",
+  "handoff_formatter",
+  "imported_codebase",
+  "interview",
+  "main",
+  "manager",
+  "mission_control_daemon",
+  "models",
+  "orchestration",
+  "planner",
+  "project_settings",
+  "prompts",
+  "provider_support",
+  "runtime_paths",
+  "schemas",
+  "startup",
+  "subagent_planner",
+  "swarm",
+  "system_status",
+  "task_board",
+  "tool_catalog",
+  "widget_catalog",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]

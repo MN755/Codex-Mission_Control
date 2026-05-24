@@ -20,24 +20,24 @@ jobs:
       fail-fast: false
       matrix:
         os:
-          - windows-latest
+          - windows-2025
           - macos-latest
           - ubuntu-22.04
     runs-on: ${{ matrix.os }}
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Set up Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
           node-version: "20"
           cache: "npm"
           cache-dependency-path: apps/dashboard/package-lock.json
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.11"
 
@@ -54,6 +54,12 @@ jobs:
         working-directory: apps/dashboard
         run: npm run build
 
+      - name: Smoke-test editable installs
+        shell: bash
+        run: |
+          python -c "import mission_control_desktop; import main"
+          MISSION_CONTROL_DESKTOP_SMOKE_TEST=1 mission-control-desktop
+
       - name: Run backend tests
         working-directory: apps/server
         run: python -m pytest
@@ -69,7 +75,7 @@ jobs:
         run: python scripts/package-desktop.py
 
       - name: Upload packaged artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: codex-mission-control-${{ runner.os }}
           path: .runtime/packages/**

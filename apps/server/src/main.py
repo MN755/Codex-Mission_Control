@@ -519,7 +519,10 @@ def get_headless_runtime_config() -> HeadlessConfigRead:
 
 
 @app.post("/api/headless/autowire", response_model=InstallReportRead)
-async def autowire_headless_runtime(payload: HeadlessAutowireRequest | None = None) -> InstallReportRead:
+async def autowire_headless_runtime(
+    payload: HeadlessAutowireRequest | None = None,
+    _: None = Depends(_require_bridge_token),
+) -> InstallReportRead:
     payload = payload or HeadlessAutowireRequest()
     report = await autowire_headless(
         workspace_path=payload.workspace_path,
@@ -536,7 +539,10 @@ async def autowire_headless_runtime(payload: HeadlessAutowireRequest | None = No
 
 
 @app.post("/api/headless/repair", response_model=InstallReportRead)
-async def repair_headless_runtime(payload: HeadlessRepairRequest | None = None) -> InstallReportRead:
+async def repair_headless_runtime(
+    payload: HeadlessRepairRequest | None = None,
+    _: None = Depends(_require_bridge_token),
+) -> InstallReportRead:
     payload = payload or HeadlessRepairRequest()
     report = await repair_headless(
         workspace_path=None,
@@ -574,6 +580,7 @@ async def system_status(
     adapter_command: str | None = Query(default=None),
     adapter_arg: list[str] | None = Query(default=None),
     db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
 ) -> SystemStatusRead:
     project = _get_project_or_404(db, project_id) if project_id is not None else None
     return SystemStatusRead(
@@ -597,12 +604,19 @@ async def auth_state() -> AuthStateRead:
 
 
 @app.get("/api/profile", response_model=AppProfileRead)
-def get_profile(db: Session = Depends(get_db)) -> AppProfileRead:
+def get_profile(
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> AppProfileRead:
     return service.get_app_profile(db)
 
 
 @app.put("/api/profile", response_model=AppProfileRead)
-def update_profile(payload: AppProfileUpdate, db: Session = Depends(get_db)) -> AppProfileRead:
+def update_profile(
+    payload: AppProfileUpdate,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> AppProfileRead:
     return service.update_app_profile(db, payload)
 
 
@@ -612,12 +626,20 @@ def get_startup_status(db: Session = Depends(get_db)) -> StartupStatusRead:
 
 
 @app.post("/api/startup/check", response_model=StartupStatusRead)
-def run_startup_check(payload: StartupCheckRequest, db: Session = Depends(get_db)) -> StartupStatusRead:
+def run_startup_check(
+    payload: StartupCheckRequest,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> StartupStatusRead:
     return StartupStatusRead(**startup_service.run_checks(db, attempt_number=payload.attempt_number, include_optional_checks=payload.include_optional_checks))
 
 
 @app.post("/api/startup/retry", response_model=StartupStatusRead)
-def retry_startup(payload: StartupRetryRequest, db: Session = Depends(get_db)) -> StartupStatusRead:
+def retry_startup(
+    payload: StartupRetryRequest,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> StartupStatusRead:
     return StartupStatusRead(**startup_service.retry(db, attempt_number=payload.attempt_number, failed_check=payload.failed_check, retry_mode=payload.retry_mode))
 
 
@@ -655,6 +677,7 @@ async def codex_status(
     adapter_command: str | None = Query(default=None),
     adapter_arg: list[str] | None = Query(default=None),
     db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
 ) -> CodexStatusRead:
     project = _get_project_or_404(db, project_id) if project_id is not None else None
     return CodexStatusRead(

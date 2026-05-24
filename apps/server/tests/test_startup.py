@@ -51,13 +51,13 @@ def test_complete_first_run_persists_and_routes_to_dashboard(monkeypatch, client
     assert payload["first_run_completed"] is True
 
 
-def test_required_check_failure_returns_error(monkeypatch, client) -> None:
+def test_required_check_failure_returns_error(monkeypatch, client, bridge_headers) -> None:
     monkeypatch.setattr(
         startup_service,
         "_check_database",
         lambda db: startup_service._check("database", required=True, status="failed", summary="Database init failed.", error_code="MC-STORAGE-DB-UNAVAILABLE-001"),
     )
-    payload = client.post("/api/startup/check", json={"attempt_number": 1, "include_optional_checks": True}).json()
+    payload = client.post("/api/startup/check", json={"attempt_number": 1, "include_optional_checks": True}, headers=bridge_headers).json()
     assert payload["mode"] == "error"
     assert payload["overall_status"] == "error"
     assert payload["backend_ready"] is False
@@ -65,7 +65,7 @@ def test_required_check_failure_returns_error(monkeypatch, client) -> None:
     assert payload["recommended_route"] == "/startup-error"
 
 
-def test_optional_selected_provider_failure_returns_degraded(monkeypatch, client) -> None:
+def test_optional_selected_provider_failure_returns_degraded(monkeypatch, client, bridge_headers) -> None:
     client.post(
         "/api/startup/complete-first-run",
         json={
@@ -82,14 +82,14 @@ def test_optional_selected_provider_failure_returns_degraded(monkeypatch, client
             startup_service._check("claude_code", required=False, status="failed", summary="Claude CLI missing.", error_code="MC-CLAUDE-CLI-MISSING-001")
         ],
     )
-    payload = client.post("/api/startup/check", json={"attempt_number": 1, "include_optional_checks": True}).json()
+    payload = client.post("/api/startup/check", json={"attempt_number": 1, "include_optional_checks": True}, headers=bridge_headers).json()
     assert payload["mode"] == "degraded"
     assert payload["overall_status"] == "degraded"
     assert payload["recommended_route"] == "/dashboard"
     assert payload["error_code"] == "MC-CLAUDE-CLI-MISSING-001"
 
 
-def test_codex_provider_failure_returns_degraded(monkeypatch, client) -> None:
+def test_codex_provider_failure_returns_degraded(monkeypatch, client, bridge_headers) -> None:
     client.post(
         "/api/startup/complete-first-run",
         json={
@@ -106,19 +106,19 @@ def test_codex_provider_failure_returns_degraded(monkeypatch, client) -> None:
             startup_service._check("codex_cli", required=False, status="failed", summary="Codex CLI missing.", error_code="MC-CODEX-CLI-MISSING-001")
         ],
     )
-    payload = client.post("/api/startup/check", json={"attempt_number": 1, "include_optional_checks": True}).json()
+    payload = client.post("/api/startup/check", json={"attempt_number": 1, "include_optional_checks": True}, headers=bridge_headers).json()
     assert payload["mode"] == "degraded"
     assert payload["overall_status"] == "degraded"
     assert payload["error_code"] == "MC-CODEX-CLI-MISSING-001"
 
 
-def test_retry_after_three_attempts_generates_diagnostic_report(monkeypatch, client) -> None:
+def test_retry_after_three_attempts_generates_diagnostic_report(monkeypatch, client, bridge_headers) -> None:
     monkeypatch.setattr(
         startup_service,
         "_check_runtime_paths",
         lambda: startup_service._check("runtime_paths", required=True, status="failed", summary="Runtime path failure.", error_code="MC-BOOT-RUNTIME-PATH-001"),
     )
-    payload = client.post("/api/startup/retry", json={"attempt_number": 3, "failed_check": "runtime_paths", "retry_mode": "full"}).json()
+    payload = client.post("/api/startup/retry", json={"attempt_number": 3, "failed_check": "runtime_paths", "retry_mode": "full"}, headers=bridge_headers).json()
     assert payload["error_code"] == "MC-BOOT-RUNTIME-PATH-001"
     assert payload["diagnostic_report_path"]
     assert Path(payload["diagnostic_report_path"]).exists()
