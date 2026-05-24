@@ -395,6 +395,7 @@ beforeEach(() => {
     default_worker_reasoning_effort: null,
     per_role_model_overrides_json: {},
     per_role_reasoning_overrides_json: {},
+    provider_endpoint: null,
     adapter_command: null,
     adapter_args_json: [],
     runner_mode: "dry_run",

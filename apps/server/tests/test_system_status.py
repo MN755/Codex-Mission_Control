@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from system_status import _strip_codex_cli_noise, detect_codex_status
+from system_status import _parse_configured_mcp_servers, _strip_codex_cli_noise, detect_codex_status
 
 
 def test_strip_codex_cli_noise_removes_arg0_warnings() -> None:
@@ -85,3 +85,26 @@ def test_detect_codex_status_uses_live_mcp_discovery_when_available(monkeypatch,
     assert payload["mcp_servers"] == [{"name": "mission-control", "status": "connected"}]
     assert payload["mcp_state"]["mission_control"]["app_loaded"] is True
     assert payload["mcp_state"]["mission_control"]["discovery_source"] == "cli"
+
+
+def test_parse_configured_mcp_servers_python310_fallback_preserves_metadata(monkeypatch) -> None:
+    monkeypatch.setattr("system_status.tomllib", None)
+    payload = _parse_configured_mcp_servers(
+        """
+[mcp_servers."mission-control"]
+command = "python"
+cwd = "C:/repo/apps/mcp-server"
+transport = "stdio"
+status = "enabled"
+""".strip()
+    )
+
+    assert payload == [
+        {
+            "name": "mission-control",
+            "command": "python",
+            "cwd": "C:/repo/apps/mcp-server",
+            "transport": "stdio",
+            "status": "enabled",
+        }
+    ]

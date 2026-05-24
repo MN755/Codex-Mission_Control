@@ -1255,6 +1255,7 @@ export function ProjectWorkspacePage() {
           default_worker_reasoning_effort: settingsDraft.default_worker_reasoning_effort,
           per_role_model_overrides_json: settingsDraft.per_role_model_overrides_json,
           per_role_reasoning_overrides_json: settingsDraft.per_role_reasoning_overrides_json,
+          provider_endpoint: settingsDraft.provider_endpoint,
           adapter_command: settingsDraft.adapter_command,
           adapter_args_json: settingsDraft.adapter_args_json,
           runner_mode: settingsDraft.runner_mode,

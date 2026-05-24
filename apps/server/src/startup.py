@@ -16,13 +16,7 @@ from models import AppProfile, Project
 from provider_support import normalize_provider
 from runtime_paths import ensure_runtime_paths
 from schemas import CompleteFirstRunRequest
-from system_status import (
-    detect_claude_code_status,
-    detect_codex_status,
-    detect_custom_status,
-    detect_ollama_status,
-    detect_provider_statuses,
-)
+from system_status import detect_codex_status, detect_provider_statuses
 
 
 CURRENT_SETUP_VERSION = "startup-v1"
@@ -209,60 +203,51 @@ class StartupCoordinator:
     def _provider_optional_checks(self, profile: AppProfile) -> list[dict[str, Any]]:
         selected = normalize_provider(profile.selected_provider)
         checks: list[dict[str, Any]] = self._codex_optional_checks()
+        provider_statuses = detect_provider_statuses(profile.adapter_command, profile.provider_endpoint, list(profile.adapter_args_json or []))
+        by_provider = {item["provider"]: item for item in provider_statuses}
 
-        claude = detect_claude_code_status()
         checks.append(
             self._check(
                 "claude_code",
                 required=False,
-                status="passed" if claude["cli_detected"] else ("failed" if selected == "claude_code" else "skipped"),
-                summary=claude["cli_version"] or claude["login_status"],
-                error=MissionControlError(code="MC-CLAUDE-CLI-MISSING-001", breakpoint="claude_cli.detect") if selected == "claude_code" and not claude["cli_detected"] else None,
+                status=(
+                    "failed"
+                    if selected == "claude_code" and not by_provider["claude_code"]["cli_detected"]
+                    else "warning"
+                    if selected == "claude_code"
+                    else "skipped"
+                ),
+                summary=str(by_provider["claude_code"].get("runtime_summary") or by_provider["claude_code"]["login_status"]),
+                error=(
+                    MissionControlError(code="MC-CLAUDE-CLI-MISSING-001", breakpoint="claude_cli.detect")
+                    if selected == "claude_code" and not by_provider["claude_code"]["cli_detected"]
+                    else MissionControlError(code="MC-CLAUDE-AUTH-UNKNOWN-001", breakpoint="claude_cli.auth_status", severity="warning")
+                    if selected == "claude_code"
+                    else None
+                ),
+                details=by_provider["claude_code"],
             )
         )
 
-        ollama_endpoint = profile.provider_endpoint or "http://localhost:11434"
-        ollama = detect_ollama_status(ollama_endpoint)
-        checks.append(
-            self._check(
-                "ollama",
-                required=False,
-                status="passed" if ollama["reachable"] else ("failed" if selected == "ollama" else "skipped"),
-                summary=ollama["summary"],
-                error=MissionControlError(code="MC-OLLAMA-SERVER-OFFLINE-001", breakpoint="ollama.server_check", severity="warning") if selected == "ollama" and not ollama["reachable"] else None,
-                details=ollama,
-            )
-        )
-
-        env_checks = {
-            "openai_api": "OPENAI_API_KEY",
-            "anthropic_api": "ANTHROPIC_API_KEY",
-            "xai_api": "XAI_API_KEY",
-        }
-        import os
-
-        for name, env_key in env_checks.items():
-            configured = bool(os.environ.get(env_key))
+        for provider_name, error_code, breakpoint in (
+            ("ollama", "MC-OLLAMA-SERVER-OFFLINE-001", "ollama.server_check"),
+            ("openai_api", "MC-API-KEY-MISSING-001", "api_provider.auth_check"),
+            ("anthropic_api", "MC-API-KEY-MISSING-001", "api_provider.auth_check"),
+            ("xai_api", "MC-API-KEY-MISSING-001", "api_provider.auth_check"),
+            ("custom", "MC-RUNNER-NONE-AVAILABLE-001", "runner.select"),
+        ):
+            provider_status = by_provider[provider_name]
+            is_selected = selected == provider_name
             checks.append(
                 self._check(
-                    name,
+                    provider_name,
                     required=False,
-                    status="passed" if configured else ("warning" if selected == name else "skipped"),
-                    summary=f"{env_key} {'is configured' if configured else 'is not configured in the current environment.'}",
-                    error=MissionControlError(code="MC-API-KEY-MISSING-001", breakpoint="api_provider.auth_check", severity="warning") if selected == name and not configured else None,
+                    status="passed" if provider_status.get("runtime_ready") else ("failed" if is_selected else "skipped"),
+                    summary=str(provider_status.get("runtime_summary") or provider_status.get("login_status") or "Runtime status unavailable."),
+                    error=MissionControlError(code=error_code, breakpoint=breakpoint, severity="warning") if is_selected and not provider_status.get("runtime_ready") else None,
+                    details=provider_status,
                 )
             )
-
-        custom = detect_custom_status(profile.adapter_command, profile.adapter_args_json)
-        checks.append(
-            self._check(
-                "custom",
-                required=False,
-                status="passed" if custom["cli_detected"] else ("warning" if selected == "custom" else "skipped"),
-                summary=custom["cli_version"] or custom["login_status"],
-                error=MissionControlError(code="MC-RUNNER-NONE-AVAILABLE-001", breakpoint="runner.select", severity="warning") if selected == "custom" and not custom["cli_detected"] else None,
-            )
-        )
 
         accounts = profile.connected_accounts_json or {}
         for account_name in ("github", "vercel", "notion"):
@@ -344,7 +329,7 @@ class StartupCoordinator:
         return payload
 
     def _system_status_snapshot(self, profile: AppProfile) -> dict[str, Any]:
-        provider_statuses = detect_provider_statuses(profile.adapter_command, profile.provider_endpoint)
+        provider_statuses = detect_provider_statuses(profile.adapter_command, profile.provider_endpoint, list(profile.adapter_args_json or []))
         selected = normalize_provider(profile.selected_provider)
         matching = next((item for item in provider_statuses if item["provider"] == selected), provider_statuses[0])
         return {
@@ -354,6 +339,8 @@ class StartupCoordinator:
             "cli_version": matching["cli_version"],
             "login_status": matching["login_status"],
             "app_server_handshake_status": "not_checked",
+            "runtime_ready": bool(matching.get("runtime_ready")),
+            "runtime_summary": matching.get("runtime_summary"),
         }
 
     def get_status(self, db: Session) -> dict[str, Any]:

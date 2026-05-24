@@ -448,6 +448,8 @@ export interface CodexStatus {
   login_status: string;
   auth_mode: string | null;
   authenticated: boolean;
+  runtime_ready: boolean;
+  runtime_summary: string | null;
   app_server_supported: boolean;
   app_server_handshake_status: string;
   app_server_transport: string;
@@ -512,6 +514,12 @@ export interface ProviderStatus {
   supports_reasoning_effort: boolean;
   supports_app_server: boolean;
   supports_builtin_auth: boolean;
+  runtime_ready: boolean;
+  runtime_summary: string | null;
+  requires_adapter_command: boolean;
+  adapter_command_configured: boolean;
+  adapter_command_detected: boolean;
+  provider_endpoint_configured: boolean;
   available_models: string[];
   notes: string[];
 }
@@ -525,6 +533,7 @@ export interface ProjectSettings {
   default_worker_reasoning_effort: ReasoningEffort | null;
   per_role_model_overrides_json: Record<string, string>;
   per_role_reasoning_overrides_json: Record<string, string>;
+  provider_endpoint: string | null;
   adapter_command: string | null;
   adapter_args_json: string[];
   runner_mode: RunnerMode;

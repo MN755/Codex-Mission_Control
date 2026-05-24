@@ -579,6 +579,7 @@ async def system_status(
     provider_endpoint: str | None = Query(default=None),
     adapter_command: str | None = Query(default=None),
     adapter_arg: list[str] | None = Query(default=None),
+    adapter_args: list[str] | None = Query(default=None),
     db: Session = Depends(get_db),
     _: None = Depends(_require_bridge_token),
 ) -> SystemStatusRead:
@@ -591,7 +592,7 @@ async def system_status(
                 provider_override=provider,
                 provider_endpoint_override=provider_endpoint,
                 adapter_command_override=adapter_command,
-                adapter_args_override=adapter_arg,
+                adapter_args_override=adapter_args if adapter_args is not None else adapter_arg,
             )
         )
     )
@@ -676,6 +677,7 @@ async def codex_status(
     provider_endpoint: str | None = Query(default=None),
     adapter_command: str | None = Query(default=None),
     adapter_arg: list[str] | None = Query(default=None),
+    adapter_args: list[str] | None = Query(default=None),
     db: Session = Depends(get_db),
     _: None = Depends(_require_bridge_token),
 ) -> CodexStatusRead:
@@ -688,7 +690,7 @@ async def codex_status(
                 provider_override=provider,
                 provider_endpoint_override=provider_endpoint,
                 adapter_command_override=adapter_command,
-                adapter_args_override=adapter_arg,
+                adapter_args_override=adapter_args if adapter_args is not None else adapter_arg,
             )
         )
     )
@@ -1263,6 +1265,7 @@ async def start_headless_task(
             strategy=payload.strategy,
             mode=payload.mode,
             interview_mode=payload.interview_mode,
+            attach_policy=payload.attach_policy,
         )
     except MissionControlError:
         raise
@@ -1860,15 +1863,20 @@ def import_existing_folder(payload: ImportFolderRequest, db: Session = Depends(g
     except PathValidationError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     project_name = payload.name.strip() if payload.name and payload.name.strip() else folder.name
-    project = service.create_project(
+    existing_matches = coordinator._workspace_projects(db, folder)
+    project = existing_matches[0] if existing_matches else service.create_project(
         db,
         name=project_name,
-        idea=f"Imported existing codebase from {folder}.",
-        workspace_path=str(folder),
+        idea=f"Imported existing codebase from {folder.as_posix()}.",
+        workspace_path=folder.as_posix(),
         provider="codex",
         runner_mode="dry_run",
         manager_mode="deterministic",
     )
+    project.runner_mode = "dry_run"
+    project.manager_mode = "deterministic"
+    if project.settings is not None:
+        project.settings.runner_mode = "dry_run"
     import_service.configure_imported_project(db, project, folder_path=str(folder), import_mode=payload.import_mode)
     service.events.publish(db, project.id, "project_import_started", {"project_id": project.id, "source_path": str(folder)})
     warnings: list[str] = []
@@ -2535,9 +2543,7 @@ async def start_task(task_id: int, db: Session = Depends(get_db)) -> AgentAction
 @app.post("/api/tasks/{task_id}/complete", response_model=AgentActionResponse)
 async def complete_task(task_id: int, db: Session = Depends(get_db)) -> AgentActionResponse:
     task = _get_task_or_404(db, task_id)
-    task.status = "done"
-    project = _get_project_or_404(db, task.project_id)
-    await service._maybe_finalize_handoff(db, project)
+    await service.complete_task_by_user(db, task)
     return AgentActionResponse(ok=True, message="Task marked done.")
 
 
@@ -2546,7 +2552,11 @@ async def submit_run_report(run_id: int, payload: RunReportRequest, db: Session 
     run = db.get(AgentRun, run_id)
     if not run:
         raise HTTPException(status_code=404, detail="Run not found")
-    return await service.ingest_worker_report(db, run, payload)
+    try:
+        return await service.ingest_worker_report(db, run, payload)
+    except ValueError as exc:
+        status_code = 409 if "already recorded" in str(exc).lower() else 400
+        raise HTTPException(status_code=status_code, detail=str(exc)) from exc
 
 
 @app.get("/api/projects/{project_id}/events", response_model=list[EventRead])

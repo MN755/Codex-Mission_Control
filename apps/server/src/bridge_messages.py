@@ -95,27 +95,37 @@ class BridgeRuntimeService:
             )
         )
 
+    @staticmethod
+    def _path_matches_workspace(raw_path: str | None, workspace: Path) -> bool:
+        if not raw_path:
+            return False
+        try:
+            return resolve_local_path(raw_path) == workspace
+        except PathValidationError:
+            return False
+
     def _workspace_projects(self, db: Session, workspace: Path) -> list[Project]:
-        workspace_text = workspace.as_posix()
-        return list(
-            db.scalars(
-                select(Project)
-                .where(or_(Project.workspace_path == workspace_text, Project.source_path == workspace_text))
-                .order_by(Project.updated_at.desc(), Project.id.desc())
-            )
-        )
+        candidates = list(db.scalars(select(Project).order_by(Project.updated_at.desc(), Project.id.desc())))
+        return [
+            project
+            for project in candidates
+            if self._path_matches_workspace(project.workspace_path, workspace) or self._path_matches_workspace(project.source_path, workspace)
+        ]
 
     def _latest_workspace_orchestration(self, db: Session, workspace: Path) -> OrchestrationSession | None:
-        workspace_text = workspace.as_posix()
-        return db.scalar(
-            select(OrchestrationSession)
-            .where(OrchestrationSession.workspace_path == workspace_text)
-            .order_by(
-                OrchestrationSession.status.in_(list(ACTIVE_ORCHESTRATION_STATUSES)).desc(),
-                OrchestrationSession.updated_at.desc(),
-                OrchestrationSession.id.desc(),
+        sessions = list(
+            db.scalars(
+                select(OrchestrationSession).order_by(
+                    OrchestrationSession.status.in_(list(ACTIVE_ORCHESTRATION_STATUSES)).desc(),
+                    OrchestrationSession.updated_at.desc(),
+                    OrchestrationSession.id.desc(),
+                )
             )
         )
+        for session in sessions:
+            if self._path_matches_workspace(session.workspace_path, workspace):
+                return session
+        return None
 
     def _preferred_option(self, decision: dict[str, Any]) -> dict[str, Any] | None:
         options = [item for item in list(decision.get("options_json") or decision.get("options") or []) if item.get("id")]
@@ -583,13 +593,63 @@ class BridgeRuntimeService:
         strategy: str,
         mode: str,
         interview_mode: str,
+        attach_policy: str,
         source: str = "codex_plugin",
         create_pending_decision: bool = True,
     ) -> dict[str, Any]:
         attached: dict[str, Any] | None = None
         project: Project | None = None
         orchestration: OrchestrationSession | None = None
-        if workspace_path:
+        if workspace_path and project_id is not None:
+            try:
+                workspace = resolve_local_path(workspace_path)
+            except PathValidationError as exc:
+                raise self._error(
+                    "MC-WORKSPACE-PATH-MISSING-001",
+                    detail=str(exc),
+                    breakpoint="workspace.attach",
+                    safe_details={"workspace_path": workspace_path},
+                    caused_by=exc,
+                ) from exc
+            project = db.get(Project, project_id)
+            if project is None:
+                raise self._error(
+                    "MC-WORKSPACE-PATH-MISSING-001",
+                    detail="Mission Control could not find the requested project.",
+                    breakpoint="workspace.attach",
+                    project_id=project_id,
+                )
+            if not (
+                self._path_matches_workspace(project.workspace_path, workspace)
+                or self._path_matches_workspace(project.source_path, workspace)
+            ):
+                raise self._error(
+                    "MC-WORKSPACE-PATH-MISSING-001",
+                    detail="The provided project_id does not belong to the provided workspace_path.",
+                    breakpoint="workspace.attach",
+                    project_id=project_id,
+                    safe_details={"workspace_path": workspace_path, "project_id": project_id},
+                )
+            active = self._latest_workspace_orchestration(db, workspace)
+            if active is not None and active.project_id == project.id:
+                orchestration = active
+                attached = {
+                    "project": service._serialize_project_card(db, project),
+                    "project_id": project.id,
+                    "project_name": project.name,
+                    "source_type": project.source_type,
+                    "workspace_path": project.workspace_path,
+                    "orchestration": coordinator._serialize_session(active),
+                    "attach_outcome": "reused_existing_orchestration",
+                    "next_action": "get_status_summary",
+                    "reused_existing_project": True,
+                    "reused_existing_orchestration": True,
+                    "user_action_required": False,
+                    "pending_decision_id": None,
+                    "message": "Mission Control reused the explicitly selected project and its active orchestration.",
+                    "status_summary_markdown": None,
+                }
+        elif workspace_path:
             attach_mode = "existing_codebase"
             try:
                 workspace = resolve_local_path(workspace_path)
@@ -609,7 +669,7 @@ class BridgeRuntimeService:
                 project_name=None,
                 mode=attach_mode,
                 read_only_first=True,
-                attach_policy="reuse_existing",
+                attach_policy=attach_policy,
                 source=source,
             )
             if attached.get("project_id") is not None:
@@ -799,14 +859,24 @@ class BridgeRuntimeService:
         attach_policy: str,
         create_pending_decision: bool,
     ) -> dict[str, Any]:
-        start_payload = await self.start_headless_task(
+        attached = self.attach_workspace(
             db,
             workspace_path=workspace_path,
-            project_id=None,
+            project_name=project_name,
+            mode=mode,
+            read_only_first=read_only_first,
+            attach_policy=attach_policy,
+            source="test",
+        )
+        start_payload = await self.start_headless_task(
+            db,
+            workspace_path=None,
+            project_id=int(attached["project_id"]),
             user_request=user_request,
             strategy="balanced",
             mode="dry_run",
             interview_mode="skip",
+            attach_policy=attach_policy,
             source="test",
             create_pending_decision=create_pending_decision,
         )
@@ -822,7 +892,7 @@ class BridgeRuntimeService:
         selected = next((item for item in pending if item["decision_type"] == "command_approval"), pending[0] if pending else None)
         selected_record = db.get(PendingDecision, int(selected["id"])) if selected is not None else None
         return {
-            "attach": start_payload.get("attach"),
+            "attach": attached,
             "orchestration": orchestration_payload,
             "initial_status_summary": start_payload.get("status_summary"),
             "pending_decision": selected,
@@ -1402,6 +1472,48 @@ class BridgeRuntimeService:
                 "status_summary": status_summary,
                 "pending_decisions": pending,
                 "user_action_required": any(item["status"] == "pending" for item in pending),
+            }
+        if len(matches) > 1 and attach_policy != "create_new":
+            attached = coordinator.attach_workspace(
+                db,
+                workspace_path=workspace.as_posix(),
+                project_name=None,
+                mode="existing_codebase",
+                read_only_first=True,
+                attach_policy=attach_policy,
+                source="codex_plugin",
+            )
+            orchestration_payload = attached.get("orchestration")
+            pending: list[dict[str, Any]] = []
+            status_summary = None
+            orchestration = None
+            if orchestration_payload and orchestration_payload.get("id") is not None:
+                orchestration = db.get(OrchestrationSession, int(orchestration_payload["id"]))
+            if orchestration is not None:
+                pending = self.get_pending_decisions(db, project=db.get(Project, orchestration.project_id), orchestration=orchestration)
+                project = db.get(Project, orchestration.project_id)
+                if project is not None:
+                    status_summary = await self.get_status_summary(db, project=project, orchestration=orchestration)
+            return {
+                "workspace_path": workspace.as_posix(),
+                "status": "needs_selection",
+                "message": "Mission Control found multiple matching projects for this workspace and needs you to choose one.",
+                "project": attached.get("project"),
+                "orchestration": orchestration_payload,
+                "status_summary": status_summary,
+                "pending_decisions": pending,
+                "user_action_required": True,
+            }
+        if matches and attach_policy == "create_new":
+            return {
+                "workspace_path": workspace.as_posix(),
+                "status": "not_found",
+                "message": "Mission Control found existing project links for this workspace, so resume cannot create a new project here automatically.",
+                "project": None,
+                "orchestration": None,
+                "status_summary": None,
+                "pending_decisions": [],
+                "user_action_required": True,
             }
         if matches:
             project = matches[0]

@@ -311,6 +311,52 @@ def test_full_headless_happy_path_approve_flow(client) -> None:
     assert "not run" in handoff_payload["fallback_markdown"].lower()
 
 
+def test_start_headless_task_honors_project_id_when_workspace_is_also_provided(client) -> None:
+    workspace = _prepare_repo_workspace("headless-project-id-match")
+    first = client.post(
+        "/api/projects",
+        json={
+            "name": "Project Id Match",
+            "idea": "Honor the explicit project id",
+            "workspace_path": workspace.as_posix(),
+            "provider": "codex",
+            "runner_mode": "dry_run",
+            "manager_mode": "deterministic",
+        },
+    )
+    assert first.status_code == 200, first.text
+    project = first.json()
+
+    second = client.post(
+        "/api/projects",
+        json={
+            "name": "Project Id Match Duplicate",
+            "idea": "Same workspace, different project",
+            "workspace_path": workspace.as_posix(),
+            "provider": "codex",
+            "runner_mode": "dry_run",
+            "manager_mode": "deterministic",
+        },
+    )
+    assert second.status_code == 200, second.text
+
+    start = client.post(
+        "/api/headless/start-task",
+        headers=_bridge_headers(),
+        json={
+            "workspace_path": workspace.as_posix(),
+            "project_id": project["id"],
+            "user_request": "Use Mission Control for this repo and fix the failing tests.",
+            "strategy": "balanced",
+            "mode": "dry_run",
+            "interview_mode": "skip",
+            "attach_policy": "reuse_existing",
+        },
+    )
+    assert start.status_code == 200, start.text
+    assert start.json()["project"]["id"] == project["id"]
+
+
 def test_full_headless_happy_path_deny_flow(client) -> None:
     workspace = _prepare_repo_workspace("headless-deny-flow")
     start = client.post(

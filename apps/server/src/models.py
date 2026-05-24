@@ -289,6 +289,7 @@ class ProjectSettings(Base):
     default_worker_reasoning_effort: Mapped[str | None] = mapped_column(String(30), nullable=True)
     per_role_model_overrides_json: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
     per_role_reasoning_overrides_json: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
+    provider_endpoint: Mapped[str | None] = mapped_column(Text, nullable=True)
     adapter_command: Mapped[str | None] = mapped_column(Text, nullable=True)
     adapter_args_json: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
     runner_mode: Mapped[str] = mapped_column(String(30), default="auto", nullable=False)

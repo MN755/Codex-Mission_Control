@@ -126,26 +126,39 @@ class OrchestrationCoordinator:
         except PathValidationError as exc:
             raise ValueError(str(exc)) from exc
 
+    @staticmethod
+    def _path_matches_workspace(raw_path: str | None, workspace: Path) -> bool:
+        if not raw_path:
+            return False
+        try:
+            return resolve_local_path(raw_path) == workspace
+        except PathValidationError:
+            return False
+
     def _workspace_projects(self, db: Session, workspace: Path) -> list[Project]:
-        workspace_str = workspace.as_posix()
-        projects = list(
+        candidates = list(
             db.scalars(
-                select(Project)
-                .where((Project.workspace_path == workspace_str) | (Project.source_path == workspace_str))
-                .order_by(Project.archived_at.is_not(None), Project.last_opened_at.desc(), Project.updated_at.desc(), Project.id.desc())
+                select(Project).order_by(Project.archived_at.is_not(None), Project.last_opened_at.desc(), Project.updated_at.desc(), Project.id.desc())
             )
         )
-        return projects
+        return [
+            project
+            for project in candidates
+            if self._path_matches_workspace(project.workspace_path, workspace) or self._path_matches_workspace(project.source_path, workspace)
+        ]
 
     def _active_session_for_workspace(self, db: Session, workspace: Path) -> OrchestrationSession | None:
-        return db.scalar(
-            select(OrchestrationSession)
-            .where(
-                OrchestrationSession.workspace_path == workspace.as_posix(),
-                OrchestrationSession.status.in_(list(ACTIVE_ORCHESTRATION_STATUSES)),
+        sessions = list(
+            db.scalars(
+                select(OrchestrationSession)
+                .where(OrchestrationSession.status.in_(list(ACTIVE_ORCHESTRATION_STATUSES)))
+                .order_by(OrchestrationSession.updated_at.desc(), OrchestrationSession.id.desc())
             )
-            .order_by(OrchestrationSession.updated_at.desc(), OrchestrationSession.id.desc())
         )
+        for session in sessions:
+            if self._path_matches_workspace(session.workspace_path, workspace):
+                return session
+        return None
 
     def _record_event(self, db: Session, session: OrchestrationSession, event_type: str, payload: dict[str, Any]) -> OrchestrationEvent:
         event = OrchestrationEvent(
@@ -333,7 +346,7 @@ class OrchestrationCoordinator:
         is_empty = not any(workspace.iterdir())
 
         if matches and attach_policy != "create_new":
-            if len(matches) > 1 and attach_policy == "ask":
+            if len(matches) > 1:
                 chosen = matches[0]
                 session = OrchestrationSession(
                     project_id=chosen.id,

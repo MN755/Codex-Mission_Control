@@ -207,11 +207,14 @@ export function SetupPage() {
         sandbox_mode: form.sandbox_mode as "workspace-write" | "read-only",
         approval_policy: form.approval_policy as "on-request" | "untrusted" | "never",
         provider_endpoint: form.provider === "ollama" ? form.provider_endpoint : null,
-        adapter_command: form.provider !== "codex" && form.provider !== "claude_code" ? form.adapter_command || null : null,
-        adapter_args: form.adapter_args
-          .split(" ")
-          .map((item) => item.trim())
-          .filter(Boolean),
+        adapter_command: form.provider === "custom" ? form.adapter_command || null : null,
+        adapter_args:
+          form.provider === "custom"
+            ? form.adapter_args
+                .split(" ")
+                .map((item) => item.trim())
+                .filter(Boolean)
+            : [],
         start_mode: form.start_mode,
       });
       navigate("/dashboard", { replace: true });
@@ -375,16 +378,10 @@ export function SetupPage() {
               ) : null}
 
               {["openai_api", "anthropic_api", "xai_api"].includes(form.provider) ? (
-                <>
-                  <label>
-                    API key
-                    <input type="password" value={apiKey} onChange={(event) => setApiKey(event.target.value)} placeholder="Enter key for validation only" />
-                  </label>
-                  <div className="startup-note-card">
-                    <strong>API key storage is not implemented in Mission Control.</strong>
-                    <p>Keep this provider configured outside the app. The key you type here is not persisted to SQLite or logs.</p>
-                  </div>
-                </>
+                <div className="startup-note-card">
+                  <strong>API providers stay external on purpose.</strong>
+                  <p>Mission Control does not collect or store those provider keys here. Configure the key and any local adapter command outside the app, then save the provider choice honestly.</p>
+                </div>
               ) : null}
 
               {form.provider === "claude_code" ? (

@@ -59,3 +59,7 @@ def supports_reasoning_effort(provider: str) -> bool:
 
 def provider_uses_adapter(provider: str) -> bool:
     return normalize_provider(provider) in {"ollama", "openai_api", "anthropic_api", "xai_api", "custom"}
+
+
+def provider_uses_endpoint(provider: str) -> bool:
+    return normalize_provider(provider) in {"ollama", "openai_api", "anthropic_api", "xai_api"}

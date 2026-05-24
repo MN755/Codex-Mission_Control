@@ -7,7 +7,7 @@ from typing import Any
 from bootstrap.dependency_probe import probe_command
 from bootstrap.secret_redaction import redact_bootstrap_value
 from errors import MissionControlError
-from system_status import detect_claude_code_status, detect_codex_status, detect_ollama_status
+from system_status import detect_claude_code_status, detect_codex_status, detect_custom_status, detect_ollama_status
 
 
 API_RUNNERS: list[tuple[str, str, str]] = [
@@ -118,35 +118,42 @@ def probe_codex_cli() -> dict[str, Any]:
     )
 
 
-def probe_ollama(*, endpoint: str | None = None) -> dict[str, Any]:
+def probe_ollama(*, endpoint: str | None = None, adapter_command: str | None = None, adapter_args: list[str] | None = None) -> dict[str, Any]:
     status = detect_ollama_status(endpoint)
+    adapter_status = detect_custom_status(adapter_command, adapter_args)
     command_info = probe_command("ollama")
     path_text = command_info["path"]
     reachable = bool(status.get("reachable"))
-    available = bool(path_text or reachable)
+    adapter_ready = bool(adapter_status.get("cli_detected"))
+    adapter_configured = bool((adapter_command or "").strip())
+    available = bool(path_text or reachable or adapter_ready)
     if not available:
         install_status = "missing"
         recommended_fix = "Install Ollama locally if you want a local model runner."
         error = MissionControlError(code="MC-OLLAMA-CLI-MISSING-001", breakpoint="ollama.detect", severity="warning", safe_details={"runner": "ollama"})
-    elif reachable:
+    elif reachable and adapter_ready:
         install_status = "ready"
         recommended_fix = None
         error = None
+    elif reachable:
+        install_status = "endpoint_ready_needs_adapter"
+        recommended_fix = "Add a working local adapter command in Mission Control project settings before expecting live Ollama worker execution."
+        error = MissionControlError(code="MC-RUNNER-NONE-AVAILABLE-001", breakpoint="runner.select", severity="warning", safe_details={"runner": "ollama", "endpoint_reachable": True})
     else:
         install_status = "installed_not_running"
-        recommended_fix = "Start the local Ollama server with `ollama serve` before enabling the runner."
+        recommended_fix = "Start the local Ollama server with `ollama serve` and keep a working local adapter command configured."
         error = MissionControlError(code="MC-OLLAMA-SERVER-OFFLINE-001", breakpoint="ollama.server_check", severity="warning", safe_details={"runner": "ollama"})
     return _probe(
         runner_id="ollama",
         label="Ollama",
         available=available,
-        configured=reachable,
+        configured=reachable and adapter_ready,
         auth_status="not_required",
         install_status=install_status,
         command_path_text=path_text,
         version=command_info["version"],
-        safe_default=reachable,
-        requires_user_action=bool(path_text and not reachable),
+        safe_default=reachable and adapter_ready,
+        requires_user_action=bool(path_text and (not reachable or not adapter_ready)) or adapter_configured,
         recommended_fix=recommended_fix,
         error=error,
         models=[str(item) for item in list(status.get("available_models", []))],
@@ -154,6 +161,9 @@ def probe_ollama(*, endpoint: str | None = None) -> dict[str, Any]:
             "endpoint": status.get("cli_version"),
             "reachable": reachable,
             "summary": status.get("summary"),
+            "adapter_command": adapter_command,
+            "adapter_ready": adapter_ready,
+            "adapter_configured": adapter_configured,
         },
     )
 
@@ -190,32 +200,35 @@ def probe_claude_cli() -> dict[str, Any]:
     )
 
 
-def _api_probe(runner_id: str, label: str, env_key: str) -> dict[str, Any]:
+def _api_probe(runner_id: str, label: str, env_key: str, *, adapter_command: str | None = None, adapter_args: list[str] | None = None) -> dict[str, Any]:
     configured_in_env = bool(os.environ.get(env_key))
+    adapter_status = detect_custom_status(adapter_command, adapter_args)
+    adapter_ready = bool(adapter_status.get("cli_detected"))
+    adapter_configured = bool((adapter_command or "").strip())
     recommended_fix = (
         "API-backed runner is available through external secure environment configuration. Keep it opt-in because it may incur billing."
-        if configured_in_env
-        else f"Set {env_key} in a secure external environment if you explicitly want this API-backed runner."
+        if configured_in_env and adapter_ready
+        else "Set both the external API credentials and a working local adapter command before enabling this API-backed runner."
     )
     error = MissionControlError(
-        code="MC-API-BILLING-WARNING-001" if configured_in_env else "MC-API-KEY-MISSING-001",
-        breakpoint="api_provider.auth_check" if not configured_in_env else "api_provider.detect",
+        code="MC-API-BILLING-WARNING-001" if configured_in_env and adapter_ready else "MC-API-KEY-MISSING-001",
+        breakpoint="api_provider.auth_check" if not configured_in_env else "runner.select",
         severity="warning",
         safe_details={"runner": runner_id, "env_var": env_key},
     )
     return _probe(
         runner_id=runner_id,
         label=label,
-        available=configured_in_env,
-        configured=configured_in_env,
+        available=configured_in_env or adapter_ready or adapter_configured,
+        configured=configured_in_env and adapter_ready,
         auth_status="authenticated" if configured_in_env else "unauthenticated",
-        install_status="external_configured" if configured_in_env else "not_configured",
+        install_status="external_configured" if configured_in_env and adapter_ready else "needs_adapter" if configured_in_env else "not_configured",
         safe_default=False,
-        requires_user_action=False,
+        requires_user_action=configured_in_env or adapter_configured,
         recommended_fix=recommended_fix,
         billing_warning=f"{label} may incur API billing.",
         error=error,
-        details={"env_var": env_key, "secure_storage_supported": False},
+        details={"env_var": env_key, "secure_storage_supported": False, "adapter_ready": adapter_ready, "adapter_configured": adapter_configured},
     )
 
 
@@ -249,20 +262,20 @@ def probe_custom_api() -> dict[str, Any]:
     )
 
 
-def probe_runners(*, ollama_endpoint: str | None = None) -> list[dict[str, Any]]:
+def probe_runners(*, ollama_endpoint: str | None = None, adapter_command: str | None = None, adapter_args: list[str] | None = None) -> list[dict[str, Any]]:
     probes = [
         probe_dry_run(),
         probe_codex_cli(),
-        probe_ollama(endpoint=ollama_endpoint),
+        probe_ollama(endpoint=ollama_endpoint, adapter_command=adapter_command, adapter_args=adapter_args),
         probe_claude_cli(),
     ]
-    probes.extend(_api_probe(*runner) for runner in API_RUNNERS)
+    probes.extend(_api_probe(*runner, adapter_command=adapter_command, adapter_args=adapter_args) for runner in API_RUNNERS)
     probes.append(probe_custom_api())
     return probes
 
 
-def summarize_runner_status(*, ollama_endpoint: str | None = None) -> dict[str, Any]:
-    probes = probe_runners(ollama_endpoint=ollama_endpoint)
+def summarize_runner_status(*, ollama_endpoint: str | None = None, adapter_command: str | None = None, adapter_args: list[str] | None = None) -> dict[str, Any]:
+    probes = probe_runners(ollama_endpoint=ollama_endpoint, adapter_command=adapter_command, adapter_args=adapter_args)
     enabled = [probe["runner_id"] for probe in probes if probe["configured"] or probe["runner_id"] == "dry_run"]
     safe_defaults = [probe["runner_id"] for probe in probes if probe["safe_default"]]
     live_ready = [probe["runner_id"] for probe in probes if probe["runner_id"] != "dry_run" and probe["configured"]]

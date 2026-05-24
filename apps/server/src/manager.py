@@ -94,6 +94,9 @@ from planner import build_plan_markdown
 from project_settings import (
     ResolvedRunSettings,
     get_or_create_project_settings,
+    normalize_provider_adapter_args,
+    normalize_provider_adapter_command,
+    normalize_provider_endpoint,
     resolve_manager_settings,
     resolve_worker_settings,
     resolved_run_settings_payload,
@@ -116,6 +119,7 @@ from prompts import (
 from provider_support import default_label, normalize_provider, provider_label, provider_uses_adapter
 from risk import risk_service
 from security import redact_text, redact_value, security_service
+from security.path_validation import resolve_local_path
 from schemas import (
     AppProfileUpdate,
     ManagerDocFile,
@@ -364,6 +368,7 @@ class RunnerRegistry:
                         approval_policy=resolved.approval_policy,
                         model=resolved.model,
                         reasoning_effort=resolved.reasoning_effort,
+                        provider_endpoint=resolved.provider_endpoint,
                         adapter_command=resolved.adapter_command,
                         adapter_args=list(resolved.adapter_args),
                     )
@@ -6977,6 +6982,7 @@ class MissionControlService:
             approval_policy=resolved.approval_policy,
             model=resolved.model,
             reasoning_effort=resolved.reasoning_effort,
+            provider_endpoint=resolved.provider_endpoint,
             adapter_command=resolved.adapter_command,
             adapter_args=list(resolved.adapter_args),
         )
@@ -8195,7 +8201,7 @@ class MissionControlService:
         provider_endpoint = (
             provider_endpoint_override
             if provider_endpoint_override is not None
-            else app_profile.provider_endpoint
+            else (project_settings.provider_endpoint if project_settings and project_settings.provider_endpoint is not None else app_profile.provider_endpoint)
         )
         status = detect_system_status(
             selected_provider=selected_provider,
@@ -8617,12 +8623,13 @@ class MissionControlService:
     def create_project(self, db: Session, *, name: str, idea: str, workspace_path: str, provider: str, runner_mode: str, manager_mode: str) -> Project:
         profile = self._app_profile(db)
         selected_provider = normalize_provider(provider or profile.selected_provider)
-        has_existing_files = self._workspace_has_user_files(workspace_path)
+        normalized_workspace = resolve_local_path(workspace_path).as_posix()
+        has_existing_files = self._workspace_has_user_files(normalized_workspace)
         project = Project(
             name=name,
             slug=self._slugify(name),
             idea=idea,
-            workspace_path=workspace_path,
+            workspace_path=normalized_workspace,
             status="draft",
             runner_mode=runner_mode or profile.default_runner_mode or DEFAULT_RUNNER_MODE,
             manager_mode=manager_mode or DEFAULT_MANAGER_MODE,
@@ -8632,7 +8639,7 @@ class MissionControlService:
             latest_activity=idea.strip().splitlines()[0][:180] if idea.strip() else None,
             handoff_status="not_ready",
             source_type="existing_folder" if has_existing_files else "idea",
-            source_path=workspace_path if has_existing_files else None,
+            source_path=normalized_workspace if has_existing_files else None,
         )
         db.add(project)
         db.flush()
@@ -8645,8 +8652,9 @@ class MissionControlService:
         settings.runner_mode = runner_mode or profile.default_runner_mode or DEFAULT_RUNNER_MODE
         settings.sandbox_mode = profile.sandbox_mode
         settings.approval_policy = profile.approval_policy
-        settings.adapter_command = profile.adapter_command
-        settings.adapter_args_json = list(profile.adapter_args_json or [])
+        settings.provider_endpoint = normalize_provider_endpoint(selected_provider, profile.provider_endpoint)
+        settings.adapter_command = normalize_provider_adapter_command(selected_provider, profile.adapter_command)
+        settings.adapter_args_json = normalize_provider_adapter_args(selected_provider, list(profile.adapter_args_json or []))
         settings.workspace_widgets_json = []
         settings.approval_overrides_json = {}
         self._ensure_swarm_preferences(db, project)
@@ -8657,7 +8665,7 @@ class MissionControlService:
             role="Project orchestration, planning, routing, and final handoff",
             kind="manager",
             status="idle",
-            workspace_path=workspace_path,
+            workspace_path=normalized_workspace,
             archetype="manager",
             mission="Coordinate the adaptive swarm and act as the single user-facing manager.",
             retire_when="Retire only when the project is archived or deleted.",
@@ -8689,8 +8697,9 @@ class MissionControlService:
             for key, value in payload.per_role_reasoning_overrides_json.items()
             if key.strip() and value
         }
-        settings.adapter_command = payload.adapter_command.strip() if payload.adapter_command and payload.adapter_command.strip() else None
-        settings.adapter_args_json = [item.strip() for item in payload.adapter_args_json if item and item.strip()]
+        settings.provider_endpoint = normalize_provider_endpoint(settings.provider, payload.provider_endpoint)
+        settings.adapter_command = normalize_provider_adapter_command(settings.provider, payload.adapter_command)
+        settings.adapter_args_json = normalize_provider_adapter_args(settings.provider, payload.adapter_args_json)
         settings.runner_mode = payload.runner_mode
         settings.sandbox_mode = payload.sandbox_mode
         settings.approval_policy = payload.approval_policy
@@ -9839,7 +9848,6 @@ class MissionControlService:
 
     async def _finalize_run(self, db: Session, project: Project, agent: Agent, run: AgentRun, status: str) -> None:
         task = db.get(Task, run.task_id) if run.task_id else None
-        run.finished_at = utc_now()
         if task:
             report = self._build_synthetic_worker_report(agent, task, status, run.report_json)
             report = self._verify_worker_report_evidence(project, task, report, self.run_input_snapshots.pop(run.id, None))
@@ -9852,6 +9860,8 @@ class MissionControlService:
         self.events.publish(db, project.id, "agent.finished", {"agent_id": agent.id, "task_id": run.task_id, "status": status})
 
     async def ingest_worker_report(self, db: Session, run: AgentRun, report: WorkerReport) -> ManagerWorkerDecision:
+        if run.finished_at is not None and run.report_json:
+            raise ValueError("Worker report already recorded for this run.")
         agent = db.get(Agent, run.agent_id)
         if not agent:
             raise ValueError("Agent not found")
@@ -10061,18 +10071,54 @@ class MissionControlService:
         )
         if not run:
             agent.status = "stopped"
+            task = db.get(Task, agent.current_task_id) if agent.current_task_id else None
+            if task is not None and task.status == "working":
+                task.status = "assigned"
+                task.assigned_agent_id = None
+                task.waiting_reason = "Agent was stopped before completing the task."
+            agent.current_task_id = None
             agent.current_action = None
             self._release_reservations(db, agent.project_id, agent_id=agent.id)
             return
         runner = await self.runners.get_runner(run.runner_type)
         await runner.stop_run(run.process_ref or "")
+        task = db.get(Task, run.task_id) if run.task_id else None
         agent.status = "stopped"
         agent.current_task_id = None
         agent.current_action = None
         run.status = "stopped"
         run.finished_at = utc_now()
+        if task is not None and task.status == "working":
+            task.status = "assigned"
+            task.assigned_agent_id = None
+            task.waiting_reason = "Agent was stopped before completing the task."
         self._release_reservations(db, agent.project_id, task_id=run.task_id, agent_id=agent.id)
         self.events.publish(db, agent.project_id, "agent.stopped", {"agent_id": agent.id})
+
+    async def complete_task_by_user(self, db: Session, task: Task) -> None:
+        project = db.get(Project, task.project_id)
+        if project is None:
+            raise ValueError("Project not found")
+        run = db.scalar(
+            select(AgentRun)
+            .where(AgentRun.task_id == task.id, AgentRun.finished_at.is_(None))
+            .order_by(AgentRun.id.desc())
+        )
+        agent = db.get(Agent, task.assigned_agent_id) if task.assigned_agent_id else None
+        if run is not None:
+            run.status = "stopped"
+            run.finished_at = utc_now()
+        if agent is not None:
+            agent.current_task_id = None
+            agent.current_action = None
+            if agent.status not in {"done", "retired"}:
+                agent.status = "waiting"
+        task.status = "done"
+        task.assigned_agent_id = None
+        task.waiting_reason = None
+        self._release_reservations(db, project.id, task_id=task.id, agent_id=agent.id if agent is not None else None)
+        self.events.publish(db, project.id, "task.completed_by_user", {"task_id": task.id, "run_id": run.id if run is not None else None})
+        await self._maybe_finalize_handoff(db, project)
 
     async def pause_agent(self, db: Session, agent: Agent) -> None:
         await self.stop_agent(db, agent)

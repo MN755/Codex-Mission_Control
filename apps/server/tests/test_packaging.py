@@ -111,5 +111,12 @@ def test_launcher_scripts_use_configured_launcher_dir() -> None:
     stop_script = (root / "scripts" / "stop-mission-control.ps1").read_text(encoding="utf-8")
     assert 'MISSION_CONTROL_LAUNCHER_DIR="${LAUNCHER_DIR}"' in start_script
     assert "launcherLogDir" in start_script
+    assert '--mode' in start_script
+    assert 'MODE="desktop"' in start_script
+    assert 'if [[ "${MODE}" == "desktop" ]]' in start_script
+    assert 'build_frontend_if_needed' in start_script
+    assert 'if [[ -d "${FRONTEND_DIST}" ]]; then' in start_script
+    assert 'npm was not found on PATH, and the frontend bundle is missing' in start_script
+    assert '-m uvicorn main:app --app-dir src' in start_script
     assert "launcherLogDir" in stop_script
     assert 'Join-Path $launcherDir "pids.json"' in stop_script

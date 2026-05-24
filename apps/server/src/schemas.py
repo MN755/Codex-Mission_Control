@@ -530,6 +530,7 @@ class ProjectSettingsRead(BaseModel):
     default_worker_reasoning_effort: ReasoningEffort | None
     per_role_model_overrides_json: dict[str, str]
     per_role_reasoning_overrides_json: dict[str, str]
+    provider_endpoint: str | None = None
     adapter_command: str | None = None
     adapter_args_json: list[str] = Field(default_factory=list)
     runner_mode: RunnerMode
@@ -551,6 +552,7 @@ class ProjectSettingsUpdate(BaseModel):
     default_worker_reasoning_effort: ReasoningEffort | None = None
     per_role_model_overrides_json: dict[str, str] = Field(default_factory=dict)
     per_role_reasoning_overrides_json: dict[str, str] = Field(default_factory=dict)
+    provider_endpoint: str | None = None
     adapter_command: str | None = None
     adapter_args_json: list[str] = Field(default_factory=list)
     runner_mode: RunnerMode = "auto"
@@ -1016,6 +1018,7 @@ class HeadlessStartTaskRequest(BaseModel):
     strategy: HeadlessTaskStrategy = "manager_decides"
     mode: HeadlessTaskMode = "auto"
     interview_mode: InterviewChoice = "manager_decides"
+    attach_policy: AttachPolicy = "reuse_existing"
 
 
 class HeadlessStartTaskRead(BaseModel):
@@ -1180,7 +1183,7 @@ class ResumeWorkspaceRequest(BaseModel):
 
 class ResumeWorkspaceRead(BaseModel):
     workspace_path: str
-    status: Literal["found_active", "found_recent", "found_project_only", "not_found"]
+    status: Literal["found_active", "found_recent", "found_project_only", "needs_selection", "not_found"]
     message: str
     project: ProjectRead | None = None
     orchestration: OrchestrationSessionRead | None = None
@@ -2580,6 +2583,12 @@ class ProviderStatusRead(BaseModel):
     supports_reasoning_effort: bool
     supports_app_server: bool
     supports_builtin_auth: bool
+    runtime_ready: bool = False
+    runtime_summary: str | None = None
+    requires_adapter_command: bool = False
+    adapter_command_configured: bool = False
+    adapter_command_detected: bool = False
+    provider_endpoint_configured: bool = False
     available_models: list[str] = Field(default_factory=list)
     notes: list[str] = Field(default_factory=list)
 
@@ -2609,6 +2618,8 @@ class SystemStatusRead(BaseModel):
     login_status: str
     auth_mode: str | None
     authenticated: bool = False
+    runtime_ready: bool = False
+    runtime_summary: str | None = None
     app_server_supported: bool
     app_server_handshake_status: str
     app_server_transport: str

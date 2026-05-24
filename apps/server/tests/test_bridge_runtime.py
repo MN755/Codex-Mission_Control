@@ -389,6 +389,32 @@ def test_resume_workspace_reports_found_and_not_found_states(client) -> None:
     assert missing.json()["status"] == "not_found"
 
 
+def test_resume_workspace_requires_selection_when_duplicates_exist(client) -> None:
+    workspace = Path(sample_workspace("resume-duplicate"))
+    workspace.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "name": "Resume Duplicate",
+        "idea": "Duplicate workspace attach",
+        "workspace_path": workspace.as_posix(),
+        "provider": "codex",
+        "runner_mode": "dry_run",
+        "manager_mode": "deterministic",
+    }
+    first = client.post("/api/projects", json=payload)
+    assert first.status_code == 200, first.text
+    second = client.post("/api/projects", json={**payload, "name": "Resume Duplicate 2"})
+    assert second.status_code == 200, second.text
+
+    response = client.post(
+        "/api/mission-control/resume-workspace",
+        headers=_bridge_headers(),
+        json={"workspace_path": workspace.as_posix(), "attach_policy": "reuse_existing"},
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["status"] == "needs_selection"
+    assert response.json()["user_action_required"] is True
+
+
 def test_resume_workspace_rejects_non_local_path_inputs(client) -> None:
     response = client.post(
         "/api/mission-control/resume-workspace",

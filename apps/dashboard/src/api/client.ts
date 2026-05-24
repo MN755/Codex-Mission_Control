@@ -161,7 +161,7 @@ export const api = {
             provider: query?.provider,
             provider_endpoint: query?.provider_endpoint,
             adapter_command: query?.adapter_command,
-            adapter_arg: query?.adapter_args,
+            adapter_args: query?.adapter_args,
           };
     return request<CodexStatus>(withQuery("/api/system/status", params));
   },
@@ -222,6 +222,7 @@ export const api = {
       default_worker_reasoning_effort: ReasoningEffort | null;
       per_role_model_overrides_json: Record<string, string>;
       per_role_reasoning_overrides_json: Record<string, string>;
+      provider_endpoint: string | null;
       adapter_command: string | null;
       adapter_args_json: string[];
       runner_mode: RunnerMode;

@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 
 from config import DEFAULT_APPROVAL_POLICY, DEFAULT_RUNNER_MODE, DEFAULT_SANDBOX
 from models import Agent, Project, ProjectSettings
-from provider_support import default_label, normalize_provider, provider_label
+from provider_support import default_label, normalize_provider, provider_label, provider_uses_adapter, provider_uses_endpoint
 from schemas import ProjectSettingsUpdate
 
 
@@ -19,6 +19,7 @@ class ResolvedRunSettings:
     approval_policy: str
     model: str | None
     reasoning_effort: str | None
+    provider_endpoint: str | None
     adapter_command: str | None
     adapter_args: list[str]
     effective_model_label: str
@@ -30,6 +31,27 @@ def normalize_optional_text(value: str | None) -> str | None:
         return None
     normalized = value.strip()
     return normalized or None
+
+
+def normalize_provider_endpoint(provider: str, value: str | None) -> str | None:
+    normalized_provider = normalize_provider(provider)
+    if not provider_uses_endpoint(normalized_provider):
+        return None
+    return normalize_optional_text(value)
+
+
+def normalize_provider_adapter_command(provider: str, value: str | None) -> str | None:
+    normalized_provider = normalize_provider(provider)
+    if not provider_uses_adapter(normalized_provider):
+        return None
+    return normalize_optional_text(value)
+
+
+def normalize_provider_adapter_args(provider: str, values: list[str] | None) -> list[str]:
+    normalized_provider = normalize_provider(provider)
+    if not provider_uses_adapter(normalized_provider):
+        return []
+    return [item.strip() for item in list(values or []) if item and item.strip()]
 
 
 def get_or_create_project_settings(db: Session, project: Project) -> ProjectSettings:
@@ -44,6 +66,7 @@ def get_or_create_project_settings(db: Session, project: Project) -> ProjectSett
         approval_policy=DEFAULT_APPROVAL_POLICY,
         per_role_model_overrides_json={},
         per_role_reasoning_overrides_json={},
+        provider_endpoint=None,
         adapter_args_json=[],
         workspace_widgets_json=[],
         approval_overrides_json={},
@@ -71,8 +94,9 @@ def update_project_settings(db: Session, project: Project, payload: ProjectSetti
         for key, value in payload.per_role_reasoning_overrides_json.items()
         if key.strip() and value
     }
-    settings.adapter_command = normalize_optional_text(payload.adapter_command)
-    settings.adapter_args_json = [item.strip() for item in payload.adapter_args_json if item and item.strip()]
+    settings.provider_endpoint = normalize_provider_endpoint(settings.provider, payload.provider_endpoint)
+    settings.adapter_command = normalize_provider_adapter_command(settings.provider, payload.adapter_command)
+    settings.adapter_args_json = normalize_provider_adapter_args(settings.provider, payload.adapter_args_json)
     settings.runner_mode = payload.runner_mode
     settings.sandbox_mode = payload.sandbox_mode
     settings.approval_policy = payload.approval_policy
@@ -93,6 +117,7 @@ def settings_summary(settings: ProjectSettings) -> dict:
         "default_worker_reasoning_effort": settings.default_worker_reasoning_effort,
         "per_role_model_overrides_json": settings.per_role_model_overrides_json or {},
         "per_role_reasoning_overrides_json": settings.per_role_reasoning_overrides_json or {},
+        "provider_endpoint": settings.provider_endpoint,
         "adapter_command": settings.adapter_command,
         "adapter_args_json": settings.adapter_args_json or [],
         "runner_mode": settings.runner_mode,
@@ -117,8 +142,9 @@ def resolve_manager_settings(project: Project, settings: ProjectSettings) -> Res
         approval_policy=settings.approval_policy or DEFAULT_APPROVAL_POLICY,
         model=model,
         reasoning_effort=reasoning,
-        adapter_command=normalize_optional_text(settings.adapter_command),
-        adapter_args=list(settings.adapter_args_json or []),
+        provider_endpoint=normalize_provider_endpoint(provider, settings.provider_endpoint),
+        adapter_command=normalize_provider_adapter_command(provider, settings.adapter_command),
+        adapter_args=normalize_provider_adapter_args(provider, list(settings.adapter_args_json or [])),
         effective_model_label=model or default_label(provider),
         effective_reasoning_label=reasoning or default_label(provider),
     )
@@ -139,8 +165,9 @@ def resolve_worker_settings(project: Project, settings: ProjectSettings, agent: 
         approval_policy=settings.approval_policy or DEFAULT_APPROVAL_POLICY,
         model=model,
         reasoning_effort=reasoning,
-        adapter_command=normalize_optional_text(settings.adapter_command),
-        adapter_args=list(settings.adapter_args_json or []),
+        provider_endpoint=normalize_provider_endpoint(provider, settings.provider_endpoint),
+        adapter_command=normalize_provider_adapter_command(provider, settings.adapter_command),
+        adapter_args=normalize_provider_adapter_args(provider, list(settings.adapter_args_json or [])),
         effective_model_label=model or default_label(provider),
         effective_reasoning_label=reasoning or default_label(provider),
     )

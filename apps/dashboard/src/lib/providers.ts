@@ -48,6 +48,10 @@ export function providerUsesAdapter(provider: ProviderId | string | null | undef
   return !["codex", "claude_code"].includes(String(provider ?? ""));
 }
 
+export function providerUsesEndpoint(provider: ProviderId | string | null | undefined): boolean {
+  return ["ollama", "openai_api", "anthropic_api", "xai_api"].includes(String(provider ?? ""));
+}
+
 export const PROVIDER_OPTIONS: Array<{ value: ProviderId; label: string; description: string; recommended?: boolean }> = [
   {
     value: "codex",

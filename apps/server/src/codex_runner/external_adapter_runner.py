@@ -353,6 +353,7 @@ class ExternalAdapterRunner(BaseCodexRunner):
                 "reasoning_effort": context.settings.reasoning_effort or effective_label,
                 "sandbox_mode": context.settings.sandbox_mode,
                 "approval_policy": context.settings.approval_policy,
+                "provider_endpoint": context.settings.provider_endpoint,
                 "adapter_command": command,
             },
         )
@@ -366,6 +367,8 @@ class ExternalAdapterRunner(BaseCodexRunner):
             "MISSION_CONTROL_SANDBOX_MODE": context.settings.sandbox_mode,
             "MISSION_CONTROL_APPROVAL_POLICY": context.settings.approval_policy,
             "MISSION_CONTROL_PROVIDER": context.settings.provider,
+            "MISSION_CONTROL_PROVIDER_ENDPOINT": context.settings.provider_endpoint or "",
+            "MISSION_CONTROL_OLLAMA_ENDPOINT": context.settings.provider_endpoint or "",
             "MISSION_CONTROL_DOCS_PATH": context.docs_path,
             "MISSION_CONTROL_PROJECT_NAME": context.project.name,
             "MISSION_CONTROL_PROJECT_WORKSPACE": context.project.workspace_path,

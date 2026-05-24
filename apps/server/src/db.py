@@ -99,6 +99,7 @@ def _apply_sqlite_migrations() -> None:
         _ensure_column("agent_runs", "effective_settings_json", "effective_settings_json JSON")
     if "project_settings" in tables:
         _ensure_column("project_settings", "provider", "provider VARCHAR(40) NOT NULL DEFAULT 'codex'")
+        _ensure_column("project_settings", "provider_endpoint", "provider_endpoint TEXT")
         _ensure_column("project_settings", "adapter_command", "adapter_command TEXT")
         _ensure_column("project_settings", "adapter_args_json", "adapter_args_json JSON NOT NULL DEFAULT '[]'")
         _ensure_column("project_settings", "workspace_widgets_json", "workspace_widgets_json JSON NOT NULL DEFAULT '[]'")

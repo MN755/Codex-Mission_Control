@@ -14,7 +14,7 @@ from claude_cli_path import claude_command_path
 from codex_cli_path import codex_command_path
 from config import LAUNCHER_ROOT, REPO_ROOT, RUNTIME_ROOT, get_codex_home, load_launcher_config
 from daemon_state import daemon_identity_snapshot, resolve_backend_binding
-from provider_support import normalize_provider, provider_label, supports_app_server
+from provider_support import normalize_provider, provider_label, provider_uses_adapter, provider_uses_endpoint, supports_app_server
 
 try:
     import tomllib
@@ -97,13 +97,37 @@ def _parse_configured_mcp_servers(config_text: str) -> list[dict[str, Any]]:
                             entry[key] = value[key]
                 servers.append(entry)
             return servers
-    names: list[str] = []
-    for match in re.finditer(r'\[mcp_servers\.(?:"([^"]+)"|([^\]\r\n]+))\]', config_text):
-        raw_name = match.group(1) or match.group(2) or ""
-        name = raw_name.strip().strip('"').strip("'")
-        if name:
-            names.append(name)
-    return [{"name": name} for name in names]
+    servers: list[dict[str, Any]] = []
+    current: dict[str, Any] | None = None
+    for raw_line in config_text.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        match = re.match(r'\[mcp_servers\.(?:"([^"]+)"|([^\]\r\n]+))\]', line)
+        if match:
+            if current is not None:
+                servers.append(current)
+            raw_name = match.group(1) or match.group(2) or ""
+            name = raw_name.strip().strip('"').strip("'")
+            current = {"name": name} if name else None
+            continue
+        if current is None:
+            continue
+        key_match = re.match(r"([A-Za-z0-9_]+)\s*=\s*(.+)", line)
+        if not key_match:
+            continue
+        key, raw_value = key_match.group(1), key_match.group(2).strip()
+        if key not in {"command", "status", "transport", "cwd"}:
+            continue
+        if raw_value.startswith('"') and raw_value.endswith('"'):
+            current[key] = raw_value[1:-1]
+        elif raw_value.startswith("'") and raw_value.endswith("'"):
+            current[key] = raw_value[1:-1]
+        else:
+            current[key] = raw_value
+    if current is not None:
+        servers.append(current)
+    return servers
 
 
 def _find_mission_control_mcp_server(servers: list[dict[str, Any]]) -> dict[str, Any] | None:
@@ -248,6 +272,13 @@ def detect_claude_code_status() -> dict[str, Any]:
     cli_path = claude_command_path()
     cli_path_exists = _path_exists(cli_path)
     cli_ok, cli_output = _run_command([cli_path, "--version"]) if cli_path else (False, "")
+    login_status = "Claude CLI was not detected."
+    auth_status_detectable = False
+    if cli_ok:
+        login_status = "Claude CLI is executable from this runtime, but Mission Control cannot verify the interactive Claude auth state automatically."
+        auth_status_detectable = True
+    elif cli_path_exists:
+        login_status = "Claude CLI path was found, but direct execution is unavailable from this runtime."
     notes = [
         "Claude Code login is managed by the local Claude Code CLI, not by Mission Control.",
         "Mission Control can pass per-run model overrides when the CLI supports them.",
@@ -261,15 +292,15 @@ def detect_claude_code_status() -> dict[str, Any]:
         "cli_path_exists": cli_path_exists,
         "cli_execution_available": cli_ok,
         "cli_version": cli_output if cli_ok else None,
-        "login_status": "Interactive Claude Code login is managed outside Mission Control.",
+        "login_status": login_status,
         "auth_mode": None,
         "authenticated": False,
-        "auth_status_detectable": False,
+        "auth_status_detectable": auth_status_detectable,
         "supports_model_override": True,
         "supports_reasoning_effort": False,
         "supports_app_server": False,
         "supports_builtin_auth": False,
-        "available_models": ["sonnet", "opus"] if cli_ok else [],
+        "available_models": ["sonnet", "opus"] if cli_ok or cli_path_exists else [],
         "notes": notes,
     }
 
@@ -365,6 +396,72 @@ def detect_custom_status(adapter_command: str | None = None, adapter_args: list[
     }
 
 
+def _runtime_details(
+    *,
+    provider: str,
+    adapter_command: str | None = None,
+    adapter_args: list[str] | None = None,
+    provider_endpoint: str | None = None,
+) -> dict[str, Any]:
+    normalized = normalize_provider(provider)
+    adapter_status = detect_custom_status(adapter_command, adapter_args) if provider_uses_adapter(normalized) else None
+    adapter_required = provider_uses_adapter(normalized)
+    adapter_configured = bool((adapter_command or "").strip()) if adapter_required else False
+    adapter_ready = bool(adapter_status and adapter_status.get("cli_detected"))
+
+    if normalized == "codex":
+        ready = bool(detect_codex_status().get("authenticated"))
+        summary = "Codex runtime is ready." if ready else "Codex runtime is not authenticated yet."
+    elif normalized == "claude_code":
+        claude = detect_claude_code_status()
+        ready = bool(claude.get("cli_execution_available")) and bool(claude.get("auth_status_detectable"))
+        summary = (
+            "Claude CLI is executable, but Mission Control still cannot guarantee the interactive Claude login state."
+            if claude.get("cli_execution_available")
+            else str(claude.get("login_status") or "Claude CLI is not executable from this runtime.")
+        )
+    elif normalized == "ollama":
+        ollama = detect_ollama_status(provider_endpoint)
+        reachable = bool(ollama.get("reachable"))
+        ready = reachable and adapter_ready
+        if reachable and adapter_ready:
+            summary = "Ollama endpoint and adapter runtime are both ready."
+        elif reachable:
+            summary = "Ollama endpoint is reachable, but the local adapter command for worker execution is missing or unavailable."
+        elif adapter_ready:
+            summary = "Adapter runtime is available, but the Ollama endpoint is not reachable."
+        else:
+            summary = "Ollama needs both a reachable endpoint and a working local adapter command."
+    elif normalized in {"openai_api", "anthropic_api", "xai_api"}:
+        env_key = {
+            "openai_api": "OPENAI_API_KEY",
+            "anthropic_api": "ANTHROPIC_API_KEY",
+            "xai_api": "XAI_API_KEY",
+        }[normalized]
+        key_present = bool(os.environ.get(env_key))
+        ready = key_present and adapter_ready
+        if key_present and adapter_ready:
+            summary = f"{env_key} is configured and the local adapter runtime is ready."
+        elif key_present:
+            summary = f"{env_key} is configured, but the local adapter command for worker execution is missing or unavailable."
+        elif adapter_ready:
+            summary = f"The local adapter runtime is ready, but {env_key} is not configured."
+        else:
+            summary = f"{normalized.replace('_', ' ')} needs both an external API key and a working local adapter command."
+    else:
+        ready = adapter_ready
+        summary = "Custom adapter runtime is ready." if ready else "Custom provider needs a working adapter command."
+
+    return {
+        "runtime_ready": ready,
+        "runtime_summary": summary,
+        "requires_adapter_command": adapter_required,
+        "adapter_command_configured": adapter_configured,
+        "adapter_command_detected": adapter_ready,
+        "provider_endpoint_configured": bool(provider_endpoint and provider_uses_endpoint(normalized)),
+    }
+
+
 def _recommended_local_coding_models(available_models: list[str] | None = None) -> list[str]:
     candidates = [str(item) for item in (available_models or []) if str(item).strip()]
     preferred_order = [
@@ -454,7 +551,7 @@ def assess_model_advisories(
 
 
 def detect_provider_statuses(adapter_command: str | None = None, ollama_endpoint: str | None = None, adapter_args: list[str] | None = None) -> list[dict[str, Any]]:
-    return [
+    providers = [
         detect_codex_status(),
         detect_ollama_status(ollama_endpoint),
         detect_env_api_status("openai_api", env_key="OPENAI_API_KEY", label="OpenAI API"),
@@ -463,6 +560,18 @@ def detect_provider_statuses(adapter_command: str | None = None, ollama_endpoint
         detect_claude_code_status(),
         detect_custom_status(adapter_command, adapter_args),
     ]
+    enriched: list[dict[str, Any]] = []
+    for item in providers:
+        normalized = normalize_provider(item.get("provider"))
+        endpoint = ollama_endpoint if provider_uses_endpoint(normalized) else None
+        runtime = _runtime_details(
+            provider=normalized,
+            adapter_command=adapter_command,
+            adapter_args=adapter_args,
+            provider_endpoint=endpoint,
+        )
+        enriched.append({**item, **runtime})
+    return enriched
 
 
 def detect_system_status(
@@ -496,6 +605,8 @@ def detect_system_status(
         "login_status": selected["login_status"],
         "auth_mode": selected["auth_mode"],
         "authenticated": selected["authenticated"],
+        "runtime_ready": bool(selected.get("runtime_ready")),
+        "runtime_summary": str(selected.get("runtime_summary") or selected["login_status"]),
         "app_server_supported": bool(supports_app_server(normalized_provider)),
         "app_server_handshake_status": "unsupported" if normalized_provider != "codex" else "not_checked",
         "app_server_transport": "stdio_jsonrpc" if normalized_provider == "codex" else "unsupported",

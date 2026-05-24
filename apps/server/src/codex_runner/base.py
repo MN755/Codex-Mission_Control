@@ -19,6 +19,7 @@ class RunnerSettings:
     approval_policy: str = "on-request"
     model: str | None = None
     reasoning_effort: str | None = None
+    provider_endpoint: str | None = None
     adapter_command: str | None = None
     adapter_args: list[str] = field(default_factory=list)
 

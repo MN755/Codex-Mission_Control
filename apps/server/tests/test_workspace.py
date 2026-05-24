@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from sqlalchemy import func, select
 
 from db import SessionLocal, init_db
@@ -345,3 +347,28 @@ def test_change_request_route_creates_record_and_manager_notice(client) -> None:
         assert manager_notice.metadata_json["change_request_id"] == payload["id"]
     finally:
         db.close()
+
+
+def test_import_existing_folder_reuses_existing_workspace_project(client) -> None:
+    workspace = Path(sample_workspace("import-folder-reuse"))
+    workspace.mkdir(parents=True, exist_ok=True)
+    created = client.post(
+        "/api/projects",
+        json={
+            "name": "Import Folder Reuse",
+            "idea": "Existing workspace project",
+            "workspace_path": workspace.as_posix(),
+            "provider": "codex",
+            "runner_mode": "dry_run",
+            "manager_mode": "deterministic",
+        },
+    )
+    assert created.status_code == 200, created.text
+    project_id = created.json()["id"]
+
+    imported = client.post(
+        "/api/projects/import-folder",
+        json={"folder_path": workspace.as_posix(), "import_mode": "linked", "start_read_only_scan": False},
+    )
+    assert imported.status_code == 200, imported.text
+    assert imported.json()["project"]["id"] == project_id

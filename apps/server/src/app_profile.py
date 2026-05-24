@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 from config import DEFAULT_APPROVAL_POLICY, DEFAULT_RUNNER_MODE, DEFAULT_SANDBOX
 from models import AppProfile, utc_now
 from provider_support import normalize_provider
+from project_settings import normalize_provider_adapter_args, normalize_provider_endpoint
 from schemas import AppProfileUpdate, CompleteFirstRunRequest
 
 
@@ -175,10 +176,11 @@ def update_app_profile(db: Session, payload: AppProfileUpdate) -> AppProfile:
 
 def complete_first_run(db: Session, payload: CompleteFirstRunRequest, *, setup_version: str) -> AppProfile:
     profile = get_or_create_app_profile(db)
+    selected_provider = normalize_startup_provider_choice(payload.provider)
     profile.display_name = normalize_display_name(payload.username)
-    profile.preferred_provider_choice = normalize_startup_provider_choice(payload.provider)
+    profile.preferred_provider_choice = selected_provider
     profile.preferred_start_mode = payload.start_mode or profile.preferred_start_mode
-    profile.selected_provider = normalize_startup_provider_choice(payload.provider)
+    profile.selected_provider = selected_provider
     profile.auth_mode = payload.auth_mode
     profile.connected_accounts_json = payload.connected_accounts_summary or {}
     profile.first_run_completed = True
@@ -193,9 +195,9 @@ def complete_first_run(db: Session, payload: CompleteFirstRunRequest, *, setup_v
     profile.default_worker_reasoning_effort = payload.default_worker_reasoning_effort
     profile.sandbox_mode = payload.sandbox_mode or profile.sandbox_mode
     profile.approval_policy = payload.approval_policy or profile.approval_policy
-    profile.provider_endpoint = payload.provider_endpoint.strip() if payload.provider_endpoint and payload.provider_endpoint.strip() else None
-    profile.adapter_command = payload.adapter_command.strip() if payload.adapter_command and payload.adapter_command.strip() else None
-    profile.adapter_args_json = [item.strip() for item in payload.adapter_args if item and item.strip()]
+    profile.provider_endpoint = normalize_provider_endpoint(selected_provider, payload.provider_endpoint)
+    profile.adapter_command = payload.adapter_command.strip() if selected_provider == "custom" and payload.adapter_command and payload.adapter_command.strip() else None
+    profile.adapter_args_json = normalize_provider_adapter_args("custom" if selected_provider == "custom" else "codex", payload.adapter_args)
     profile.recent_startup_error_json = None
     profile.last_opened_at = utc_now()
     db.flush()

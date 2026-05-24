@@ -6,7 +6,7 @@ import { LoadingBlock } from "../components/LoadingBlock";
 import { ModelPicker } from "../components/ModelPicker";
 import { ProjectShell } from "../components/ProjectShell";
 import { SectionCard } from "../components/SectionCard";
-import { PROVIDER_OPTIONS, providerUsesAdapter } from "../lib/providers";
+import { PROVIDER_OPTIONS, providerUsesAdapter, providerUsesEndpoint } from "../lib/providers";
 import type {
   Agent,
   ApprovalPolicy,
@@ -92,6 +92,7 @@ export function ModelsRunnersPage() {
         .getSystemStatus({
           projectId: numericProjectId,
           provider: settings.provider,
+          provider_endpoint: settings.provider_endpoint,
           adapter_command: settings.adapter_command,
           adapter_args: settings.adapter_args_json,
         })
@@ -107,7 +108,7 @@ export function ModelsRunnersPage() {
       cancelled = true;
       window.clearTimeout(timeout);
     };
-  }, [numericProjectId, settings?.adapter_args_json, settings?.adapter_command, settings?.provider]);
+  }, [numericProjectId, settings?.adapter_args_json, settings?.adapter_command, settings?.provider, settings?.provider_endpoint]);
 
   const roleOptions = useMemo(() => {
     const activeWorkerRoles = agents.filter((agent) => agent.kind === "worker").map((agent) => agent.role);
@@ -273,6 +274,16 @@ export function ModelsRunnersPage() {
               </div>
               {providerUsesAdapter(settings.provider) ? (
                 <div className="form-row">
+                  {providerUsesEndpoint(settings.provider) ? (
+                    <label>
+                      Provider endpoint
+                      <input
+                        value={settings.provider_endpoint ?? ""}
+                        onChange={(event) => updateField("provider_endpoint", event.target.value || null)}
+                        placeholder={settings.provider === "ollama" ? "http://127.0.0.1:11434" : "Optional provider base URL override"}
+                      />
+                    </label>
+                  ) : null}
                   <label>
                     Adapter command
                     <input

@@ -107,7 +107,8 @@ def test_runner_probe_reports_missing_tools_and_api_billing(monkeypatch) -> None
     assert probes["ollama"]["install_status"] == "missing"
     assert probes["claude_cli"]["install_status"] == "missing"
     assert probes["openai_api"]["billing_warning"]
-    assert probes["openai_api"]["configured"] is True
+    assert probes["openai_api"]["configured"] is False
+    assert probes["openai_api"]["install_status"] == "needs_adapter"
     assert "sk-proj-super-secret-value" not in str(probes["openai_api"])
 
 
@@ -126,7 +127,12 @@ def test_ollama_probe_reports_running_state(monkeypatch) -> None:
         },
     )
 
-    probe = probe_ollama()
+    monkeypatch.setattr(
+        "bootstrap.runner_probe.detect_custom_status",
+        lambda adapter_command=None, adapter_args=None: {"cli_detected": True},
+    )
+
+    probe = probe_ollama(adapter_command="python", adapter_args=["scripts/ollama_adapter.py"])
     assert probe["available"] is True
     assert probe["configured"] is True
     assert probe["safe_default"] is True
@@ -421,7 +427,7 @@ def test_scripts_and_headless_skills_exist() -> None:
 def test_runner_status_summary_degrades_to_dry_run_only(monkeypatch) -> None:
     monkeypatch.setattr(
         "bootstrap.runner_probe.probe_runners",
-        lambda ollama_endpoint=None: [
+        lambda ollama_endpoint=None, adapter_command=None, adapter_args=None: [
             {
                 "runner_id": "dry_run",
                 "label": "Dry-run",

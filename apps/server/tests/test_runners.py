@@ -26,6 +26,7 @@ def test_runner_registry_auto_falls_back_to_codex_cli(monkeypatch) -> None:
     resolved = ResolvedRunSettings(
         provider="codex",
         provider_label="Codex",
+        provider_endpoint=None,
         runner_mode="auto",
         sandbox_mode="workspace-write",
         approval_policy="on-request",
@@ -46,6 +47,7 @@ def test_runner_registry_selects_claude_cli(monkeypatch) -> None:
     resolved = ResolvedRunSettings(
         provider="claude_code",
         provider_label="Claude Code",
+        provider_endpoint=None,
         runner_mode="auto",
         sandbox_mode="workspace-write",
         approval_policy="on-request",

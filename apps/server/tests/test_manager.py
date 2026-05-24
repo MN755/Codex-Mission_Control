@@ -290,3 +290,60 @@ def test_verify_worker_report_evidence_downgrades_unverified_fix_claim(tmp_path)
     assert verified.status == "needs_review"
     assert verified.files_changed == []
     assert "could not verify any workspace file changes" in verified.summary.lower()
+
+
+def test_duplicate_worker_report_is_rejected() -> None:
+    service = MissionControlService()
+    from db import SessionLocal, init_db
+
+    init_db()
+    db = SessionLocal()
+    try:
+        project = Project(name="Duplicate Report", idea="Idea", workspace_path=sample_workspace("duplicate-report"), status="building", runner_mode="dry_run", manager_mode="deterministic")
+        db.add(project)
+        db.flush()
+        manager_agent = Agent(project_id=project.id, name="Manager AI", role="Project orchestration", kind="manager", status="idle", workspace_path=project.workspace_path)
+        worker = Agent(project_id=project.id, name="Builder Agent A", role="Primary implementation", kind="worker", status="waiting", workspace_path=project.workspace_path)
+        db.add_all([manager_agent, worker])
+        db.flush()
+        task = Task(
+            project_id=project.id,
+            assigned_agent_id=worker.id,
+            title="Vertical slice",
+            goal="Build",
+            scope="Scope",
+            agent_role="Primary implementation",
+            milestone="Milestone 1",
+            allowed_paths_json=["src"],
+            forbidden_paths_json=[],
+            validation_steps_json=["run"],
+            success_criteria_json=["done"],
+            estimated_complexity="small",
+            dependencies_json=[],
+            status="done",
+            priority=10,
+        )
+        db.add(task)
+        db.flush()
+        run = AgentRun(agent_id=worker.id, task_id=task.id, runner_type="dry_run", process_ref="dry-test", status="done", finished_at=project.created_at, report_json={"status": "done"})
+        db.add(run)
+        db.flush()
+        report = WorkerReport(
+            agent=worker.name,
+            task_id=str(task.id),
+            status="done",
+            summary="Completed",
+            files_changed=[],
+            tests_run=[],
+            blockers=[],
+            risks=[],
+            recommended_next_task="None",
+        )
+
+        try:
+            asyncio.run(service.ingest_worker_report(db, run, report))
+            assert False, "Expected duplicate worker report rejection"
+        except ValueError as exc:
+            assert "already recorded" in str(exc).lower()
+    finally:
+        db.close()
