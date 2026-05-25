@@ -4,6 +4,26 @@
 
 This page covers the most common structured Mission Control failures so a user or Codex chat agent can tell what failed, where it failed, and what to do next without reading raw logs.
 
+## Device-aware first move
+
+Before guessing, generate a local support bundle and use the platform-appropriate health command:
+
+Windows 10 / Windows 11:
+
+```powershell
+.\scripts\mission-control-headless-health.ps1 -Json
+.\scripts\mission-control-support-bundle.ps1
+```
+
+macOS / Linux:
+
+```bash
+./scripts/mission-control-headless-health.sh --json
+./scripts/mission-control-support-bundle.sh
+```
+
+The support bundle is redacted and gives Codex or Claude chat a safer starting point than random raw logs.
+
 ## How to read an error
 
 When Mission Control reports an error, focus on:
@@ -41,6 +61,13 @@ Checks:
 ```powershell
 Invoke-WebRequest http://127.0.0.1:8010/api/health
 .\scripts\mission-control-headless-health.ps1
+```
+
+macOS / Linux equivalent:
+
+```bash
+curl -fsS http://127.0.0.1:8010/api/health
+./scripts/mission-control-headless-health.sh --json
 ```
 
 Fix:
@@ -233,6 +260,13 @@ Try:
 ```powershell
 .\scripts\mission-control-headless-health.ps1
 Invoke-WebRequest http://127.0.0.1:8010/api/health
+```
+
+macOS / Linux equivalent:
+
+```bash
+./scripts/mission-control-headless-health.sh --json
+curl -fsS http://127.0.0.1:8010/api/health
 ```
 
 Related codes:

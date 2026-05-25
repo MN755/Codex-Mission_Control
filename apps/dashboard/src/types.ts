@@ -852,9 +852,14 @@ export interface StartupStatus {
 
 export interface DiagnosticReport {
   path: string;
+  json_path?: string | null;
+  bundle_path?: string | null;
   summary: string;
   error_code: string | null;
   recommended_fixes: string[];
+  platform_profile?: Record<string, unknown>;
+  performance_profile?: Record<string, unknown>;
+  safe_debug_commands?: string[];
 }
 
 export interface DashboardAttentionItem {
@@ -1101,9 +1106,13 @@ export interface UserPreference {
 export interface DiagnosticReportListItem {
   path: string;
   json_path: string | null;
+  bundle_path?: string | null;
   created_at: string;
   error_code: string | null;
   summary: string;
+  platform_profile?: Record<string, unknown>;
+  performance_profile?: Record<string, unknown>;
+  safe_debug_commands?: string[];
 }
 
 export type ToolAvailability = "available" | "needs_setup" | "experimental" | "unsupported_on_device" | "coming_soon";

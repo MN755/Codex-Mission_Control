@@ -234,6 +234,10 @@
         "report_count",
         "latest_report",
         "orchestration_status",
+        "platform_profile",
+        "performance_profile",
+        "safe_debug_commands",
+        "bundle_path",
         "notes"
       ],
       "redaction": {

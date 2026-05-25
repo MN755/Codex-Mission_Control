@@ -6,11 +6,13 @@ import platform
 import shutil
 import subprocess
 import sys
+import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from config import LAUNCHER_ROOT, RUNTIME_LOGS_ROOT
+from device_profile import detect_device_profile, detect_performance_profile, platform_debug_commands
 from runtime_paths import diagnostics_root, runtime_path_payload
 from security.path_validation import PathValidationError, ensure_within_roots
 from security.redaction import redact_text, redact_value
@@ -40,6 +42,31 @@ def _sanitized_environment() -> dict[str, str]:
     return payload
 
 
+def _write_bundle(bundle_path: Path, *, markdown_path: Path, json_path: Path) -> None:
+    with zipfile.ZipFile(bundle_path, "w", compression=zipfile.ZIP_DEFLATED) as bundle:
+        bundle.write(markdown_path, arcname=markdown_path.name)
+        bundle.write(json_path, arcname=json_path.name)
+
+
+def _load_report_metadata(json_path: Path) -> dict[str, Any]:
+    if not json_path.exists():
+        return {}
+    try:
+        payload = json.loads(json_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    startup_status = payload.get("startup_status", {})
+    return {
+        "summary": str(startup_status.get("error_summary") or startup_status.get("overall_status") or "Diagnostic report"),
+        "error_code": startup_status.get("error_code"),
+        "platform_profile": payload.get("platform_profile") if isinstance(payload.get("platform_profile"), dict) else {},
+        "performance_profile": payload.get("performance_profile") if isinstance(payload.get("performance_profile"), dict) else {},
+        "safe_debug_commands": list(payload.get("safe_debug_commands") or []),
+        "bundle_path": payload.get("bundle_path"),
+        "timestamp": payload.get("timestamp"),
+    }
+
+
 def write_diagnostic_report(
     *,
     startup_status: dict[str, Any],
@@ -52,6 +79,11 @@ def write_diagnostic_report(
     report_dir = diagnostics_root()
     markdown_path = report_dir / f"diagnostic-{stamp}.md"
     json_path = report_dir / f"diagnostic-{stamp}.json"
+    bundle_path = report_dir / f"diagnostic-{stamp}-bundle.zip"
+    device_profile = detect_device_profile()
+    performance_profile = detect_performance_profile()
+    backend_port = int(system_status.get("backend_port") or startup_status.get("backend_port") or 8010)
+    safe_debug_commands = platform_debug_commands(backend_port=backend_port)
 
     launcher_logs = []
     if LAUNCHER_ROOT.exists():
@@ -90,6 +122,10 @@ def write_diagnostic_report(
         "recent_launcher_logs": launcher_logs,
         "recent_runtime_logs": redact_value(runtime_logs),
         "recommended_fixes": recommended_fixes,
+        "platform_profile": device_profile,
+        "performance_profile": performance_profile,
+        "safe_debug_commands": safe_debug_commands,
+        "bundle_path": str(bundle_path),
     }
 
     markdown = [
@@ -141,11 +177,40 @@ def write_diagnostic_report(
             f"- Login status: {system_status.get('login_status')}",
             f"- App-server handshake: {system_status.get('app_server_handshake_status')}",
             "",
+            "## Device profile",
+            "",
+            f"- Platform: {device_profile.get('platform_label')}",
+            f"- Architecture: {device_profile.get('architecture')}",
+            f"- CPU count: {device_profile.get('cpu_count')}",
+            f"- Memory (GB): {device_profile.get('memory_total_gb') if device_profile.get('memory_total_gb') is not None else 'Unknown'}",
+            "",
+            "## Performance guardrails",
+            "",
+            f"- Resource tier: {performance_profile.get('resource_tier')}",
+            f"- Lag risk: {performance_profile.get('lag_risk')}",
+            f"- Recommended swarm max agents: {performance_profile.get('recommended_swarm_max_agents')}",
+            "",
+            "## Safe debug commands",
+            "",
+        ]
+    )
+    markdown.extend([f"- `{command}`" for command in safe_debug_commands])
+    markdown.extend(
+        [
+            "",
             "## Recommended fixes",
             "",
         ]
     )
     markdown.extend([f"- {fix}" for fix in recommended_fixes])
+    markdown.extend(
+        [
+            "",
+            "## Platform hints",
+            "",
+        ]
+    )
+    markdown.extend([f"- {item}" for item in list(device_profile.get("platform_hints") or [])])
     markdown.extend(
         [
             "",
@@ -160,12 +225,17 @@ def write_diagnostic_report(
 
     markdown_path.write_text("\n".join(markdown).strip() + "\n", encoding="utf-8")
     json_path.write_text(json.dumps(payload, indent=2, default=str), encoding="utf-8")
+    _write_bundle(bundle_path, markdown_path=markdown_path, json_path=json_path)
     return {
         "path": str(markdown_path),
         "json_path": str(json_path),
+        "bundle_path": str(bundle_path),
         "summary": startup_status.get("error_summary") or startup_status.get("overall_status") or "Diagnostic report generated.",
         "error_code": startup_status.get("error_code"),
         "recommended_fixes": recommended_fixes,
+        "platform_profile": device_profile,
+        "performance_profile": performance_profile,
+        "safe_debug_commands": safe_debug_commands,
         "problem": {
             "type": f"https://github.com/MN755/Codex-Mission_Control/wiki/Errors-and-Debug-Codes#{str(startup_status.get('error_code') or '').lower()}",
             "title": "Mission Control diagnostic failure" if startup_status.get("error_code") else "Mission Control diagnostic report",
@@ -227,20 +297,24 @@ def list_diagnostic_reports() -> list[dict[str, Any]]:
         summary = "Diagnostic report"
         error_code: str | None = None
         created_at = datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc)
+        platform_profile: dict[str, Any] = {}
+        performance_profile: dict[str, Any] = {}
+        safe_debug_commands: list[str] = []
+        bundle_path: str | None = None
         if json_path.exists():
-            try:
-                payload = json.loads(json_path.read_text(encoding="utf-8"))
-                summary = str(
-                    payload.get("startup_status", {}).get("error_summary")
-                    or payload.get("startup_status", {}).get("overall_status")
-                    or summary
-                )
-                error_code = payload.get("startup_status", {}).get("error_code")
-                timestamp = payload.get("timestamp")
-                if isinstance(timestamp, str):
+            metadata = _load_report_metadata(json_path)
+            summary = str(metadata.get("summary") or summary)
+            error_code = metadata.get("error_code")
+            platform_profile = dict(metadata.get("platform_profile") or {})
+            performance_profile = dict(metadata.get("performance_profile") or {})
+            safe_debug_commands = [str(item) for item in list(metadata.get("safe_debug_commands") or [])]
+            bundle_path = str(metadata.get("bundle_path")) if metadata.get("bundle_path") else None
+            timestamp = metadata.get("timestamp")
+            if isinstance(timestamp, str):
+                try:
                     created_at = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
-            except (OSError, json.JSONDecodeError, ValueError):
-                pass
+                except ValueError:
+                    pass
         items.append(
             {
                 "path": str(path),
@@ -248,6 +322,10 @@ def list_diagnostic_reports() -> list[dict[str, Any]]:
                 "created_at": created_at,
                 "error_code": error_code,
                 "summary": summary,
+                "bundle_path": bundle_path,
+                "platform_profile": platform_profile,
+                "performance_profile": performance_profile,
+                "safe_debug_commands": safe_debug_commands,
             }
         )
     return items

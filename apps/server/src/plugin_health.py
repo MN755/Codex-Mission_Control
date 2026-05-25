@@ -13,6 +13,7 @@ from sqlalchemy import text
 from config import REPO_ROOT, RUNTIME_ROOT, get_codex_home
 from daemon_state import daemon_dashboard_url, daemon_identity_snapshot, read_daemon_metadata, resolve_backend_binding
 from db import engine
+from device_profile import detect_device_profile, detect_performance_profile, platform_debug_commands
 from errors import MissionControlError, derive_health_status, format_health_check_item
 from manager import service
 from system_status import detect_codex_status
@@ -139,12 +140,15 @@ def _component_state(checks: list[dict[str, Any]], keys: list[str]) -> str:
 
 async def mission_control_plugin_health() -> dict[str, Any]:
     codex = detect_codex_status()
+    device_profile = detect_device_profile()
+    performance_profile = detect_performance_profile()
     identity = daemon_identity_snapshot()
     metadata = read_daemon_metadata()
     backend_binding = resolve_backend_binding()
     dashboard_url = daemon_dashboard_url()
     daemon_host = str(backend_binding.get("host") or identity.get("host") or "")
     daemon_port = int(backend_binding.get("port") or identity.get("port") or 0)
+    device_debug_commands = platform_debug_commands(backend_port=daemon_port or 8010)
     identity_mode = str(identity.get("mode") or "unknown")
     daemon_mode = str(backend_binding.get("mode") or identity_mode or "unknown")
     daemon_url = _backend_url(daemon_host, daemon_port, "/api/health") if daemon_host and daemon_port else ""
@@ -628,6 +632,28 @@ async def mission_control_plugin_health() -> dict[str, Any]:
         )
     )
 
+    device_budget_status = "degraded" if performance_profile.get("lag_risk") == "high" else "ready"
+    device_budget_summary = (
+        f"{device_profile.get('platform_label')} detected. Mission Control should keep live swarm activity at or below "
+        f"{performance_profile.get('recommended_swarm_max_agents')} agent(s) here to avoid turning local execution into a space heater."
+    )
+    checks.append(
+        _check(
+            check_id="device_runtime_budget",
+            label="Device runtime budget",
+            status=device_budget_status,
+            summary=device_budget_summary,
+            critical=False,
+            fix=(
+                "Reduce swarm aggressiveness, prefer compact plans, or use a stronger remote runner when this device starts to lag."
+                if device_budget_status == "degraded"
+                else None
+            ),
+            commands=device_debug_commands[:3],
+            details={"platform_profile": device_profile, "performance_profile": performance_profile},
+        )
+    )
+
     overall_degraded = any(check["status"] == "broken" and check["critical"] for check in checks)
     if overall_degraded:
         overall = "broken"
@@ -644,6 +670,7 @@ async def mission_control_plugin_health() -> dict[str, Any]:
     safe_commands = list(
         dict.fromkeys(command for check in checks if check["status"] in {"broken", "degraded", "unknown"} for command in check.get("commands", []))
     )
+    safe_commands = list(dict.fromkeys([*device_debug_commands, *safe_commands]))
 
     backend_ready = _component_state(
         checks,
@@ -661,6 +688,8 @@ async def mission_control_plugin_health() -> dict[str, Any]:
         f"**Bridge ready:** {bridge_ready}",
         f"**Codex host ready:** {codex_ready}",
         f"**Optional UI:** {optional_ui_ready}",
+        f"**Device:** {device_profile.get('platform_label')}",
+        f"**Lag guardrail:** keep live swarm at or below {performance_profile.get('recommended_swarm_max_agents')} agent(s)",
         "",
         "### Checks",
     ]
@@ -679,6 +708,9 @@ async def mission_control_plugin_health() -> dict[str, Any]:
         "safe_troubleshooting_commands": safe_commands,
         "codex_chat_markdown": "\n".join(markdown_lines),
         "checked_at": _utc_now(),
+        "platform_profile": device_profile,
+        "performance_profile": performance_profile,
+        "device_debug_commands": device_debug_commands,
         "notes": [
             "Plugin health checks are read-only and never return daemon tokens, API keys, or secret file contents.",
             f"Detected Codex home: {get_codex_home()}",

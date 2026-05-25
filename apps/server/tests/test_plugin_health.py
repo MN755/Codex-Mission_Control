@@ -65,6 +65,9 @@ def test_plugin_health_ready(monkeypatch, tmp_path) -> None:
     assert not any(check["status"] == "broken" and check["critical"] for check in payload["checks"])
     assert any(check["key"] == "mission_control_daemon_reachable" and check["status"] == "ready" for check in payload["checks"])
     assert any(check["key"] == "mcp_server_reachable" and check["status"] == "ready" for check in payload["checks"])
+    assert payload["platform_profile"]["platform_label"]
+    assert payload["performance_profile"]["recommended_swarm_max_agents"] >= 1
+    assert payload["device_debug_commands"]
     assert "## Plugin Health Doctor" in payload["codex_chat_markdown"]
 
 

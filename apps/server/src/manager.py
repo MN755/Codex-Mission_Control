@@ -29,6 +29,7 @@ from config import (
     WORKTREE_ROOT,
 )
 from context_packs import context_pack_service
+from device_profile import recommended_swarm_max_agents
 from events import EventService
 from intelligence import planning_intelligence_service, reputation_service, scope_creep_service
 from interview import INTERVIEW_CATEGORIES, select_fallback_questions
@@ -1055,7 +1056,7 @@ class MissionControlService:
             "maximum": 12,
             "manager_decides": preferences.max_agents,
         }.get(preferences.swarm_aggressiveness, preferences.max_agents)
-        return max(1, min(preferences.max_agents, aggressiveness_cap))
+        return max(1, min(preferences.max_agents, aggressiveness_cap, recommended_swarm_max_agents()))
 
     def _make_swarm_spec(
         self,
@@ -2839,7 +2840,7 @@ class MissionControlService:
             for agent in db.scalars(select(Agent).where(Agent.project_id == project.id).order_by(Agent.id.asc()))
             if agent.kind == "worker" and agent.status not in {"done", "stopped"}
         ]
-        budget.max_agents = preferences.max_agents
+        budget.max_agents = self._swarm_capacity_limit(preferences)
         budget.require_approval_above_agent_count = preferences.require_approval_above_agent_count
         budget.current_active_agents = len(active_agents)
         budget.dynamic_spawning_paused = not preferences.allow_dynamic_spawning

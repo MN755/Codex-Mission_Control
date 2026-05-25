@@ -2443,9 +2443,14 @@ class CompleteFirstRunRequest(BaseModel):
 
 class DiagnosticReportRead(BaseModel):
     path: str
+    json_path: str | None = None
+    bundle_path: str | None = None
     summary: str
     error_code: str | None = None
     recommended_fixes: list[str] = Field(default_factory=list)
+    platform_profile: dict[str, Any] = Field(default_factory=dict)
+    performance_profile: dict[str, Any] = Field(default_factory=dict)
+    safe_debug_commands: list[str] = Field(default_factory=list)
     problem: ProblemDetailsRead | None = None
 
 
@@ -2510,9 +2515,13 @@ class OrchestrationHandoffRead(BaseModel):
 class DiagnosticReportListItemRead(BaseModel):
     path: str
     json_path: str | None = None
+    bundle_path: str | None = None
     created_at: datetime
     error_code: str | None = None
     summary: str
+    platform_profile: dict[str, Any] = Field(default_factory=dict)
+    performance_profile: dict[str, Any] = Field(default_factory=dict)
+    safe_debug_commands: list[str] = Field(default_factory=list)
 
 
 ToolAvailability = Literal["available", "needs_setup", "experimental", "unsupported_on_device", "coming_soon"]
@@ -2688,6 +2697,9 @@ class PluginHealthSummaryRead(BaseModel):
     codex_chat_markdown: str
     checked_at: datetime
     notes: list[str] = Field(default_factory=list)
+    platform_profile: dict[str, Any] = Field(default_factory=dict)
+    performance_profile: dict[str, Any] = Field(default_factory=dict)
+    device_debug_commands: list[str] = Field(default_factory=list)
 
 
 PluginHealthRead = PluginHealthSummaryRead

@@ -28,18 +28,21 @@ The Codex chat agent is not the Mission Control Manager. It is the bridge.
 ## Step-By-Step Workflow
 
 1. Fetch status.
-2. Fetch diagnostics.
+2. Fetch diagnostics, including platform profile, performance guardrails, safe debug commands, and the latest support-bundle path if present.
 3. Fetch pending decisions.
 4. Fetch recent orchestration events.
 5. Ask Mission Control for recovery options if the tool is available.
-6. Return a concise blocker explanation.
+6. Distinguish user-blocked, runner-blocked, daemon-blocked, and host-app-blocked states explicitly.
+7. Return a concise blocker explanation plus the safest next commands for the detected device.
 
 ## What To Show The User In Codex Chat
 
 - Current failure or degraded state
+- Detected device family: Windows 10, Windows 11, macOS, or Linux
 - Whether the run is blocked on the user, infrastructure, or manager recovery
 - Relevant recent events
 - Safe next options
+- Support-bundle path when one exists
 
 ## Safety And Approval Behavior
 
@@ -49,7 +52,7 @@ The Codex chat agent is not the Mission Control Manager. It is the bridge.
 ## Fallback Behavior If The Daemon Is Unavailable
 
 - State that bridge-level diagnostics could not reach Mission Control.
-- Suggest verifying the daemon first before continuing.
+- Suggest generating the local support bundle first, then verifying the daemon before continuing.
 
 ## What Not To Do
 

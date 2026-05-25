@@ -1,7 +1,7 @@
 # Codex Mission Control
 
 <p align="center">
-  <img src="plugins/mission-control/assets/icon.svg" alt="Mission Control logo" width="96" />
+  <img src="apps/desktop/assets/mission-control-logo.png" alt="Mission Control logo" width="112" />
 </p>
 
 Codex Mission Control is a background-running orchestration platform that lets a single Codex chat coordinate a Manager AI and multiple background coding agents.

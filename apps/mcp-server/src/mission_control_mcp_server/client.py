@@ -504,6 +504,7 @@ class MissionControlDaemonClient:
     def get_diagnostics(self, *, project_id: int | None = None, orchestration_id: int | None = None) -> dict[str, Any]:
         plugin_health = self.plugin_health()
         reports = self._request("GET", "/api/diagnostics/reports")
+        latest_report = reports[0] if reports else None
         resolved_project_id = project_id
         if resolved_project_id is None and orchestration_id is not None:
             session = self.get_orchestration(orchestration_id)
@@ -520,6 +521,10 @@ class MissionControlDaemonClient:
             "health_checks": plugin_health.get("checks", []),
             "recommended_fixes": plugin_health.get("recommended_fixes", []),
             "recent_reports": reports[:5],
+            "platform_profile": latest_report.get("platform_profile", {}) if isinstance(latest_report, dict) else {},
+            "performance_profile": latest_report.get("performance_profile", {}) if isinstance(latest_report, dict) else {},
+            "safe_debug_commands": latest_report.get("safe_debug_commands", []) if isinstance(latest_report, dict) else [],
+            "bundle_path": latest_report.get("bundle_path") if isinstance(latest_report, dict) else None,
             "orchestration_status": status.get("orchestration_status") if status else None,
             "manager_status": status.get("manager_status") if status else None,
         }
@@ -801,6 +806,10 @@ class MissionControlDaemonClient:
             "orchestration_status": payload.get("orchestration_status"),
             "manager_status": payload.get("manager_status"),
             "recommended_fixes": payload.get("recommended_fixes", [])[:6],
+            "platform_profile": payload.get("platform_profile", {}),
+            "performance_profile": payload.get("performance_profile", {}),
+            "safe_debug_commands": payload.get("safe_debug_commands", [])[:6],
+            "bundle_path": payload.get("bundle_path"),
             "notes": [check.get("summary") for check in payload.get("health_checks", [])[:6] if check.get("summary")],
         }
 

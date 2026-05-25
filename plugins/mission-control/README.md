@@ -15,7 +15,8 @@ What is here:
 - `mcp/resources.json`: safe-summary MCP resource catalog
 - `mcp/prompts.json`: reusable MCP prompt catalog
 - `templates/`: bridge-safe markdown response templates
-- `assets/icon.svg`: placeholder icon asset
+- `assets/icon.svg`: SVG icon asset for host compatibility
+- `assets/mission-control-logo.png`: transparent PNG logo for README and plugin surfaces that prefer raster artwork
 
 What is not here:
 

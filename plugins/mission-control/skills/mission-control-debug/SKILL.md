@@ -21,9 +21,10 @@ The Codex chat agent is not the Mission Control Manager. It is the bridge betwee
 
 1. Fetch status with `mission_control_get_status`.
 2. Fetch pending decisions with `mission_control_get_pending_decisions`.
-3. Fetch diagnostics and recent event digest.
+3. Fetch diagnostics and recent event digest, including platform profile, performance guardrails, safe debug commands, and the latest support-bundle path when present.
 4. Ask Mission Control for a recovery plan if available.
-5. Summarize blocker, likely causes, and next options.
+5. Distinguish user-blocked, runner-blocked, daemon-blocked, and host-app-blocked states explicitly.
+6. Summarize blocker, likely causes, and the safest next options for the detected device.
 
 ## Mission Control calls
 
@@ -40,7 +41,8 @@ Resources:
 
 ## User-facing output
 
-- State the main blocker, supporting evidence, pending approvals, and recommended next options.
+- State the main blocker, supporting evidence, pending approvals, detected device family, and recommended next options.
+- Include the support-bundle path when one exists.
 - Keep diagnostics summarized; do not paste raw logs by default.
 
 ## Approval behavior
@@ -55,7 +57,7 @@ If recovery choices may retry commands, widen scope, or restart work, relay the 
 
 ## Failure and fallback
 
-If recovery tooling is missing, summarize the failure from status, diagnostics, and events, and clearly mark recovery-plan tooling as expected or future.
+If recovery tooling is missing, summarize the failure from status, diagnostics, and events, suggest generating the local support bundle first, and clearly mark recovery-plan tooling as expected or future.
 
 ## Example invocation
 

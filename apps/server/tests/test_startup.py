@@ -129,6 +129,11 @@ def test_manual_diagnostics_report_is_created(client) -> None:
     assert report.status_code == 200
     payload = report.json()
     assert Path(payload["path"]).exists()
+    assert Path(payload["json_path"]).exists()
+    assert Path(payload["bundle_path"]).exists()
+    assert payload["safe_debug_commands"]
+    assert payload["platform_profile"]["platform_label"]
+    assert payload["performance_profile"]["recommended_swarm_max_agents"] >= 1
     assert "summary" in payload
 
 
@@ -152,3 +157,4 @@ def test_diagnostics_collects_daemon_launcher_logs(monkeypatch, tmp_path) -> Non
     payload = Path(report["json_path"]).read_text(encoding="utf-8")
     assert "daemon out" in payload
     assert "daemon err" in payload
+    assert Path(report["bundle_path"]).exists()
