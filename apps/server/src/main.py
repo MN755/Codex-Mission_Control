@@ -499,17 +499,17 @@ def daemon_identity() -> dict[str, Any]:
 
 
 @app.get("/api/plugin/health", response_model=PluginHealthSummaryRead)
-async def get_plugin_health() -> PluginHealthSummaryRead:
+async def get_plugin_health(_: None = Depends(_require_bridge_token)) -> PluginHealthSummaryRead:
     return PluginHealthSummaryRead(**(await mission_control_plugin_health()))
 
 
 @app.post("/api/plugin/health/check", response_model=PluginHealthSummaryRead)
-async def check_plugin_health() -> PluginHealthSummaryRead:
+async def check_plugin_health(_: None = Depends(_require_bridge_token)) -> PluginHealthSummaryRead:
     return PluginHealthSummaryRead(**(await mission_control_plugin_health()))
 
 
 @app.get("/api/headless/health", response_model=PluginHealthSummaryRead)
-async def get_headless_runtime_health() -> PluginHealthSummaryRead:
+async def get_headless_runtime_health(_: None = Depends(_require_bridge_token)) -> PluginHealthSummaryRead:
     return PluginHealthSummaryRead(**(await get_headless_health()))
 
 

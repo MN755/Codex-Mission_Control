@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import os
+from pathlib import Path
 
 from daemon_state import ensure_daemon_token
 
@@ -15,6 +17,11 @@ def _daemon_identity(*, repo_root: str, runtime_root: str, launcher_root: str, m
         "runtime_root": runtime_root,
         "launcher_root": launcher_root,
     }
+
+
+def _bridge_headers() -> dict[str, str]:
+    token_path = Path(os.environ["MISSION_CONTROL_RUNTIME_ROOT"]) / "daemon.token"
+    return {"X-Mission-Control-Token": token_path.read_text(encoding="utf-8").strip()}
 
 
 def test_plugin_health_ready(monkeypatch, tmp_path) -> None:
@@ -313,6 +320,6 @@ def test_plugin_health_broken_when_critical_checks_fail(monkeypatch, client, tmp
     assert any(check["key"] == "codex_cli_detected" and check["status"] == "broken" for check in payload["checks"])
     assert payload["safe_troubleshooting_commands"]
 
-    response = client.get("/api/plugin/health")
+    response = client.get("/api/plugin/health", headers=_bridge_headers())
     assert response.status_code == 200
     assert response.json()["status"] == "broken"

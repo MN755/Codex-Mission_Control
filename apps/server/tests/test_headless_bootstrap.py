@@ -164,6 +164,7 @@ def test_claude_cli_probe_prefers_resolved_cli_path(monkeypatch) -> None:
         lambda: {
             "cli_detected": True,
             "cli_path": "/opt/homebrew/bin/claude",
+            "cli_execution_available": True,
             "cli_version": "claude 1.2.3",
             "available_models": ["sonnet"],
             "login_status": "Interactive Claude Code login is managed outside Mission Control.",
@@ -172,6 +173,8 @@ def test_claude_cli_probe_prefers_resolved_cli_path(monkeypatch) -> None:
 
     probe = probe_claude_cli()
     assert probe["available"] is True
+    assert probe["configured"] is True
+    assert probe["install_status"] == "ready_auth_unknown"
     assert probe["command_path"] == "/opt/homebrew/bin/claude"
 
 
@@ -373,7 +376,7 @@ def test_headless_endpoints_and_runner_status_endpoint(client, bridge_headers, m
         },
     )
 
-    assert client.get("/api/headless/health").status_code == 200
+    assert client.get("/api/headless/health", headers=bridge_headers).status_code == 200
     assert client.get("/api/headless/config").status_code == 200
     assert client.get("/api/runners/status").status_code == 200
     assert client.post("/api/headless/autowire", json={}, headers=bridge_headers).status_code == 200

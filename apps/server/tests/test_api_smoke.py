@@ -156,6 +156,9 @@ def test_privileged_headless_and_status_routes_require_token() -> None:
     with TestClient(app) as raw_client:
         assert raw_client.get("/api/system/status").status_code == 401
         assert raw_client.get("/api/profile").status_code == 401
+        assert raw_client.get("/api/plugin/health").status_code == 401
+        assert raw_client.post("/api/plugin/health/check").status_code == 401
+        assert raw_client.get("/api/headless/health").status_code == 401
         assert raw_client.post("/api/headless/autowire", json={}).status_code == 401
         assert raw_client.post("/api/headless/repair", json={}).status_code == 401
         assert raw_client.post("/api/startup/check", json={"attempt_number": 1, "include_optional_checks": True}).status_code == 401

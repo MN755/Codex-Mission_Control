@@ -173,13 +173,29 @@ def probe_claude_cli() -> dict[str, Any]:
     command_info = probe_command("claude")
     path_text = status.get("cli_path") or command_info["path"]
     available = bool(path_text or status.get("cli_detected"))
-    configured = False
+    execution_available = bool(status.get("cli_execution_available"))
+    configured = execution_available
     install_status = "missing"
     recommended_fix = "Install Claude CLI if you want Mission Control to use it."
     if available:
-        install_status = "needs_setup"
-        recommended_fix = "Finish Claude CLI setup outside Mission Control, or set MISSION_CONTROL_CLAUDE_PATH / CLAUDE_CLI_PATH if the executable is installed in a non-standard location."
-        error = MissionControlError(code="MC-CLAUDE-AUTH-UNKNOWN-001", breakpoint="claude_cli.auth_status", severity="warning", safe_details={"runner": "claude_cli"})
+        if execution_available:
+            install_status = "ready_auth_unknown"
+            recommended_fix = "Claude CLI is executable. If live runs fail, verify the interactive Claude auth state in the host environment and then retry."
+            error = MissionControlError(
+                code="MC-CLAUDE-AUTH-UNKNOWN-001",
+                breakpoint="claude_cli.auth_status",
+                severity="warning",
+                safe_details={"runner": "claude_cli"},
+            )
+        else:
+            install_status = "needs_setup"
+            recommended_fix = "Finish Claude CLI setup outside Mission Control, or set MISSION_CONTROL_CLAUDE_PATH / CLAUDE_CLI_PATH if the executable is installed in a non-standard location."
+            error = MissionControlError(
+                code="MC-CLAUDE-AUTH-UNKNOWN-001",
+                breakpoint="claude_cli.auth_status",
+                severity="warning",
+                safe_details={"runner": "claude_cli"},
+            )
     else:
         error = MissionControlError(code="MC-CLAUDE-CLI-MISSING-001", breakpoint="claude_cli.detect", severity="warning", safe_details={"runner": "claude_cli"})
     return _probe(
@@ -192,11 +208,11 @@ def probe_claude_cli() -> dict[str, Any]:
         command_path_text=path_text,
         version=status.get("cli_version") or command_info["version"],
         safe_default=False,
-        requires_user_action=available,
+        requires_user_action=available and not execution_available,
         recommended_fix=recommended_fix,
         error=error,
         models=[str(item) for item in list(status.get("available_models", []))],
-        details={"login_status": status.get("login_status")},
+        details={"login_status": status.get("login_status"), "cli_execution_available": execution_available},
     )
 
 
