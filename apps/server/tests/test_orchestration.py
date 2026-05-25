@@ -241,7 +241,7 @@ def test_pending_decisions_can_be_listed_and_answered(client) -> None:
     )
     assert orchestration.status_code == 200, orchestration.text
     session_id = orchestration.json()["id"]
-    decisions_response = client.get(f"/api/orchestrations/{session_id}/pending-decisions", headers=_bridge_headers())
+    decisions_response = client.get(f"/api/orchestrations/{session_id}/pending-decisions", headers=_bridge_headers(), params={"project_id": project["id"]})
     assert decisions_response.status_code == 200, decisions_response.text
     decisions = decisions_response.json()
     assert decisions
@@ -250,6 +250,7 @@ def test_pending_decisions_can_be_listed_and_answered(client) -> None:
     answer = client.post(
         f"/api/decisions/{decision['id']}/answer",
         headers=_bridge_headers(),
+        params={"project_id": project["id"]},
         json={"option_id": option["id"], "selected_text": option["label"]},
     )
     assert answer.status_code == 200, answer.text
@@ -268,11 +269,12 @@ def test_invalid_pending_decision_answer_is_rejected(client) -> None:
         json={"project_id": project["id"], "user_request": "Run this through Mission Control.", "source": "codex_plugin"},
     )
     session_id = orchestration.json()["id"]
-    decisions = client.get(f"/api/orchestrations/{session_id}/pending-decisions", headers=_bridge_headers()).json()
+    decisions = client.get(f"/api/orchestrations/{session_id}/pending-decisions", headers=_bridge_headers(), params={"project_id": project["id"]}).json()
     assert decisions
     response = client.post(
         f"/api/decisions/{decisions[0]['id']}/answer",
         headers=_bridge_headers(),
+        params={"project_id": project["id"]},
         json={"option_id": "definitely_not_allowed", "selected_text": "Nope"},
     )
     assert response.status_code == 400
@@ -354,7 +356,7 @@ def test_orchestration_status_reports_pending_decision_count(client) -> None:
         json={"project_id": project["id"], "user_request": "Manage this project in the background.", "source": "codex_plugin"},
     )
     session_id = orchestration.json()["id"]
-    status = client.get(f"/api/orchestrations/{session_id}/status", headers=_bridge_headers())
+    status = client.get(f"/api/orchestrations/{session_id}/status", headers=_bridge_headers(), params={"project_id": project["id"]})
     assert status.status_code == 200, status.text
     payload = status.json()
     assert payload["project_id"] == project["id"]
@@ -372,7 +374,7 @@ def test_orchestration_handoff_returns_not_ready_state(client) -> None:
         json={"project_id": project["id"], "user_request": "Start background orchestration.", "source": "codex_plugin"},
     )
     session_id = orchestration.json()["id"]
-    handoff = client.get(f"/api/orchestrations/{session_id}/handoff", headers=_bridge_headers())
+    handoff = client.get(f"/api/orchestrations/{session_id}/handoff", headers=_bridge_headers(), params={"project_id": project["id"]})
     assert handoff.status_code == 200, handoff.text
     payload = handoff.json()
     assert payload["ready"] is False

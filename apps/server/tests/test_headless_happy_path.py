@@ -74,6 +74,7 @@ def test_headless_happy_path_acceptance(client) -> None:
             client.get(
                 f"/api/orchestrations/{orchestration_id}/pending-decisions",
                 headers=_bridge_headers(),
+                params={"project_id": project_id},
             ).json()
         )
     )
@@ -81,6 +82,7 @@ def test_headless_happy_path_acceptance(client) -> None:
     status_summary = client.get(
         f"/api/orchestrations/{orchestration_id}/status-summary",
         headers=_bridge_headers(),
+        params={"project_id": project_id},
     )
     assert status_summary.status_code == 200, status_summary.text
     status_payload = status_summary.json()
@@ -94,6 +96,7 @@ def test_headless_happy_path_acceptance(client) -> None:
     decisions_response = client.get(
         f"/api/orchestrations/{orchestration_id}/pending-decisions",
         headers=_bridge_headers(),
+        params={"project_id": project_id},
     )
     assert decisions_response.status_code == 200, decisions_response.text
     decisions = decisions_response.json()
@@ -119,6 +122,7 @@ def test_headless_happy_path_acceptance(client) -> None:
         decisions = client.get(
             f"/api/orchestrations/{orchestration_id}/pending-decisions",
             headers=_bridge_headers(),
+            params={"project_id": project_id},
         ).json()
         approval = next(item for item in decisions if item["decision_type"] == "command_approval")
 
@@ -129,6 +133,7 @@ def test_headless_happy_path_acceptance(client) -> None:
         response = client.post(
             f"/api/decisions/{decision['id']}/answer",
             headers=_bridge_headers(),
+            params={"project_id": project_id},
             json={"option_id": option["id"], "selected_text": option["label"]},
         )
         assert response.status_code == 200, response.text
@@ -136,6 +141,7 @@ def test_headless_happy_path_acceptance(client) -> None:
     approval_message = client.get(
         f"/api/decisions/{approval['id']}/bridge-message",
         headers=_bridge_headers(),
+        params={"project_id": project_id},
     )
     assert approval_message.status_code == 200, approval_message.text
     approval_payload = approval_message.json()
@@ -147,6 +153,7 @@ def test_headless_happy_path_acceptance(client) -> None:
     answered = client.post(
         f"/api/decisions/{approval['id']}/answer",
         headers=_bridge_headers(),
+        params={"project_id": project_id},
         json={"option_id": "approve_once", "selected_text": "Approve once"},
     )
     assert answered.status_code == 200, answered.text
@@ -174,7 +181,7 @@ def test_headless_happy_path_acceptance(client) -> None:
     digest = client.get(
         f"/api/orchestrations/{orchestration_id}/event-digest",
         headers=_bridge_headers(),
-        params={"window": "since_orchestration_start"},
+        params={"window": "since_orchestration_start", "project_id": project_id},
     )
     assert digest.status_code == 200, digest.text
     digest_payload = digest.json()
@@ -208,6 +215,7 @@ def test_headless_happy_path_acceptance(client) -> None:
     handoff_summary = client.get(
         f"/api/orchestrations/{orchestration_id}/handoff-summary",
         headers=_bridge_headers(),
+        params={"project_id": project_id},
     )
     assert handoff_summary.status_code == 200, handoff_summary.text
     handoff_payload = handoff_summary.json()
@@ -289,6 +297,7 @@ def test_full_headless_happy_path_approve_flow(client) -> None:
     answered = client.post(
         f"/api/decisions/{approval['id']}/answer",
         headers=_bridge_headers(),
+        params={"project_id": payload["project"]["id"]},
         json={"option_id": "approve_once", "selected_text": "Approve once"},
     )
     assert answered.status_code == 200, answered.text
@@ -299,12 +308,12 @@ def test_full_headless_happy_path_approve_flow(client) -> None:
     digest = client.get(
         f"/api/orchestrations/{orchestration_id}/event-digest",
         headers=_bridge_headers(),
-        params={"window": "since_orchestration_start"},
+        params={"window": "since_orchestration_start", "project_id": payload["project"]["id"]},
     )
     assert digest.status_code == 200, digest.text
     assert "dry run validation simulated" in digest.json()["fallback_markdown"].lower()
 
-    handoff = client.get(f"/api/orchestrations/{orchestration_id}/handoff-summary", headers=_bridge_headers())
+    handoff = client.get(f"/api/orchestrations/{orchestration_id}/handoff-summary", headers=_bridge_headers(), params={"project_id": payload["project"]["id"]})
     assert handoff.status_code == 200, handoff.text
     handoff_payload = handoff.json()
     assert "dry-run" in handoff_payload["fallback_markdown"].lower()
@@ -377,6 +386,7 @@ def test_full_headless_happy_path_deny_flow(client) -> None:
     answered = client.post(
         f"/api/decisions/{approval['id']}/answer",
         headers=_bridge_headers(),
+        params={"project_id": payload["project"]["id"]},
         json={"option_id": "deny", "selected_text": "Deny"},
     )
     assert answered.status_code == 200, answered.text
@@ -384,7 +394,7 @@ def test_full_headless_happy_path_deny_flow(client) -> None:
     assert answer_payload["decision"]["status"] == "answered"
     assert answer_payload["next_status_summary"]["user_action_required"] is False
 
-    handoff = client.get(f"/api/orchestrations/{orchestration_id}/handoff-summary", headers=_bridge_headers())
+    handoff = client.get(f"/api/orchestrations/{orchestration_id}/handoff-summary", headers=_bridge_headers(), params={"project_id": payload["project"]["id"]})
     assert handoff.status_code == 200, handoff.text
     handoff_markdown = handoff.json()["fallback_markdown"].lower()
     assert "dry-run" in handoff_markdown

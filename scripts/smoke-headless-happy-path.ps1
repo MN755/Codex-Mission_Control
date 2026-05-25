@@ -92,19 +92,19 @@ $orchestration = Invoke-Json -Method POST -Url "$BaseUrl/api/orchestrations" -He
 $orchestrationId = [int]$orchestration.id
 
 for ($index = 0; $index -lt 20; $index += 1) {
-  $pending = Invoke-Json -Method GET -Url "$BaseUrl/api/orchestrations/$orchestrationId/pending-decisions" -Headers $bridgeHeaders
+  $pending = Invoke-Json -Method GET -Url "$BaseUrl/api/orchestrations/$orchestrationId/pending-decisions?project_id=$projectId" -Headers $bridgeHeaders
   if ($pending.Count -gt 0) {
     break
   }
   Start-Sleep -Milliseconds 500
 }
 
-$statusSummary = Invoke-Json -Method GET -Url "$BaseUrl/api/orchestrations/$orchestrationId/status-summary" -Headers $bridgeHeaders
+$statusSummary = Invoke-Json -Method GET -Url "$BaseUrl/api/orchestrations/$orchestrationId/status-summary?project_id=$projectId" -Headers $bridgeHeaders
 Write-Host ""
 Write-Host "===== STATUS SUMMARY ====="
 Write-Host $statusSummary.fallback_markdown
 
-$pending = Invoke-Json -Method GET -Url "$BaseUrl/api/orchestrations/$orchestrationId/pending-decisions" -Headers $bridgeHeaders
+$pending = Invoke-Json -Method GET -Url "$BaseUrl/api/orchestrations/$orchestrationId/pending-decisions?project_id=$projectId" -Headers $bridgeHeaders
 for ($attempt = 0; $attempt -lt 3; $attempt += 1) {
   if (-not $pending -or $pending.Count -eq 0) {
     break
@@ -113,7 +113,7 @@ for ($attempt = 0; $attempt -lt 3; $attempt += 1) {
   if (-not $decision) {
     $decision = $pending | Select-Object -First 1
   }
-  $bridgeMessage = Invoke-Json -Method GET -Url "$BaseUrl/api/decisions/$($decision.id)/bridge-message" -Headers $bridgeHeaders
+  $bridgeMessage = Invoke-Json -Method GET -Url "$BaseUrl/api/decisions/$($decision.id)/bridge-message?project_id=$projectId" -Headers $bridgeHeaders
   Write-Host ""
   Write-Host "===== PENDING DECISION ====="
   Write-Host $bridgeMessage.fallback_markdown
@@ -126,7 +126,7 @@ for ($attempt = 0; $attempt -lt 3; $attempt += 1) {
   if (-not $selected) {
     break
   }
-  $answered = Invoke-Json -Method POST -Url "$BaseUrl/api/decisions/$($decision.id)/answer" -Headers $bridgeHeaders -Body @{
+  $answered = Invoke-Json -Method POST -Url "$BaseUrl/api/decisions/$($decision.id)/answer?project_id=$projectId" -Headers $bridgeHeaders -Body @{
     option_id     = $selected.id
     selected_text = $selected.label
   }
@@ -136,16 +136,16 @@ for ($attempt = 0; $attempt -lt 3; $attempt += 1) {
   if (-not $answered.next_status_summary.user_action_required) {
     break
   }
-  $pending = Invoke-Json -Method GET -Url "$BaseUrl/api/orchestrations/$orchestrationId/pending-decisions" -Headers $bridgeHeaders
+  $pending = Invoke-Json -Method GET -Url "$BaseUrl/api/orchestrations/$orchestrationId/pending-decisions?project_id=$projectId" -Headers $bridgeHeaders
 }
 
-$digest = Invoke-Json -Method GET -Url "$BaseUrl/api/orchestrations/$orchestrationId/event-digest?window=since_orchestration_start" -Headers $bridgeHeaders
+$digest = Invoke-Json -Method GET -Url "$BaseUrl/api/orchestrations/$orchestrationId/event-digest?window=since_orchestration_start&project_id=$projectId" -Headers $bridgeHeaders
 Write-Host ""
 Write-Host "===== EVENT DIGEST ====="
 Write-Host $digest.fallback_markdown
 
 $null = Invoke-Json -Method POST -Url "$BaseUrl/api/projects/$projectId/handoff/generate" -Headers $bridgeHeaders
-$handoff = Invoke-Json -Method GET -Url "$BaseUrl/api/orchestrations/$orchestrationId/handoff-summary" -Headers $bridgeHeaders
+$handoff = Invoke-Json -Method GET -Url "$BaseUrl/api/orchestrations/$orchestrationId/handoff-summary?project_id=$projectId" -Headers $bridgeHeaders
 Write-Host ""
 Write-Host "===== HANDOFF SUMMARY ====="
 Write-Host $handoff.fallback_markdown

@@ -1138,9 +1138,9 @@ class BridgeRuntimeService:
         )
 
     def get_safe_mode(self, db: Session, *, project: Project) -> dict[str, Any]:
-        policy = security_service.get_policy(db, project=project)
+        policy = security_service.get_policy(db, project=project, create_if_missing=False)
         preferences = service.get_swarm_preferences(db, project)
-        imported_safety = import_service.ensure_safety(db, project) if project.source_type == "existing_folder" else None
+        imported_safety = import_service.ensure_safety(db, project, create_if_missing=False) if project.source_type == "existing_folder" else None
         enabled = (
             policy.default_command_policy == "ask"
             and policy.deployment_policy == "deny"

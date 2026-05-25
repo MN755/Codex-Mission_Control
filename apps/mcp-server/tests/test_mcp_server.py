@@ -123,8 +123,8 @@ class FakeClient:
         self.calls.append(("request_recovery_plan", kwargs))
         return {"id": 8, "status": "proposed"}
 
-    def get_orchestration_events(self, orchestration_id: int):
-        self.calls.append(("get_orchestration_events", {"orchestration_id": orchestration_id}))
+    def get_orchestration_events(self, orchestration_id: int, *, project_id: int | None = None):
+        self.calls.append(("get_orchestration_events", {"orchestration_id": orchestration_id, "project_id": project_id}))
         return [{"event_type": "orchestration_created"}]
 
     def get_codebase_map(self, project_id: int):
@@ -195,12 +195,12 @@ class FakeClient:
         self.calls.append(("request_recovery_options", kwargs))
         return {"status": "requested"}
 
-    def pause(self, orchestration_id: int):
-        self.calls.append(("pause", {"orchestration_id": orchestration_id}))
+    def pause(self, orchestration_id: int, *, project_id: int | None = None):
+        self.calls.append(("pause", {"orchestration_id": orchestration_id, "project_id": project_id}))
         return {"id": orchestration_id, "status": "paused"}
 
-    def resume(self, orchestration_id: int):
-        self.calls.append(("resume", {"orchestration_id": orchestration_id}))
+    def resume(self, orchestration_id: int, *, project_id: int | None = None):
+        self.calls.append(("resume", {"orchestration_id": orchestration_id, "project_id": project_id}))
         return {"id": orchestration_id, "status": "running"}
 
     def read_resource(self, uri: str):
@@ -246,7 +246,7 @@ def test_answer_decision_sends_answer() -> None:
     server = MissionControlMcpServer(client=client)
     result = server.call_tool(
         "mission_control_answer_decision",
-        {"decision_id": 9, "option_id": "approve_once", "selected_text": "Approve once"},
+        {"decision_id": 9, "project_id": 7, "option_id": "approve_once", "selected_text": "Approve once"},
     )
     assert result["structuredContent"]["status"] == "answered"
     assert client.calls[0][0] == "answer_decision"

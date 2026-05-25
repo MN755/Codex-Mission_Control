@@ -140,7 +140,11 @@ def test_subagent_burst_bridge_message_and_use_fewer_flow(client) -> None:
     decisions = client.get(f"/api/projects/{project['id']}/pending-decisions", headers=_bridge_headers()).json()
     decision = next(item for item in decisions if item["decision_type"] == "subagent_burst_approval")
 
-    bridge_message = client.get(f"/api/decisions/{decision['id']}/bridge-message", headers=_bridge_headers())
+    bridge_message = client.get(
+        f"/api/decisions/{decision['id']}/bridge-message",
+        headers=_bridge_headers(),
+        params={"project_id": project["id"]},
+    )
     assert bridge_message.status_code == 200, bridge_message.text
     markdown = bridge_message.json()["fallback_markdown"]
     assert "Mission Control recommends a Codex subagent burst" in markdown
@@ -150,11 +154,12 @@ def test_subagent_burst_bridge_message_and_use_fewer_flow(client) -> None:
     answer = client.post(
         f"/api/decisions/{decision['id']}/answer",
         headers=_bridge_headers(),
+        params={"project_id": project["id"]},
         json={"option_id": "use_fewer_subagents", "selected_text": "Use fewer subagents"},
     )
     assert answer.status_code == 200, answer.text
 
-    batch = client.get(f"/api/subagents/batches/{batch_id}", headers=_bridge_headers()).json()
+    batch = client.get(f"/api/subagents/batches/{batch_id}", headers=_bridge_headers(), params={"project_id": project["id"]}).json()
     statuses = [spec["status"] for spec in batch["specs"]]
     assert batch["status"] == "approved"
     assert statuses.count("approved") == 3
@@ -224,6 +229,7 @@ def test_result_ingestion_completes_batch(client) -> None:
     results = client.post(
         f"/api/subagents/batches/{batch['id']}/results",
         headers=_bridge_headers(),
+        params={"project_id": project["id"]},
         json={
             "results": [
                 {"subagent_name": spec["name"], "summary": f"{spec['display_name']} summary", "evidence": ["file.py"], "risks_found": [], "recommendations": ["keep"], "confidence": "medium"}

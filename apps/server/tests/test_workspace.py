@@ -90,7 +90,7 @@ def test_high_impact_question_cannot_auto_decide(client) -> None:
             manager_recommendation="No",
         )
         db.commit()
-        response = client.post(f"/api/questions/{question.id}/auto-decide")
+        response = client.post(f"/api/questions/{question.id}/auto-decide", params={"project_id": project.id})
         assert response.status_code == 400
     finally:
         db.close()

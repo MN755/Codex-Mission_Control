@@ -26,7 +26,7 @@ DEFAULT_SECURITY_POLICY = {
 
 
 class SecurityService:
-    def get_policy(self, db: Session, *, project: Project | None = None) -> SecurityPolicy:
+    def get_policy(self, db: Session, *, project: Project | None = None, create_if_missing: bool = True) -> SecurityPolicy:
         scope = "project" if project is not None else "global"
         query = select(SecurityPolicy).where(SecurityPolicy.scope == scope)
         if project is None:
@@ -35,6 +35,8 @@ class SecurityService:
             query = query.where(SecurityPolicy.project_id == project.id)
         record = db.scalar(query.order_by(SecurityPolicy.id.asc()))
         if record is None:
+            if not create_if_missing:
+                return SecurityPolicy(scope=scope, project_id=project.id if project is not None else None, **DEFAULT_SECURITY_POLICY)
             record = SecurityPolicy(scope=scope, project_id=project.id if project is not None else None, **DEFAULT_SECURITY_POLICY)
             db.add(record)
             db.flush()

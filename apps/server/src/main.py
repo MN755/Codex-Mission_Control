@@ -348,6 +348,16 @@ def _get_subagent_batch_or_404(db: Session, batch_id: int) -> SubagentBatch:
     return batch
 
 
+def _require_project_scope(resource_name: str, actual_project_id: int | None, requested_project_id: int) -> None:
+    if actual_project_id != requested_project_id:
+        raise HTTPException(status_code=404, detail=f"{resource_name} not found in this project")
+
+
+def _require_imported_project(project: Project) -> None:
+    if project.source_type != "existing_folder":
+        raise HTTPException(status_code=400, detail="Import safety is only available for imported codebases")
+
+
 def _require_bridge_token(request: Request) -> None:
     token = read_daemon_token()
     if not token:
@@ -1002,11 +1012,13 @@ def list_context_packs(project_id: int, db: Session = Depends(get_db)) -> list[C
 
 
 @app.get("/api/context-packs/{context_pack_id}", response_model=ContextPackRead)
-def get_context_pack(context_pack_id: int, db: Session = Depends(get_db)) -> ContextPackRead:
+def get_context_pack(context_pack_id: int, project_id: int = Query(...), db: Session = Depends(get_db)) -> ContextPackRead:
     try:
-        return ContextPackRead(**context_pack_service.get_context_pack(db, context_pack_id))
+        pack = context_pack_service.get_context_pack(db, context_pack_id)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    _require_project_scope("Context pack", pack.get("project_id"), project_id)
+    return ContextPackRead(**pack)
 
 
 @app.get("/api/projects/{project_id}/risks", response_model=list[RiskRecordRead])
@@ -1042,11 +1054,12 @@ def analyze_scope_creep(project_id: int, payload: ScopeChangeAnalyzeRequest, db:
 
 
 @app.post("/api/scope-creep/{signal_id}/resolve", response_model=ScopeChangeSignalRead)
-def resolve_scope_creep(signal_id: int, payload: ScopeChangeResolveRequest, db: Session = Depends(get_db)) -> ScopeChangeSignalRead:
+def resolve_scope_creep(signal_id: int, payload: ScopeChangeResolveRequest, project_id: int = Query(...), db: Session = Depends(get_db)) -> ScopeChangeSignalRead:
     try:
-        return ScopeChangeSignalRead.model_validate(scope_creep_service.resolve(db, signal_id, payload.status))
+        signal = scope_creep_service.resolve(db, signal_id, payload.status, project_id=project_id)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return ScopeChangeSignalRead.model_validate(signal)
 
 
 @app.post("/api/projects/{project_id}/swarm/simulate-launch", response_model=SwarmLaunchSimulationRead)
@@ -1064,8 +1077,10 @@ def list_swarm_simulations(project_id: int, db: Session = Depends(get_db)) -> li
 @app.get("/api/projects/{project_id}/validation-coverage", response_model=list[ValidationCoverageAreaRead])
 def get_validation_coverage(project_id: int, db: Session = Depends(get_db)) -> list[ValidationCoverageAreaRead]:
     project = _get_project_or_404(db, project_id)
-    coverage = validation_coverage_service.list_coverage(db, project) or validation_coverage_service.recompute(db, project)
-    return [ValidationCoverageAreaRead.model_validate(item) for item in coverage]
+    coverage = validation_coverage_service.list_coverage(db, project)
+    if coverage:
+        return [ValidationCoverageAreaRead.model_validate(item) for item in coverage]
+    return [ValidationCoverageAreaRead.model_validate(item) for item in validation_coverage_service.preview_coverage(db, project)]
 
 
 @app.post("/api/projects/{project_id}/validation-coverage/recompute", response_model=list[ValidationCoverageAreaRead])
@@ -1332,10 +1347,14 @@ async def run_headless_happy_path_demo(
 def get_orchestration(
     orchestration_id: int,
     request: Request,
+    project_id: int | None = Query(default=None),
     db: Session = Depends(get_db),
     _: None = Depends(_require_bridge_token),
 ) -> OrchestrationSessionRead:
-    return OrchestrationSessionRead(**coordinator._serialize_session(_get_orchestration_or_404(db, orchestration_id)))
+    session = _get_orchestration_or_404(db, orchestration_id)
+    if project_id is not None:
+        _require_project_scope("Orchestration session", session.project_id, project_id)
+    return OrchestrationSessionRead(**coordinator._serialize_session(session))
 
 
 @app.get("/api/projects/{project_id}/orchestrations/active", response_model=OrchestrationSessionRead | None)
@@ -1354,10 +1373,12 @@ def get_active_project_orchestration(
 async def get_orchestration_status(
     orchestration_id: int,
     request: Request,
+    project_id: int = Query(...),
     db: Session = Depends(get_db),
     _: None = Depends(_require_bridge_token),
 ) -> OrchestrationStatusRead:
     session = _get_orchestration_or_404(db, orchestration_id)
+    _require_project_scope("Orchestration session", session.project_id, project_id)
     return OrchestrationStatusRead(**(await coordinator.get_status(db, session)))
 
 
@@ -1365,10 +1386,13 @@ async def get_orchestration_status(
 def pause_orchestration(
     orchestration_id: int,
     request: Request,
+    project_id: int = Query(...),
     db: Session = Depends(get_db),
     _: None = Depends(_require_bridge_token),
 ) -> OrchestrationSessionRead:
-    session = coordinator.pause_orchestration(db, _get_orchestration_or_404(db, orchestration_id))
+    session = _get_orchestration_or_404(db, orchestration_id)
+    _require_project_scope("Orchestration session", session.project_id, project_id)
+    session = coordinator.pause_orchestration(db, session)
     return OrchestrationSessionRead(**coordinator._serialize_session(session))
 
 
@@ -1376,11 +1400,14 @@ def pause_orchestration(
 async def resume_orchestration(
     orchestration_id: int,
     request: Request,
+    project_id: int = Query(...),
     db: Session = Depends(get_db),
     _: None = Depends(_require_bridge_token),
 ) -> OrchestrationSessionRead:
+    session = _get_orchestration_or_404(db, orchestration_id)
+    _require_project_scope("Orchestration session", session.project_id, project_id)
     try:
-        session = coordinator.resume_orchestration(db, _get_orchestration_or_404(db, orchestration_id))
+        session = coordinator.resume_orchestration(db, session)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return OrchestrationSessionRead(**coordinator._serialize_session(session))
@@ -1390,10 +1417,12 @@ async def resume_orchestration(
 def get_orchestration_events(
     orchestration_id: int,
     request: Request,
+    project_id: int = Query(...),
     db: Session = Depends(get_db),
     _: None = Depends(_require_bridge_token),
 ) -> list[OrchestrationEventRead]:
     session = _get_orchestration_or_404(db, orchestration_id)
+    _require_project_scope("Orchestration session", session.project_id, project_id)
     return [OrchestrationEventRead(**event) for event in coordinator.list_events(db, session)]
 
 
@@ -1401,10 +1430,12 @@ def get_orchestration_events(
 def get_orchestration_handoff(
     orchestration_id: int,
     request: Request,
+    project_id: int = Query(...),
     db: Session = Depends(get_db),
     _: None = Depends(_require_bridge_token),
 ) -> OrchestrationHandoffRead:
     session = _get_orchestration_or_404(db, orchestration_id)
+    _require_project_scope("Orchestration session", session.project_id, project_id)
     return OrchestrationHandoffRead(**coordinator.get_handoff(db, session))
 
 
@@ -1412,10 +1443,12 @@ def get_orchestration_handoff(
 def get_orchestration_pending_decisions(
     orchestration_id: int,
     request: Request,
+    project_id: int = Query(...),
     db: Session = Depends(get_db),
     _: None = Depends(_require_bridge_token),
 ) -> list[PendingDecisionRead]:
     session = _get_orchestration_or_404(db, orchestration_id)
+    _require_project_scope("Orchestration session", session.project_id, project_id)
     project = _get_project_or_404(db, session.project_id)
     return [PendingDecisionRead(**item) for item in bridge_runtime_service.get_pending_decisions(db, project=project, orchestration=session)]
 
@@ -1435,10 +1468,12 @@ def get_project_pending_decisions(
 def get_decision_bridge_message(
     decision_id: int,
     request: Request,
+    project_id: int = Query(...),
     db: Session = Depends(get_db),
     _: None = Depends(_require_bridge_token),
 ) -> BridgeMessageRead:
     decision = _get_pending_decision_or_404(db, decision_id)
+    _require_project_scope("Pending decision", decision.project_id, project_id)
     return BridgeMessageRead(**bridge_runtime_service.get_bridge_message_for_decision(db, decision))
 
 
@@ -1447,10 +1482,12 @@ async def answer_pending_decision(
     decision_id: int,
     payload: PendingDecisionAnswerRequest,
     request: Request,
+    project_id: int = Query(...),
     db: Session = Depends(get_db),
     _: None = Depends(_require_bridge_token),
 ) -> PendingDecisionAnswerResultRead:
     decision = _get_pending_decision_or_404(db, decision_id)
+    _require_project_scope("Pending decision", decision.project_id, project_id)
     try:
         updated, next_summary = await bridge_runtime_service.answer_decision(
             db,
@@ -1479,10 +1516,12 @@ async def answer_pending_decision(
 async def get_orchestration_status_summary(
     orchestration_id: int,
     request: Request,
+    project_id: int = Query(...),
     db: Session = Depends(get_db),
     _: None = Depends(_require_bridge_token),
 ) -> BridgeMessageRead:
     session = _get_orchestration_or_404(db, orchestration_id)
+    _require_project_scope("Orchestration session", session.project_id, project_id)
     project = _get_project_or_404(db, session.project_id)
     return BridgeMessageRead(**(await bridge_runtime_service.get_status_summary(db, project=project, orchestration=session)))
 
@@ -1502,11 +1541,13 @@ async def get_project_status_summary(
 def get_orchestration_event_digest(
     orchestration_id: int,
     request: Request,
+    project_id: int = Query(...),
     window: EventDigestWindow = Query(default="last_15_minutes"),
     db: Session = Depends(get_db),
     _: None = Depends(_require_bridge_token),
 ) -> BridgeMessageRead:
     session = _get_orchestration_or_404(db, orchestration_id)
+    _require_project_scope("Orchestration session", session.project_id, project_id)
     project = _get_project_or_404(db, session.project_id)
     return BridgeMessageRead(**bridge_runtime_service.get_event_digest(db, project=project, orchestration=session, window=window))
 
@@ -1527,10 +1568,12 @@ def get_project_event_digest(
 def get_orchestration_handoff_summary(
     orchestration_id: int,
     request: Request,
+    project_id: int = Query(...),
     db: Session = Depends(get_db),
     _: None = Depends(_require_bridge_token),
 ) -> BridgeMessageRead:
     session = _get_orchestration_or_404(db, orchestration_id)
+    _require_project_scope("Orchestration session", session.project_id, project_id)
     project = _get_project_or_404(db, session.project_id)
     return BridgeMessageRead(**bridge_runtime_service.get_handoff_summary(db, project=project, orchestration=session))
 
@@ -1674,10 +1717,12 @@ def list_project_subagent_batches(
 def get_subagent_batch(
     batch_id: int,
     request: Request,
+    project_id: int = Query(...),
     db: Session = Depends(get_db),
     _: None = Depends(_require_bridge_token),
 ) -> SubagentBatchRead:
     batch = _get_subagent_batch_or_404(db, batch_id)
+    _require_project_scope("Subagent batch", batch.project_id, project_id)
     return SubagentBatchRead(**subagent_planner_service.serialize_batch(db, batch))
 
 
@@ -1686,10 +1731,12 @@ def ingest_subagent_batch_results(
     batch_id: int,
     payload: SubagentBatchResultsIngestRequest,
     request: Request,
+    project_id: int = Query(...),
     db: Session = Depends(get_db),
     _: None = Depends(_require_bridge_token),
 ) -> SubagentBatchRead:
     batch = _get_subagent_batch_or_404(db, batch_id)
+    _require_project_scope("Subagent batch", batch.project_id, project_id)
     try:
         updated = subagent_planner_service.ingest_results(db, batch, payload.model_dump())
     except ValueError as exc:
@@ -1829,10 +1876,12 @@ def select_project_recovery_plan(
     plan_id: int,
     payload: RecoveryPlanSelectRequest,
     request: Request,
+    project_id: int = Query(...),
     db: Session = Depends(get_db),
     _: None = Depends(_require_bridge_token),
 ) -> RecoveryPlanRead:
-    _get_recovery_plan_or_404(db, plan_id)
+    plan = _get_recovery_plan_or_404(db, plan_id)
+    _require_project_scope("Recovery plan", plan.project_id, project_id)
     try:
         plan = service.select_recovery_action(db, plan_id, payload.action)
     except ValueError as exc:
@@ -2053,12 +2102,17 @@ def choose_import_interview(project_id: int, payload: ImportInterviewChoiceReque
 @app.get("/api/projects/{project_id}/import-safety", response_model=ImportedCodebaseSafetyRead)
 def get_import_safety(project_id: int, db: Session = Depends(get_db)) -> ImportedCodebaseSafetyRead:
     project = _get_project_or_404(db, project_id)
-    return ImportedCodebaseSafetyRead.model_validate(import_service.ensure_safety(db, project))
+    _require_imported_project(project)
+    safety = import_service.ensure_safety(db, project, create_if_missing=False)
+    if safety is None:
+        raise HTTPException(status_code=404, detail="Import safety not found")
+    return ImportedCodebaseSafetyRead.model_validate(safety)
 
 
 @app.patch("/api/projects/{project_id}/import-safety", response_model=ImportedCodebaseSafetyRead)
 def patch_import_safety(project_id: int, payload: ImportedCodebaseSafetyUpdate, db: Session = Depends(get_db)) -> ImportedCodebaseSafetyRead:
     project = _get_project_or_404(db, project_id)
+    _require_imported_project(project)
     safety = import_service.update_safety(db, project, payload.model_dump(exclude_unset=True))
     service.events.publish(db, project.id, "import_safety_updated", {"project_id": project.id, "write_permission_status": safety.write_permission_status})
     return ImportedCodebaseSafetyRead.model_validate(safety)
@@ -2067,6 +2121,7 @@ def patch_import_safety(project_id: int, payload: ImportedCodebaseSafetyUpdate, 
 @app.post("/api/projects/{project_id}/write-permission", response_model=ImportedCodebaseSafetyRead)
 def update_write_permission(project_id: int, payload: WritePermissionRequest, db: Session = Depends(get_db)) -> ImportedCodebaseSafetyRead:
     project = _get_project_or_404(db, project_id)
+    _require_imported_project(project)
     safety = import_service.update_safety(db, project, {"write_permission_status": payload.write_permission_status})
     service.events.publish(db, project.id, "write_permission_updated", {"project_id": project.id, "write_permission_status": payload.write_permission_status})
     return ImportedCodebaseSafetyRead.model_validate(safety)
@@ -2204,11 +2259,13 @@ async def generate_manager_update(project_id: int, db: Session = Depends(get_db)
 @app.get("/api/projects/{project_id}/questions/pending", response_model=list[ManagerQuestionRead])
 def get_pending_questions(project_id: int, db: Session = Depends(get_db)) -> list[ManagerQuestionRead]:
     project = _get_project_or_404(db, project_id)
-    return [ManagerQuestionRead(**item) for item in service.list_pending_questions(db, project)]
+    return [ManagerQuestionRead(**item) for item in service.list_pending_questions(db, project, mutate=False)]
 
 
 @app.post("/api/questions/{question_id}/answer", response_model=ManagerQuestionRead)
 def answer_question(question_id: int, payload: ManagerQuestionAnswer, db: Session = Depends(get_db)) -> ManagerQuestionRead:
+    if payload.project_id is None:
+        raise HTTPException(status_code=400, detail="project_id is required")
     try:
         question = service.answer_question(
             db,
@@ -2223,9 +2280,9 @@ def answer_question(question_id: int, payload: ManagerQuestionAnswer, db: Sessio
 
 
 @app.post("/api/questions/{question_id}/auto-decide", response_model=ManagerQuestionRead)
-def auto_decide_question(question_id: int, db: Session = Depends(get_db)) -> ManagerQuestionRead:
+def auto_decide_question(question_id: int, project_id: int = Query(...), db: Session = Depends(get_db)) -> ManagerQuestionRead:
     try:
-        question = service.auto_decide_question(db, question_id)
+        question = service.auto_decide_question(db, question_id, project_id=project_id)
         return ManagerQuestionRead(**service._serialize_question(question))
     except ValueError as exc:
         status_code = 400 if "High-impact" in str(exc) or "no selectable options" in str(exc).lower() else 404
@@ -2269,7 +2326,7 @@ def allow_approval_for_project(approval_id: int, payload: ApprovalResolveRequest
 @app.get("/api/projects/{project_id}/manager/queue", response_model=ManagerQueueRead)
 def get_manager_queue(project_id: int, db: Session = Depends(get_db)) -> ManagerQueueRead:
     project = _get_project_or_404(db, project_id)
-    return ManagerQueueRead(**service.get_manager_queue(db, project))
+    return ManagerQueueRead(**service.get_manager_queue(db, project, mutate=False))
 
 
 @app.post("/api/projects/{project_id}/widgets", response_model=ProjectSettingsRead)

@@ -121,24 +121,25 @@ class MissionControlMcpServer:
                 "inputSchema": _object_schema(
                     {
                         "decision_id": {"type": "integer", "minimum": 1},
+                        "project_id": {"type": "integer", "minimum": 1},
                         "option_id": {"type": "string", "minLength": 1},
                         "selected_text": {"type": "string", "minLength": 1},
                         "free_text": {"type": "string"},
                     },
-                    required=["decision_id", "option_id", "selected_text"],
+                    required=["decision_id", "project_id", "option_id", "selected_text"],
                 ),
                 "outputSchema": GENERIC_OUTPUT_SCHEMA,
             },
             {
                 "name": "mission_control_pause",
                 "description": "Pause a running Mission Control orchestration.",
-                "inputSchema": _object_schema({"orchestration_id": {"type": "integer", "minimum": 1}}, required=["orchestration_id"]),
+                "inputSchema": common_target,
                 "outputSchema": GENERIC_OUTPUT_SCHEMA,
             },
             {
                 "name": "mission_control_resume",
                 "description": "Resume a paused Mission Control orchestration.",
-                "inputSchema": _object_schema({"orchestration_id": {"type": "integer", "minimum": 1}}, required=["orchestration_id"]),
+                "inputSchema": common_target,
                 "outputSchema": GENERIC_OUTPUT_SCHEMA,
             },
             {
@@ -506,16 +507,23 @@ class MissionControlMcpServer:
     def _call_answer_decision(self, args: dict[str, Any]) -> Any:
         return self.client.answer_decision(
             decision_id=self._require_int(args, "decision_id"),
+            project_id=self._require_int(args, "project_id"),
             option_id=self._require_string(args, "option_id"),
             selected_text=self._require_string(args, "selected_text"),
             free_text=str(args["free_text"]) if args.get("free_text") is not None else None,
         )
 
     def _call_pause(self, args: dict[str, Any]) -> Any:
-        return self.client.pause(self._require_int(args, "orchestration_id"))
+        orchestration_id, project_id = self._require_target(args)
+        if orchestration_id is None:
+            raise RuntimeError("Pause requires an orchestration_id.")
+        return self.client.pause(orchestration_id, project_id=project_id)
 
     def _call_resume(self, args: dict[str, Any]) -> Any:
-        return self.client.resume(self._require_int(args, "orchestration_id"))
+        orchestration_id, project_id = self._require_target(args)
+        if orchestration_id is None:
+            raise RuntimeError("Resume requires an orchestration_id.")
+        return self.client.resume(orchestration_id, project_id=project_id)
 
     def _call_get_handoff(self, args: dict[str, Any]) -> Any:
         orchestration_id, project_id = self._require_target(args)
@@ -572,7 +580,10 @@ class MissionControlMcpServer:
         )
 
     def _call_get_orchestration_events(self, args: dict[str, Any]) -> Any:
-        return self.client.get_orchestration_events(self._require_int(args, "orchestration_id"))
+        orchestration_id, project_id = self._require_target(args)
+        if orchestration_id is None:
+            raise RuntimeError("Orchestration events require an orchestration_id.")
+        return self.client.get_orchestration_events(orchestration_id, project_id=project_id)
 
     def _call_get_codebase_map(self, args: dict[str, Any]) -> Any:
         return self.client.get_codebase_map(self._require_int(args, "project_id"))

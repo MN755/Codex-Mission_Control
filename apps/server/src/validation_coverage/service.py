@@ -44,10 +44,17 @@ class ValidationCoverageService:
             db.flush()
         return record
 
-    def recompute(self, db: Session, project: Project) -> list[ValidationCoverageArea]:
+    def _compute_area_payloads(self, db: Session, project: Project) -> list[dict[str, Any]]:
+        existing = {
+            item.area: item
+            for item in self.list_coverage(db, project)
+        }
+        recipe_id = None
+        recipes = list(db.scalars(select(ValidationRecipe).where(ValidationRecipe.project_id == project.id).order_by(ValidationRecipe.id.asc())))
+        if recipes:
+            recipe_id = recipes[0].id
         repo = project.repo_intelligence
         tasks = list(db.scalars(select(Task).where(Task.project_id == project.id).order_by(Task.id.asc())))
-        recipes = list(db.scalars(select(ValidationRecipe).where(ValidationRecipe.project_id == project.id).order_by(ValidationRecipe.id.asc())))
         performance = list(
             db.scalars(
                 select(AgentPerformanceRecord)
@@ -77,7 +84,6 @@ class ValidationCoverageService:
             return any(token in item.lower() for item in (repo.important_folders_json or []) + (repo.deployment_config_json or []) + (repo.docs_found_json or []))
 
         def infer_status(area: str) -> tuple[str, str | None, int | None]:
-            recipe_id = recipes[0].id if recipes else None
             if area == "frontend":
                 if any(path for task in done_tasks for path in task.allowed_paths_json if "dashboard" in path.lower() or "src" == path.lower()):
                     return "validated", "Frontend task completed with explicit task ownership.", recipe_id
@@ -118,13 +124,29 @@ class ValidationCoverageService:
                     return ("partial" if done_tasks else "planned"), evidence_lines[area], recipe_id
             return "none", None, recipe_id
 
+        return [
+            {
+                "id": existing[area].id if area in existing else 0,
+                "project_id": project.id,
+                "area": area,
+                "coverage_status": infer_status(area)[0],
+                "evidence_summary": infer_status(area)[1],
+                "related_validation_step_id": infer_status(area)[2],
+                "last_updated": existing[area].last_updated if area in existing else project.updated_at,
+            }
+            for area in VALIDATION_AREAS
+        ]
+
+    def preview_coverage(self, db: Session, project: Project) -> list[dict[str, Any]]:
+        return self._compute_area_payloads(db, project)
+
+    def recompute(self, db: Session, project: Project) -> list[ValidationCoverageArea]:
         results: list[ValidationCoverageArea] = []
-        for area in VALIDATION_AREAS:
-            record = self._upsert_area(db, project.id, area)
-            status, evidence, recipe_id = infer_status(area)
-            record.coverage_status = status
-            record.evidence_summary = evidence
-            record.related_validation_step_id = recipe_id
+        for payload in self._compute_area_payloads(db, project):
+            record = self._upsert_area(db, project.id, str(payload["area"]))
+            record.coverage_status = str(payload["coverage_status"])
+            record.evidence_summary = payload["evidence_summary"]
+            record.related_validation_step_id = payload["related_validation_step_id"]
             db.flush()
             results.append(record)
         return results
@@ -132,7 +154,12 @@ class ValidationCoverageService:
     def coverage_summary(self, db: Session, project: Project) -> dict[str, Any]:
         items = self.list_coverage(db, project)
         if not items:
-            items = self.recompute(db, project)
+            preview = self.preview_coverage(db, project)
+            gaps = [item["area"] for item in preview if item["coverage_status"] in {"none", "failed"}]
+            return {
+                "items": preview,
+                "gaps": gaps,
+            }
         gaps = [item.area for item in items if item.coverage_status in {"none", "failed"}]
         return {
             "items": items,

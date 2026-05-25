@@ -39,6 +39,7 @@ class MissionControlDaemonClient:
         self._configured_port = port
         self.base_url = base_url or _base_url(host, port)
         self.timeout = timeout
+        self._orchestration_project_ids: dict[int, int] = {}
 
     def _discover_repo_root(self) -> Path:
         explicit = os.environ.get("MISSION_CONTROL_REPO_ROOT")
@@ -241,6 +242,23 @@ class MissionControlDaemonClient:
         session = self.active_project_orchestration(project_id)
         return int(session["id"]) if session else None
 
+    def _remember_orchestration_project(self, orchestration_id: int | None, project_id: int | None) -> None:
+        if orchestration_id is None or project_id is None:
+            return
+        self._orchestration_project_ids[int(orchestration_id)] = int(project_id)
+
+    def _project_id_for_orchestration(self, orchestration_id: int, project_id: int | None = None) -> int:
+        if project_id is not None:
+            self._remember_orchestration_project(orchestration_id, project_id)
+            return int(project_id)
+        cached = self._orchestration_project_ids.get(int(orchestration_id))
+        if cached is not None:
+            return cached
+        session = self.get_orchestration(orchestration_id)
+        resolved_project_id = int(session["project_id"])
+        self._remember_orchestration_project(orchestration_id, resolved_project_id)
+        return resolved_project_id
+
     def daemon_status(self) -> dict[str, Any]:
         return self._request("GET", "/api/daemon/status", requires_token=False)
 
@@ -259,7 +277,7 @@ class MissionControlDaemonClient:
         read_only_first: bool = True,
         attach_policy: str = "reuse_existing",
     ) -> dict[str, Any]:
-        return self._request(
+        payload = self._request(
             "POST",
             "/api/headless/attach-workspace",
             json_body={
@@ -270,19 +288,30 @@ class MissionControlDaemonClient:
                 "attach_policy": attach_policy,
             },
         )
+        project = payload.get("project") if isinstance(payload, dict) else None
+        orchestration = payload.get("orchestration") if isinstance(payload, dict) else None
+        if isinstance(project, dict) and isinstance(orchestration, dict):
+            self._remember_orchestration_project(orchestration.get("id"), project.get("id"))
+        return payload
 
     def start_task(self, *, project_id: int, user_request: str, source: str = "codex_plugin", orchestration_id: int | None = None) -> dict[str, Any]:
-        return self._request(
+        payload = self._request(
             "POST",
             "/api/orchestrations",
             json_body={"project_id": project_id, "user_request": user_request, "source": source, "orchestration_id": orchestration_id},
         )
+        if isinstance(payload, dict):
+            self._remember_orchestration_project(payload.get("id"), project_id)
+        return payload
 
     def get_project(self, project_id: int) -> dict[str, Any]:
         return self._request("GET", f"/api/projects/{project_id}")
 
     def get_orchestration(self, orchestration_id: int) -> dict[str, Any]:
-        return self._request("GET", f"/api/orchestrations/{orchestration_id}")
+        payload = self._request("GET", f"/api/orchestrations/{orchestration_id}")
+        if isinstance(payload, dict):
+            self._remember_orchestration_project(payload.get("id"), payload.get("project_id"))
+        return payload
 
     def active_project_orchestration(self, project_id: int) -> dict[str, Any] | None:
         return self._request("GET", f"/api/projects/{project_id}/orchestrations/active")
@@ -291,12 +320,17 @@ class MissionControlDaemonClient:
         resolved_id = self._maybe_orchestration_id(orchestration_id=orchestration_id, project_id=project_id)
         if resolved_id is None:
             raise RuntimeError("Mission Control status requires an orchestration_id or a project with an active orchestration.")
-        return self._request("GET", f"/api/orchestrations/{resolved_id}/status")
+        resolved_project_id = self._project_id_for_orchestration(resolved_id, project_id=project_id)
+        payload = self._request("GET", f"/api/orchestrations/{resolved_id}/status", params={"project_id": resolved_project_id})
+        if isinstance(payload, dict):
+            self._remember_orchestration_project(payload.get("orchestration_id") or resolved_id, payload.get("project_id") or resolved_project_id)
+        return payload
 
     def get_status_summary(self, *, orchestration_id: int | None = None, project_id: int | None = None) -> dict[str, Any]:
         resolved_id = self._maybe_orchestration_id(orchestration_id=orchestration_id, project_id=project_id)
         if resolved_id is not None:
-            return self._request("GET", f"/api/orchestrations/{resolved_id}/status-summary")
+            resolved_project_id = self._project_id_for_orchestration(resolved_id, project_id=project_id)
+            return self._request("GET", f"/api/orchestrations/{resolved_id}/status-summary", params={"project_id": resolved_project_id})
         if project_id is None:
             raise RuntimeError("Mission Control status summary requires an orchestration_id or project_id.")
         return self._request("GET", f"/api/projects/{project_id}/status-summary")
@@ -307,26 +341,31 @@ class MissionControlDaemonClient:
             if project_id is None:
                 return []
             return self._request("GET", f"/api/projects/{project_id}/pending-decisions")
-        return self._request("GET", f"/api/orchestrations/{resolved_id}/pending-decisions")
+        resolved_project_id = self._project_id_for_orchestration(resolved_id, project_id=project_id)
+        return self._request("GET", f"/api/orchestrations/{resolved_id}/pending-decisions", params={"project_id": resolved_project_id})
 
-    def answer_decision(self, *, decision_id: int, option_id: str, selected_text: str, free_text: str | None = None) -> dict[str, Any]:
+    def answer_decision(self, *, decision_id: int, project_id: int, option_id: str, selected_text: str, free_text: str | None = None) -> dict[str, Any]:
         return self._request(
             "POST",
             f"/api/decisions/{decision_id}/answer",
+            params={"project_id": project_id},
             json_body={"option_id": option_id, "selected_text": selected_text, "free_text": free_text},
         )
 
-    def pause(self, orchestration_id: int) -> dict[str, Any]:
-        return self._request("POST", f"/api/orchestrations/{orchestration_id}/pause", json_body={})
+    def pause(self, orchestration_id: int, *, project_id: int | None = None) -> dict[str, Any]:
+        resolved_project_id = self._project_id_for_orchestration(orchestration_id, project_id=project_id)
+        return self._request("POST", f"/api/orchestrations/{orchestration_id}/pause", params={"project_id": resolved_project_id}, json_body={})
 
-    def resume(self, orchestration_id: int) -> dict[str, Any]:
-        return self._request("POST", f"/api/orchestrations/{orchestration_id}/resume", json_body={})
+    def resume(self, orchestration_id: int, *, project_id: int | None = None) -> dict[str, Any]:
+        resolved_project_id = self._project_id_for_orchestration(orchestration_id, project_id=project_id)
+        return self._request("POST", f"/api/orchestrations/{orchestration_id}/resume", params={"project_id": resolved_project_id}, json_body={})
 
     def get_handoff(self, *, orchestration_id: int | None = None, project_id: int | None = None) -> dict[str, Any]:
         resolved_id = self._maybe_orchestration_id(orchestration_id=orchestration_id, project_id=project_id)
         if resolved_id is None:
             raise RuntimeError("Mission Control handoff lookup requires an orchestration_id or a project with an active orchestration.")
-        return self._request("GET", f"/api/orchestrations/{resolved_id}/handoff")
+        resolved_project_id = self._project_id_for_orchestration(resolved_id, project_id=project_id)
+        return self._request("GET", f"/api/orchestrations/{resolved_id}/handoff", params={"project_id": resolved_project_id})
 
     def get_event_digest(
         self,
@@ -337,7 +376,8 @@ class MissionControlDaemonClient:
     ) -> dict[str, Any]:
         resolved_id = self._maybe_orchestration_id(orchestration_id=orchestration_id, project_id=project_id)
         if resolved_id is not None:
-            return self._request("GET", f"/api/orchestrations/{resolved_id}/event-digest", params={"window": window})
+            resolved_project_id = self._project_id_for_orchestration(resolved_id, project_id=project_id)
+            return self._request("GET", f"/api/orchestrations/{resolved_id}/event-digest", params={"window": window, "project_id": resolved_project_id})
         if project_id is None:
             raise RuntimeError("Event digest requires an orchestration_id or project_id.")
         return self._request("GET", f"/api/projects/{project_id}/event-digest", params={"window": window})
@@ -345,13 +385,15 @@ class MissionControlDaemonClient:
     def get_handoff_summary(self, *, orchestration_id: int | None = None, project_id: int | None = None) -> dict[str, Any]:
         resolved_id = self._maybe_orchestration_id(orchestration_id=orchestration_id, project_id=project_id)
         if resolved_id is not None:
-            return self._request("GET", f"/api/orchestrations/{resolved_id}/handoff-summary")
+            resolved_project_id = self._project_id_for_orchestration(resolved_id, project_id=project_id)
+            return self._request("GET", f"/api/orchestrations/{resolved_id}/handoff-summary", params={"project_id": resolved_project_id})
         if project_id is None:
             raise RuntimeError("Handoff summary requires an orchestration_id or project_id.")
         return self._request("GET", f"/api/projects/{project_id}/handoff-summary")
 
-    def get_orchestration_events(self, orchestration_id: int) -> list[dict[str, Any]]:
-        return self._request("GET", f"/api/orchestrations/{orchestration_id}/events")
+    def get_orchestration_events(self, orchestration_id: int, *, project_id: int | None = None) -> list[dict[str, Any]]:
+        resolved_project_id = self._project_id_for_orchestration(orchestration_id, project_id=project_id)
+        return self._request("GET", f"/api/orchestrations/{orchestration_id}/events", params={"project_id": resolved_project_id})
 
     def get_agents(self, project_id: int) -> list[dict[str, Any]]:
         return self._request("GET", f"/api/projects/{project_id}/agents")

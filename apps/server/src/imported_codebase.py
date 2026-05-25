@@ -163,9 +163,11 @@ class ImportedCodebaseService:
         self.ensure_safety(db, project)
         db.flush()
 
-    def ensure_safety(self, db: Session, project: Project) -> ImportedCodebaseSafety:
+    def ensure_safety(self, db: Session, project: Project, *, create_if_missing: bool = True) -> ImportedCodebaseSafety | None:
         safety = project.imported_codebase_safety
         if safety is None:
+            if not create_if_missing:
+                return None
             safety = ImportedCodebaseSafety(project_id=project.id)
             db.add(safety)
             db.flush()

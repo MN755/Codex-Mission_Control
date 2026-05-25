@@ -91,10 +91,12 @@ class ScopeCreepService:
             created.append(signal)
         return created
 
-    def resolve(self, db: Session, signal_id: int, status: str) -> ScopeChangeSignal:
+    def resolve(self, db: Session, signal_id: int, status: str, *, project_id: int | None = None) -> ScopeChangeSignal:
         signal = db.get(ScopeChangeSignal, signal_id)
         if signal is None:
             raise ValueError("Scope creep signal not found")
+        if project_id is not None and signal.project_id != project_id:
+            raise ValueError("Scope creep signal not found in this project")
         signal.status = status
         signal.resolved_at = utc_now()
         db.flush()

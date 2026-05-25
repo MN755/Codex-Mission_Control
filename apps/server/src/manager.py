@@ -3543,10 +3543,6 @@ class MissionControlService:
         preference = project.handoff_quality_preference
         if preference is None:
             preference = HandoffQualityPreference(project_id=project.id)
-            db.add(preference)
-            db.flush()
-            project.handoff_quality_preference = preference
-        db.flush()
         return preference
 
     def _project_health(
@@ -4450,8 +4446,12 @@ class MissionControlService:
                 data_json={
                     "items": [
                         {
-                            "title": item.area,
-                            "detail": f"{item.coverage_status} • {item.evidence_summary or 'No evidence recorded yet.'}",
+                            "title": item["area"] if isinstance(item, dict) else item.area,
+                            "detail": (
+                                f"{item['coverage_status']} • {item.get('evidence_summary') or 'No evidence recorded yet.'}"
+                                if isinstance(item, dict)
+                                else f"{item.coverage_status} • {item.evidence_summary or 'No evidence recorded yet.'}"
+                            ),
                         }
                         for item in items
                     ],
@@ -5853,8 +5853,9 @@ class MissionControlService:
             "metadata_json": dict(event.metadata_json or {}),
         }
 
-    def get_swarm_preferences(self, db: Session, project: Project) -> dict[str, Any]:
-        return self._serialize_swarm_preferences(self._ensure_swarm_preferences(db, project))
+    def get_swarm_preferences(self, db: Session, project: Project, *, create_if_missing: bool = False) -> dict[str, Any]:
+        preferences = self._ensure_swarm_preferences(db, project) if create_if_missing else self._swarm_preferences(project)
+        return self._serialize_swarm_preferences(preferences)
 
     def update_swarm_preferences(self, db: Session, project: Project, payload: SwarmPreferencesUpdate) -> dict[str, Any]:
         preferences = self._ensure_swarm_preferences(db, project)
@@ -5882,19 +5883,23 @@ class MissionControlService:
         return serialized
 
     def list_agent_archetypes(self, db: Session) -> list[dict[str, Any]]:
+        existing = {
+            entry.name: entry
+            for entry in db.scalars(select(AgentArchetype).order_by(AgentArchetype.name.asc()))
+        }
         return [
             {
-                "id": entry.id,
-                "name": entry.name,
-                "purpose": entry.purpose,
-                "default_guidelines": entry.default_guidelines,
-                "default_tools_json": list(entry.default_tools_json or []),
-                "default_permissions_json": dict(entry.default_permissions_json or {}),
-                "spawn_triggers_json": list(entry.spawn_triggers_json or []),
-                "retirement_triggers_json": list(entry.retirement_triggers_json or []),
-                "risk_profile": entry.risk_profile,
+                "id": existing_entry.id if (existing_entry := existing.get(str(payload["name"]))) is not None else 0,
+                "name": str(payload["name"]),
+                "purpose": existing_entry.purpose if existing_entry is not None else str(payload["purpose"]),
+                "default_guidelines": existing_entry.default_guidelines if existing_entry is not None else str(payload["default_guidelines"]),
+                "default_tools_json": list(existing_entry.default_tools_json or []) if existing_entry is not None else list(payload.get("default_tools_json") or []),
+                "default_permissions_json": dict(existing_entry.default_permissions_json or {}) if existing_entry is not None else dict(payload.get("default_permissions_json") or {}),
+                "spawn_triggers_json": list(existing_entry.spawn_triggers_json or []) if existing_entry is not None else list(payload.get("spawn_triggers_json") or []),
+                "retirement_triggers_json": list(existing_entry.retirement_triggers_json or []) if existing_entry is not None else list(payload.get("retirement_triggers_json") or []),
+                "risk_profile": existing_entry.risk_profile if existing_entry is not None else str(payload.get("risk_profile") or "medium"),
             }
-            for entry in self._ensure_agent_archetypes(db)
+            for payload in AGENT_ARCHETYPE_CATALOG
         ]
 
     def get_swarm_plan(self, db: Session, project: Project) -> dict[str, Any] | None:
@@ -8774,10 +8779,11 @@ class MissionControlService:
         )
         return [self._serialize_manager_message(message) for message in messages]
 
-    def list_pending_questions(self, db: Session, project: Project) -> list[dict[str, Any]]:
-        self._auto_decide_due_questions(db, project)
+    def list_pending_questions(self, db: Session, project: Project, *, mutate: bool = True) -> list[dict[str, Any]]:
+        if mutate:
+            self._auto_decide_due_questions(db, project)
         session = self._latest_session(db, project.id)
-        if session is not None and session.status == "in_progress":
+        if mutate and session is not None and session.status == "in_progress":
             self._sync_interview_question_mirror(db, project, session)
         questions = list(
             db.scalars(
@@ -8798,8 +8804,9 @@ class MissionControlService:
         )
         return [self._serialize_approval(approval) for approval in approvals]
 
-    def get_manager_queue(self, db: Session, project: Project) -> dict[str, Any]:
-        self._auto_decide_due_questions(db, project)
+    def get_manager_queue(self, db: Session, project: Project, *, mutate: bool = True) -> dict[str, Any]:
+        if mutate:
+            self._auto_decide_due_questions(db, project)
         return self._manager_queue(db, project)
 
     async def get_project_action(self, db: Session, project: Project) -> dict[str, Any]:
@@ -8866,12 +8873,11 @@ class MissionControlService:
 
     async def get_project_workspace(self, db: Session, project: Project) -> dict[str, Any]:
         settings = self._project_settings(db, project)
-        swarm_preferences = self._ensure_swarm_preferences(db, project)
-        self._auto_decide_due_questions(db, project)
+        swarm_preferences = self._swarm_preferences(project)
         tasks = list(db.scalars(select(Task).where(Task.project_id == project.id).order_by(Task.priority.asc(), Task.id.asc())))
         degraded_notices = await self._workspace_degraded_notices(project, settings)
         current_action = self._derive_current_action(db, project, degraded_notices)
-        queue = self._manager_queue(db, project)
+        queue = self.get_manager_queue(db, project, mutate=False)
         reservations = self.list_reservations(db, project.id)
         swarm_plan = self._current_swarm_plan_record(db, project.id)
         widget_summary = await self.get_project_widget_summary(db, project)
@@ -8880,7 +8886,7 @@ class MissionControlService:
             "current_action": current_action,
             "action_history": self._derive_action_history(db, project),
             "manager_messages": self.list_manager_messages(db, project),
-            "pending_question": next(iter(self.list_pending_questions(db, project)), None),
+            "pending_question": next(iter(self.list_pending_questions(db, project, mutate=False)), None),
             "pending_approvals": self.list_pending_approvals(db, project),
             "agents": self._sorted_workspace_agents(db, project.id),
             "manager_queue": queue,
@@ -8934,10 +8940,12 @@ class MissionControlService:
                 return resolved
         return self._resolve_question(db, question, option_id=option_id, selected_text=selected_text, status="answered")
 
-    def auto_decide_question(self, db: Session, question_id: int) -> ManagerQuestion:
+    def auto_decide_question(self, db: Session, question_id: int, *, project_id: int | None = None) -> ManagerQuestion:
         question = db.get(ManagerQuestion, question_id)
         if not question:
             raise ValueError("Question not found")
+        if project_id is not None and question.project_id != project_id:
+            raise ValueError("Question not found in this project")
         if question.status != "pending":
             return question
         if question.impact == "high":

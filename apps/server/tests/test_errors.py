@@ -149,6 +149,7 @@ def test_pending_decision_invalid_option_returns_problem_details(client) -> None
     response = client.post(
         f"/api/decisions/{decision_id}/answer",
         headers=_bridge_headers(),
+        params={"project_id": project["id"]},
         json={"option_id": "reckless", "selected_text": "Reckless path"},
     )
     assert response.status_code == 400
