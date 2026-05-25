@@ -4,10 +4,11 @@ import asyncio
 import json
 
 from conftest import sample_workspace
+from main import service as app_service
 from manager import MissionControlService
 from models import Agent, AgentRun, Project, Task
 from project_settings import get_or_create_project_settings, resolve_manager_settings, resolve_worker_settings
-from schemas import WorkerReport
+from schemas import ManagerDocFile, ManagerDocUpdate, WorkerReport
 
 
 def test_manager_doc_generation_uses_deterministic_for_dry_run(client) -> None:
@@ -24,6 +25,51 @@ def test_manager_doc_generation_uses_deterministic_for_dry_run(client) -> None:
     project_id = response.json()["id"]
     docs = client.post(f"/api/projects/{project_id}/docs/generate").json()
     assert docs["manager_mode_used"] == "deterministic"
+
+
+def test_manager_doc_generation_rejects_paths_outside_docs_root(client, monkeypatch) -> None:
+    response = client.post(
+        "/api/projects",
+        json={
+            "name": "Docs Escape Demo",
+            "idea": "Build a local project manager",
+            "workspace_path": sample_workspace("docs-escape-demo"),
+            "runner_mode": "dry_run",
+            "manager_mode": "auto",
+        },
+    )
+    project_id = response.json()["id"]
+
+    async def fake_resolve(*args, **kwargs):
+        return ManagerDocUpdate(summary_markdown="x", files=[ManagerDocFile(filename="../escape.txt", content="owned")]), "deterministic"
+
+    monkeypatch.setattr(app_service, "_resolve_manager_model", fake_resolve)
+    docs = client.post(f"/api/projects/{project_id}/docs/generate")
+    assert docs.status_code == 400
+    assert "stay inside the selected root" in docs.json()["detail"].lower()
+
+
+def test_manager_doc_generation_creates_nested_parent_directories(client, monkeypatch) -> None:
+    workspace_path = sample_workspace("docs-nested-demo")
+    response = client.post(
+        "/api/projects",
+        json={
+            "name": "Docs Nested Demo",
+            "idea": "Build a local project manager",
+            "workspace_path": workspace_path,
+            "runner_mode": "dry_run",
+            "manager_mode": "auto",
+        },
+    )
+    project = response.json()
+
+    async def fake_resolve(*args, **kwargs):
+        return ManagerDocUpdate(summary_markdown="x", files=[ManagerDocFile(filename="nested/readme.md", content="hi")]), "deterministic"
+
+    monkeypatch.setattr(app_service, "_resolve_manager_model", fake_resolve)
+    docs = client.post(f"/api/projects/{project['id']}/docs/generate")
+    assert docs.status_code == 200
+    assert "nested/readme.md" in docs.json()["files"]
 
 
 def test_path_reservations_acquire_and_release() -> None:

@@ -272,6 +272,103 @@ def test_plugin_health_degraded_when_noncritical_checks_warn(monkeypatch, tmp_pa
     assert "dashboard reachability is optional" in payload["codex_chat_markdown"].lower()
 
 
+def test_plugin_health_marks_codex_host_not_ready_when_unauthenticated(monkeypatch, tmp_path) -> None:
+    async def fake_inventory() -> list[dict]:
+        return [{"runner_type": "dry_run", "availability": True}]
+
+    runtime_root = tmp_path / "runtime"
+    launcher_root = tmp_path / "launcher"
+    monkeypatch.setattr(
+        "plugin_health.detect_codex_status",
+        lambda: {
+            "cli_detected": True,
+            "cli_execution_available": True,
+            "cli_version": "codex 1.0.0",
+            "login_status": "Not authenticated",
+            "auth_mode": None,
+            "authenticated": False,
+            "auth_status_detectable": True,
+            "mcp_servers": [{"name": "mission-control", "status": "connected"}],
+            "configured_mcp_servers": [{"name": "mission-control"}],
+            "local_skills": [],
+        },
+    )
+    monkeypatch.setattr(
+        "plugin_health.daemon_identity_snapshot",
+        lambda: _daemon_identity(
+            repo_root=str(__import__("plugin_health").REPO_ROOT),
+            runtime_root=str(runtime_root),
+            launcher_root=str(launcher_root),
+        ),
+    )
+    monkeypatch.setattr("plugin_health.read_daemon_metadata", lambda: {"host": "127.0.0.1", "port": 8000, "mode": "daemon"})
+    monkeypatch.setattr(
+        "plugin_health.resolve_backend_binding",
+        lambda: {"host": "127.0.0.1", "port": 8000, "mode": "daemon", "source": "daemon_metadata"},
+    )
+    monkeypatch.setattr("plugin_health.daemon_dashboard_url", lambda project_id=None: "http://127.0.0.1:8000/dashboard")
+    monkeypatch.setattr(
+        "plugin_health._probe_url",
+        lambda url, timeout=2.0: (False, "URLError") if url.endswith("/dashboard") else (True, "HTTP 200"),
+    )
+    monkeypatch.setattr("plugin_health.service.runners.inventory", fake_inventory)
+    monkeypatch.setattr("plugin_health.RUNTIME_ROOT", runtime_root)
+
+    payload = asyncio.run(__import__("plugin_health").mission_control_plugin_health())
+    checks = {check["key"]: check for check in payload["checks"]}
+
+    assert checks["codex_authenticated"]["status"] == "degraded"
+    assert "**Codex host ready:** degraded" in payload["codex_chat_markdown"]
+
+
+def test_plugin_health_degrades_when_login_status_could_not_be_queried(monkeypatch, tmp_path) -> None:
+    async def fake_inventory() -> list[dict]:
+        return [{"runner_type": "dry_run", "availability": True}]
+
+    runtime_root = tmp_path / "runtime"
+    launcher_root = tmp_path / "launcher"
+    monkeypatch.setattr(
+        "plugin_health.detect_codex_status",
+        lambda: {
+            "cli_detected": True,
+            "cli_execution_available": True,
+            "cli_version": "codex 1.0.0",
+            "login_status": "CLI path found, but login status could not be queried from this runtime.",
+            "auth_mode": None,
+            "authenticated": False,
+            "auth_status_detectable": True,
+            "mcp_servers": [{"name": "mission-control", "status": "connected"}],
+            "configured_mcp_servers": [{"name": "mission-control"}],
+            "local_skills": [],
+        },
+    )
+    monkeypatch.setattr(
+        "plugin_health.daemon_identity_snapshot",
+        lambda: _daemon_identity(
+            repo_root=str(__import__("plugin_health").REPO_ROOT),
+            runtime_root=str(runtime_root),
+            launcher_root=str(launcher_root),
+        ),
+    )
+    monkeypatch.setattr("plugin_health.read_daemon_metadata", lambda: {"host": "127.0.0.1", "port": 8000, "mode": "daemon"})
+    monkeypatch.setattr(
+        "plugin_health.resolve_backend_binding",
+        lambda: {"host": "127.0.0.1", "port": 8000, "mode": "daemon", "source": "daemon_metadata"},
+    )
+    monkeypatch.setattr("plugin_health.daemon_dashboard_url", lambda project_id=None: "http://127.0.0.1:8000/dashboard")
+    monkeypatch.setattr(
+        "plugin_health._probe_url",
+        lambda url, timeout=2.0: (False, "URLError") if url.endswith("/dashboard") else (True, "HTTP 200"),
+    )
+    monkeypatch.setattr("plugin_health.service.runners.inventory", fake_inventory)
+    monkeypatch.setattr("plugin_health.RUNTIME_ROOT", runtime_root)
+
+    payload = asyncio.run(__import__("plugin_health").mission_control_plugin_health())
+    checks = {check["key"]: check for check in payload["checks"]}
+
+    assert checks["codex_login_status_detectable"]["status"] == "degraded"
+
+
 def test_plugin_health_broken_when_critical_checks_fail(monkeypatch, client, tmp_path) -> None:
     ensure_daemon_token()
 

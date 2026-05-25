@@ -13,7 +13,6 @@ Mission Control uses runners to execute background work. Runner availability dep
 - `openai_api`
 - `anthropic_api`
 - `xai_api`
-- `custom_api`
 
 ## Detection model
 

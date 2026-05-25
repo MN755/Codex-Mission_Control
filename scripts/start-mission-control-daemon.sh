@@ -3,13 +3,8 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
-CONFIG_PATH="${SCRIPT_DIR}/mission-control.config.json"
+CONFIG_PATH="${MISSION_CONTROL_LAUNCHER_CONFIG:-${SCRIPT_DIR}/mission-control.config.json}"
 PYTHON_BIN="${PYTHON_BIN:-python3}"
-LAUNCHER_DIR="${REPO_ROOT}/.runtime/launcher"
-METADATA_PATH="${LAUNCHER_DIR}/daemon.json"
-STDOUT_PATH="${LAUNCHER_DIR}/daemon.stdout.log"
-STDERR_PATH="${LAUNCHER_DIR}/daemon.stderr.log"
-LAUNCH_LOG_PATH="${LAUNCHER_DIR}/daemon.launch.log"
 
 if ! command -v "${PYTHON_BIN}" >/dev/null 2>&1; then
   PYTHON_BIN="python"
@@ -72,6 +67,7 @@ bootstrap_cli_paths() {
 
 HOST="${MISSION_CONTROL_BACKEND_HOST:-127.0.0.1}"
 PORT="${MISSION_CONTROL_BACKEND_PORT:-8010}"
+CONFIG_LAUNCHER_DIR=".runtime/launcher"
 if [[ -f "${CONFIG_PATH}" ]]; then
   HOST="${MISSION_CONTROL_BACKEND_HOST:-$("${PYTHON_BIN}" - <<'PY' "${CONFIG_PATH}"
 import json, sys
@@ -87,7 +83,20 @@ with open(sys.argv[1], 'r', encoding='utf-8') as handle:
 print(payload.get('backendPort', 8010))
 PY
 )}"
+  CONFIG_LAUNCHER_DIR="$("${PYTHON_BIN}" - <<'PY' "${CONFIG_PATH}"
+import json, sys
+with open(sys.argv[1], 'r', encoding='utf-8') as handle:
+    payload = json.load(handle)
+print(payload.get('launcherLogDir', '.runtime/launcher'))
+PY
+)"
 fi
+
+LAUNCHER_DIR="${MISSION_CONTROL_LAUNCHER_DIR:-${REPO_ROOT}/${CONFIG_LAUNCHER_DIR}}"
+METADATA_PATH="${LAUNCHER_DIR}/daemon.json"
+STDOUT_PATH="${LAUNCHER_DIR}/daemon.stdout.log"
+STDERR_PATH="${LAUNCHER_DIR}/daemon.stderr.log"
+LAUNCH_LOG_PATH="${LAUNCHER_DIR}/daemon.launch.log"
 
 assert_local_host "${HOST}"
 url_host() {

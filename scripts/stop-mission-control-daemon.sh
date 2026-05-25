@@ -3,7 +3,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
-CONFIG_PATH="${SCRIPT_DIR}/mission-control.config.json"
+CONFIG_PATH="${MISSION_CONTROL_LAUNCHER_CONFIG:-${SCRIPT_DIR}/mission-control.config.json}"
 PYTHON_BIN="${PYTHON_BIN:-python3}"
 
 if ! command -v "${PYTHON_BIN}" >/dev/null 2>&1; then
@@ -15,7 +15,7 @@ if ! command -v "${PYTHON_BIN}" >/dev/null 2>&1; then
   exit 1
 fi
 
-"${PYTHON_BIN}" - <<'PY' "${REPO_ROOT}" "${CONFIG_PATH}"
+"${PYTHON_BIN}" - <<'PY' "${REPO_ROOT}" "${CONFIG_PATH}" "${MISSION_CONTROL_LAUNCHER_DIR:-}"
 from __future__ import annotations
 
 import json
@@ -29,6 +29,7 @@ from pathlib import Path
 
 repo_root = Path(sys.argv[1]).resolve()
 config_path = Path(sys.argv[2])
+launcher_override = str(sys.argv[3]).strip()
 config = {}
 if config_path.exists():
     try:
@@ -38,7 +39,7 @@ if config_path.exists():
 
 host = str(os.environ.get("MISSION_CONTROL_BACKEND_HOST") or config.get("host") or "127.0.0.1")
 port = int(os.environ.get("MISSION_CONTROL_BACKEND_PORT") or config.get("backendPort") or 8010)
-launcher_dir = repo_root / str(config.get("launcherLogDir") or ".runtime/launcher")
+launcher_dir = Path(launcher_override).expanduser().resolve() if launcher_override else (repo_root / str(config.get("launcherLogDir") or ".runtime/launcher")).resolve()
 metadata_path = launcher_dir / "daemon.json"
 
 

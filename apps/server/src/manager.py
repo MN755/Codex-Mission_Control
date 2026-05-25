@@ -120,7 +120,7 @@ from prompts import (
 from provider_support import default_label, normalize_provider, provider_label, provider_uses_adapter
 from risk import risk_service
 from security import redact_text, redact_value, security_service
-from security.path_validation import resolve_local_path
+from security.path_validation import resolve_local_path, resolve_relative_to_root
 from schemas import (
     AppProfileUpdate,
     ManagerDocFile,
@@ -9083,8 +9083,10 @@ class MissionControlService:
         )
         files_written: list[str] = []
         for item in doc_update.files:
-            (docs_dir / item.filename).write_text(item.content, encoding="utf-8")
-            files_written.append(item.filename)
+            target = resolve_relative_to_root(docs_dir, item.filename)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(item.content, encoding="utf-8")
+            files_written.append(str(target.relative_to(docs_dir).as_posix()))
         docs_manifest_path(project).write_text(
             json.dumps(
                 {

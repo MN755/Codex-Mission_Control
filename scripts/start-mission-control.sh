@@ -7,7 +7,7 @@ DESKTOP_SRC="${REPO_ROOT}/apps/desktop/src"
 SERVER_SRC="${REPO_ROOT}/apps/server/src"
 FRONTEND_DIR="${REPO_ROOT}/apps/dashboard"
 FRONTEND_DIST="${FRONTEND_DIR}/dist"
-CONFIG_PATH="${SCRIPT_DIR}/mission-control.config.json"
+CONFIG_PATH="${MISSION_CONTROL_LAUNCHER_CONFIG:-${SCRIPT_DIR}/mission-control.config.json}"
 
 MODE="desktop"
 PYTHON_BIN="${PYTHON_BIN:-python3}"
@@ -86,6 +86,9 @@ CONFIG_BACKEND_PORT="${CONFIG_VALUES[1]}"
 CONFIG_FRONTEND_PORT="${CONFIG_VALUES[2]}"
 AUTO_OPEN_BROWSER="${CONFIG_VALUES[3]}"
 LAUNCHER_DIR="${CONFIG_VALUES[4]}"
+if [[ -n "${MISSION_CONTROL_LAUNCHER_DIR:-}" ]]; then
+  LAUNCHER_DIR="${MISSION_CONTROL_LAUNCHER_DIR}"
+fi
 mkdir -p "${LAUNCHER_DIR}"
 PID_FILE="${LAUNCHER_DIR}/pids.json"
 
@@ -94,6 +97,16 @@ EFFECTIVE_BACKEND_PORT="${BACKEND_PORT:-${CONFIG_BACKEND_PORT}}"
 
 write_status() {
   echo "[Mission Control] $1"
+}
+
+assert_local_host() {
+  case "${1}" in
+    127.0.0.1|localhost|::1) ;;
+    *)
+      echo "Mission Control web mode must stay localhost-only. Refusing host '${1}'." >&2
+      exit 1
+      ;;
+  esac
 }
 
 build_frontend_if_needed() {
@@ -185,6 +198,7 @@ maybe_open_browser() {
 }
 
 if [[ "${MODE}" == "desktop" ]]; then
+  assert_local_host "${EFFECTIVE_HOST}"
   build_frontend_if_needed
   export PYTHONPATH="${DESKTOP_SRC}:${SERVER_SRC}:${PYTHONPATH:-}"
   export MISSION_CONTROL_FRONTEND_DIST="${FRONTEND_DIST}"
@@ -194,6 +208,7 @@ if [[ "${MODE}" == "desktop" ]]; then
   exec "${PYTHON_BIN}" -m mission_control_desktop
 fi
 
+assert_local_host "${EFFECTIVE_HOST}"
 build_frontend_if_needed
 export PYTHONPATH="${SERVER_SRC}:${PYTHONPATH:-}"
 export MISSION_CONTROL_FRONTEND_DIST="${FRONTEND_DIST}"

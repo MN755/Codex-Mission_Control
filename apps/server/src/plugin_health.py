@@ -454,7 +454,13 @@ async def mission_control_plugin_health() -> dict[str, Any]:
     )
 
     login_status = str(codex.get("login_status") or "").strip()
-    login_detectable = bool(codex.get("auth_status_detectable")) and login_status not in {"", "Unavailable"}
+    login_status_lower = login_status.lower()
+    login_query_unavailable = (
+        login_status in {"", "Unavailable"}
+        or "could not be queried" in login_status_lower
+        or "unavailable from this runtime" in login_status_lower
+    )
+    login_detectable = bool(codex.get("auth_status_detectable")) and not login_query_unavailable
     login_error = None if login_detectable else MissionControlError(
         code="MC-CODEX-LOGIN-UNKNOWN-001",
         breakpoint="codex_cli.login_status",
@@ -632,6 +638,27 @@ async def mission_control_plugin_health() -> dict[str, Any]:
         )
     )
 
+    authenticated = bool(codex.get("authenticated"))
+    login_ready_error = None if authenticated else MissionControlError(
+        code="MC-CODEX-LOGIN-UNKNOWN-001",
+        breakpoint="codex_cli.auth_required",
+        severity="warning",
+        safe_details={"auth_mode": codex.get("auth_mode"), "login_status": login_status},
+    )
+    checks.append(
+        _check(
+            check_id="codex_authenticated",
+            label="Codex authenticated",
+            status="ready" if login_ready_error is None else derive_health_status(login_ready_error, critical=False),
+            summary="Codex CLI is authenticated and usable for host-backed Mission Control flows." if login_ready_error is None else login_ready_error.detail,
+            critical=False,
+            fix=None if login_ready_error is None else login_ready_error.recommended_fix,
+            commands=["codex login status", "codex login"],
+            details={"auth_mode": codex.get("auth_mode"), "authenticated": authenticated},
+            error=login_ready_error,
+        )
+    )
+
     device_budget_status = "degraded" if performance_profile.get("lag_risk") == "high" else "ready"
     device_budget_summary = (
         f"{device_profile.get('platform_label')} detected. Mission Control should keep live swarm activity at or below "
@@ -677,7 +704,7 @@ async def mission_control_plugin_health() -> dict[str, Any]:
         ["mission_control_daemon_reachable", "daemon_identity_confirmed", "runtime_directory_writable", "sqlite_db_reachable", "runner_registry_available"],
     )
     bridge_ready = _component_state(checks, ["mcp_server_reachable", "plugin_package_exists", "skill_files_exist"])
-    codex_ready = _component_state(checks, ["codex_cli_detected", "codex_cli_execution_available", "codex_login_status_detectable"])
+    codex_ready = _component_state(checks, ["codex_cli_detected", "codex_cli_execution_available", "codex_login_status_detectable", "codex_authenticated"])
     optional_ui_ready = _component_state(checks, ["dashboard_optional_status"])
 
     markdown_lines = [

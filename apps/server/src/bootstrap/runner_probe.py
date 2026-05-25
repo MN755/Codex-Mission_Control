@@ -248,36 +248,6 @@ def _api_probe(runner_id: str, label: str, env_key: str, *, adapter_command: str
     )
 
 
-def probe_custom_api() -> dict[str, Any]:
-    base_url = os.environ.get("MISSION_CONTROL_CUSTOM_API_BASE_URL") or os.environ.get("CUSTOM_API_BASE_URL")
-    key_present = bool(os.environ.get("MISSION_CONTROL_CUSTOM_API_KEY") or os.environ.get("CUSTOM_API_KEY"))
-    available = bool(base_url)
-    configured = bool(base_url and key_present)
-    auth_status = "authenticated" if configured else ("unknown" if available else "unauthenticated")
-    error = MissionControlError(
-        code="MC-API-BILLING-WARNING-001" if available else "MC-RUNNER-NONE-AVAILABLE-001",
-        breakpoint="api_provider.detect",
-        severity="warning",
-        safe_details={"runner": "custom_api", "base_url_present": available},
-    )
-    return _probe(
-        runner_id="custom_api",
-        label="Custom API",
-        available=available,
-        configured=configured,
-        auth_status=auth_status,
-        install_status="external_configured" if configured else ("needs_credentials" if available else "not_configured"),
-        safe_default=False,
-        requires_user_action=available and not configured,
-        recommended_fix="Provide a stable external adapter or secure environment config before enabling this custom API runner."
-        if available
-        else "Set a custom API base URL and adapter outside Mission Control if you intentionally need one.",
-        billing_warning="Custom API runners may incur third-party billing.",
-        error=error if (available or not configured) else None,
-        details={"base_url_present": available, "secure_storage_supported": False},
-    )
-
-
 def probe_runners(*, ollama_endpoint: str | None = None, adapter_command: str | None = None, adapter_args: list[str] | None = None) -> list[dict[str, Any]]:
     probes = [
         probe_dry_run(),
@@ -286,7 +256,6 @@ def probe_runners(*, ollama_endpoint: str | None = None, adapter_command: str | 
         probe_claude_cli(),
     ]
     probes.extend(_api_probe(*runner, adapter_command=adapter_command, adapter_args=adapter_args) for runner in API_RUNNERS)
-    probes.append(probe_custom_api())
     return probes
 
 

@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from bootstrap.dependency_probe import probe_core_tools
-from bootstrap.headless_config import headless_config_path
+from bootstrap.headless_config import headless_config_path, read_headless_config
 from bootstrap.secret_redaction import redact_bootstrap_text, redact_bootstrap_value
 from config import APP_SUPPORT_ROOT, DEFAULT_BACKEND_PORT, REPO_ROOT, RUNTIME_ROOT, get_codex_home, load_launcher_config
 from daemon_state import daemon_identity_snapshot, read_daemon_metadata, resolve_backend_binding
@@ -134,8 +134,10 @@ def probe_environment(
         "runtime_root": _normalize_path_text(daemon_identity.get("runtime_root") or runtime_root),
         "launcher_root": _normalize_path_text(daemon_identity.get("launcher_root") or APP_SUPPORT_ROOT),
     }
+    stored_headless = read_headless_config(runtime_path)
     mcp_status = {
-        "transport": "stdio",
+        "transport": str((stored_headless or {}).get("mcp_transport") or "stdio"),
+        "port": (stored_headless or {}).get("mcp_port"),
         "example_config_path": _normalize_path_text(PLUGIN_ROOT / "mcp" / "mission-control-mcp.example.json"),
         "headless_config_path": _normalize_path_text(headless_config_path(runtime_path)),
     }

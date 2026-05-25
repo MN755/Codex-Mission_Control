@@ -6,7 +6,7 @@ import os
 from pathlib import Path
 
 from bootstrap.environment_probe import probe_environment, summarize_path_entries
-from bootstrap.headless_config import build_headless_config, normalize_transport
+from bootstrap.headless_config import build_headless_config, normalize_transport, write_headless_config
 from bootstrap.runner_autowire import autowire_headless, get_headless_config, repair_headless
 from bootstrap.runner_probe import probe_claude_cli, probe_dry_run, probe_ollama, probe_runners, summarize_runner_status
 
@@ -109,6 +109,7 @@ def test_runner_probe_reports_missing_tools_and_api_billing(monkeypatch) -> None
     assert probes["openai_api"]["billing_warning"]
     assert probes["openai_api"]["configured"] is False
     assert probes["openai_api"]["install_status"] == "needs_adapter"
+    assert "custom_api" not in probes
     assert "sk-proj-super-secret-value" not in str(probes["openai_api"])
 
 
@@ -268,6 +269,38 @@ def test_autowire_generates_safe_headless_config_and_repair_preserves_install_id
     install_id = config["install_id"]
     repaired = asyncio.run(repair_headless())
     assert repaired["headless_config"]["install_id"] == install_id
+
+
+def test_environment_probe_reports_stored_mcp_transport(monkeypatch, tmp_path) -> None:
+    runtime_root = tmp_path / "runtime"
+    write_headless_config(
+        {
+            "install_id": "x",
+            "install_path": str(ROOT),
+            "runtime_path": str(runtime_root),
+            "headless_only": True,
+            "dashboard_enabled": False,
+            "daemon_host": "127.0.0.1",
+            "daemon_port": 8010,
+            "mcp_transport": "disabled",
+            "mcp_port": None,
+            "enabled_runners": ["dry_run"],
+            "runner_configs": {},
+            "default_runner_policy": {},
+            "default_model_policy": {},
+            "safe_mode_defaults": {},
+            "plugin_paths": [],
+            "skills_paths": [],
+            "created_at": "now",
+            "updated_at": "now",
+            "redaction_status": "clean",
+        },
+        str(runtime_root),
+    )
+
+    payload = probe_environment(runtime_path=str(runtime_root))
+
+    assert payload["mcp_status"]["transport"] == "disabled"
 
 
 def test_headless_config_rejects_unsupported_http_mcp_transport() -> None:

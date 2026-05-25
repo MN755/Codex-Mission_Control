@@ -11,7 +11,11 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
-$configPath = Join-Path $PSScriptRoot "mission-control.config.json"
+$configPath = if ($env:MISSION_CONTROL_LAUNCHER_CONFIG) {
+  $env:MISSION_CONTROL_LAUNCHER_CONFIG
+} else {
+  Join-Path $PSScriptRoot "mission-control.config.json"
+}
 $config = if (Test-Path $configPath) {
   Get-Content -Raw $configPath | ConvertFrom-Json
 } else {
@@ -29,7 +33,11 @@ $effectiveBackendPort = if ($PSBoundParameters.ContainsKey("BackendPort")) { $Ba
 $effectiveFrontendPort = if ($PSBoundParameters.ContainsKey("FrontendPort")) { $FrontendPort } else { [int]$config.frontendPort }
 $autoOpenBrowser = -not $NoBrowser -and [bool]$config.autoOpenBrowser
 
-$launcherDir = Join-Path $repoRoot ([string]$config.launcherLogDir)
+$launcherDir = if ($env:MISSION_CONTROL_LAUNCHER_DIR) {
+  $env:MISSION_CONTROL_LAUNCHER_DIR
+} else {
+  Join-Path $repoRoot ([string]$config.launcherLogDir)
+}
 $null = New-Item -ItemType Directory -Path $launcherDir -Force
 $pidFile = Join-Path $launcherDir "pids.json"
 
@@ -44,6 +52,13 @@ function Get-UrlHost {
     return "[$HostValue]"
   }
   return $HostValue
+}
+
+function Assert-LocalHost {
+  param([string]$HostValue)
+  if ($HostValue -notin @("127.0.0.1", "localhost", "::1")) {
+    throw "Mission Control web mode must stay localhost-only. Refusing host '$HostValue'."
+  }
 }
 
 function Get-RequiredCommand {
@@ -132,6 +147,7 @@ function Start-TrackedShellProcess {
     [string]$Name,
     [string]$WorkingDirectory,
     [string]$Command,
+    [hashtable]$Environment = @{},
     [switch]$Hidden
   )
 
@@ -139,10 +155,21 @@ function Start-TrackedShellProcess {
   $stderrPath = Join-Path $launcherDir "$Name.stderr.log"
   $cmdPath = Join-Path $env:WINDIR "System32\cmd.exe"
   $scriptPath = Join-Path $launcherDir "$Name.launch.cmd"
+  $environmentLines = @()
+  foreach ($entry in $Environment.GetEnumerator()) {
+    $value = [string]$entry.Value
+    $escapedValue = $value.Replace('"', '""')
+    $environmentLines += "set `"$($entry.Key)=$escapedValue`""
+  }
+  $environmentBlock = if ($environmentLines.Count -gt 0) {
+    ($environmentLines -join "`r`n") + "`r`n"
+  } else {
+    ""
+  }
   $scriptContent = @"
 @echo off
 cd /d "$WorkingDirectory"
-$Command 1>>"$stdoutPath" 2>>"$stderrPath"
+$environmentBlock$Command 1>>"$stdoutPath" 2>>"$stderrPath"
 "@
   Set-Content -Path $scriptPath -Value $scriptContent -Encoding UTF8
   $commandLine = "`"$cmdPath`" /d /c `"$scriptPath`""
@@ -260,6 +287,7 @@ function Start-WebMode {
   $backendHealthUrl = "http://${urlHost}:${effectiveBackendPort}/api/health"
   $frontendUrl = "http://${urlHost}:${effectiveFrontendPort}"
   $startupUrl = "${frontendUrl}/startup"
+  $backendBaseUrl = "http://${urlHost}:${effectiveBackendPort}"
 
   $backendHealthy = Test-BackendHealthy
   $frontendHealthy = Test-FrontendHealthy
@@ -307,6 +335,10 @@ function Start-WebMode {
       -Name "frontend" `
       -WorkingDirectory (Join-Path $repoRoot "apps\dashboard") `
       -Command $frontendCommand `
+      -Environment @{
+        MISSION_CONTROL_API_BASE_URL = $backendBaseUrl
+        MISSION_CONTROL_BACKEND_URL = $backendBaseUrl
+      } `
       -Hidden
     Write-Status "Waiting for frontend on $frontendUrl"
     Wait-ForHealthy -Probe ${function:Test-FrontendHealthy} -Name "Frontend"
@@ -324,6 +356,8 @@ function Start-WebMode {
     Write-Status "Browser auto-open is disabled. Open $startupUrl manually."
   }
 }
+
+Assert-LocalHost -HostValue $effectiveHost
 
 if ($Mode -eq "desktop") {
   Start-DesktopMode

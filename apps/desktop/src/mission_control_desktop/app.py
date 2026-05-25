@@ -28,6 +28,12 @@ if SOURCE_REPO_ROOT is not None:
     os.environ.setdefault("MISSION_CONTROL_REPO_ROOT", str(SOURCE_REPO_ROOT))
 
 
+def _frontend_build_command() -> str:
+    if sys.platform == "win32":
+        return "npm run build"
+    return "npm run build"
+
+
 def _write_launcher_metadata(port: int, *, app_support_root: Path) -> None:
     launcher_dir = os.environ.get("MISSION_CONTROL_LAUNCHER_DIR")
     if not launcher_dir:
@@ -78,7 +84,7 @@ def main() -> None:
     ensure_runtime_dirs()
     if not FRONTEND_DIST.exists():
         raise SystemExit(
-            "Frontend build not found. Run `cmd /c npm.cmd run build` in apps/dashboard first, "
+            f"Frontend build not found. Run `{_frontend_build_command()}` in apps/dashboard first, "
             "or use the launcher script that builds the desktop UI automatically."
         )
 

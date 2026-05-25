@@ -108,8 +108,15 @@ def test_package_workflow_smoke_tests_editable_installs_and_node24_actions() -> 
 def test_launcher_scripts_use_configured_launcher_dir() -> None:
     root = Path(__file__).resolve().parents[3]
     start_script = (root / "scripts" / "start-mission-control.sh").read_text(encoding="utf-8")
+    start_script_ps1 = (root / "scripts" / "start-mission-control.ps1").read_text(encoding="utf-8")
+    start_daemon_script_ps1 = (root / "scripts" / "start-mission-control-daemon.ps1").read_text(encoding="utf-8")
+    start_daemon_script_sh = (root / "scripts" / "start-mission-control-daemon.sh").read_text(encoding="utf-8")
+    stop_daemon_script_sh = (root / "scripts" / "stop-mission-control-daemon.sh").read_text(encoding="utf-8")
     stop_script = (root / "scripts" / "stop-mission-control.ps1").read_text(encoding="utf-8")
+    desktop_app = (root / "apps" / "desktop" / "src" / "mission_control_desktop" / "app.py").read_text(encoding="utf-8")
     assert 'MISSION_CONTROL_LAUNCHER_DIR="${LAUNCHER_DIR}"' in start_script
+    assert 'MISSION_CONTROL_LAUNCHER_CONFIG' in start_script
+    assert 'assert_local_host' in start_script
     assert "launcherLogDir" in start_script
     assert '--mode' in start_script
     assert 'MODE="desktop"' in start_script
@@ -118,5 +125,19 @@ def test_launcher_scripts_use_configured_launcher_dir() -> None:
     assert 'if [[ -d "${FRONTEND_DIST}" ]]; then' in start_script
     assert 'npm was not found on PATH, and the frontend bundle is missing' in start_script
     assert '-m uvicorn main:app --app-dir src' in start_script
+    assert 'MISSION_CONTROL_API_BASE_URL' in start_script_ps1
+    assert 'MISSION_CONTROL_BACKEND_URL' in start_script_ps1
+    assert 'MISSION_CONTROL_LAUNCHER_CONFIG' in start_script_ps1
+    assert 'Assert-LocalHost' in start_script_ps1
+    assert 'MISSION_CONTROL_LAUNCHER_CONFIG' in start_daemon_script_ps1
+    assert 'MISSION_CONTROL_LAUNCHER_DIR' in start_daemon_script_ps1
+    assert 'MISSION_CONTROL_LAUNCHER_CONFIG' in start_daemon_script_sh
+    assert 'MISSION_CONTROL_LAUNCHER_DIR' in start_daemon_script_sh
+    assert 'launcherLogDir' in start_daemon_script_sh
+    assert 'MISSION_CONTROL_LAUNCHER_CONFIG' in stop_daemon_script_sh
+    assert "Frontend build not found. Run `" in desktop_app
+    assert "in apps/dashboard first" in desktop_app
+    assert "_frontend_build_command" in desktop_app
+    assert "npm.cmd run build" not in desktop_app
     assert "launcherLogDir" in stop_script
     assert 'Join-Path $launcherDir "pids.json"' in stop_script

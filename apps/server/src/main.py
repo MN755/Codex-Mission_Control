@@ -2315,8 +2315,11 @@ async def get_skills(db: Session = Depends(get_db)) -> list[SkillRead]:
 @app.post("/api/projects/{project_id}/docs/generate", response_model=DocGenerationResponse)
 async def generate_docs(project_id: int, db: Session = Depends(get_db)) -> DocGenerationResponse:
     project = _get_project_or_404(db, project_id)
-    result = await service.generate_project_docs(db, project)
-    return DocGenerationResponse(**result)
+    try:
+        result = await service.generate_project_docs(db, project)
+        return DocGenerationResponse(**result)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @app.post("/api/projects/{project_id}/interview/start", response_model=InterviewSessionRead)
