@@ -61,10 +61,11 @@ def write_headless_config(payload: dict[str, Any], runtime_path: str | None = No
     return payload
 
 
-def plugin_paths() -> list[str]:
+def plugin_paths(install_root: str | Path | None = None) -> list[str]:
+    base_root = Path(install_root).expanduser().resolve() if install_root else REPO_ROOT
     paths = [
-        (REPO_ROOT / "plugins" / "mission-control").resolve(),
-        (REPO_ROOT / ".codex" / "plugins" / "mission-control").resolve(),
+        (base_root / "plugins" / "mission-control").resolve(),
+        (base_root / ".codex" / "plugins" / "mission-control").resolve(),
         (get_codex_home() / "plugins" / "mission-control").resolve(),
     ]
     unique: list[str] = []
@@ -78,10 +79,11 @@ def plugin_paths() -> list[str]:
     return unique
 
 
-def skills_paths() -> list[str]:
+def skills_paths(install_root: str | Path | None = None) -> list[str]:
+    base_root = Path(install_root).expanduser().resolve() if install_root else REPO_ROOT
     paths = [
-        (REPO_ROOT / ".codex" / "skills").resolve(),
-        (REPO_ROOT / "plugins" / "mission-control" / "skills").resolve(),
+        (base_root / ".codex" / "skills").resolve(),
+        (base_root / "plugins" / "mission-control" / "skills").resolve(),
         (get_codex_home() / "skills").resolve(),
     ]
     unique: list[str] = []
@@ -172,8 +174,8 @@ def build_headless_config(
         "default_runner_policy": default_runner_policy(),
         "default_model_policy": default_model_policy(),
         "safe_mode_defaults": safe_mode_defaults(),
-        "plugin_paths": plugin_paths(),
-        "skills_paths": skills_paths(),
+        "plugin_paths": plugin_paths(install_root),
+        "skills_paths": skills_paths(install_root),
         "created_at": existing.get("created_at") or now,
         "updated_at": now,
         "redaction_status": redaction_status(runner_configs),

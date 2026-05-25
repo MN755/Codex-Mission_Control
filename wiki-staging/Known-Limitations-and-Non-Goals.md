@@ -4,32 +4,20 @@ This page captures the current edges of the product so the wiki does not oversel
 
 > Status: Current
 
-## Current limitations
+## Reference
 
-- some install and autowire surfaces remain partial
+- standalone dashboard is optional, not primary
+- some install/autowire surfaces remain planned or partial
 - runner support depth varies by local environment
-- orchestration hardening is still in progress
-- plugin packaging and local setup may continue to evolve
+- worker orchestration hardening is still in progress
+- plugin packaging may evolve
 
-## Do not build right now
+## Example
 
-- standalone dashboard UI is optional or future-facing
-- dashboard widgets are not the current priority
-- background-running Codex chat UX is the current priority
-- deeper app-server integration remains experimental
-- API-backed runners require secure configuration and explicit user awareness
-
-## GitHub wiki rendering notes
-
-- the staged wiki does not currently show broken internal links
-- `_Sidebar.md` is moderate in size and does not appear unusually large
-- filenames are plain Markdown names without unusual punctuation or Unicode
-- there are no exact duplicate content pages in the staged set
-
-If GitHub still shows repeated `Uh oh! There was an error while loading.` messages after a push, the most likely remaining causes are a GitHub-side rendering or cache issue rather than a broken staged markdown set.
+Use this page when a user or contributor needs a compact reference instead of a full architecture walkthrough.
 
 ## Related pages
 
 - [Roadmap](Roadmap)
-- [Background-Running Direction](Headless-First-Direction)
+- [Headless First Direction](Headless-First-Direction)
 - [Troubleshooting CLI Runners](Troubleshooting-CLI-Runners)

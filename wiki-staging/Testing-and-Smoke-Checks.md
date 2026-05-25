@@ -13,6 +13,8 @@ Validation targets:
 - skill validation
 - headless happy path
 - runner detection smoke checks
+- startup freshness and provider-adapter smoke checks
+- subagent policy behavior checks
 - diagnostic summary output
 
 ## Example commands

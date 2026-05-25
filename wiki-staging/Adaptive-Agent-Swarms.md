@@ -37,6 +37,18 @@ Adaptive swarms should still obey:
 - path locks
 - contract boundaries
 - high-risk approval gates
+- local performance guardrails so weaker machines are not overcommitted
+
+## Capability-aware subagent bursts
+
+Mission Control now reflects the current subagent policy inside burst specs instead of pretending every burst is permanently read-only.
+
+That means:
+
+- read-only stays the default
+- limited-write bursts can use `workspace-write`
+- command-capable bursts say so explicitly
+- generated custom Codex subagents inherit the same policy
 
 ## User-facing explanation
 

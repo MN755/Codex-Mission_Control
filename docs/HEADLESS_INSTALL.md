@@ -27,8 +27,9 @@ This page describes the preferred install path for Mission Control: set up the d
 - daemon host defaults to `127.0.0.1`
 - `dry_run` is always available
 - `codex_cli` is preferred when installed and signed in
-- `ollama` is enabled only when reachable locally
-- API-backed runners stay disabled unless they were configured securely and intentionally
+- `ollama` uses the built-in local adapter recipe and becomes runnable only when the local endpoint is reachable
+- API-backed runners use built-in adapter recipes but stay non-runnable unless they were configured securely and intentionally
+- requested `install_path` is now treated as real source-of-truth for plugin and skill path reporting instead of cosmetic metadata
 
 ## What is not automatic
 

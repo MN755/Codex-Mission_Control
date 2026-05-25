@@ -15,7 +15,7 @@ Supported runner types:
 - `openai_api`
 - `anthropic_api`
 - `xai_api`
-- `custom_api`
+- `custom`
 
 ## Detection and user action
 
@@ -23,10 +23,10 @@ Detection guidance:
 
 - `dry_run`: always available and safe fallback
 - `codex_cli`: detect local CLI and login state; preferred when available
-- `ollama`: detect installed service and available local models
+- `ollama`: use the built-in `scripts/ollama_adapter.py` recipe and require a reachable local endpoint
 - `claude_cli`: detect installed CLI and configuration
-- `*_api`: detect only configured secure provider settings, never raw chat-pasted keys
-- `custom_api`: only available when explicitly configured
+- `*_api`: use the built-in `scripts/api_provider_adapter.py` recipe but still require secure provider credentials
+- `custom`: only available when explicitly configured
 
 ## Billing and security notes
 
@@ -35,6 +35,7 @@ Notes:
 - Codex CLI via ChatGPT/Codex login should be preferred where available.
 - API providers may incur billing and require explicit configuration.
 - Ollama is local but still requires installed models and local compute budget.
+- Built-in adapter recipes reduce setup friction but do not silently make a provider ready when auth or the endpoint is still missing.
 - Dry-run is the safe fallback when no runner is ready.
 
 ## Fallback behavior

@@ -1,12 +1,10 @@
 ## Start Here
 - [Home](Home)
 - [Quick Start](Quick-Start)
-- [Background-Running Happy Path](Headless-Happy-Path)
-- [Copy Paste Codex Prompts](Copy-Paste-Codex-Prompts)
-- [Background-Running Direction](Headless-First-Direction)
+- [Headless First Direction](Headless-First-Direction)
 - [Install From Codex](Install-From-Codex)
 
-## Background Running
+## Headless Usage
 - [Codex Chat Workflow](Codex-Chat-Workflow)
 - [Existing Codebase Mode](Existing-Codebase-Mode)
 - [Pending Decisions and Approvals](Pending-Decisions-and-Approvals)
@@ -35,9 +33,6 @@
 ## Debugging
 - [Diagnostics and Health Checks](Diagnostics-and-Health-Checks)
 - [Debugging Common Issues](Debugging-Common-Issues)
-- [Errors and Debug Codes](Errors-and-Debug-Codes)
-- [Debug Breakpoints](Debug-Breakpoints)
-- [Troubleshooting Error Codes](Troubleshooting-Error-Codes)
 - [Plugin Health Doctor](Plugin-Health-Doctor)
 - [Health Doctor Example Output](Health-Doctor-Example-Output)
 

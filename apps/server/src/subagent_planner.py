@@ -184,6 +184,26 @@ class SubagentPlannerService:
             return "low"
         return "medium"
 
+    @staticmethod
+    def _policy_allows_file_edits(policy: SubagentPolicy) -> bool:
+        return bool(policy.allow_file_edits or policy.default_mode == "limited_write")
+
+    @staticmethod
+    def _sandbox_mode_for_policy(policy: SubagentPolicy) -> str:
+        return "workspace-write" if SubagentPlannerService._policy_allows_file_edits(policy) else "read-only"
+
+    @staticmethod
+    def _read_only_default(policy: SubagentPolicy) -> bool:
+        return SubagentPlannerService._sandbox_mode_for_policy(policy) == "read-only"
+
+    @staticmethod
+    def _commands_allowed_for_specs(specs: list[SubagentSpec]) -> bool:
+        return any(
+            "commands are allowed" in f"{spec.mission or ''} {spec.expected_output or ''}".lower()
+            or "command execution" in f"{spec.mission or ''} {spec.expected_output or ''}".lower()
+            for spec in specs
+        )
+
     def _should_recommend(self, *, task_type: str, codebase_size: str, task_complexity: str, expected_parallelism: int, risk_level: str, bounded_scope: bool, requires_file_edits: bool, requires_commands: bool, policy: SubagentPolicy) -> tuple[bool, str, list[str]]:
         reasons: list[str] = []
         risks: list[str] = []
@@ -191,10 +211,10 @@ class SubagentPlannerService:
             return False, "Subagent bursts are disabled by policy.", ["Policy disables subagent bursts."]
         if task_type not in list(policy.allowed_task_types_json or []):
             return False, f"Task type `{task_type}` is not allowed by the subagent policy.", [f"`{task_type}` is outside the allowed task types."]
-        if requires_file_edits:
-            return False, "This task needs file edits, so the default read-only burst mode is a bad fit.", ["Coordinated edits should stay in the normal worker system."]
-        if requires_commands:
-            return False, "This task needs command execution, which the default burst policy does not allow.", ["Subagent bursts default to no-command mode."]
+        if requires_file_edits and not self._policy_allows_file_edits(policy):
+            return False, "This task needs file edits, but the current subagent policy is still read-only.", ["Enable limited-write bursts before using subagents for coordinated edits."]
+        if requires_commands and not policy.allow_commands:
+            return False, "This task needs command execution, but the current subagent policy does not allow commands.", ["Enable command-capable bursts before using subagents for validation or reproduction."]
         if not bounded_scope:
             return False, "The scope is not bounded enough for a short-lived burst.", ["Unclear scope produces noisy parallel output."]
         if expected_parallelism < 2:
@@ -258,13 +278,15 @@ class SubagentPlannerService:
         }
 
     def _render_spawn_instructions(self, batch: SubagentBatch) -> str:
+        commands_allowed = self._commands_allowed_for_specs(list(batch.specs))
+        read_only_default = all(spec.sandbox_mode == "read-only" for spec in batch.specs)
         lines = [
             "## Mission Control Codex subagent burst",
             "",
             f"**Purpose:** {batch.purpose}",
             f"**Spawn method:** {batch.spawn_method}",
-            f"**Read-only default:** yes",
-            f"**Commands allowed:** no",
+            f"**Read-only default:** {'yes' if read_only_default else 'no'}",
+            f"**Commands allowed:** {'yes' if commands_allowed else 'no'}",
             "",
             "### Proposed subagents",
         ]
@@ -280,9 +302,17 @@ class SubagentPlannerService:
         return "\n".join(lines)
 
     def _render_manual_prompt(self, batch: SubagentBatch) -> str:
+        commands_allowed = self._commands_allowed_for_specs(list(batch.specs))
+        read_only_default = all(spec.sandbox_mode == "read-only" for spec in batch.specs)
         lines = [
-            "Spawn short-lived Codex subagents for the following read-only tasks.",
-            "Do not edit files. Do not run commands. Do not delegate recursively. Stop at depth 1.",
+            f"Spawn short-lived Codex subagents for the following {'read-only' if read_only_default else 'bounded'} tasks.",
+            (
+                "Do not edit files. Do not run commands. Do not delegate recursively. Stop at depth 1."
+                if read_only_default and not commands_allowed
+                else "Stay within the assigned scope and paths. Do not delegate recursively. Stop at depth 1."
+            ),
+            ("Commands are allowed when needed for bounded validation." if commands_allowed else "Do not run commands."),
+            ("File edits are allowed only inside the assigned paths." if not read_only_default else "Do not edit files."),
             "",
         ]
         for spec in batch.specs:
@@ -395,8 +425,8 @@ class SubagentPlannerService:
             "reason": batch.reason,
             "subagents": [spec.display_name for spec in batch.specs],
             "spawn_method": batch.spawn_method,
-            "read_only_default": True,
-            "commands_allowed": False,
+            "read_only_default": all(spec.sandbox_mode == "read-only" for spec in batch.specs),
+            "commands_allowed": self._commands_allowed_for_specs(list(batch.specs)),
             "options": options,
         }
         db.flush()
@@ -466,17 +496,22 @@ class SubagentPlannerService:
         allowed_paths = [str(item) for item in list(payload.get("allowed_paths_json") or []) if str(item).strip()]
         forbidden_paths = [str(item) for item in list(payload.get("forbidden_paths_json") or []) if str(item).strip()]
         timeout_cap = min(int(policy.max_runtime_seconds), 600)
+        sandbox_mode = self._sandbox_mode_for_policy(policy)
+        command_note = " Commands are allowed for bounded validation or reproduction inside the assigned scope." if policy.allow_commands else ""
         for template_spec in list(template["subagents"])[:count]:
             spec = SubagentSpec(
                 batch_id=batch.id,
                 name=template_spec.name,
                 display_name=template_spec.display_name,
                 custom_agent_name=template_spec.custom_agent_name,
-                mission=template_spec.mission,
-                sandbox_mode="read-only",
+                mission=f"{template_spec.mission}{command_note}",
+                sandbox_mode=sandbox_mode,
                 allowed_paths_json=allowed_paths,
                 forbidden_paths_json=forbidden_paths,
-                expected_output=template_spec.expected_output,
+                expected_output=(
+                    f"{template_spec.expected_output} "
+                    + ("You may edit files only within the assigned paths." if sandbox_mode != "read-only" else "Do not edit files.")
+                ).strip(),
                 timeout_seconds=min(template_spec.default_timeout_seconds, timeout_cap),
                 status=batch.status,
             )
@@ -613,6 +648,7 @@ class SubagentPlannerService:
         return batch
 
     def generate_custom_agents(self, db: Session, project: Project, *, overwrite_existing: bool = False, template_names: list[str] | None = None) -> dict[str, Any]:
+        policy = self.ensure_policy(db)
         workspace_root = self._workspace_root(project)
         workspace_root.mkdir(parents=True, exist_ok=True)
         agents_dir = workspace_root / ".codex" / "agents"
@@ -633,7 +669,7 @@ class SubagentPlannerService:
                 backup_path = file_path.with_suffix(".toml.bak")
                 backup_path.write_text(file_path.read_text(encoding="utf-8"), encoding="utf-8")
                 backup_files.append(backup_path.as_posix())
-            file_path.write_text(self._agent_toml(template), encoding="utf-8")
+            file_path.write_text(self._agent_toml(template, policy), encoding="utf-8")
             generated_files.append(file_path.as_posix())
         service.events.publish(
             db,
@@ -653,25 +689,35 @@ class SubagentPlannerService:
             "generated_count": len(generated_files),
         }
 
-    def _agent_toml(self, template: BurstSpecTemplate) -> str:
+    def _agent_toml(self, template: BurstSpecTemplate, policy: SubagentPolicy) -> str:
+        sandbox_mode = self._sandbox_mode_for_policy(policy)
+        allow_file_edits = self._policy_allows_file_edits(policy)
+        allow_commands = bool(policy.allow_commands)
+        role_description = "bounded" if allow_file_edits or allow_commands else "read-only"
+        extra = "Stay inside assigned scope. Cite files when possible."
+        if not allow_file_edits:
+            extra = f"{extra} Do not edit files."
+        if not allow_commands:
+            extra = f"{extra} Do not run commands."
+        extra = f"{extra} Do not spawn more agents."
         return "\n".join(
             [
                 f'name = "{template.custom_agent_name or template.name}"',
-                f'description = "{template.display_name} for Mission Control read-only burst work."',
-                'sandbox_mode = "read-only"',
-                "allow_file_edits = false",
-                "allow_commands = false",
+                f'description = "{template.display_name} for Mission Control {role_description} burst work."',
+                f'sandbox_mode = "{sandbox_mode}"',
+                f"allow_file_edits = {'true' if allow_file_edits else 'false'}",
+                f"allow_commands = {'true' if allow_commands else 'false'}",
                 "allow_recursive_delegation = false",
                 "",
                 "[developer_instructions]",
-                'purpose = "Narrow read-only Mission Control helper."',
+                f'purpose = "Narrow {role_description} Mission Control helper."',
                 f'mission = "{template.mission}"',
                 'expected_report_format = "summary, evidence, risks, recommendations, confidence"',
-                'extra = "Do not edit files. Do not run commands. Do not spawn more agents. Cite files when possible."',
+                f'extra = "{extra}"',
                 "",
                 "[limits]",
                 "max_depth = 1",
-                "read_only_default = true",
+                f"read_only_default = {'true' if sandbox_mode == 'read-only' else 'false'}",
             ]
         )
 

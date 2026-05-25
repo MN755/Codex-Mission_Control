@@ -8,9 +8,16 @@ Provider autowiring probes the local environment and enables only the runners th
 
 - `dry_run` is always enabled
 - `codex_cli` is enabled only when the CLI is present and login can be confirmed
-- `ollama` is enabled only when the local server is reachable
+- `ollama` gets a built-in local adapter recipe, but it is only runnable when the local server is reachable
 - `claude_cli` may be detected without being auto-enabled
-- API-backed runners remain disabled unless secure external configuration already exists and the user explicitly wants them
+- API-backed runners get a built-in adapter recipe, but they stay non-runnable until secure external configuration already exists
+
+## What autowire now persists
+
+- selected provider endpoint for endpoint-backed providers
+- built-in adapter command and args for `ollama`, `openai_api`, `anthropic_api`, and `xai_api`
+- install-path-aware plugin and skill paths in the headless config
+- a fresh startup status check instead of stale cached bootstrap state
 
 ## Safety rules
 

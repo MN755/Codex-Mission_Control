@@ -237,6 +237,76 @@ def test_result_ingestion_completes_batch(client) -> None:
     assert all(spec["status"] == "completed" for spec in payload["specs"])
 
 
+def test_burst_policy_honors_command_and_file_edit_allowances(client) -> None:
+    policy = client.put(
+        "/api/subagent-policy",
+        headers=_bridge_headers(),
+        json={
+            "enabled": True,
+            "default_mode": "limited_write",
+            "allow_file_edits": True,
+            "allow_commands": True,
+            "require_user_approval_above_count": 10,
+        },
+    )
+    assert policy.status_code == 200, policy.text
+
+    project = _create_project(client, "Writable Burst", "writable-burst")
+    response = client.post(
+        f"/api/projects/{project['id']}/subagent-bursts/recommend",
+        headers=_bridge_headers(),
+        json={
+            "purpose": "Bounded fix burst",
+            "task_type": "planning",
+            "codebase_size": "large",
+            "task_complexity": "medium",
+            "expected_parallelism": 3,
+            "risk_level": "low",
+            "bounded_scope": True,
+            "requires_file_edits": True,
+            "requires_commands": True,
+            "allowed_paths_json": ["src"],
+        },
+    )
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["recommended"] is True
+    assert payload["pending_decision_required"] is False
+    assert all(spec["sandbox_mode"] == "workspace-write" for spec in payload["batch"]["specs"])
+    assert payload["batch"]["manual_prompt_text"].startswith("Spawn short-lived Codex subagents for the following bounded tasks.")
+    assert "Commands are allowed when needed for bounded validation." in payload["batch"]["manual_prompt_text"]
+    assert "File edits are allowed only inside the assigned paths." in payload["batch"]["manual_prompt_text"]
+
+
+def test_custom_agent_generation_reflects_current_subagent_policy(client) -> None:
+    policy = client.put(
+        "/api/subagent-policy",
+        headers=_bridge_headers(),
+        json={
+            "enabled": True,
+            "default_mode": "limited_write",
+            "allow_file_edits": True,
+            "allow_commands": True,
+            "require_user_approval_above_count": 3,
+        },
+    )
+    assert policy.status_code == 200, policy.text
+    project = _create_project(client, "Agent Policy", "agent-policy")
+
+    response = client.post(
+        f"/api/projects/{project['id']}/subagent-agents/generate",
+        headers=_bridge_headers(),
+        json={"overwrite_existing": True, "template_names": ["mc-repo-mapper"]},
+    )
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    generated = next(path for path in payload["generated_files"] if path.endswith("mc-repo-mapper.toml"))
+    content = Path(generated).read_text(encoding="utf-8")
+    assert 'sandbox_mode = "workspace-write"' in content
+    assert "allow_file_edits = true" in content
+    assert "allow_commands = true" in content
+
+
 def test_direct_bridge_formatter_for_subagent_burst() -> None:
     message = format_pending_decision_message(
         decision={

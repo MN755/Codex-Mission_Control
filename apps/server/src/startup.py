@@ -54,8 +54,10 @@ class StartupCoordinator:
             "diagnostic_report_path": None,
             "degraded_reasons": [],
             "failed_checks": [],
+            "status_source": "fresh",
             "startup_started_at": started_at,
             "last_completed_at": None,
+            "checked_at": None,
         }
 
     @staticmethod
@@ -203,7 +205,12 @@ class StartupCoordinator:
     def _provider_optional_checks(self, profile: AppProfile) -> list[dict[str, Any]]:
         selected = normalize_provider(profile.selected_provider)
         checks: list[dict[str, Any]] = self._codex_optional_checks()
-        provider_statuses = detect_provider_statuses(profile.adapter_command, profile.provider_endpoint, list(profile.adapter_args_json or []))
+        provider_statuses = detect_provider_statuses(
+            selected_provider=profile.selected_provider,
+            adapter_command=profile.adapter_command,
+            provider_endpoint=profile.provider_endpoint,
+            adapter_args=list(profile.adapter_args_json or []),
+        )
         by_provider = {item["provider"]: item for item in provider_statuses}
 
         checks.append(
@@ -278,6 +285,8 @@ class StartupCoordinator:
         payload["failed_checks"] = [check["name"] for check in payload["checks"] if check["status"] == "failed"]
         payload["degraded_reasons"] = [check["summary"] for check in degraded_checks]
         payload["last_completed_at"] = _now()
+        payload["checked_at"] = payload["last_completed_at"]
+        payload["status_source"] = "fresh"
 
         if required_failures:
             primary = required_failures[0]
@@ -329,7 +338,12 @@ class StartupCoordinator:
         return payload
 
     def _system_status_snapshot(self, profile: AppProfile) -> dict[str, Any]:
-        provider_statuses = detect_provider_statuses(profile.adapter_command, profile.provider_endpoint, list(profile.adapter_args_json or []))
+        provider_statuses = detect_provider_statuses(
+            selected_provider=profile.selected_provider,
+            adapter_command=profile.adapter_command,
+            provider_endpoint=profile.provider_endpoint,
+            adapter_args=list(profile.adapter_args_json or []),
+        )
         selected = normalize_provider(profile.selected_provider)
         matching = next((item for item in provider_statuses if item["provider"] == selected), provider_statuses[0])
         return {
@@ -344,9 +358,8 @@ class StartupCoordinator:
         }
 
     def get_status(self, db: Session) -> dict[str, Any]:
-        if self.last_status is None:
-            return self.run_checks(db, attempt_number=1, include_optional_checks=True)
-        return self.last_status
+        attempt = int((self.last_status or {}).get("startup_attempt") or 1)
+        return self.run_checks(db, attempt_number=max(attempt, 1), include_optional_checks=True)
 
     def run_checks(self, db: Session, *, attempt_number: int, include_optional_checks: bool = True) -> dict[str, Any]:
         profile = get_or_create_app_profile(db)

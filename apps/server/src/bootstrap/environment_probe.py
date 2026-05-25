@@ -12,10 +12,6 @@ from config import APP_SUPPORT_ROOT, DEFAULT_BACKEND_PORT, REPO_ROOT, RUNTIME_RO
 from daemon_state import daemon_identity_snapshot, read_daemon_metadata, resolve_backend_binding
 
 
-PLUGIN_ROOT = REPO_ROOT / "plugins" / "mission-control"
-LOCAL_SKILLS_ROOT = REPO_ROOT / ".codex" / "skills"
-
-
 def _normalize_path_text(value: str | Path) -> str:
     path_text = str(value)
     home = str(Path.home())
@@ -46,8 +42,9 @@ def _shell_name() -> str:
     return Path(shell).name or shell
 
 
-def _plugin_paths() -> list[str]:
-    paths = [PLUGIN_ROOT, REPO_ROOT / ".codex" / "plugins" / "mission-control", get_codex_home() / "plugins" / "mission-control"]
+def _plugin_paths(install_root: Path) -> list[str]:
+    plugin_root = install_root / "plugins" / "mission-control"
+    paths = [plugin_root, install_root / ".codex" / "plugins" / "mission-control", get_codex_home() / "plugins" / "mission-control"]
     unique: list[str] = []
     seen: set[str] = set()
     for path in paths:
@@ -59,8 +56,9 @@ def _plugin_paths() -> list[str]:
     return unique
 
 
-def _skill_paths() -> list[str]:
-    paths = [LOCAL_SKILLS_ROOT, PLUGIN_ROOT / "skills", get_codex_home() / "skills"]
+def _skill_paths(install_root: Path) -> list[str]:
+    plugin_root = install_root / "plugins" / "mission-control"
+    paths = [install_root / ".codex" / "skills", plugin_root / "skills", get_codex_home() / "skills"]
     unique: list[str] = []
     seen: set[str] = set()
     for path in paths:
@@ -120,8 +118,8 @@ def probe_environment(
     daemon_identity = daemon_identity_snapshot()
     runtime_root = Path(runtime_path).expanduser().resolve() if runtime_path else RUNTIME_ROOT
     install_root = Path(install_path).expanduser().resolve() if install_path else REPO_ROOT
-    plugin_paths = _plugin_paths()
-    skill_paths = _skill_paths()
+    plugin_paths = _plugin_paths(install_root)
+    skill_paths = _skill_paths(install_root)
     daemon_status = {
         "host": str(backend_binding["host"]),
         "port": int(backend_binding["port"]),
@@ -135,10 +133,11 @@ def probe_environment(
         "launcher_root": _normalize_path_text(daemon_identity.get("launcher_root") or APP_SUPPORT_ROOT),
     }
     stored_headless = read_headless_config(runtime_path)
+    plugin_root = install_root / "plugins" / "mission-control"
     mcp_status = {
         "transport": str((stored_headless or {}).get("mcp_transport") or "stdio"),
         "port": (stored_headless or {}).get("mcp_port"),
-        "example_config_path": _normalize_path_text(PLUGIN_ROOT / "mcp" / "mission-control-mcp.example.json"),
+        "example_config_path": _normalize_path_text(plugin_root / "mcp" / "mission-control-mcp.example.json"),
         "headless_config_path": _normalize_path_text(headless_config_path(runtime_path)),
     }
     payload = {

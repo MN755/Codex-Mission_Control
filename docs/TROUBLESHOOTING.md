@@ -24,6 +24,8 @@ macOS / Linux:
 
 The support bundle is redacted and gives Codex or Claude chat a safer starting point than random raw logs.
 
+Startup status is now recomputed fresh on each status check. If the app still shows a bad state after a real fix, suspect a live runtime problem instead of stale bootstrap cache.
+
 ## How to read an error
 
 When Mission Control reports an error, focus on:
@@ -161,6 +163,28 @@ Fix:
 
 - start Ollama locally
 - verify that at least one local model exists
+- keep the built-in adapter recipe intact unless you intentionally override it
+
+### `MC-API-KEY-MISSING-001`
+
+Symptoms:
+
+- selected API-backed provider stays degraded
+- startup or runner status says the runtime is not ready
+
+Likely cause:
+
+- the external API key is missing even though the built-in adapter recipe exists
+
+Checks:
+
+- verify `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, or `XAI_API_KEY` in the host environment
+- rerun the support bundle to confirm the provider state
+
+Fix:
+
+- set the provider key outside chat in the host environment
+- rerun the startup or plugin health check
 
 ### `MC-WORKSPACE-PATH-MISSING-001`
 

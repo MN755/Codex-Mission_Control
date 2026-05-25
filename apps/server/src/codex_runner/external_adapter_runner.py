@@ -57,7 +57,7 @@ class ExternalAdapterRunner(BaseCodexRunner):
         if settings is None or not settings.adapter_command:
             return False
         command = settings.adapter_command.strip()
-        return bool(command and shutil.which(command))
+        return bool(command and (Path(command).exists() or shutil.which(command)))
 
     async def start_task(self, context: RunnerContext) -> RunnerHandle:
         prompt = self._build_adapter_prompt(context)

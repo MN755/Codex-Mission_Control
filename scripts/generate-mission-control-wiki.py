@@ -850,7 +850,7 @@ add(
             - `openai_api`
             - `anthropic_api`
             - `xai_api`
-            - `custom_api`
+            - `custom`
             """,
         ),
         (
@@ -860,10 +860,10 @@ add(
 
             - `dry_run`: always available and safe fallback
             - `codex_cli`: detect local CLI and login state; preferred when available
-            - `ollama`: detect installed service and available local models
+            - `ollama`: use the built-in `scripts/ollama_adapter.py` recipe and require a reachable local endpoint
             - `claude_cli`: detect installed CLI and configuration
-            - `*_api`: detect only configured secure provider settings, never raw chat-pasted keys
-            - `custom_api`: only available when explicitly configured
+            - `*_api`: use the built-in `scripts/api_provider_adapter.py` recipe but still require secure provider credentials
+            - `custom`: only available when explicitly configured
             """,
         ),
         (
@@ -874,6 +874,7 @@ add(
             - Codex CLI via ChatGPT/Codex login should be preferred where available.
             - API providers may incur billing and require explicit configuration.
             - Ollama is local but still requires installed models and local compute budget.
+            - Built-in adapter recipes reduce setup friction but do not silently make a provider ready when auth or the endpoint is still missing.
             - Dry-run is the safe fallback when no runner is ready.
             """,
         ),
@@ -913,6 +914,7 @@ add(
             - localhost health endpoints
             - plugin/skill file presence
             - Ollama service presence
+            - built-in adapter recipe availability for Ollama and API-backed providers
             """,
         ),
         (
@@ -925,6 +927,7 @@ add(
             - API provider secrets in a secure store
             - network-heavy model downloads
             - elevated permissions outside the workspace
+            - app reload after plugin or MCP configuration changes
             """,
         ),
         (
@@ -978,6 +981,8 @@ add(
             5. produce a codebase understanding summary
             6. choose skip, quick, or full interview if needed
             7. only then move into planning or execution
+
+            Scan outputs should prefer repo-relative metadata for docs, CI, deployment files, and risk flags so the same understanding survives across machines.
             """,
         ),
         (
@@ -1070,6 +1075,20 @@ add(
             - path locks
             - contract boundaries
             - high-risk approval gates
+            - local performance guardrails so weaker machines are not overcommitted
+            """,
+        ),
+        (
+            "Capability-aware subagent bursts",
+            """
+            Mission Control now reflects the current subagent policy inside burst specs instead of pretending every burst is permanently read-only.
+
+            That means:
+
+            - read-only stays the default
+            - limited-write bursts can use `workspace-write`
+            - command-capable bursts say so explicitly
+            - generated custom Codex subagents inherit the same policy
             """,
         ),
         (
@@ -1314,6 +1333,7 @@ add(
             - Codex CLI login
             - Ollama status
             - Claude CLI status
+            - startup freshness and last completed check time
             - degraded vs broken classification
             """,
         ),
@@ -1324,6 +1344,7 @@ add(
 
             ```powershell
             .\\scripts\\start-mission-control-daemon.ps1
+            .\\scripts\\mission-control-support-bundle.ps1
             Invoke-WebRequest http://127.0.0.1:8010/api/health
             codex --version
             codex login status
@@ -1375,6 +1396,7 @@ add(
 
             - port conflict
             - Python environment not ready
+            - another Mission Control daemon already owns the expected identity on the same port
 
             Checks:
 
@@ -1387,6 +1409,7 @@ add(
 
             - verify Python environment
             - inspect port usage
+            - confirm which repo root owns the live daemon
             - check runtime folder permissions
             """,
         ),
@@ -1403,6 +1426,7 @@ add(
             - MCP config not loaded
             - daemon token mismatch
             - bridge cannot reach localhost daemon
+            - host app reload still has not happened after plugin or MCP config changes
 
             Checks:
 
@@ -1455,6 +1479,7 @@ add(
 
             - service stopped
             - no model installed
+            - provider adapter was overridden badly
 
             Checks:
 
@@ -1465,7 +1490,31 @@ add(
 
             - start Ollama
             - install the required local model with explicit user awareness
+            - restore the built-in adapter recipe unless a custom override is intentional
             - fall back to Codex CLI or dry-run if needed
+            """,
+        ),
+        (
+            "API provider selected but still degraded",
+            """
+            Symptoms:
+
+            - OpenAI, Anthropic, or xAI was selected
+            - startup or runner status still says runtime is not ready
+
+            Likely cause:
+
+            - the built-in adapter recipe exists, but the external API key is still missing
+
+            Checks:
+
+            - verify the provider key in the host environment
+            - rerun the support bundle and health checks
+
+            Fix:
+
+            - set the API key outside chat
+            - rerun startup or plugin health
             """,
         ),
         (
@@ -1880,6 +1929,8 @@ add(
             - skill validation
             - headless happy path
             - runner detection smoke checks
+            - startup freshness and provider-adapter smoke checks
+            - subagent policy behavior checks
             - diagnostic summary output
             """,
         ),
@@ -2586,6 +2637,9 @@ def validate_links() -> list[str]:
 
 def main() -> None:
     WIKI_DIR.mkdir(exist_ok=True)
+    for existing in WIKI_DIR.glob("*.md"):
+        if existing.name not in {"PUSH-TO-GITHUB-WIKI.md"}:
+            existing.unlink()
     for name, content in PAGES.items():
         (WIKI_DIR / name).write_text(content, encoding="utf-8")
 

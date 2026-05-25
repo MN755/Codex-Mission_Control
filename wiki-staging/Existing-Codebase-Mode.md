@@ -16,6 +16,8 @@ Existing-codebase mode should:
 6. choose skip, quick, or full interview if needed
 7. only then move into planning or execution
 
+Scan outputs should prefer repo-relative metadata for docs, CI, deployment files, and risk flags so the same understanding survives across machines.
+
 ## Safety mode and AGENTS.md
 
 Imported codebase safety mode should favor:

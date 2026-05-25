@@ -14,6 +14,7 @@ from claude_cli_path import claude_command_path
 from codex_cli_path import codex_command_path
 from config import LAUNCHER_ROOT, REPO_ROOT, RUNTIME_ROOT, get_codex_home, load_launcher_config
 from daemon_state import daemon_identity_snapshot, resolve_backend_binding
+from provider_adapter_recipes import resolve_adapter_recipe
 from provider_support import normalize_provider, provider_label, provider_uses_adapter, provider_uses_endpoint, supports_app_server
 
 try:
@@ -368,13 +369,15 @@ def detect_env_api_status(provider: str, *, env_key: str, label: str) -> dict[st
 
 
 def detect_custom_status(adapter_command: str | None = None, adapter_args: list[str] | None = None) -> dict[str, Any]:
-    command = (adapter_command or "").strip()
-    detected = bool(command and shutil.which(command))
+    recipe = resolve_adapter_recipe("custom", adapter_command, adapter_args)
+    command = (recipe.command if recipe else adapter_command or "").strip()
+    detected = bool(command and (Path(command).exists() or shutil.which(command)))
     notes = [
         "Mission Control does not manage authentication for custom providers.",
         "Custom providers run through local adapter commands rather than direct built-in integrations.",
     ]
-    version = " ".join([command, *(adapter_args or [])]).strip() if command else None
+    effective_args = list(recipe.args) if recipe else list(adapter_args or [])
+    version = " ".join([command, *effective_args]).strip() if command else None
     return {
         "provider": "custom",
         "label": "Custom provider",
@@ -404,9 +407,12 @@ def _runtime_details(
     provider_endpoint: str | None = None,
 ) -> dict[str, Any]:
     normalized = normalize_provider(provider)
-    adapter_status = detect_custom_status(adapter_command, adapter_args) if provider_uses_adapter(normalized) else None
+    recipe = resolve_adapter_recipe(normalized, adapter_command, adapter_args)
+    effective_command = recipe.command if recipe else None
+    effective_args = list(recipe.args) if recipe else []
+    adapter_status = detect_custom_status(effective_command, effective_args) if provider_uses_adapter(normalized) else None
     adapter_required = provider_uses_adapter(normalized)
-    adapter_configured = bool((adapter_command or "").strip()) if adapter_required else False
+    adapter_configured = bool(effective_command) if adapter_required else False
     adapter_ready = bool(adapter_status and adapter_status.get("cli_detected"))
 
     if normalized == "codex":
@@ -459,6 +465,9 @@ def _runtime_details(
         "adapter_command_configured": adapter_configured,
         "adapter_command_detected": adapter_ready,
         "provider_endpoint_configured": bool(provider_endpoint and provider_uses_endpoint(normalized)),
+        "adapter_command_path": effective_command,
+        "adapter_args": effective_args,
+        "adapter_recipe_source": recipe.source if recipe else "none",
     }
 
 
@@ -550,10 +559,16 @@ def assess_model_advisories(
     return advisories
 
 
-def detect_provider_statuses(adapter_command: str | None = None, ollama_endpoint: str | None = None, adapter_args: list[str] | None = None) -> list[dict[str, Any]]:
+def detect_provider_statuses(
+    selected_provider: str | None = None,
+    adapter_command: str | None = None,
+    provider_endpoint: str | None = None,
+    adapter_args: list[str] | None = None,
+) -> list[dict[str, Any]]:
+    selected = normalize_provider(selected_provider)
     providers = [
         detect_codex_status(),
-        detect_ollama_status(ollama_endpoint),
+        detect_ollama_status(provider_endpoint if selected == "ollama" else None),
         detect_env_api_status("openai_api", env_key="OPENAI_API_KEY", label="OpenAI API"),
         detect_env_api_status("anthropic_api", env_key="ANTHROPIC_API_KEY", label="Anthropic API"),
         detect_env_api_status("xai_api", env_key="XAI_API_KEY", label="xAI API"),
@@ -563,15 +578,38 @@ def detect_provider_statuses(adapter_command: str | None = None, ollama_endpoint
     enriched: list[dict[str, Any]] = []
     for item in providers:
         normalized = normalize_provider(item.get("provider"))
-        endpoint = ollama_endpoint if provider_uses_endpoint(normalized) else None
+        endpoint = provider_endpoint if normalized == selected and provider_uses_endpoint(normalized) else None
+        provider_command = adapter_command if normalized == selected else None
+        provider_args = adapter_args if normalized == selected else None
         runtime = _runtime_details(
             provider=normalized,
-            adapter_command=adapter_command,
-            adapter_args=adapter_args,
+            adapter_command=provider_command,
+            adapter_args=provider_args,
             provider_endpoint=endpoint,
         )
         enriched.append({**item, **runtime})
     return enriched
+
+
+def _safe_detect_provider_statuses(
+    *,
+    selected_provider: str,
+    adapter_command: str | None = None,
+    provider_endpoint: str | None = None,
+    adapter_args: list[str] | None = None,
+) -> list[dict[str, Any]]:
+    try:
+        return detect_provider_statuses(
+            selected_provider=selected_provider,
+            adapter_command=adapter_command,
+            provider_endpoint=provider_endpoint,
+            adapter_args=adapter_args,
+        )
+    except TypeError as exc:
+        message = str(exc)
+        if "selected_provider" not in message and "provider_endpoint" not in message:
+            raise
+        return detect_provider_statuses(adapter_command, provider_endpoint, adapter_args)
 
 
 def detect_system_status(
@@ -585,7 +623,12 @@ def detect_system_status(
     launcher_config = load_launcher_config()
     backend_binding = resolve_backend_binding()
     daemon_identity = daemon_identity_snapshot()
-    provider_statuses = detect_provider_statuses(adapter_command, ollama_endpoint, adapter_args)
+    provider_statuses = _safe_detect_provider_statuses(
+        selected_provider=normalized_provider,
+        adapter_command=adapter_command,
+        provider_endpoint=ollama_endpoint,
+        adapter_args=adapter_args,
+    )
     provider_lookup = {entry["provider"]: entry for entry in provider_statuses}
     selected = provider_lookup.get(normalized_provider, provider_lookup["codex"])
     codex = provider_lookup["codex"]

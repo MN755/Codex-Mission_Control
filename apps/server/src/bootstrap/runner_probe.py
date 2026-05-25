@@ -7,6 +7,7 @@ from typing import Any
 from bootstrap.dependency_probe import probe_command
 from bootstrap.secret_redaction import redact_bootstrap_value
 from errors import MissionControlError
+from provider_adapter_recipes import resolve_adapter_recipe
 from system_status import detect_claude_code_status, detect_codex_status, detect_custom_status, detect_ollama_status
 
 
@@ -120,12 +121,15 @@ def probe_codex_cli() -> dict[str, Any]:
 
 def probe_ollama(*, endpoint: str | None = None, adapter_command: str | None = None, adapter_args: list[str] | None = None) -> dict[str, Any]:
     status = detect_ollama_status(endpoint)
-    adapter_status = detect_custom_status(adapter_command, adapter_args)
+    recipe = resolve_adapter_recipe("ollama", adapter_command, adapter_args)
+    effective_command = recipe.command if recipe else None
+    effective_args = list(recipe.args) if recipe else []
+    adapter_status = detect_custom_status(effective_command, effective_args)
     command_info = probe_command("ollama")
     path_text = command_info["path"]
     reachable = bool(status.get("reachable"))
     adapter_ready = bool(adapter_status.get("cli_detected"))
-    adapter_configured = bool((adapter_command or "").strip())
+    adapter_configured = bool(effective_command)
     available = bool(path_text or reachable or adapter_ready)
     if not available:
         install_status = "missing"
@@ -161,7 +165,9 @@ def probe_ollama(*, endpoint: str | None = None, adapter_command: str | None = N
             "endpoint": status.get("cli_version"),
             "reachable": reachable,
             "summary": status.get("summary"),
-            "adapter_command": adapter_command,
+            "adapter_command": effective_command,
+            "adapter_args": effective_args,
+            "adapter_recipe_source": recipe.source if recipe else "none",
             "adapter_ready": adapter_ready,
             "adapter_configured": adapter_configured,
         },
@@ -218,9 +224,12 @@ def probe_claude_cli() -> dict[str, Any]:
 
 def _api_probe(runner_id: str, label: str, env_key: str, *, adapter_command: str | None = None, adapter_args: list[str] | None = None) -> dict[str, Any]:
     configured_in_env = bool(os.environ.get(env_key))
-    adapter_status = detect_custom_status(adapter_command, adapter_args)
+    recipe = resolve_adapter_recipe(runner_id, adapter_command, adapter_args)
+    effective_command = recipe.command if recipe else None
+    effective_args = list(recipe.args) if recipe else []
+    adapter_status = detect_custom_status(effective_command, effective_args)
     adapter_ready = bool(adapter_status.get("cli_detected"))
-    adapter_configured = bool((adapter_command or "").strip())
+    adapter_configured = bool(effective_command)
     recommended_fix = (
         "API-backed runner is available through external secure environment configuration. Keep it opt-in because it may incur billing."
         if configured_in_env and adapter_ready
@@ -244,7 +253,15 @@ def _api_probe(runner_id: str, label: str, env_key: str, *, adapter_command: str
         recommended_fix=recommended_fix,
         billing_warning=f"{label} may incur API billing.",
         error=error,
-        details={"env_var": env_key, "secure_storage_supported": False, "adapter_ready": adapter_ready, "adapter_configured": adapter_configured},
+        details={
+            "env_var": env_key,
+            "secure_storage_supported": False,
+            "adapter_ready": adapter_ready,
+            "adapter_configured": adapter_configured,
+            "adapter_command": effective_command,
+            "adapter_args": effective_args,
+            "adapter_recipe_source": recipe.source if recipe else "none",
+        },
     )
 
 

@@ -6,7 +6,8 @@ from sqlalchemy.orm import Session
 
 from config import DEFAULT_APPROVAL_POLICY, DEFAULT_RUNNER_MODE, DEFAULT_SANDBOX
 from models import Agent, Project, ProjectSettings
-from provider_support import default_label, normalize_provider, provider_label, provider_uses_adapter, provider_uses_endpoint
+from provider_adapter_recipes import resolve_adapter_recipe
+from provider_support import default_label, normalize_provider, provider_label, provider_uses_endpoint
 from schemas import ProjectSettingsUpdate
 
 
@@ -41,17 +42,20 @@ def normalize_provider_endpoint(provider: str, value: str | None) -> str | None:
 
 
 def normalize_provider_adapter_command(provider: str, value: str | None) -> str | None:
-    normalized_provider = normalize_provider(provider)
-    if not provider_uses_adapter(normalized_provider):
-        return None
-    return normalize_optional_text(value)
+    recipe = resolve_adapter_recipe(provider, value, None)
+    return recipe.command if recipe else None
 
 
 def normalize_provider_adapter_args(provider: str, values: list[str] | None) -> list[str]:
-    normalized_provider = normalize_provider(provider)
-    if not provider_uses_adapter(normalized_provider):
-        return []
-    return [item.strip() for item in list(values or []) if item and item.strip()]
+    recipe = resolve_adapter_recipe(provider, None, values)
+    return list(recipe.args) if recipe else []
+
+
+def normalize_provider_adapter_settings(provider: str, command: str | None, values: list[str] | None) -> tuple[str | None, list[str]]:
+    recipe = resolve_adapter_recipe(provider, command, values)
+    if recipe is None:
+        return None, []
+    return recipe.command, list(recipe.args)
 
 
 def get_or_create_project_settings(db: Session, project: Project) -> ProjectSettings:
@@ -95,8 +99,11 @@ def update_project_settings(db: Session, project: Project, payload: ProjectSetti
         if key.strip() and value
     }
     settings.provider_endpoint = normalize_provider_endpoint(settings.provider, payload.provider_endpoint)
-    settings.adapter_command = normalize_provider_adapter_command(settings.provider, payload.adapter_command)
-    settings.adapter_args_json = normalize_provider_adapter_args(settings.provider, payload.adapter_args_json)
+    settings.adapter_command, settings.adapter_args_json = normalize_provider_adapter_settings(
+        settings.provider,
+        payload.adapter_command,
+        payload.adapter_args_json,
+    )
     settings.runner_mode = payload.runner_mode
     settings.sandbox_mode = payload.sandbox_mode
     settings.approval_policy = payload.approval_policy
@@ -134,6 +141,7 @@ def resolve_manager_settings(project: Project, settings: ProjectSettings) -> Res
     provider = normalize_provider(settings.provider)
     model = normalize_optional_text(settings.manager_model)
     reasoning = settings.manager_reasoning_effort
+    adapter_command, adapter_args = normalize_provider_adapter_settings(provider, settings.adapter_command, list(settings.adapter_args_json or []))
     return ResolvedRunSettings(
         provider=provider,
         provider_label=provider_label(provider),
@@ -143,8 +151,8 @@ def resolve_manager_settings(project: Project, settings: ProjectSettings) -> Res
         model=model,
         reasoning_effort=reasoning,
         provider_endpoint=normalize_provider_endpoint(provider, settings.provider_endpoint),
-        adapter_command=normalize_provider_adapter_command(provider, settings.adapter_command),
-        adapter_args=normalize_provider_adapter_args(provider, list(settings.adapter_args_json or [])),
+        adapter_command=adapter_command,
+        adapter_args=adapter_args,
         effective_model_label=model or default_label(provider),
         effective_reasoning_label=reasoning or default_label(provider),
     )
@@ -157,6 +165,7 @@ def resolve_worker_settings(project: Project, settings: ProjectSettings, agent: 
     override_reasoning = (settings.per_role_reasoning_overrides_json or {}).get(role_key)
     model = override_model or normalize_optional_text(settings.default_worker_model)
     reasoning = override_reasoning or settings.default_worker_reasoning_effort
+    adapter_command, adapter_args = normalize_provider_adapter_settings(provider, settings.adapter_command, list(settings.adapter_args_json or []))
     return ResolvedRunSettings(
         provider=provider,
         provider_label=provider_label(provider),
@@ -166,8 +175,8 @@ def resolve_worker_settings(project: Project, settings: ProjectSettings, agent: 
         model=model,
         reasoning_effort=reasoning,
         provider_endpoint=normalize_provider_endpoint(provider, settings.provider_endpoint),
-        adapter_command=normalize_provider_adapter_command(provider, settings.adapter_command),
-        adapter_args=normalize_provider_adapter_args(provider, list(settings.adapter_args_json or [])),
+        adapter_command=adapter_command,
+        adapter_args=adapter_args,
         effective_model_label=model or default_label(provider),
         effective_reasoning_label=reasoning or default_label(provider),
     )

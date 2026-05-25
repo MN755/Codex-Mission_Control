@@ -30,6 +30,8 @@ The normal Mission Control worker system is still the default for coordinated im
 - depth stays at `1`
 - larger bursts require user approval
 
+If policy is widened to `limited_write` or command-capable mode, Mission Control now reflects that explicitly in the generated burst specs, manual prompts, and custom subagent agent files instead of pretending every burst is read-only forever.
+
 ## Codex Chat Workflow
 
 1. Codex asks Mission Control for a burst recommendation.

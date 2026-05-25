@@ -15,18 +15,20 @@ Likely cause:
 
 - port conflict
 - Python environment not ready
+- another Mission Control daemon already owns the expected identity on the same port
 
 Checks:
 
 ```powershell
 .\scripts\start-mission-control-daemon.ps1
-Invoke-WebRequest http://127.0.0.1:8000/api/health
+Invoke-WebRequest http://127.0.0.1:8010/api/health
 ```
 
 Fix:
 
 - verify Python environment
 - inspect port usage
+- confirm which repo root owns the live daemon
 - check runtime folder permissions
 
 ## MCP bridge unreachable
@@ -41,6 +43,7 @@ Likely cause:
 - MCP config not loaded
 - daemon token mismatch
 - bridge cannot reach localhost daemon
+- host app reload still has not happened after plugin or MCP config changes
 
 Checks:
 
@@ -89,6 +92,7 @@ Likely cause:
 
 - service stopped
 - no model installed
+- provider adapter was overridden badly
 
 Checks:
 
@@ -99,7 +103,29 @@ Fix:
 
 - start Ollama
 - install the required local model with explicit user awareness
+- restore the built-in adapter recipe unless a custom override is intentional
 - fall back to Codex CLI or dry-run if needed
+
+## API provider selected but still degraded
+
+Symptoms:
+
+- OpenAI, Anthropic, or xAI was selected
+- startup or runner status still says runtime is not ready
+
+Likely cause:
+
+- the built-in adapter recipe exists, but the external API key is still missing
+
+Checks:
+
+- verify the provider key in the host environment
+- rerun the support bundle and health checks
+
+Fix:
+
+- set the API key outside chat
+- rerun startup or plugin health
 
 ## Claude CLI not detected
 

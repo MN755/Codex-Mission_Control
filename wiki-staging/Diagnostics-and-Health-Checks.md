@@ -16,6 +16,7 @@ Health checks should cover:
 - Codex CLI login
 - Ollama status
 - Claude CLI status
+- startup freshness and last completed check time
 - degraded vs broken classification
 
 ## Example commands
@@ -24,7 +25,8 @@ Copyable checks:
 
 ```powershell
 .\scripts\start-mission-control-daemon.ps1
-Invoke-WebRequest http://127.0.0.1:8000/api/health
+.\scripts\mission-control-support-bundle.ps1
+Invoke-WebRequest http://127.0.0.1:8010/api/health
 codex --version
 codex login status
 ```

@@ -104,11 +104,12 @@ def test_runner_probe_reports_missing_tools_and_api_billing(monkeypatch) -> None
     probes = {probe["runner_id"]: probe for probe in probe_runners()}
     assert probes["dry_run"]["configured"] is True
     assert probes["codex_cli"]["install_status"] == "missing"
-    assert probes["ollama"]["install_status"] == "missing"
+    assert probes["ollama"]["install_status"] == "installed_not_running"
     assert probes["claude_cli"]["install_status"] == "missing"
     assert probes["openai_api"]["billing_warning"]
-    assert probes["openai_api"]["configured"] is False
-    assert probes["openai_api"]["install_status"] == "needs_adapter"
+    assert probes["openai_api"]["configured"] is True
+    assert probes["openai_api"]["install_status"] == "external_configured"
+    assert probes["openai_api"]["details_json"]["adapter_recipe_source"] == "builtin"
     assert "custom_api" not in probes
     assert "sk-proj-super-secret-value" not in str(probes["openai_api"])
 
@@ -319,6 +320,31 @@ def test_headless_config_rejects_unsupported_http_mcp_transport() -> None:
     assert config["mcp_port"] is None
 
 
+def test_headless_config_and_environment_probe_honor_requested_install_path(monkeypatch, tmp_path) -> None:
+    install_root = tmp_path / "portable-install"
+    (install_root / "plugins" / "mission-control" / "mcp").mkdir(parents=True, exist_ok=True)
+    (install_root / ".codex" / "skills").mkdir(parents=True, exist_ok=True)
+    runtime_root = tmp_path / "runtime"
+    config = build_headless_config(
+        probes=[],
+        install_path=str(install_root),
+        runtime_path=str(runtime_root),
+        daemon_host="127.0.0.1",
+        daemon_port=8010,
+        mcp_transport="stdio",
+        mcp_port=None,
+        headless_only=True,
+    )
+
+    assert any(path.startswith(str(install_root.resolve())) for path in config["plugin_paths"])
+    assert any(path.startswith(str(install_root.resolve())) for path in config["skills_paths"])
+
+    monkeypatch.setattr("bootstrap.environment_probe.REPO_ROOT", tmp_path / "different-repo")
+    payload = probe_environment(install_path=str(install_root), runtime_path=str(runtime_root))
+    assert payload["mission_control"]["install_path"].endswith("portable-install")
+    assert any("portable-install" in path for path in payload["plugin_paths"])
+
+
 def test_get_headless_config_is_read_only(monkeypatch, tmp_path) -> None:
     runtime_root = tmp_path / "runtime"
     monkeypatch.setattr(
@@ -437,6 +463,7 @@ def test_scripts_and_headless_skills_exist() -> None:
         ROOT / "scripts" / "start-mission-control-mcp.ps1",
         ROOT / "scripts" / "mission-control-headless-health.ps1",
         ROOT / "scripts" / "mission-control-bootstrap.py",
+        ROOT / "scripts" / "api_provider_adapter.py",
     ]
     for path in script_paths:
         assert path.exists(), f"Missing script: {path}"

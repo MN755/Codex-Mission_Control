@@ -14,6 +14,7 @@ Automatic probing can safely check:
 - localhost health endpoints
 - plugin/skill file presence
 - Ollama service presence
+- built-in adapter recipe availability for Ollama and API-backed providers
 
 ## What requires user action
 
@@ -24,6 +25,7 @@ User action may still be needed for:
 - API provider secrets in a secure store
 - network-heavy model downloads
 - elevated permissions outside the workspace
+- app reload after plugin or MCP configuration changes
 
 ## What should never be automatic
 

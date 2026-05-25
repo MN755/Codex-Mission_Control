@@ -18,9 +18,16 @@ Mission Control uses runners to execute background work. Runner availability dep
 
 - `dry_run` is always the safe fallback
 - `codex_cli` is preferred when installed and signed in
-- `ollama` is treated as a local endpoint and must be reachable
+- `ollama` uses the built-in `scripts/ollama_adapter.py` recipe and still requires a reachable local endpoint
 - `claude_cli` depends on a working local CLI environment
-- API-backed runners require explicit secure configuration and may incur billing
+- API-backed runners use the built-in `scripts/api_provider_adapter.py` recipe, still require secure external API keys, and may incur billing
+
+## Built-in adapter recipes
+
+- Mission Control now ships first-class default adapter recipes for `ollama`, `openai_api`, `anthropic_api`, and `xai_api`
+- those recipes use the current Python interpreter plus the repo-local adapter script
+- users can still override the adapter command or args explicitly when they need a custom path
+- `custom` providers stay opt-in and do not get a fake default recipe
 
 ## Operational rules
 

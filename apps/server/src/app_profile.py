@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 from config import DEFAULT_APPROVAL_POLICY, DEFAULT_RUNNER_MODE, DEFAULT_SANDBOX
 from models import AppProfile, utc_now
 from provider_support import normalize_provider
-from project_settings import normalize_provider_adapter_args, normalize_provider_endpoint
+from project_settings import normalize_provider_adapter_settings, normalize_provider_endpoint
 from schemas import AppProfileUpdate, CompleteFirstRunRequest
 
 
@@ -196,8 +196,11 @@ def complete_first_run(db: Session, payload: CompleteFirstRunRequest, *, setup_v
     profile.sandbox_mode = payload.sandbox_mode or profile.sandbox_mode
     profile.approval_policy = payload.approval_policy or profile.approval_policy
     profile.provider_endpoint = normalize_provider_endpoint(selected_provider, payload.provider_endpoint)
-    profile.adapter_command = payload.adapter_command.strip() if selected_provider == "custom" and payload.adapter_command and payload.adapter_command.strip() else None
-    profile.adapter_args_json = normalize_provider_adapter_args("custom" if selected_provider == "custom" else "codex", payload.adapter_args)
+    profile.adapter_command, profile.adapter_args_json = normalize_provider_adapter_settings(
+        selected_provider,
+        payload.adapter_command,
+        payload.adapter_args,
+    )
     profile.recent_startup_error_json = None
     profile.last_opened_at = utc_now()
     db.flush()

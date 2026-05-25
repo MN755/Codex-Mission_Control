@@ -2,8 +2,6 @@
 
 This staging folder was generated locally because the live wiki repository could not be cloned from this environment.
 
-> Status: Reference
-
 ## HTTPS flow
 
 ```bash

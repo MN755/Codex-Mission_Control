@@ -389,11 +389,11 @@ class ImportedCodebaseService:
         unindexed = [item for item in metadata["top_level_dirs"] if item not in indexed_top_level]
         languages = self._detect_languages(metadata["file_paths"])
         package_analysis = self._analyze_package_files(root, metadata["relative_lookup"])
-        docs = self._detect_docs(metadata["file_paths"])
+        docs = self._detect_docs(metadata["file_paths"], root=root)
         agents_md = self._detect_agents_md(root, metadata["relative_lookup"])
-        config_files = self._detect_config_files(metadata["file_paths"])
-        ci_config = self._detect_ci_config(metadata["file_paths"])
-        deployment_config = self._detect_deployment_config(metadata["file_paths"])
+        config_files = self._detect_config_files(metadata["file_paths"], root=root)
+        ci_config = self._detect_ci_config(metadata["file_paths"], root=root)
+        deployment_config = self._detect_deployment_config(metadata["file_paths"], root=root)
         entry_points = self._detect_entry_points(root, metadata["relative_lookup"])
         important_folders = self._important_folders(metadata["top_level_dirs"], metadata["relative_lookup"])
         git_status = self._detect_git_status(root)
@@ -403,6 +403,7 @@ class ImportedCodebaseService:
             agents_md=agents_md,
             codebase_size=codebase_size,
             depth=depth,
+            root=root,
         )
         recommended_strategy = "progressive_targeted" if codebase_size in {"large", "huge"} else "standard_complete"
         scan_depth = depth
@@ -1104,14 +1105,14 @@ class ImportedCodebaseService:
             preferred = sorted({Path(relative).parts[0] for relative in lookup if "/" in relative})[:8]
         return preferred[:10]
 
-    def _detect_docs(self, file_paths: list[Path]) -> list[str]:
+    def _detect_docs(self, file_paths: list[Path], *, root: Path) -> list[str]:
         docs = []
         for path in file_paths:
             lowered = path.name.lower()
             relative = str(path)
             if lowered.startswith("readme") or lowered == "contributing.md" or "docs" in path.parts:
                 docs.append(relative.replace("\\", "/"))
-        return [self._trim_relative_path(path) for path in docs[:24]]
+        return [self._trim_relative_path(path, root=root) for path in docs[:24]]
 
     def _detect_agents_md(self, root: Path, lookup: dict[str, Path]) -> dict[str, Any]:
         candidates = [
@@ -1139,28 +1140,28 @@ class ImportedCodebaseService:
             "recommended_action": recommended_action if candidates else "create",
         }
 
-    def _detect_config_files(self, file_paths: list[Path]) -> list[str]:
+    def _detect_config_files(self, file_paths: list[Path], *, root: Path) -> list[str]:
         results = []
         for path in file_paths:
-            relative = self._trim_relative_path(str(path))
+            relative = self._trim_relative_path(str(path), root=root)
             if path.name.lower() in CONFIG_NAMES or path.name.startswith(".env"):
                 results.append(relative)
         return sorted(set(results))[:40]
 
-    def _detect_ci_config(self, file_paths: list[Path]) -> list[str]:
+    def _detect_ci_config(self, file_paths: list[Path], *, root: Path) -> list[str]:
         results = []
         for path in file_paths:
-            relative = self._trim_relative_path(str(path))
+            relative = self._trim_relative_path(str(path), root=root)
             lowered = path.name.lower()
             if ".github" in path.parts or lowered in {"azure-pipelines.yml", "azure-pipelines.yaml", ".gitlab-ci.yml"}:
                 results.append(relative)
         return sorted(set(results))[:24]
 
-    def _detect_deployment_config(self, file_paths: list[Path]) -> list[str]:
+    def _detect_deployment_config(self, file_paths: list[Path], *, root: Path) -> list[str]:
         names = {"dockerfile", "docker-compose.yml", "docker-compose.yaml", "vercel.json", "fly.toml", "render.yaml", "render.yml", "netlify.toml", "procfile"}
         return sorted(
             {
-                self._trim_relative_path(str(path))
+                self._trim_relative_path(str(path), root=root)
                 for path in file_paths
                 if path.name.lower() in names
             }
@@ -1196,6 +1197,7 @@ class ImportedCodebaseService:
         agents_md: dict[str, Any],
         codebase_size: str,
         depth: str,
+        root: Path,
     ) -> list[str]:
         flags = []
         for relative, size in metadata["large_files"][:5]:
@@ -1203,7 +1205,7 @@ class ImportedCodebaseService:
         for path in metadata["file_paths"]:
             lowered = path.name.lower()
             if any(fragment in lowered for fragment in SECRET_LIKE_NAMES):
-                flags.append(f"Secret-like filename detected: {self._trim_relative_path(str(path))}")
+                flags.append(f"Secret-like filename detected: {self._trim_relative_path(str(path), root=root)}")
         flags.extend(package_analysis["risk_flags"])
         if codebase_size in {"large", "huge"} and depth == "shallow":
             flags.append("Large codebase: progressive understanding is active, so unindexed areas remain.")
@@ -1219,8 +1221,15 @@ class ImportedCodebaseService:
         except OSError:
             return ""
 
-    def _trim_relative_path(self, value: str) -> str:
+    def _trim_relative_path(self, value: str, *, root: Path | None = None) -> str:
         normalized = value.replace("\\", "/")
+        if root is not None:
+            try:
+                relative = Path(normalized).resolve().relative_to(root.resolve())
+            except (OSError, ValueError):
+                relative = None
+            if relative is not None:
+                return relative.as_posix()
         if "/workspace/" in normalized:
             return normalized.split("/workspace/", 1)[1]
         return normalized

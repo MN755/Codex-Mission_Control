@@ -27,15 +27,21 @@ Mission Control keeps subagent bursts behind an explicit policy.
 - the scope is bounded
 - the work can be split into independent reports
 - results can be merged cleanly
-- commands and file edits are not required
+- commands and file edits fit the current policy
 
 ## When Mission Control Should Not Recommend a Burst
 
 - the task is simple
-- coordinated edits are required
+- coordinated edits are required but the current policy is still read-only
 - the same shared files would be touched
 - scope is unclear
 - the likely cost is higher than the value
+
+## Capability-aware behavior
+
+- if `default_mode` is `limited_write` or `allow_file_edits` is `true`, burst specs use `workspace-write`
+- if `allow_commands` is `true`, Mission Control says so explicitly in the burst prompt and approval card
+- generated custom Codex subagents now inherit the current policy instead of staying permanently read-only
 
 ## Approval Rule
 

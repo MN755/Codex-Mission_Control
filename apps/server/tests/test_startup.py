@@ -3,6 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 
 import diagnostics
+from db import SessionLocal
+from models import AppProfile
 from startup import startup_service
 
 
@@ -16,6 +18,8 @@ def test_new_install_routes_to_first_time_setup(client) -> None:
     assert payload["onboarding_complete"] is False
     assert payload["recommended_route"] == "/setup"
     assert payload["first_run_completed"] is False
+    assert payload["status_source"] == "fresh"
+    assert payload["checked_at"] is not None
 
 
 def test_complete_first_run_persists_and_routes_to_dashboard(monkeypatch, client) -> None:
@@ -49,6 +53,31 @@ def test_complete_first_run_persists_and_routes_to_dashboard(monkeypatch, client
     assert payload["onboarding_complete"] is True
     assert payload["recommended_route"] == "/dashboard"
     assert payload["first_run_completed"] is True
+
+
+def test_complete_first_run_persists_builtin_ollama_adapter_recipe(client) -> None:
+    complete = client.post(
+        "/api/startup/complete-first-run",
+        json={
+            "username": "Morgan",
+            "provider": "ollama",
+            "auth_mode": "local",
+            "default_runner_mode": "auto",
+            "provider_endpoint": "http://localhost:11434",
+        },
+    )
+    assert complete.status_code == 200
+    db = SessionLocal()
+    try:
+        profile = db.get(AppProfile, 1)
+        assert profile is not None
+        assert profile.provider_endpoint == "http://localhost:11434"
+        assert profile.adapter_command
+        assert profile.adapter_args_json
+        normalized_path = profile.adapter_args_json[0].replace("\\", "/")
+        assert normalized_path.endswith("scripts/ollama_adapter.py")
+    finally:
+        db.close()
 
 
 def test_required_check_failure_returns_error(monkeypatch, client, bridge_headers) -> None:
@@ -135,6 +164,64 @@ def test_manual_diagnostics_report_is_created(client) -> None:
     assert payload["platform_profile"]["platform_label"]
     assert payload["performance_profile"]["recommended_swarm_max_agents"] >= 1
     assert "summary" in payload
+
+
+def test_startup_status_is_recomputed_instead_of_returning_stale_cached_payload(monkeypatch, client) -> None:
+    calls = {"count": 0}
+
+    def fake_backend_route() -> dict:
+        calls["count"] += 1
+        return startup_service._check(
+            "backend_route",
+            required=True,
+            status="passed",
+            summary=f"Backend route check #{calls['count']}",
+        )
+
+    monkeypatch.setattr(startup_service, "_check_backend_route", fake_backend_route)
+
+    first = client.get("/api/startup/status")
+    second = client.get("/api/startup/status")
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert calls["count"] == 2
+    assert any(item["summary"] == "Backend route check #2" for item in second.json()["checks"])
+
+
+def test_selected_openai_provider_without_api_key_degrades_startup(monkeypatch, client, bridge_headers) -> None:
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    client.post(
+        "/api/startup/complete-first-run",
+        json={
+            "username": "Morgan",
+            "provider": "openai_api",
+            "auth_mode": "api_key",
+            "default_runner_mode": "auto",
+        },
+    )
+    payload = client.post("/api/startup/check", json={"attempt_number": 1, "include_optional_checks": True}, headers=bridge_headers).json()
+    assert payload["mode"] == "degraded"
+    assert payload["overall_status"] == "degraded"
+    assert payload["error_code"] == "MC-API-KEY-MISSING-001"
+    assert "openai_api" in payload["failed_checks"]
+
+
+def test_selected_custom_provider_without_adapter_degrades_startup(client, bridge_headers) -> None:
+    client.post(
+        "/api/startup/complete-first-run",
+        json={
+            "username": "Morgan",
+            "provider": "custom",
+            "auth_mode": "external",
+            "default_runner_mode": "auto",
+        },
+    )
+    payload = client.post("/api/startup/check", json={"attempt_number": 1, "include_optional_checks": True}, headers=bridge_headers).json()
+    assert payload["mode"] == "degraded"
+    assert payload["overall_status"] == "degraded"
+    assert payload["error_code"] == "MC-RUNNER-NONE-AVAILABLE-001"
+    assert "custom" in payload["failed_checks"]
 
 
 def test_diagnostics_collects_daemon_launcher_logs(monkeypatch, tmp_path) -> None:

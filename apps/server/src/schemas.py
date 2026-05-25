@@ -2408,8 +2408,10 @@ class StartupStatusRead(BaseModel):
     diagnostic_report_path: str | None = None
     degraded_reasons: list[str] = Field(default_factory=list)
     failed_checks: list[str] = Field(default_factory=list)
+    status_source: Literal["fresh", "cached"] = "fresh"
     startup_started_at: datetime
     last_completed_at: datetime | None = None
+    checked_at: datetime | None = None
 
 
 class StartupCheckRequest(BaseModel):
@@ -2597,6 +2599,9 @@ class ProviderStatusRead(BaseModel):
     requires_adapter_command: bool = False
     adapter_command_configured: bool = False
     adapter_command_detected: bool = False
+    adapter_command_path: str | None = None
+    adapter_args: list[str] = Field(default_factory=list)
+    adapter_recipe_source: Literal["explicit", "builtin", "none"] = "none"
     provider_endpoint_configured: bool = False
     available_models: list[str] = Field(default_factory=list)
     notes: list[str] = Field(default_factory=list)

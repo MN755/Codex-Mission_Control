@@ -95,8 +95,7 @@ from planner import build_plan_markdown
 from project_settings import (
     ResolvedRunSettings,
     get_or_create_project_settings,
-    normalize_provider_adapter_args,
-    normalize_provider_adapter_command,
+    normalize_provider_adapter_settings,
     normalize_provider_endpoint,
     resolve_manager_settings,
     resolve_worker_settings,
@@ -8654,8 +8653,11 @@ class MissionControlService:
         settings.sandbox_mode = profile.sandbox_mode
         settings.approval_policy = profile.approval_policy
         settings.provider_endpoint = normalize_provider_endpoint(selected_provider, profile.provider_endpoint)
-        settings.adapter_command = normalize_provider_adapter_command(selected_provider, profile.adapter_command)
-        settings.adapter_args_json = normalize_provider_adapter_args(selected_provider, list(profile.adapter_args_json or []))
+        settings.adapter_command, settings.adapter_args_json = normalize_provider_adapter_settings(
+            selected_provider,
+            profile.adapter_command,
+            list(profile.adapter_args_json or []),
+        )
         settings.workspace_widgets_json = []
         settings.approval_overrides_json = {}
         self._ensure_swarm_preferences(db, project)
@@ -8699,8 +8701,11 @@ class MissionControlService:
             if key.strip() and value
         }
         settings.provider_endpoint = normalize_provider_endpoint(settings.provider, payload.provider_endpoint)
-        settings.adapter_command = normalize_provider_adapter_command(settings.provider, payload.adapter_command)
-        settings.adapter_args_json = normalize_provider_adapter_args(settings.provider, payload.adapter_args_json)
+        settings.adapter_command, settings.adapter_args_json = normalize_provider_adapter_settings(
+            settings.provider,
+            payload.adapter_command,
+            payload.adapter_args_json,
+        )
         settings.runner_mode = payload.runner_mode
         settings.sandbox_mode = payload.sandbox_mode
         settings.approval_policy = payload.approval_policy
