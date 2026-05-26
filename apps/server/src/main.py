@@ -2813,7 +2813,12 @@ def get_manager_queue(
 
 
 @app.post("/api/projects/{project_id}/widgets", response_model=ProjectSettingsRead)
-def update_project_widgets(project_id: int, payload: WorkspaceWidgetsUpdate, db: Session = Depends(get_db)) -> ProjectSettingsRead:
+def update_project_widgets(
+    project_id: int,
+    payload: WorkspaceWidgetsUpdate,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> ProjectSettingsRead:
     project = _get_project_or_404(db, project_id)
     return service.update_workspace_widgets(db, project, payload.widgets)
 
