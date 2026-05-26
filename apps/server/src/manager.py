@@ -9903,7 +9903,11 @@ class MissionControlService:
 
     def update_workspace_widgets(self, db: Session, project: Project, widgets: list[str]) -> ProjectSettings:
         settings = self._ensure_project_settings(db, project)
-        requested = [item for item in widgets if item in PROJECT_WIDGET_TYPES]
+        requested = [item.strip() for item in widgets if item and item.strip()]
+        invalid_widgets = [item for item in requested if item not in PROJECT_WIDGET_TYPES]
+        if invalid_widgets:
+            invalid_list = ", ".join(sorted(dict.fromkeys(invalid_widgets)))
+            raise ValueError(f"Unknown project widget(s): {invalid_list}")
         instances = {item.widget_type: item for item in self._project_widget_instances(db, project, settings)}
         for order_index, widget_type in enumerate(requested):
             instance = instances.get(widget_type)
