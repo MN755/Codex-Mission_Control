@@ -3663,6 +3663,43 @@ class MissionControlService:
         db.flush()
         return list(db.scalars(select(PathLock).where(PathLock.project_id == project.id).order_by(PathLock.status.asc(), PathLock.created_at.desc())))
 
+    def _preview_path_locks(self, db: Session, project: Project) -> list[dict[str, Any]]:
+        locks: list[dict[str, Any]] = []
+        seen: set[tuple[str, int | None, int | None, str]] = set()
+        for reservation in self.list_reservations(db, project.id):
+            key = (reservation.path, reservation.agent_id, reservation.task_id, "active")
+            if key in seen:
+                continue
+            seen.add(key)
+            locks.append(
+                {
+                    "path_pattern": reservation.path,
+                    "owner_agent_id": reservation.agent_id,
+                    "owner_task_id": reservation.task_id,
+                    "reason": "Reserved for active task execution.",
+                    "status": "active",
+                }
+            )
+        tasks = list(db.scalars(select(Task).where(Task.project_id == project.id).order_by(Task.id.asc())))
+        for task in tasks:
+            if task.status != "waiting_on_paths":
+                continue
+            for path_pattern in task.allowed_paths_json or []:
+                key = (path_pattern, None, task.id, "waiting")
+                if key in seen:
+                    continue
+                seen.add(key)
+                locks.append(
+                    {
+                        "path_pattern": path_pattern,
+                        "owner_agent_id": None,
+                        "owner_task_id": task.id,
+                        "reason": task.waiting_reason or "Waiting for path ownership to clear.",
+                        "status": "waiting",
+                    }
+                )
+        return sorted(locks, key=lambda entry: (entry["status"], entry["path_pattern"], entry["owner_task_id"] or 0))
+
     def _sync_project_confidence(self, db: Session, project: Project) -> list[ProjectConfidence]:
         understanding = self._ensure_project_understanding(db, project)
         default_categories = [
@@ -4597,7 +4634,7 @@ class MissionControlService:
                     "items": [
                         {
                             "title": category.replace("_", " "),
-                            "detail": f"{entry['provider']} / {entry['model']} • score {entry['score']}",
+                            "detail": f"{entry['provider']} / {entry['model']} â€¢ score {entry['score']}",
                         }
                         for category, entry in summary["top_categories"].items()
                     ],
@@ -4615,7 +4652,7 @@ class MissionControlService:
                     "items": [
                         {
                             "title": f"{item['archetype']} ({item['model'] or item['provider'] or 'default'})",
-                            "detail": f"success {int(item['success_rate'] * 100)}% • confidence {item['confidence']}",
+                            "detail": f"success {int(item['success_rate'] * 100)}% â€¢ confidence {item['confidence']}",
                         }
                         for item in reputation[:8]
                     ]
@@ -4637,7 +4674,7 @@ class MissionControlService:
                     "items": [
                         {
                             "title": item.summary,
-                            "detail": f"{item.severity} • {item.suggested_action} • {item.status}",
+                            "detail": f"{item.severity} â€¢ {item.suggested_action} â€¢ {item.status}",
                         }
                         for item in signals
                     ]
@@ -4654,7 +4691,7 @@ class MissionControlService:
                     "items": [
                         {
                             "title": item.key,
-                            "detail": f"{item.value_json} • {item.source}",
+                            "detail": f"{item.value_json} â€¢ {item.source}",
                         }
                         for item in preferences[:8]
                     ]
@@ -4760,7 +4797,7 @@ class MissionControlService:
                             "project_id": project.id,
                             "project_name": project.name,
                             "title": plan.trigger_summary,
-                            "detail": f"{plan.trigger_type} · {plan.status}",
+                            "detail": f"{plan.trigger_type} Â· {plan.status}",
                         }
                     )
             if not items:
@@ -4841,7 +4878,7 @@ class MissionControlService:
                     "items": [
                         {
                             "title": f"{item['archetype']} ({item['model'] or item['provider'] or 'default'})",
-                            "detail": f"success {int(item['success_rate'] * 100)}% • best: {', '.join(item['recommended_for']) or 'unknown'}",
+                            "detail": f"success {int(item['success_rate'] * 100)}% â€¢ best: {', '.join(item['recommended_for']) or 'unknown'}",
                             "weak_spots": item["avoid_for"],
                         }
                         for item in reputation[:8]
@@ -4876,7 +4913,7 @@ class MissionControlService:
                     "items": [
                         {
                             "title": item["title"],
-                            "detail": f"files {len(item['included_files_json'])} • docs {len(item['included_docs_json'])} • warnings {len(item['warnings_json'])}",
+                            "detail": f"files {len(item['included_files_json'])} â€¢ docs {len(item['included_docs_json'])} â€¢ warnings {len(item['warnings_json'])}",
                             "task_id": item["task_id"],
                             "agent_id": item["agent_id"],
                         }
@@ -4895,7 +4932,7 @@ class MissionControlService:
                     "items": [
                         {
                             "title": item.title,
-                            "detail": f"{item.severity}/{item.likelihood} • {item.status} • mitigation: {item.mitigation or 'none'}",
+                            "detail": f"{item.severity}/{item.likelihood} â€¢ {item.status} â€¢ mitigation: {item.mitigation or 'none'}",
                             "owner": item.owner_agent_id,
                         }
                         for item in risks[:10]
@@ -4969,7 +5006,7 @@ class MissionControlService:
                     "items": [
                         {
                             "title": item.summary,
-                            "detail": f"{item.severity} • {item.suggested_action} • {item.status}",
+                            "detail": f"{item.severity} â€¢ {item.suggested_action} â€¢ {item.status}",
                         }
                         for item in signals[:10]
                     ]
@@ -5004,9 +5041,9 @@ class MissionControlService:
                         {
                             "title": item["area"] if isinstance(item, dict) else item.area,
                             "detail": (
-                                f"{item['coverage_status']} • {item.get('evidence_summary') or 'No evidence recorded yet.'}"
+                                f"{item['coverage_status']} â€¢ {item.get('evidence_summary') or 'No evidence recorded yet.'}"
                                 if isinstance(item, dict)
-                                else f"{item.coverage_status} • {item.evidence_summary or 'No evidence recorded yet.'}"
+                                else f"{item.coverage_status} â€¢ {item.evidence_summary or 'No evidence recorded yet.'}"
                             ),
                         }
                         for item in items
@@ -5025,7 +5062,7 @@ class MissionControlService:
                     "items": [
                         {
                             "title": item.key,
-                            "detail": f"{item.value_json} • {item.source} • {item.scope}",
+                            "detail": f"{item.value_json} â€¢ {item.source} â€¢ {item.scope}",
                         }
                         for item in preferences[:10]
                     ]
@@ -5239,11 +5276,10 @@ class MissionControlService:
                 },
             )
         if instance.widget_type == "Path Ownership Map":
-            support = get_support()
-            path_locks: list[PathLock] = support["path_locks"]
+            path_locks = self._preview_path_locks(db, project)
             if not path_locks:
                 return self._serialize_widget_data(instance, status="empty", empty_state="No path ownership data exists yet.")
-            waiting = [entry for entry in path_locks if entry.status == "waiting"]
+            waiting = [entry for entry in path_locks if entry["status"] == "waiting"]
             warnings = [f"{len(waiting)} task(s) are waiting on path ownership."] if waiting else []
             return self._serialize_widget_data(
                 instance,
@@ -5251,11 +5287,11 @@ class MissionControlService:
                 data_json={
                     "locks": [
                         {
-                            "path_pattern": entry.path_pattern,
-                            "owner_agent_id": entry.owner_agent_id,
-                            "owner_task_id": entry.owner_task_id,
-                            "reason": entry.reason,
-                            "status": entry.status,
+                            "path_pattern": entry["path_pattern"],
+                            "owner_agent_id": entry["owner_agent_id"],
+                            "owner_task_id": entry["owner_task_id"],
+                            "reason": entry["reason"],
+                            "status": entry["status"],
                         }
                         for entry in path_locks[:20]
                     ]
