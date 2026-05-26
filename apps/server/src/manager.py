@@ -3562,6 +3562,23 @@ class MissionControlService:
         support = self._ensure_widget_support_records(db, project, tasks=tasks, degraded_notices=degraded, current_action=current_action, overview=overview)
         return support["health"]
 
+    def get_project_health_preview(self, db: Session, project: Project) -> dict[str, Any]:
+        tasks = list(db.scalars(select(Task).where(Task.project_id == project.id).order_by(Task.priority.asc(), Task.id.asc())))
+        settings = self._project_settings_preview(db, project)
+        _ = settings
+        degraded: list[str] = []
+        current_action = self._derive_current_action(db, project, degraded)
+        overview = self._project_overview(db, project, tasks, current_action)
+        support = self._preview_widget_support_records(
+            db,
+            project,
+            tasks=tasks,
+            degraded_notices=degraded,
+            current_action=current_action,
+            overview=overview,
+        )
+        return support["health"]
+
     def list_change_requests(self, db: Session, project: Project) -> list[ChangeRequest]:
         return list(
             db.scalars(

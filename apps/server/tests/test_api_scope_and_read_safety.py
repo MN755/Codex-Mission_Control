@@ -28,6 +28,7 @@ from models import (
     ModelPolicy,
     PathLock,
     PathReservation,
+    OrchestrationSession,
     Project,
     ProjectConfidence,
     ProjectPlaybook,
@@ -93,6 +94,17 @@ def _create_legacy_project(name: str, workspace_name: str) -> int:
         return project.id
     finally:
         db.close()
+
+
+def _support_row_counts(db, project_id: int) -> dict[str, int]:
+    return {
+        "project_confidence": db.scalar(select(func.count(ProjectConfidence.id)).where(ProjectConfidence.project_id == project_id)),
+        "review_gates": db.scalar(select(func.count(ReviewGate.id)).where(ReviewGate.project_id == project_id)),
+        "model_policy": db.scalar(select(func.count(ModelPolicy.id)).where(ModelPolicy.project_id == project_id)),
+        "tool_routing": db.scalar(select(func.count(ToolRoutingPolicy.id)).where(ToolRoutingPolicy.project_id == project_id)),
+        "validation_recipe": db.scalar(select(func.count(ValidationRecipe.id)).where(ValidationRecipe.project_id == project_id)),
+        "swarm_budget": db.scalar(select(func.count(SwarmBudget.project_id)).where(SwarmBudget.project_id == project_id)),
+    }
 
 
 def test_project_widget_data_route_keeps_import_and_security_widgets_read_only(client, bridge_headers) -> None:
@@ -322,6 +334,85 @@ def test_validation_coverage_get_returns_preview_without_persisting_rows(client)
     try:
         row_count = db.scalar(select(func.count(ValidationCoverageArea.id)).where(ValidationCoverageArea.project_id == project_id))
         assert row_count == 0
+    finally:
+        db.close()
+
+
+def test_project_status_summary_get_is_read_only_for_support_records(client, bridge_headers) -> None:
+    project_id = _create_legacy_project("Project Status Summary Read Safety", "project-status-summary-read-safety")
+
+    db = SessionLocal()
+    try:
+        baseline = _support_row_counts(db, project_id)
+        assert baseline == {
+            "project_confidence": 0,
+            "review_gates": 0,
+            "model_policy": 0,
+            "tool_routing": 0,
+            "validation_recipe": 0,
+            "swarm_budget": 0,
+        }
+    finally:
+        db.close()
+
+    response = client.get(f"/api/projects/{project_id}/status-summary", headers=bridge_headers)
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["message_type"] in {"status_update", "blocked"}
+    assert "## Mission Control Status" in payload["fallback_markdown"]
+
+    db = SessionLocal()
+    try:
+        assert _support_row_counts(db, project_id) == baseline
+    finally:
+        db.close()
+
+
+def test_orchestration_status_summary_get_is_read_only_for_support_records(client, bridge_headers) -> None:
+    project_id = _create_legacy_project("Orchestration Status Summary Read Safety", "orchestration-status-summary-read-safety")
+
+    db = SessionLocal()
+    try:
+        project = db.get(Project, project_id)
+        assert project is not None
+        session = OrchestrationSession(
+            project_id=project.id,
+            workspace_path=project.workspace_path,
+            source="codex_plugin",
+            user_request="Check status safely.",
+            status="running",
+            manager_status="Reviewing background work.",
+            mode="existing_codebase",
+            metadata_json={},
+        )
+        db.add(session)
+        db.commit()
+        orchestration_id = session.id
+        baseline = _support_row_counts(db, project_id)
+        assert baseline == {
+            "project_confidence": 0,
+            "review_gates": 0,
+            "model_policy": 0,
+            "tool_routing": 0,
+            "validation_recipe": 0,
+            "swarm_budget": 0,
+        }
+    finally:
+        db.close()
+
+    response = client.get(
+        f"/api/orchestrations/{orchestration_id}/status-summary",
+        headers=bridge_headers,
+        params={"project_id": project_id},
+    )
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["message_type"] in {"status_update", "blocked"}
+    assert "## Mission Control Status" in payload["fallback_markdown"]
+
+    db = SessionLocal()
+    try:
+        assert _support_row_counts(db, project_id) == baseline
     finally:
         db.close()
 
