@@ -253,3 +253,100 @@ def test_project_widget_data_is_project_scoped_and_emits_project_events(client) 
         assert any(event.payload_json.get("project_id") == project_one["id"] for event in mirrored_app_events)
     finally:
         db.close()
+
+
+def test_profile_rejects_unknown_and_wrong_scope_dashboard_widgets(client, bridge_headers) -> None:
+    seeded = client.put(
+        "/api/profile",
+        json={"dashboard_widgets_json": ["Needs Attention", "Recent Handoffs"]},
+        headers=bridge_headers,
+    )
+    assert seeded.status_code == 200, seeded.text
+    assert seeded.json()["dashboard_widgets_json"] == ["Needs Attention", "Recent Handoffs"]
+
+    wrong_scope = client.put(
+        "/api/profile",
+        json={"dashboard_widgets_json": ["Validation Recipe"]},
+        headers=bridge_headers,
+    )
+    assert wrong_scope.status_code == 400, wrong_scope.text
+    assert "dashboard widgets" in wrong_scope.json()["detail"].lower()
+
+    unknown = client.put(
+        "/api/profile",
+        json={"dashboard_widgets_json": ["Ghost Widget"]},
+        headers=bridge_headers,
+    )
+    assert unknown.status_code == 400, unknown.text
+    assert "ghost widget" in unknown.json()["detail"].lower()
+
+    profile = client.get("/api/profile", headers=bridge_headers)
+    assert profile.status_code == 200, profile.text
+    assert profile.json()["dashboard_widgets_json"] == ["Needs Attention", "Recent Handoffs"]
+
+
+def test_settings_reject_unknown_and_wrong_scope_project_widgets(client, bridge_headers) -> None:
+    project = create_project(client, "Project Widget Settings Validation", "project-widget-settings-validation")
+
+    seeded = client.put(
+        "/api/settings",
+        params={"project_id": project["id"]},
+        json={"workspace_widgets_json": ["Validation Recipe", "Manager Assumptions"]},
+        headers=bridge_headers,
+    )
+    assert seeded.status_code == 200, seeded.text
+    assert seeded.json()["workspace_widgets_json"] == ["Validation Recipe", "Manager Assumptions"]
+
+    wrong_scope = client.put(
+        "/api/settings",
+        params={"project_id": project["id"]},
+        json={"workspace_widgets_json": ["Needs Attention"]},
+        headers=bridge_headers,
+    )
+    assert wrong_scope.status_code == 400, wrong_scope.text
+    assert "workspace widgets" in wrong_scope.json()["detail"].lower()
+
+    unknown = client.put(
+        "/api/settings",
+        params={"project_id": project["id"]},
+        json={"workspace_widgets_json": ["Ghost Widget"]},
+        headers=bridge_headers,
+    )
+    assert unknown.status_code == 400, unknown.text
+    assert "ghost widget" in unknown.json()["detail"].lower()
+
+    settings = client.get("/api/settings", params={"project_id": project["id"]}, headers=bridge_headers)
+    assert settings.status_code == 200, settings.text
+    assert settings.json()["workspace_widgets_json"] == ["Validation Recipe", "Manager Assumptions"]
+
+
+def test_project_widget_update_rejects_invalid_names_without_clearing_existing_widgets(client, bridge_headers) -> None:
+    project = create_project(client, "Project Widget Update Validation", "project-widget-update-validation")
+
+    seeded = client.post(
+        f"/api/projects/{project['id']}/widgets",
+        json={"widgets": ["Validation Recipe"]},
+        headers=bridge_headers,
+    )
+    assert seeded.status_code == 200, seeded.text
+    assert seeded.json()["workspace_widgets_json"] == ["Validation Recipe"]
+
+    wrong_scope = client.post(
+        f"/api/projects/{project['id']}/widgets",
+        json={"widgets": ["Needs Attention"]},
+        headers=bridge_headers,
+    )
+    assert wrong_scope.status_code == 400, wrong_scope.text
+    assert "project widgets" in wrong_scope.json()["detail"].lower()
+
+    unknown = client.post(
+        f"/api/projects/{project['id']}/widgets",
+        json={"widgets": ["Ghost Widget"]},
+        headers=bridge_headers,
+    )
+    assert unknown.status_code == 400, unknown.text
+    assert "ghost widget" in unknown.json()["detail"].lower()
+
+    settings = client.get("/api/settings", params={"project_id": project["id"]}, headers=bridge_headers)
+    assert settings.status_code == 200, settings.text
+    assert settings.json()["workspace_widgets_json"] == ["Validation Recipe"]

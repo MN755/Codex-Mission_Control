@@ -919,3 +919,43 @@ WIDGET_CATALOG: list[dict[str, Any]] = [
 WIDGET_CATALOG_BY_TYPE = {item["widget_type"]: item for item in WIDGET_CATALOG}
 DASHBOARD_WIDGET_TYPES = [item["widget_type"] for item in WIDGET_CATALOG if item["scope"] == "dashboard"]
 PROJECT_WIDGET_TYPES = [item["widget_type"] for item in WIDGET_CATALOG if item["scope"] == "project"]
+
+
+def normalize_widget_type_list(widget_types: list[str] | None) -> list[str]:
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for item in widget_types or []:
+        if not item:
+            continue
+        widget_type = item.strip()
+        if not widget_type or widget_type in seen:
+            continue
+        seen.add(widget_type)
+        normalized.append(widget_type)
+    return normalized
+
+
+def validate_widget_types(
+    widget_types: list[str] | None,
+    *,
+    scope: str,
+    field_name: str = "widgets",
+) -> list[str]:
+    normalized = normalize_widget_type_list(widget_types)
+    unknown: list[str] = []
+    wrong_scope: list[str] = []
+    for widget_type in normalized:
+        definition = WIDGET_CATALOG_BY_TYPE.get(widget_type)
+        if definition is None:
+            unknown.append(widget_type)
+            continue
+        if definition["scope"] != scope:
+            wrong_scope.append(widget_type)
+    if unknown or wrong_scope:
+        problems: list[str] = []
+        if unknown:
+            problems.append(f"Unknown {field_name}: {', '.join(unknown)}")
+        if wrong_scope:
+            problems.append(f"{field_name.capitalize()} not allowed for {scope} scope: {', '.join(wrong_scope)}")
+        raise ValueError("; ".join(problems))
+    return normalized

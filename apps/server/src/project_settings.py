@@ -9,6 +9,7 @@ from models import Agent, Project, ProjectSettings
 from provider_adapter_recipes import resolve_adapter_recipe
 from provider_support import default_label, normalize_provider, provider_label, provider_uses_endpoint
 from schemas import ProjectSettingsUpdate
+from widget_catalog import validate_widget_types
 
 
 @dataclass
@@ -107,7 +108,11 @@ def update_project_settings(db: Session, project: Project, payload: ProjectSetti
     settings.runner_mode = payload.runner_mode
     settings.sandbox_mode = payload.sandbox_mode
     settings.approval_policy = payload.approval_policy
-    settings.workspace_widgets_json = [item.strip() for item in payload.workspace_widgets_json if item and item.strip()]
+    settings.workspace_widgets_json = validate_widget_types(
+        payload.workspace_widgets_json,
+        scope="project",
+        field_name="workspace widgets",
+    )
     settings.approval_overrides_json = dict(payload.approval_overrides_json or {})
     project.runner_mode = payload.runner_mode
     db.flush()

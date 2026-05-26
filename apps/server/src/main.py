@@ -663,7 +663,10 @@ def update_profile(
     db: Session = Depends(get_db),
     _: None = Depends(_require_bridge_token),
 ) -> AppProfileRead:
-    return service.update_app_profile(db, payload)
+    try:
+        return service.update_app_profile(db, payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @app.get("/api/startup/status", response_model=StartupStatusRead)
@@ -810,7 +813,10 @@ def update_settings(
     _: None = Depends(_require_bridge_token),
 ) -> ProjectSettingsRead:
     project = _get_project_or_404(db, project_id)
-    return service.update_settings(db, project, payload)
+    try:
+        return service.update_settings(db, project, payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @app.get("/api/projects/{project_id}/swarm/preferences", response_model=SwarmPreferencesRead)
@@ -2879,7 +2885,10 @@ def update_project_widgets(
     _: None = Depends(_require_bridge_token),
 ) -> ProjectSettingsRead:
     project = _get_project_or_404(db, project_id)
-    return service.update_workspace_widgets(db, project, payload.widgets)
+    try:
+        return service.update_workspace_widgets(db, project, payload.widgets)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @app.get("/api/handoffs", response_model=list[HandoffListItemRead])

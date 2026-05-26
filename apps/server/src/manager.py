@@ -147,6 +147,7 @@ from widget_catalog import (
     PROJECT_WIDGET_TYPES,
     WIDGET_CATALOG,
     WIDGET_CATALOG_BY_TYPE,
+    validate_widget_types,
 )
 
 
@@ -9582,7 +9583,11 @@ class MissionControlService:
         settings.runner_mode = payload.runner_mode
         settings.sandbox_mode = payload.sandbox_mode
         settings.approval_policy = payload.approval_policy
-        settings.workspace_widgets_json = [item.strip() for item in payload.workspace_widgets_json if item and item.strip()]
+        settings.workspace_widgets_json = validate_widget_types(
+            payload.workspace_widgets_json,
+            scope="project",
+            field_name="workspace widgets",
+        )
         settings.approval_overrides_json = dict(payload.approval_overrides_json or {})
         project.runner_mode = payload.runner_mode
         self.events.publish(
@@ -9903,7 +9908,11 @@ class MissionControlService:
 
     def update_workspace_widgets(self, db: Session, project: Project, widgets: list[str]) -> ProjectSettings:
         settings = self._ensure_project_settings(db, project)
-        requested = [item for item in widgets if item in PROJECT_WIDGET_TYPES]
+        requested = validate_widget_types(
+            widgets,
+            scope="project",
+            field_name="project widgets",
+        )
         instances = {item.widget_type: item for item in self._project_widget_instances(db, project, settings)}
         for order_index, widget_type in enumerate(requested):
             instance = instances.get(widget_type)
