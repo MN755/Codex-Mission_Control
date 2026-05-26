@@ -743,3 +743,114 @@ def test_project_widget_data_route_stays_read_only_for_preview_widgets(client, b
         assert load_snapshot_count == 0
     finally:
         db.close()
+
+
+def test_project_widget_summary_stays_read_only_for_support_widgets(client, bridge_headers) -> None:
+    workspace_root = Path(sample_workspace("widget-summary-read-only"))
+    (workspace_root / "src").mkdir(parents=True, exist_ok=True)
+    (workspace_root / "tests").mkdir(parents=True, exist_ok=True)
+    (workspace_root / "package.json").write_text(
+        '{"dependencies":{"react":"^19.0.0","vite":"^6.0.0"},"scripts":{"build":"vite build","test":"vitest run"}}',
+        encoding="utf-8",
+    )
+    (workspace_root / "package-lock.json").write_text("{}", encoding="utf-8")
+    (workspace_root / "src" / "main.tsx").write_text("export const summaryAudit = true;\n", encoding="utf-8")
+    (workspace_root / "README.md").write_text("# Widget Summary Preview\n", encoding="utf-8")
+
+    init_db()
+    db = SessionLocal()
+    try:
+        project = Project(
+            name="Widget Summary Read Safety",
+            idea="Exercise read-only summary widgets",
+            workspace_path=workspace_root.as_posix(),
+            runner_mode="dry_run",
+            manager_mode="auto",
+        )
+        db.add(project)
+        db.flush()
+        db.add(
+            ProjectUnderstanding(
+                project_id=project.id,
+                summary="Summary widgets should stay preview-only.",
+                known_facts_json={},
+                unknowns_json={},
+                assumptions_json=["Need test coverage"],
+                constraints_json=[],
+                confidence_by_category_json={},
+            )
+        )
+        db.add(Agent(project_id=project.id, name="Manager AI", role="Project orchestration", kind="manager", status="idle", workspace_path=project.workspace_path))
+        worker = Agent(
+            project_id=project.id,
+            name="Summary Worker",
+            role="Implementation",
+            kind="worker",
+            status="blocked",
+            workspace_path=project.workspace_path,
+            current_action="Waiting on a missing fix.",
+            failure_count=2,
+        )
+        db.add(worker)
+        db.flush()
+        task = Task(
+            project_id=project.id,
+            assigned_agent_id=worker.id,
+            title="Unblock the summary lane",
+            goal="Keep summary reads non-persistent",
+            scope="Summary-only test scope.",
+            agent_role="Implementation",
+            milestone="MVP",
+            allowed_paths_json=["src"],
+            forbidden_paths_json=[],
+            validation_steps_json=["vitest run"],
+            success_criteria_json=["Summary stays read-only"],
+            estimated_complexity="small",
+            dependencies_json=[],
+            status="blocked",
+            waiting_reason="Needs a real fix.",
+            priority=10,
+        )
+        db.add(task)
+        db.flush()
+        db.add(
+            AgentRun(
+                agent_id=worker.id,
+                task_id=task.id,
+                runner_type="dry_run",
+                process_ref="summary-run",
+                status="done",
+                report_json={
+                    "summary": "Recorded a blocked implementation pass.",
+                    "tests_run": ["vitest run"],
+                    "files_changed": ["src/main.tsx"],
+                },
+            )
+        )
+        db.commit()
+        project_id = project.id
+    finally:
+        db.close()
+
+    for widget_type in ["Conflict Resolver", "Project Health Score", "What Changed Timeline"]:
+        added = client.post(
+            f"/api/projects/{project_id}/widgets/add",
+            json={"widget_type": widget_type},
+            headers=bridge_headers,
+        )
+        assert added.status_code == 200, added.text
+
+    response = client.get(f"/api/projects/{project_id}/widgets/summary", headers=bridge_headers)
+    assert response.status_code == 200, response.text
+    assert response.json()["scope"] == "project"
+
+    db = SessionLocal()
+    try:
+        assert db.scalar(select(func.count(ManagerAssumption.id)).where(ManagerAssumption.project_id == project_id)) == 0
+        assert db.scalar(select(func.count(AgentExecutionTrace.id)).where(AgentExecutionTrace.project_id == project_id)) == 0
+        assert db.scalar(select(func.count(AgentLoadSnapshot.id)).where(AgentLoadSnapshot.project_id == project_id)) == 0
+        assert db.scalar(select(func.count(AgentStuckSignal.id)).where(AgentStuckSignal.project_id == project_id)) == 0
+        assert db.scalar(select(func.count(RecoveryPlan.id)).where(RecoveryPlan.project_id == project_id)) == 0
+        assert db.scalar(select(func.count(RepoIntelligenceSummary.project_id)).where(RepoIntelligenceSummary.project_id == project_id)) == 0
+    finally:
+        db.close()
