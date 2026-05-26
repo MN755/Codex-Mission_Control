@@ -5,7 +5,7 @@ import pytest
 from conftest import sample_workspace
 from db import SessionLocal, init_db
 from manager import service
-from models import Agent, HandoffEvidence, Project, ReviewGate, Task
+from models import Agent, ChangeRequest, EvidenceBasedHandoff, HandoffEvidence, Project, ReviewGate, Task
 
 
 def _seed_project_pair() -> tuple[int, int, int, int, int, int]:
@@ -295,5 +295,50 @@ def test_review_gate_update_rejects_foreign_refs_and_missing_evidence() -> None:
             service.update_review_gate(db, gate.id, {"related_agent_id": foreign_agent_id})
         with pytest.raises(ValueError, match="Review gate evidence"):
             service.update_review_gate(db, gate.id, {"evidence_ids_json": [scoped_evidence.id, foreign_evidence.id, 999_999]})
+    finally:
+        db.close()
+
+
+def test_update_change_request_rejects_foreign_task_and_handoff_refs() -> None:
+    project_one_id, project_two_id, _, _, _, foreign_task_id = _seed_project_pair()
+
+    db = SessionLocal()
+    try:
+        scoped_project = db.get(Project, project_one_id)
+        foreign_project = db.get(Project, project_two_id)
+        assert scoped_project is not None
+        assert foreign_project is not None
+        foreign_handoff = EvidenceBasedHandoff(
+            project_id=foreign_project.id,
+            title="Foreign handoff",
+            summary="Cross-project handoff",
+            what_was_built="Elsewhere",
+            how_to_run="Not here",
+            how_to_use="Not here either",
+            tests_run_json=[],
+            known_limitations_json=[],
+            suggested_next_steps_json=[],
+            evidence_ids_json=[],
+            confidence_level="medium",
+            dry_run=False,
+        )
+        change_request = ChangeRequest(
+            project_id=scoped_project.id,
+            request_text="Track a scoped change",
+            classification="needs_triage",
+            impact_estimate="unknown",
+            status="new",
+        )
+        db.add_all([foreign_handoff, change_request])
+        db.flush()
+
+        with pytest.raises(ValueError, match="Change request related task"):
+            service.update_change_request(db, change_request.id, {"related_tasks_json": [foreign_task_id]})
+        with pytest.raises(ValueError, match="Change request related handoff"):
+            service.update_change_request(db, change_request.id, {"related_handoff_id": foreign_handoff.id})
+
+        db.refresh(change_request)
+        assert change_request.related_tasks_json == []
+        assert change_request.related_handoff_id is None
     finally:
         db.close()
