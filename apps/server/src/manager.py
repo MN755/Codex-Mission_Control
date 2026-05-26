@@ -592,6 +592,31 @@ class MissionControlService:
             updated_at=timestamp,
         )
 
+    def _project_settings_preview(self, project: Project) -> ProjectSettings:
+        if project.settings is not None:
+            return project.settings
+        timestamp = utc_now()
+        return ProjectSettings(
+            project_id=project.id,
+            provider="codex",
+            manager_model=None,
+            default_worker_model=None,
+            manager_reasoning_effort=None,
+            default_worker_reasoning_effort=None,
+            per_role_model_overrides_json={},
+            per_role_reasoning_overrides_json={},
+            provider_endpoint=None,
+            adapter_command=None,
+            adapter_args_json=[],
+            runner_mode=project.runner_mode or DEFAULT_RUNNER_MODE,
+            sandbox_mode="workspace-write",
+            approval_policy="on-request",
+            workspace_widgets_json=[],
+            approval_overrides_json={},
+            created_at=timestamp,
+            updated_at=timestamp,
+        )
+
     def _ensure_project_settings(self, db: Session, project: Project) -> ProjectSettings:
         return get_or_create_project_settings(db, project)
 
@@ -3539,6 +3564,43 @@ class MissionControlService:
         db.flush()
         return budget
 
+    def _preview_swarm_budget(self, db: Session, project: Project) -> dict[str, Any]:
+        preferences = self._swarm_preferences(project)
+        settings = self._project_settings_preview(project)
+        active_agents = [
+            agent
+            for agent in db.scalars(select(Agent).where(Agent.project_id == project.id).order_by(Agent.id.asc()))
+            if agent.kind == "worker" and agent.status not in {"done", "stopped"}
+        ]
+        max_agents = self._swarm_capacity_limit(preferences)
+        current_active_agents = len(active_agents)
+        ratio = (current_active_agents / max(1, max_agents)) if max_agents else 0
+        if current_active_agents >= max(1, max_agents):
+            current_intensity = "extreme"
+        elif ratio >= 0.75:
+            current_intensity = "high"
+        elif ratio >= 0.4:
+            current_intensity = "medium"
+        else:
+            current_intensity = "low"
+        premium_models_only_for: list[str] = []
+        for role_name, model in {
+            "manager": settings.manager_model,
+            "worker": settings.default_worker_model,
+        }.items():
+            label = (model or "").lower()
+            if any(token in label for token in ("gpt", "claude", "sonnet", "opus")):
+                premium_models_only_for.append(role_name)
+        return {
+            "current_active_agents": current_active_agents,
+            "max_agents": max_agents,
+            "require_approval_above_agent_count": preferences.require_approval_above_agent_count,
+            "current_intensity": current_intensity,
+            "dynamic_spawning_paused": not preferences.allow_dynamic_spawning,
+            "prefer_local_models": settings.provider in {"ollama", "claude_code"} or settings.runner_mode == "dry_run",
+            "premium_models_only_for": premium_models_only_for,
+        }
+
     def _sync_agent_contracts(self, db: Session, project: Project) -> list[AgentContract]:
         plan = self._current_swarm_plan_record(db, project.id)
         specs = self._swarm_specs_for_plan(db, plan.id) if plan is not None else []
@@ -4597,7 +4659,7 @@ class MissionControlService:
                     "items": [
                         {
                             "title": category.replace("_", " "),
-                            "detail": f"{entry['provider']} / {entry['model']} • score {entry['score']}",
+                            "detail": f"{entry['provider']} / {entry['model']} â€¢ score {entry['score']}",
                         }
                         for category, entry in summary["top_categories"].items()
                     ],
@@ -4615,7 +4677,7 @@ class MissionControlService:
                     "items": [
                         {
                             "title": f"{item['archetype']} ({item['model'] or item['provider'] or 'default'})",
-                            "detail": f"success {int(item['success_rate'] * 100)}% • confidence {item['confidence']}",
+                            "detail": f"success {int(item['success_rate'] * 100)}% â€¢ confidence {item['confidence']}",
                         }
                         for item in reputation[:8]
                     ]
@@ -4637,7 +4699,7 @@ class MissionControlService:
                     "items": [
                         {
                             "title": item.summary,
-                            "detail": f"{item.severity} • {item.suggested_action} • {item.status}",
+                            "detail": f"{item.severity} â€¢ {item.suggested_action} â€¢ {item.status}",
                         }
                         for item in signals
                     ]
@@ -4654,7 +4716,7 @@ class MissionControlService:
                     "items": [
                         {
                             "title": item.key,
-                            "detail": f"{item.value_json} • {item.source}",
+                            "detail": f"{item.value_json} â€¢ {item.source}",
                         }
                         for item in preferences[:8]
                     ]
@@ -4760,7 +4822,7 @@ class MissionControlService:
                             "project_id": project.id,
                             "project_name": project.name,
                             "title": plan.trigger_summary,
-                            "detail": f"{plan.trigger_type} · {plan.status}",
+                            "detail": f"{plan.trigger_type} Â· {plan.status}",
                         }
                     )
             if not items:
@@ -4841,7 +4903,7 @@ class MissionControlService:
                     "items": [
                         {
                             "title": f"{item['archetype']} ({item['model'] or item['provider'] or 'default'})",
-                            "detail": f"success {int(item['success_rate'] * 100)}% • best: {', '.join(item['recommended_for']) or 'unknown'}",
+                            "detail": f"success {int(item['success_rate'] * 100)}% â€¢ best: {', '.join(item['recommended_for']) or 'unknown'}",
                             "weak_spots": item["avoid_for"],
                         }
                         for item in reputation[:8]
@@ -4876,7 +4938,7 @@ class MissionControlService:
                     "items": [
                         {
                             "title": item["title"],
-                            "detail": f"files {len(item['included_files_json'])} • docs {len(item['included_docs_json'])} • warnings {len(item['warnings_json'])}",
+                            "detail": f"files {len(item['included_files_json'])} â€¢ docs {len(item['included_docs_json'])} â€¢ warnings {len(item['warnings_json'])}",
                             "task_id": item["task_id"],
                             "agent_id": item["agent_id"],
                         }
@@ -4895,7 +4957,7 @@ class MissionControlService:
                     "items": [
                         {
                             "title": item.title,
-                            "detail": f"{item.severity}/{item.likelihood} • {item.status} • mitigation: {item.mitigation or 'none'}",
+                            "detail": f"{item.severity}/{item.likelihood} â€¢ {item.status} â€¢ mitigation: {item.mitigation or 'none'}",
                             "owner": item.owner_agent_id,
                         }
                         for item in risks[:10]
@@ -4969,7 +5031,7 @@ class MissionControlService:
                     "items": [
                         {
                             "title": item.summary,
-                            "detail": f"{item.severity} • {item.suggested_action} • {item.status}",
+                            "detail": f"{item.severity} â€¢ {item.suggested_action} â€¢ {item.status}",
                         }
                         for item in signals[:10]
                     ]
@@ -5004,9 +5066,9 @@ class MissionControlService:
                         {
                             "title": item["area"] if isinstance(item, dict) else item.area,
                             "detail": (
-                                f"{item['coverage_status']} • {item.get('evidence_summary') or 'No evidence recorded yet.'}"
+                                f"{item['coverage_status']} â€¢ {item.get('evidence_summary') or 'No evidence recorded yet.'}"
                                 if isinstance(item, dict)
-                                else f"{item.coverage_status} • {item.evidence_summary or 'No evidence recorded yet.'}"
+                                else f"{item.coverage_status} â€¢ {item.evidence_summary or 'No evidence recorded yet.'}"
                             ),
                         }
                         for item in items
@@ -5025,31 +5087,30 @@ class MissionControlService:
                     "items": [
                         {
                             "title": item.key,
-                            "detail": f"{item.value_json} • {item.source} • {item.scope}",
+                            "detail": f"{item.value_json} â€¢ {item.source} â€¢ {item.scope}",
                         }
                         for item in preferences[:10]
                     ]
                 },
             )
         if instance.widget_type == "Swarm Budget":
-            support = get_support()
-            budget: SwarmBudget = support["budget"]
+            budget = self._preview_swarm_budget(db, project)
             warnings = []
-            if budget.current_intensity in {"high", "extreme"}:
-                warnings.append(f"Swarm intensity is {budget.current_intensity}. More agents are not free speed; they are coordination debt in nicer clothing.")
-            if budget.premium_models_only_for:
-                warnings.append(f"Premium model roles configured: {', '.join(budget.premium_models_only_for)}")
+            if budget["current_intensity"] in {"high", "extreme"}:
+                warnings.append(f"Swarm intensity is {budget['current_intensity']}. More agents are not free speed; they are coordination debt in nicer clothing.")
+            if budget["premium_models_only_for"]:
+                warnings.append(f"Premium model roles configured: {', '.join(budget['premium_models_only_for'])}")
             return self._serialize_widget_data(
                 instance,
                 status="warning" if warnings else "ready",
                 data_json={
-                    "active_agents": budget.current_active_agents,
-                    "max_agents": budget.max_agents,
-                    "approval_threshold": budget.require_approval_above_agent_count,
-                    "intensity": budget.current_intensity,
-                    "dynamic_spawning_paused": budget.dynamic_spawning_paused,
-                    "prefer_local_models": budget.prefer_local_models,
-                    "premium_models_only_for": list(budget.premium_models_only_for or []),
+                    "active_agents": budget["current_active_agents"],
+                    "max_agents": budget["max_agents"],
+                    "approval_threshold": budget["require_approval_above_agent_count"],
+                    "intensity": budget["current_intensity"],
+                    "dynamic_spawning_paused": budget["dynamic_spawning_paused"],
+                    "prefer_local_models": budget["prefer_local_models"],
+                    "premium_models_only_for": list(budget["premium_models_only_for"]),
                 },
                 warnings_json=warnings,
             )
