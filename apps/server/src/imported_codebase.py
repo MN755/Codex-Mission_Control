@@ -6,6 +6,7 @@ from collections import Counter
 from pathlib import Path
 from typing import Any
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from models import (
@@ -525,11 +526,41 @@ class ImportedCodebaseService:
     def get_codebase_map(self, db: Session, project: Project) -> CodebaseMap:
         return self._ensure_codebase_map(db, project)
 
+    def peek_codebase_map(self, db: Session, project: Project) -> CodebaseMap:
+        existing = project.codebase_map or db.scalar(select(CodebaseMap).where(CodebaseMap.project_id == project.id))
+        if existing is not None:
+            return existing
+        return CodebaseMap(project_id=project.id, source_path=project.source_path or project.workspace_path)
+
     def get_codebase_understanding(self, db: Session, project: Project) -> CodebaseUnderstanding:
         return self._ensure_codebase_understanding(db, project)
 
+    def peek_codebase_understanding(self, db: Session, project: Project) -> CodebaseUnderstanding:
+        existing = project.codebase_understanding or db.scalar(
+            select(CodebaseUnderstanding).where(CodebaseUnderstanding.project_id == project.id)
+        )
+        if existing is not None:
+            return existing
+        return CodebaseUnderstanding(project_id=project.id)
+
     def get_agents_status(self, db: Session, project: Project) -> AgentInstructionsStatus:
         return self._ensure_agents_status(db, project)
+
+    def peek_agents_status(self, db: Session, project: Project) -> AgentInstructionsStatus:
+        existing = project.agents_md_status or db.scalar(
+            select(AgentInstructionsStatus).where(AgentInstructionsStatus.project_id == project.id)
+        )
+        if existing is not None:
+            return existing
+        return AgentInstructionsStatus(project_id=project.id)
+
+    def peek_safety(self, db: Session, project: Project) -> ImportedCodebaseSafety:
+        existing = project.imported_codebase_safety or db.scalar(
+            select(ImportedCodebaseSafety).where(ImportedCodebaseSafety.project_id == project.id)
+        )
+        if existing is not None:
+            return existing
+        return ImportedCodebaseSafety(project_id=project.id)
 
     def choose_interview_mode(self, db: Session, project: Project, *, choice: str) -> tuple[str, list[InterviewQuestion], str]:
         understanding = self._ensure_codebase_understanding(db, project)
