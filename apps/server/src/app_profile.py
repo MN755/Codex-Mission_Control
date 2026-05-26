@@ -144,6 +144,44 @@ def get_or_create_app_profile(db: Session) -> AppProfile:
         return get_or_create_app_profile(db)
 
 
+def get_app_profile_preview(db: Session) -> AppProfile:
+    profile = db.get(AppProfile, 1)
+    if profile is not None:
+        return profile
+    timestamp = utc_now()
+    return AppProfile(
+        id=1,
+        display_name=None,
+        install_id=uuid.uuid4().hex,
+        preferred_provider_choice="codex",
+        preferred_start_mode="new_project",
+        selected_provider="codex",
+        auth_mode=None,
+        connected_accounts_json={},
+        first_run_completed=False,
+        setup_version_completed=None,
+        onboarding_completed=False,
+        default_runner_mode=DEFAULT_RUNNER_MODE,
+        manager_model=None,
+        default_worker_model=None,
+        manager_reasoning_effort=None,
+        default_worker_reasoning_effort=None,
+        sandbox_mode=DEFAULT_SANDBOX,
+        approval_policy=DEFAULT_APPROVAL_POLICY,
+        theme=DEFAULT_THEME,
+        startup_behavior=DEFAULT_STARTUP_BEHAVIOR,
+        notification_preferences_json=dict(DEFAULT_NOTIFICATION_PREFERENCES),
+        dashboard_widgets_json=[],
+        dashboard_widget_preferences_json={},
+        tool_permission_overrides_json={},
+        provider_endpoint=None,
+        adapter_command=None,
+        adapter_args_json=[],
+        recent_startup_error_json=None,
+        last_opened_at=timestamp,
+    )
+
+
 def update_app_profile(db: Session, payload: AppProfileUpdate) -> AppProfile:
     profile = get_or_create_app_profile(db)
     if payload.display_name is not None:
