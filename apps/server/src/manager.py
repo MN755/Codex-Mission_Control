@@ -9978,6 +9978,7 @@ class MissionControlService:
             raise ValueError("Question not found in this project")
         if question.status != "pending":
             return question
+        normalized_option_id, normalized_selected_text = self._normalize_question_answer(question, option_id)
         metadata = question.metadata_json if isinstance(question.metadata_json, dict) else {}
         if metadata.get("question_type") == "interview":
             session_id = int(metadata.get("interview_session_id") or 0)
@@ -9988,19 +9989,42 @@ class MissionControlService:
                     db,
                     session,
                     interview_question_id,
-                    option_id,
-                    selected_text,
+                    normalized_option_id,
+                    normalized_selected_text,
                     project_id=question.project_id,
                     sync_question_mirrors=False,
                 )
                 project = db.get(Project, question.project_id)
-                resolved = self._resolve_question(db, question, option_id=option_id, selected_text=selected_text, status="answered")
+                resolved = self._resolve_question(
+                    db,
+                    question,
+                    option_id=normalized_option_id,
+                    selected_text=normalized_selected_text,
+                    status="answered",
+                )
                 if project is not None:
                     refreshed_session = db.get(InterviewSession, session_id)
                     if refreshed_session is not None and refreshed_session.status == "in_progress":
                         self._sync_interview_question_mirror(db, project, refreshed_session)
                 return resolved
-        return self._resolve_question(db, question, option_id=option_id, selected_text=selected_text, status="answered")
+        return self._resolve_question(
+            db,
+            question,
+            option_id=normalized_option_id,
+            selected_text=normalized_selected_text,
+            status="answered",
+        )
+
+    def _normalize_question_answer(self, question: ManagerQuestion, option_id: str) -> tuple[str, str]:
+        option_map = {
+            str(option.get("id")): str(option.get("label"))
+            for option in (question.options_json or [])
+            if isinstance(option, dict) and option.get("id") and option.get("label")
+        }
+        normalized_option_id = str(option_id or "").strip()
+        if not normalized_option_id or normalized_option_id not in option_map:
+            raise ValueError("Question option is not valid.")
+        return normalized_option_id, option_map[normalized_option_id]
 
     def auto_decide_question(self, db: Session, question_id: int, *, project_id: int | None = None) -> ManagerQuestion:
         question = db.get(ManagerQuestion, question_id)
