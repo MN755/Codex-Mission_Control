@@ -8,11 +8,14 @@ from conftest import sample_workspace
 from db import SessionLocal, init_db
 from models import (
     Agent,
+    AgentInstructionsStatus,
     AgentExecutionTrace,
     AgentLoadSnapshot,
     AgentRun,
     AgentArchetype,
     AgentStuckSignal,
+    CodebaseMap,
+    CodebaseUnderstanding,
     HandoffEvidence,
     ImportedCodebaseSafety,
     ManagerAssumption,
@@ -226,6 +229,43 @@ def test_safe_mode_get_and_import_safety_do_not_mutate_non_imported_project(clie
         assert project_policy_count == 0
         assert swarm_pref_count == 0
         assert import_safety_count == 0
+    finally:
+        db.close()
+
+
+def test_project_widget_data_keeps_import_and_security_widgets_read_only(client, bridge_headers) -> None:
+    project = _create_project(client, "Import Widget Read Safety", "import-widget-read-safety")
+    project_id = project["id"]
+
+    widget_types = [
+        "AGENTS.md Status",
+        "Codebase Map",
+        "Codebase Understanding",
+        "Scan Coverage",
+        "Imported Codebase Safety",
+        "Security Policy",
+    ]
+    instance_ids: list[int] = []
+    for widget_type in widget_types:
+        added = client.post(
+            f"/api/projects/{project_id}/widgets/add",
+            json={"widget_type": widget_type},
+            headers=bridge_headers,
+        )
+        assert added.status_code == 200, added.text
+        instance_ids.append(added.json()["id"])
+
+    for instance_id in instance_ids:
+        response = client.get(f"/api/widgets/instances/{instance_id}/data", headers=bridge_headers)
+        assert response.status_code == 200, response.text
+
+    db = SessionLocal()
+    try:
+        assert db.scalar(select(func.count(AgentInstructionsStatus.project_id)).where(AgentInstructionsStatus.project_id == project_id)) == 0
+        assert db.scalar(select(func.count(CodebaseMap.project_id)).where(CodebaseMap.project_id == project_id)) == 0
+        assert db.scalar(select(func.count(CodebaseUnderstanding.project_id)).where(CodebaseUnderstanding.project_id == project_id)) == 0
+        assert db.scalar(select(func.count(ImportedCodebaseSafety.project_id)).where(ImportedCodebaseSafety.project_id == project_id)) == 0
+        assert db.scalar(select(func.count(SecurityPolicy.id)).where(SecurityPolicy.project_id == project_id)) == 0
     finally:
         db.close()
 
