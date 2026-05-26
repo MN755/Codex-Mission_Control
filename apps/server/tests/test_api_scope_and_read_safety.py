@@ -26,6 +26,7 @@ from models import (
     ManagerMessage,
     ManagerAssumption,
     ModelPolicy,
+    OrchestrationSession,
     PathLock,
     PathReservation,
     Project,
@@ -270,6 +271,46 @@ def test_parallelism_safety_meter_data_is_read_only(client, bridge_headers) -> N
         )
         assert stale_conflict is not None
         assert stale_conflict.status == "detected"
+    finally:
+        db.close()
+
+
+def test_orchestration_status_summary_is_read_only(client, bridge_headers) -> None:
+    project_id = _create_legacy_project("Bridge Status Summary Read Safety", "bridge-status-summary-read-safety")
+
+    db = SessionLocal()
+    try:
+        project = db.get(Project, project_id)
+        assert project is not None
+        orchestration = OrchestrationSession(
+            project_id=project_id,
+            status="running",
+            mode="dry_run",
+            manager_status="Monitoring",
+            workspace_path=project.workspace_path,
+            user_request="Summarize status",
+        )
+        db.add(orchestration)
+        db.commit()
+        orchestration_id = orchestration.id
+    finally:
+        db.close()
+
+    response = client.get(
+        f"/api/orchestrations/{orchestration_id}/status-summary",
+        params={"project_id": project_id},
+        headers=bridge_headers,
+    )
+    assert response.status_code == 200, response.text
+
+    db = SessionLocal()
+    try:
+        assert db.scalar(select(func.count(ProjectConfidence.id)).where(ProjectConfidence.project_id == project_id)) == 0
+        assert db.scalar(select(func.count(ReviewGate.id)).where(ReviewGate.project_id == project_id)) == 0
+        assert db.scalar(select(func.count(SwarmBudget.project_id)).where(SwarmBudget.project_id == project_id)) == 0
+        assert db.scalar(select(func.count(ModelPolicy.project_id)).where(ModelPolicy.project_id == project_id)) == 0
+        assert db.scalar(select(func.count(ToolRoutingPolicy.id)).where(ToolRoutingPolicy.project_id == project_id)) == 0
+        assert db.scalar(select(func.count(ValidationRecipe.project_id)).where(ValidationRecipe.project_id == project_id)) == 0
     finally:
         db.close()
 
