@@ -1850,6 +1850,69 @@ class MissionControlService:
             )
         )
 
+    def _preview_agent_execution_traces(self, db: Session, project: Project) -> list[dict[str, Any]]:
+        existing = list(
+            db.scalars(
+                select(AgentExecutionTrace)
+                .where(AgentExecutionTrace.project_id == project.id)
+                .order_by(AgentExecutionTrace.created_at.desc(), AgentExecutionTrace.id.desc())
+            )
+        )
+        items = [
+            {
+                "id": trace.id,
+                "title": trace.prompt_summary,
+                "detail": trace.response_summary,
+                "files_changed": list(trace.files_changed_json or []),
+                "commands_attempted": list(trace.commands_attempted_json or []),
+                "manager_decision_after": trace.manager_decision_after,
+                "redaction_status": trace.redaction_status,
+                "created_at": trace.created_at,
+            }
+            for trace in existing
+        ]
+        existing_run_ids = {trace.run_id for trace in existing if trace.run_id is not None}
+        agent_ids = [agent.id for agent in db.scalars(select(Agent).where(Agent.project_id == project.id))]
+        if not agent_ids:
+            return items
+        runs = list(
+            db.scalars(
+                select(AgentRun)
+                .where(AgentRun.agent_id.in_(agent_ids))
+                .order_by(AgentRun.started_at.desc(), AgentRun.id.desc())
+            )
+        )
+        agents_by_id = {agent.id: agent for agent in db.scalars(select(Agent).where(Agent.project_id == project.id))}
+        tasks_by_id = {task.id: task for task in db.scalars(select(Task).where(Task.project_id == project.id))}
+        for run in runs:
+            if run.id in existing_run_ids:
+                continue
+            agent = agents_by_id.get(run.agent_id)
+            task = tasks_by_id.get(run.task_id) if run.task_id is not None else None
+            raw_report = self._redact_payload(run.report_json or {})
+            files_changed = [str(item) for item in (raw_report.get("files_changed") or []) if str(item).strip()]
+            tests_run = [str(item) for item in (raw_report.get("tests_run") or []) if str(item).strip()]
+            prompt_bits = [agent.mission if agent and agent.mission else None, task.goal if task else None, task.scope if task else None]
+            prompt_summary = " | ".join(bit for bit in prompt_bits if bit) or f"{agent.name if agent else 'Worker'} executed a recorded run."
+            response_summary = str(raw_report.get("summary") or run.status or "Run completed.")
+            commands_attempted = []
+            if run.runner_type:
+                commands_attempted.append(f"runner:{run.runner_type}")
+            commands_attempted.extend(tests_run[:3])
+            items.append(
+                {
+                    "id": f"preview-run-{run.id}",
+                    "title": prompt_summary[:1000],
+                    "detail": response_summary[:1000],
+                    "files_changed": files_changed[:40],
+                    "commands_attempted": commands_attempted[:20],
+                    "manager_decision_after": run.manager_action,
+                    "redaction_status": "redacted_summary",
+                    "created_at": run.started_at,
+                }
+            )
+        return items[:10]
+
     def _sync_agent_load_snapshots(self, db: Session, project: Project) -> list[AgentLoadSnapshot]:
         agents = list(db.scalars(select(Agent).where(Agent.project_id == project.id).order_by(Agent.id.asc())))
         tasks = list(db.scalars(select(Task).where(Task.project_id == project.id).order_by(Task.id.asc())))
@@ -4616,6 +4679,11 @@ class MissionControlService:
         overview: dict[str, Any],
         degraded_notices: list[str],
     ) -> dict[str, Any]:
+        if instance.widget_type == "Agent Black Box":
+            traces = self._preview_agent_execution_traces(db, project)
+            if not traces:
+                return self._serialize_widget_data(instance, status="empty", empty_state="No agent execution traces have been recorded yet.")
+            return self._serialize_widget_data(instance, status="ready", data_json={"items": traces})
         support = self._ensure_widget_support_records(
             db,
             project,
@@ -4938,29 +5006,6 @@ class MissionControlService:
                     "run_commands": [line[2:] for line in runbook.content_markdown.splitlines() if line.startswith("- ")][:6],
                 },
                 warnings_json=[f"Missing section: {section}" for section in missing_sections[:4]],
-            )
-        if instance.widget_type == "Agent Black Box":
-            traces: list[AgentExecutionTrace] = support["agent_traces"]
-            if not traces:
-                return self._serialize_widget_data(instance, status="empty", empty_state="No agent execution traces have been recorded yet.")
-            return self._serialize_widget_data(
-                instance,
-                status="ready",
-                data_json={
-                    "items": [
-                        {
-                            "id": trace.id,
-                            "title": trace.prompt_summary,
-                            "detail": trace.response_summary,
-                            "files_changed": list(trace.files_changed_json or []),
-                            "commands_attempted": list(trace.commands_attempted_json or []),
-                            "manager_decision_after": trace.manager_decision_after,
-                            "redaction_status": trace.redaction_status,
-                            "created_at": trace.created_at,
-                        }
-                        for trace in traces[:10]
-                    ]
-                },
             )
         if instance.widget_type == "Snapshots":
             snapshots: list[ProjectSnapshot] = support["snapshots"]

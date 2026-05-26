@@ -163,6 +163,52 @@ def test_widget_catalog_get_does_not_seed_or_overwrite_rows(client) -> None:
         db.close()
 
 
+def test_agent_black_box_widget_data_does_not_persist_rows(client) -> None:
+    project_id = _create_legacy_project("Agent Black Box Widget", "agent-black-box-widget")
+
+    db = SessionLocal()
+    try:
+        worker = Agent(
+            project_id=project_id,
+            name="Worker",
+            role="Build",
+            kind="worker",
+            status="done",
+            workspace_path=sample_workspace("agent-black-box-widget"),
+        )
+        db.add(worker)
+        db.flush()
+        task = Task(project_id=project_id, title="Implement", goal="Do it", scope="core", status="done", assigned_agent_id=worker.id)
+        db.add(task)
+        db.flush()
+        db.add(
+            AgentRun(
+                agent_id=worker.id,
+                task_id=task.id,
+                runner_type="dry_run",
+                status="completed",
+                report_json={"summary": "done", "files_changed": ["src/a.py"], "tests_run": ["pytest -q"]},
+            )
+        )
+        db.commit()
+    finally:
+        db.close()
+
+    widget = client.post(f"/api/projects/{project_id}/widgets/add", json={"widget_type": "Agent Black Box"})
+    assert widget.status_code == 200, widget.text
+
+    response = client.get(f"/api/widgets/instances/{widget.json()['id']}/data")
+    assert response.status_code == 200, response.text
+    assert response.json()["status"] == "ready"
+
+    db = SessionLocal()
+    try:
+        row_count = db.scalar(select(func.count(AgentExecutionTrace.id)).where(AgentExecutionTrace.project_id == project_id))
+        assert row_count == 0
+    finally:
+        db.close()
+
+
 def test_playbook_catalog_get_does_not_seed_or_overwrite_rows(client) -> None:
     init_db()
     db = SessionLocal()
