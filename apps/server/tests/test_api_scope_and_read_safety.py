@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 from sqlalchemy import func, select
 
 from conftest import sample_workspace
@@ -90,6 +91,31 @@ def _create_legacy_project(name: str, workspace_name: str) -> int:
         )
         db.commit()
         return project.id
+    finally:
+        db.close()
+
+
+@pytest.mark.parametrize(
+    ("route_template", "uses_project"),
+    [
+        ("/api/tools", False),
+        ("/api/dashboard/summary", False),
+        ("/api/settings?project_id={project_id}", True),
+        ("/api/projects/{project_id}/action", True),
+        ("/api/projects/{project_id}/actions", True),
+        ("/api/projects/{project_id}/workspace", True),
+    ],
+)
+def test_read_only_routes_do_not_create_app_profile(client, bridge_headers, route_template: str, uses_project: bool) -> None:
+    project_id = _create_legacy_project("Read Only Profile Safety", "read-only-profile-safety") if uses_project else None
+    route = route_template.format(project_id=project_id) if project_id is not None else route_template
+
+    response = client.get(route, headers=bridge_headers)
+    assert response.status_code == 200, response.text
+
+    db = SessionLocal()
+    try:
+        assert db.scalar(select(func.count(AppProfile.id))) == 0
     finally:
         db.close()
 
