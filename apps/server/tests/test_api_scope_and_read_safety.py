@@ -8,6 +8,7 @@ from conftest import sample_workspace
 from db import SessionLocal, init_db
 from models import (
     Agent,
+    AgentContract,
     AgentExecutionTrace,
     AgentLoadSnapshot,
     AgentRun,
@@ -70,6 +71,57 @@ def _create_legacy_project(name: str, workspace_name: str) -> int:
         )
         db.commit()
         return project.id
+    finally:
+        db.close()
+
+
+def test_agent_contracts_widget_data_does_not_persist_rows(client, bridge_headers) -> None:
+    init_db()
+    db = SessionLocal()
+    try:
+        project = Project(
+            name="Agent Contracts Widget",
+            idea="Keep widget reads read-only",
+            workspace_path=sample_workspace("agent-contracts-widget"),
+            runner_mode="dry_run",
+            manager_mode="auto",
+        )
+        db.add(project)
+        db.flush()
+        db.add(Agent(project_id=project.id, name="Manager AI", role="Project orchestration", kind="manager", status="idle", workspace_path=project.workspace_path))
+        db.add(
+            Agent(
+                project_id=project.id,
+                name="Worker One",
+                role="Implementation",
+                kind="worker",
+                status="working",
+                workspace_path=project.workspace_path,
+                locked_paths_json=["src"],
+                archetype="feature",
+            )
+        )
+        db.commit()
+        project_id = project.id
+    finally:
+        db.close()
+
+    added = client.post(
+        f"/api/projects/{project_id}/widgets/add",
+        json={"widget_type": "Agent Contracts"},
+        headers=bridge_headers,
+    )
+    assert added.status_code == 200, added.text
+
+    response = client.get(f"/api/widgets/instances/{added.json()['id']}/data", headers=bridge_headers)
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["status"] == "ready"
+    assert payload["data_json"]["items"][0]["agent_name"] == "Worker One"
+
+    db = SessionLocal()
+    try:
+        assert db.scalar(select(func.count(AgentContract.id)).where(AgentContract.project_id == project_id)) == 0
     finally:
         db.close()
 
