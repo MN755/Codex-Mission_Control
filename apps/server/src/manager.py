@@ -1734,6 +1734,20 @@ class MissionControlService:
                 raise ValueError(f"{evidence_label} not found in this project")
         return normalized
 
+    def _validate_project_handoff_ref(
+        self,
+        db: Session,
+        project: Project,
+        *,
+        handoff_id: int | None = None,
+        handoff_label: str = "Related handoff",
+    ) -> None:
+        if handoff_id is None:
+            return
+        handoff = db.get(EvidenceBasedHandoff, handoff_id)
+        if handoff is None or handoff.project_id != project.id:
+            raise ValueError(f"{handoff_label} not found in this project")
+
     def _record_decision(
         self,
         db: Session,
@@ -1804,6 +1818,20 @@ class MissionControlService:
         related_task_id: int | None = None,
         related_handoff_id: int | None = None,
     ) -> ProjectTimelineEvent:
+        self._validate_project_related_refs(
+            db,
+            project,
+            related_agent_id=related_agent_id,
+            related_task_id=related_task_id,
+            agent_label="Timeline event related agent",
+            task_label="Timeline event related task",
+        )
+        self._validate_project_handoff_ref(
+            db,
+            project,
+            handoff_id=related_handoff_id,
+            handoff_label="Timeline event related handoff",
+        )
         existing = db.scalar(
             select(ProjectTimelineEvent)
             .where(
