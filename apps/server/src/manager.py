@@ -3520,6 +3520,11 @@ class MissionControlService:
         }
 
     def create_review_gate(self, db: Session, project: Project, payload: dict[str, Any]) -> ReviewGate:
+        evidence_ids = [int(item) for item in (payload.get("evidence_ids_json") or [])]
+        for evidence_id in evidence_ids:
+            evidence = db.get(HandoffEvidence, evidence_id)
+            if evidence is None or evidence.project_id != project.id:
+                raise ValueError("Review gate evidence not found in this project")
         gate = ReviewGate(
             project_id=project.id,
             gate_type=str(payload["gate_type"]).strip(),
@@ -3529,7 +3534,7 @@ class MissionControlService:
             related_task_id=payload.get("related_task_id"),
             related_agent_id=payload.get("related_agent_id"),
             required_checks_json=[str(item) for item in (payload.get("required_checks_json") or []) if str(item).strip()],
-            evidence_ids_json=[int(item) for item in (payload.get("evidence_ids_json") or [])],
+            evidence_ids_json=evidence_ids,
             result_summary=payload.get("result_summary"),
         )
         db.add(gate)
@@ -3541,6 +3546,11 @@ class MissionControlService:
         gate = db.get(ReviewGate, gate_id)
         if gate is None:
             raise ValueError("Review gate not found")
+        if "evidence_ids_json" in payload and payload["evidence_ids_json"] is not None:
+            for evidence_id in [int(item) for item in payload["evidence_ids_json"]]:
+                evidence = db.get(HandoffEvidence, evidence_id)
+                if evidence is None or evidence.project_id != gate.project_id:
+                    raise ValueError("Review gate evidence not found in this project")
         for field in ["status", "required", "related_task_id", "related_agent_id", "result_summary"]:
             if field in payload and payload[field] is not None:
                 setattr(gate, field, payload[field])
