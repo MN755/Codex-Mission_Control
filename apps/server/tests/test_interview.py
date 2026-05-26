@@ -238,3 +238,57 @@ def test_canonical_answer_route_enforces_project_scope(client, monkeypatch) -> N
     )
 
     assert bad_answer.status_code == 404 or bad_answer.status_code == 400
+
+
+def test_global_answer_route_canonicalizes_selected_text(client, monkeypatch) -> None:
+    project = _create_project(client, name="Canonical Answer", runner_mode="auto")
+
+    async def fake_resolve(*args, **kwargs):
+        return (
+            _turn("Scoped summary.", [_question("product goal", 1)], more_questions_needed=True),
+            "codex",
+        )
+
+    monkeypatch.setattr(service, "_resolve_manager_model", fake_resolve)
+
+    session = client.post(f"/api/projects/{project['id']}/interview/start", json={"question_budget": 6}).json()
+    question = session["questions"][0]
+    answer = client.post(
+        f"/api/interview/questions/{question['id']}/answer",
+        json={
+            "project_id": project["id"],
+            "option_id": question["options"][0]["id"],
+            "selected_text": "Fabricated answer text",
+        },
+    )
+
+    assert answer.status_code == 200
+    answered_question = answer.json()["questions"][0]
+    assert answered_question["selected_option_id"] == question["options"][0]["id"]
+    assert answered_question["selected_text"] == question["options"][0]["label"]
+
+
+def test_global_answer_route_rejects_invalid_option_id(client, monkeypatch) -> None:
+    project = _create_project(client, name="Invalid Global Answer", runner_mode="auto")
+
+    async def fake_resolve(*args, **kwargs):
+        return (
+            _turn("Scoped summary.", [_question("product goal", 1)], more_questions_needed=True),
+            "codex",
+        )
+
+    monkeypatch.setattr(service, "_resolve_manager_model", fake_resolve)
+
+    session = client.post(f"/api/projects/{project['id']}/interview/start", json={"question_budget": 6}).json()
+    question = session["questions"][0]
+    answer = client.post(
+        f"/api/interview/questions/{question['id']}/answer",
+        json={
+            "project_id": project["id"],
+            "option_id": "invented_option",
+            "selected_text": question["options"][0]["label"],
+        },
+    )
+
+    assert answer.status_code == 400
+    assert "selected option" in answer.json()["detail"].lower()
