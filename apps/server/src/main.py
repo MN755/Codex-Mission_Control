@@ -663,7 +663,10 @@ def update_profile(
     db: Session = Depends(get_db),
     _: None = Depends(_require_bridge_token),
 ) -> AppProfileRead:
-    return service.update_app_profile(db, payload)
+    try:
+        return service.update_app_profile(db, payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @app.get("/api/startup/status", response_model=StartupStatusRead)
