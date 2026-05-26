@@ -46,6 +46,7 @@ from models import (
     ValidationCoverageArea,
     ValidationRecipe,
     WidgetDefinition,
+    WidgetInstance,
 )
 
 
@@ -387,6 +388,55 @@ def test_read_only_profile_backed_routes_do_not_create_app_profile(client) -> No
     db = SessionLocal()
     try:
         assert db.scalar(select(func.count(AppProfile.id))) == 0
+    finally:
+        db.close()
+
+
+def test_dashboard_support_widget_data_stays_read_only(client, bridge_headers) -> None:
+    project_id = _create_legacy_project("Dashboard Widget Read Safety", "dashboard-widget-read-safety")
+
+    db = SessionLocal()
+    try:
+        db.add_all(
+            [
+                WidgetInstance(
+                    scope="dashboard",
+                    project_id=None,
+                    widget_type="Project Health Overview",
+                    area="dashboard_main",
+                    order_index=0,
+                    size="large",
+                    enabled=True,
+                    config_json={},
+                ),
+                WidgetInstance(
+                    scope="dashboard",
+                    project_id=None,
+                    widget_type="Swarm Budget Overview",
+                    area="dashboard_main",
+                    order_index=1,
+                    size="large",
+                    enabled=True,
+                    config_json={},
+                ),
+            ]
+        )
+        db.commit()
+        instance_ids = list(db.scalars(select(WidgetInstance.id).order_by(WidgetInstance.id.asc())))
+        assert instance_ids
+    finally:
+        db.close()
+
+    for instance_id in instance_ids:
+        response = client.get(f"/api/widgets/instances/{instance_id}/data", headers=bridge_headers)
+        assert response.status_code == 200, response.text
+        assert response.json()["status"] in {"ready", "warning", "empty"}
+
+    db = SessionLocal()
+    try:
+        assert db.scalar(select(func.count(AppProfile.id))) == 0
+        assert db.scalar(select(func.count(ProjectConfidence.id)).where(ProjectConfidence.project_id == project_id)) == 0
+        assert db.scalar(select(func.count(ReviewGate.id)).where(ReviewGate.project_id == project_id)) == 0
     finally:
         db.close()
 
