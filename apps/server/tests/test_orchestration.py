@@ -5,7 +5,10 @@ import shutil
 import asyncio
 from pathlib import Path
 
+from fastapi.testclient import TestClient
+
 from conftest import sample_workspace, wait_for
+from main import app
 
 
 def _bridge_headers() -> dict[str, str]:
@@ -422,13 +425,14 @@ def test_direct_orchestration_runs_initial_turn_inline_for_live_mode(client, mon
 
 def test_bridge_routes_require_token(client) -> None:
     workspace = _fresh_workspace("token-guard")
-    response = client.post(
-        "/api/orchestrations/attach-workspace",
-        json={"workspace_path": workspace.as_posix(), "project_name": "Token Guard", "mode": "auto", "read_only_first": True, "attach_policy": "reuse_existing"},
-    )
-    assert response.status_code == 401
-    status = client.get("/api/daemon/status")
-    assert status.status_code == 401
+    with TestClient(app) as raw_client:
+        response = raw_client.post(
+            "/api/orchestrations/attach-workspace",
+            json={"workspace_path": workspace.as_posix(), "project_name": "Token Guard", "mode": "auto", "read_only_first": True, "attach_policy": "reuse_existing"},
+        )
+        assert response.status_code == 401
+        status = raw_client.get("/api/daemon/status")
+        assert status.status_code == 401
 
 
 def test_targeted_scan_ignores_parent_escape_targets(client) -> None:
