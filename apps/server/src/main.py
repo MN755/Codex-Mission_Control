@@ -937,7 +937,12 @@ def add_project_widget(project_id: int, payload: WidgetAddRequest, db: Session =
 
 
 @app.post("/api/projects/{project_id}/change-requests", response_model=ChangeRequestRead)
-def create_change_request(project_id: int, payload: ChangeRequestCreate, db: Session = Depends(get_db)) -> ChangeRequestRead:
+def create_change_request(
+    project_id: int,
+    payload: ChangeRequestCreate,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> ChangeRequestRead:
     project = _get_project_or_404(db, project_id)
     try:
         return service.create_change_request(db, project, payload.request_text)
