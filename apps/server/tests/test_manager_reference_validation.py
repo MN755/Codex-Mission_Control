@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import pytest
+from sqlalchemy import select
 
 from conftest import sample_workspace
 from db import SessionLocal, init_db
 from manager import service
-from models import Agent, HandoffEvidence, Project, ReviewGate, Task
+from models import Agent, HandoffEvidence, Project, RecoveryPlan, ReviewGate, Task
 
 
 def _seed_project_pair() -> tuple[int, int, int, int, int, int]:
@@ -295,5 +296,44 @@ def test_review_gate_update_rejects_foreign_refs_and_missing_evidence() -> None:
             service.update_review_gate(db, gate.id, {"related_agent_id": foreign_agent_id})
         with pytest.raises(ValueError, match="Review gate evidence"):
             service.update_review_gate(db, gate.id, {"evidence_ids_json": [scoped_evidence.id, foreign_evidence.id, 999_999]})
+    finally:
+        db.close()
+
+
+def test_create_recovery_plan_rejects_foreign_refs_before_flush() -> None:
+    project_one_id, _, _, foreign_agent_id, _, foreign_task_id = _seed_project_pair()
+
+    db = SessionLocal()
+    try:
+        scoped_project = db.get(Project, project_one_id)
+        assert scoped_project is not None
+
+        with pytest.raises(ValueError, match="Recovery plan related agent"):
+            service.create_recovery_plan(
+                db,
+                scoped_project,
+                {
+                    "trigger_type": "stuck",
+                    "trigger_summary": "Bad foreign agent",
+                    "related_agent_id": foreign_agent_id,
+                    "suggested_actions_json": ["pause_project"],
+                },
+            )
+        with pytest.raises(ValueError, match="Recovery plan related task"):
+            service.create_recovery_plan(
+                db,
+                scoped_project,
+                {
+                    "trigger_type": "stuck",
+                    "trigger_summary": "Bad foreign task",
+                    "related_task_id": foreign_task_id,
+                    "suggested_actions_json": ["pause_project"],
+                },
+            )
+
+        persisted = list(
+            db.scalars(select(RecoveryPlan).where(RecoveryPlan.project_id == scoped_project.id))
+        )
+        assert persisted == []
     finally:
         db.close()
