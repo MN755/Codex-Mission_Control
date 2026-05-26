@@ -1710,6 +1710,30 @@ class MissionControlService:
             if task is None or task.project_id != project.id:
                 raise ValueError(f"{task_label} not found in this project")
 
+    def _validate_project_evidence_refs(
+        self,
+        db: Session,
+        project: Project,
+        *,
+        evidence_ids: list[int] | None = None,
+        evidence_label: str = "Related evidence",
+    ) -> list[int]:
+        normalized = [int(item) for item in (evidence_ids or [])]
+        if not normalized:
+            return normalized
+        valid_ids = set(
+            db.scalars(
+                select(HandoffEvidence.id).where(
+                    HandoffEvidence.project_id == project.id,
+                    HandoffEvidence.id.in_(normalized),
+                )
+            )
+        )
+        for evidence_id in normalized:
+            if evidence_id not in valid_ids:
+                raise ValueError(f"{evidence_label} not found in this project")
+        return normalized
+
     def _record_decision(
         self,
         db: Session,
@@ -3520,6 +3544,20 @@ class MissionControlService:
         }
 
     def create_review_gate(self, db: Session, project: Project, payload: dict[str, Any]) -> ReviewGate:
+        self._validate_project_related_refs(
+            db,
+            project,
+            related_agent_id=payload.get("related_agent_id"),
+            related_task_id=payload.get("related_task_id"),
+            agent_label="Review gate related agent",
+            task_label="Review gate related task",
+        )
+        evidence_ids = self._validate_project_evidence_refs(
+            db,
+            project,
+            evidence_ids=payload.get("evidence_ids_json"),
+            evidence_label="Review gate evidence",
+        )
         gate = ReviewGate(
             project_id=project.id,
             gate_type=str(payload["gate_type"]).strip(),
@@ -3529,7 +3567,7 @@ class MissionControlService:
             related_task_id=payload.get("related_task_id"),
             related_agent_id=payload.get("related_agent_id"),
             required_checks_json=[str(item) for item in (payload.get("required_checks_json") or []) if str(item).strip()],
-            evidence_ids_json=[int(item) for item in (payload.get("evidence_ids_json") or [])],
+            evidence_ids_json=evidence_ids,
             result_summary=payload.get("result_summary"),
         )
         db.add(gate)
@@ -3541,13 +3579,29 @@ class MissionControlService:
         gate = db.get(ReviewGate, gate_id)
         if gate is None:
             raise ValueError("Review gate not found")
+        project = db.get(Project, gate.project_id)
+        if project is None:
+            raise ValueError("Project not found for review gate")
+        self._validate_project_related_refs(
+            db,
+            project,
+            related_agent_id=payload.get("related_agent_id") if "related_agent_id" in payload else None,
+            related_task_id=payload.get("related_task_id") if "related_task_id" in payload else None,
+            agent_label="Review gate related agent",
+            task_label="Review gate related task",
+        )
         for field in ["status", "required", "related_task_id", "related_agent_id", "result_summary"]:
             if field in payload and payload[field] is not None:
                 setattr(gate, field, payload[field])
         if "required_checks_json" in payload and payload["required_checks_json"] is not None:
             gate.required_checks_json = [str(item) for item in payload["required_checks_json"]]
         if "evidence_ids_json" in payload and payload["evidence_ids_json"] is not None:
-            gate.evidence_ids_json = [int(item) for item in payload["evidence_ids_json"]]
+            gate.evidence_ids_json = self._validate_project_evidence_refs(
+                db,
+                project,
+                evidence_ids=payload["evidence_ids_json"],
+                evidence_label="Review gate evidence",
+            )
         db.flush()
         self.events.publish(db, gate.project_id, "review_gate_updated", {"project_id": gate.project_id, "gate_id": gate.id, "status": gate.status})
         return gate

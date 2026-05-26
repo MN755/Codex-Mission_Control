@@ -5,7 +5,7 @@ import pytest
 from conftest import sample_workspace
 from db import SessionLocal, init_db
 from manager import service
-from models import Agent, Project, Task
+from models import Agent, HandoffEvidence, Project, ReviewGate, Task
 
 
 def _seed_project_pair() -> tuple[int, int, int, int, int, int]:
@@ -211,5 +211,89 @@ def test_record_decision_rejects_foreign_agent_and_missing_task() -> None:
                 made_by="manager",
                 related_task_id=999_999,
             )
+    finally:
+        db.close()
+
+
+def test_review_gate_create_rejects_foreign_refs_and_missing_evidence() -> None:
+    project_one_id, project_two_id, _, foreign_agent_id, _, foreign_task_id = _seed_project_pair()
+
+    db = SessionLocal()
+    try:
+        scoped_project = db.get(Project, project_one_id)
+        foreign_project = db.get(Project, project_two_id)
+        assert scoped_project is not None
+        assert foreign_project is not None
+        foreign_evidence = HandoffEvidence(
+            project_id=foreign_project.id,
+            evidence_type="test_result",
+            claim="Foreign evidence",
+            summary="Should not be accepted across projects.",
+            status="verified",
+        )
+        db.add(foreign_evidence)
+        db.flush()
+
+        base_payload = {
+            "gate_type": "code_review",
+            "title": "Scoped gate",
+            "status": "pending",
+            "required": True,
+            "required_checks_json": ["pytest -q"],
+            "evidence_ids_json": [],
+        }
+
+        with pytest.raises(ValueError, match="Review gate related task"):
+            service.create_review_gate(db, scoped_project, {**base_payload, "related_task_id": foreign_task_id})
+        with pytest.raises(ValueError, match="Review gate related agent"):
+            service.create_review_gate(db, scoped_project, {**base_payload, "related_agent_id": foreign_agent_id})
+        with pytest.raises(ValueError, match="Review gate evidence"):
+            service.create_review_gate(db, scoped_project, {**base_payload, "evidence_ids_json": [foreign_evidence.id, 999_999]})
+    finally:
+        db.close()
+
+
+def test_review_gate_update_rejects_foreign_refs_and_missing_evidence() -> None:
+    project_one_id, project_two_id, agent_one_id, foreign_agent_id, task_one_id, foreign_task_id = _seed_project_pair()
+
+    db = SessionLocal()
+    try:
+        scoped_project = db.get(Project, project_one_id)
+        foreign_project = db.get(Project, project_two_id)
+        assert scoped_project is not None
+        assert foreign_project is not None
+        scoped_evidence = HandoffEvidence(
+            project_id=scoped_project.id,
+            evidence_type="report",
+            claim="Scoped evidence",
+            summary="Valid evidence for the project.",
+            status="verified",
+        )
+        foreign_evidence = HandoffEvidence(
+            project_id=foreign_project.id,
+            evidence_type="report",
+            claim="Foreign evidence",
+            summary="Should stay out of this review gate.",
+            status="verified",
+        )
+        gate = ReviewGate(
+            project_id=scoped_project.id,
+            gate_type="code_review",
+            title="Existing gate",
+            status="pending",
+            required=True,
+            related_task_id=task_one_id,
+            related_agent_id=agent_one_id,
+            evidence_ids_json=[],
+        )
+        db.add_all([scoped_evidence, foreign_evidence, gate])
+        db.flush()
+
+        with pytest.raises(ValueError, match="Review gate related task"):
+            service.update_review_gate(db, gate.id, {"related_task_id": foreign_task_id})
+        with pytest.raises(ValueError, match="Review gate related agent"):
+            service.update_review_gate(db, gate.id, {"related_agent_id": foreign_agent_id})
+        with pytest.raises(ValueError, match="Review gate evidence"):
+            service.update_review_gate(db, gate.id, {"evidence_ids_json": [scoped_evidence.id, foreign_evidence.id, 999_999]})
     finally:
         db.close()
