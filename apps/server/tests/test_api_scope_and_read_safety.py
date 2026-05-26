@@ -175,3 +175,98 @@ def test_global_id_routes_require_matching_project_scope(client, bridge_headers)
         assert stored is not None
     finally:
         db.close()
+
+
+def test_project_routes_reject_invalid_related_resource_ids(client) -> None:
+    project = _create_project(client, "Reference Validation", "reference-validation")
+    project_id = project["id"]
+
+    invalid_context_agent = client.post(
+        f"/api/projects/{project_id}/context-packs/build",
+        json={"title": "Bad agent", "goal": "Validate refs", "agent_id": 999999},
+    )
+    assert invalid_context_agent.status_code == 404
+
+    invalid_context_task = client.post(
+        f"/api/projects/{project_id}/context-packs/build",
+        json={"title": "Bad task", "goal": "Validate refs", "task_id": 999999},
+    )
+    assert invalid_context_task.status_code == 404
+
+    invalid_risk_owner = client.post(
+        f"/api/projects/{project_id}/risks",
+        json={
+            "title": "Risk owner missing",
+            "description": "Owner should exist.",
+            "severity": "medium",
+            "likelihood": "medium",
+            "owner_agent_id": 999999,
+        },
+    )
+    assert invalid_risk_owner.status_code == 404
+
+    invalid_risk_task = client.post(
+        f"/api/projects/{project_id}/risks",
+        json={
+            "title": "Risk task missing",
+            "description": "Task should exist.",
+            "severity": "medium",
+            "likelihood": "medium",
+            "related_task_id": 999999,
+        },
+    )
+    assert invalid_risk_task.status_code == 404
+
+    invalid_scope_task = client.post(
+        f"/api/projects/{project_id}/scope-creep/analyze",
+        json={"summary": "This clearly drifts scope.", "related_task_id": 999999},
+    )
+    assert invalid_scope_task.status_code == 404
+
+    invalid_scope_message = client.post(
+        f"/api/projects/{project_id}/scope-creep/analyze",
+        json={"summary": "This also drifts scope.", "related_message_id": 999999},
+    )
+    assert invalid_scope_message.status_code == 404
+
+    invalid_snapshot_task = client.post(
+        f"/api/projects/{project_id}/snapshots",
+        json={
+            "label": "Bad task snapshot",
+            "description": "Should reject missing task.",
+            "created_before_task_id": 999999,
+        },
+    )
+    assert invalid_snapshot_task.status_code == 404
+
+    invalid_snapshot_agent = client.post(
+        f"/api/projects/{project_id}/snapshots",
+        json={
+            "label": "Bad agent snapshot",
+            "description": "Should reject missing agent.",
+            "created_before_agent_id": 999999,
+        },
+    )
+    assert invalid_snapshot_agent.status_code == 404
+
+    invalid_recovery_task = client.post(
+        f"/api/projects/{project_id}/recovery-plans",
+        json={
+            "trigger_type": "task_blocked",
+            "trigger_summary": "Recovery needs a real task.",
+            "related_task_id": 999999,
+            "suggested_actions_json": ["ask_user"],
+        },
+    )
+    assert invalid_recovery_task.status_code == 404
+
+    invalid_recovery_agent = client.post(
+        f"/api/projects/{project_id}/recovery-plans",
+        json={
+            "trigger_type": "agent_stuck",
+            "trigger_summary": "Recovery needs a real agent.",
+            "related_agent_id": 999999,
+            "suggested_actions_json": ["ask_user"],
+        },
+    )
+    assert invalid_recovery_agent.status_code == 404

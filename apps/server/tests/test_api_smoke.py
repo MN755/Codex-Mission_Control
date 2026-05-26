@@ -163,3 +163,38 @@ def test_privileged_headless_and_status_routes_require_token() -> None:
         assert raw_client.post("/api/headless/repair", json={}).status_code == 401
         assert raw_client.post("/api/startup/check", json={"attempt_number": 1, "include_optional_checks": True}).status_code == 401
         assert raw_client.post("/api/startup/retry", json={"attempt_number": 1, "failed_check": "runtime_paths", "retry_mode": "full"}).status_code == 401
+
+
+def test_runtime_and_project_control_routes_require_token() -> None:
+    with TestClient(app) as raw_client:
+        project = raw_client.post(
+            "/api/projects",
+            json={
+                "name": "Auth Surface",
+                "idea": "Lock down route access",
+                "workspace_path": sample_workspace("auth-surface"),
+                "provider": "codex",
+                "runner_mode": "dry_run",
+                "manager_mode": "auto",
+            },
+        ).json()
+        project_id = project["id"]
+
+        assert raw_client.get("/api/dashboard/summary").status_code == 401
+        assert raw_client.get("/api/dashboard/stream").status_code == 401
+        assert raw_client.get("/api/tools").status_code == 401
+        assert raw_client.get("/api/skills").status_code == 401
+        assert raw_client.get("/api/handoffs").status_code == 401
+        assert raw_client.get("/api/capabilities/matrix").status_code == 401
+        assert raw_client.get("/api/capabilities/benchmarks").status_code == 401
+        assert raw_client.get("/api/agents/reputation").status_code == 401
+        assert raw_client.get(f"/api/projects/{project_id}/workspace").status_code == 401
+        assert raw_client.get(f"/api/projects/{project_id}/actions").status_code == 401
+        assert raw_client.get(f"/api/projects/{project_id}/events").status_code == 401
+        assert raw_client.get(f"/api/projects/{project_id}/stream").status_code == 401
+        assert raw_client.get(f"/api/projects/{project_id}/reservations").status_code == 401
+        assert raw_client.get(f"/api/projects/{project_id}/swarm/events").status_code == 401
+        assert raw_client.post(f"/api/projects/{project_id}/docs/generate").status_code == 401
+        assert raw_client.post(f"/api/projects/{project_id}/interview/start", json={"question_budget": 4}).status_code == 401
+        assert raw_client.post(f"/api/projects/{project_id}/plan/generate", json={"force_rebuild": True}).status_code == 401
+        assert raw_client.post("/api/projects/import-folder", json={"folder_path": sample_workspace("auth-import"), "import_mode": "linked"}).status_code == 401

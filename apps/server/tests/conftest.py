@@ -59,6 +59,7 @@ def reset_db() -> None:
 @pytest.fixture
 def client() -> TestClient:
     with TestClient(app) as test_client:
+        test_client.headers.update({"X-Mission-Control-Token": ensure_daemon_token()})
         yield test_client
 
 

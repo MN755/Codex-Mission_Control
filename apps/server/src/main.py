@@ -30,6 +30,7 @@ from models import (
     Agent,
     AgentRun,
     InterviewSession,
+    ManagerMessage,
     OrchestrationSession,
     PathReservation,
     PendingDecision,
@@ -348,9 +349,34 @@ def _get_subagent_batch_or_404(db: Session, batch_id: int) -> SubagentBatch:
     return batch
 
 
+def _get_manager_message_or_404(db: Session, message_id: int) -> ManagerMessage:
+    message = db.get(ManagerMessage, message_id)
+    if not message:
+        raise HTTPException(status_code=404, detail="Manager message not found")
+    return message
+
+
 def _require_project_scope(resource_name: str, actual_project_id: int | None, requested_project_id: int) -> None:
     if actual_project_id != requested_project_id:
         raise HTTPException(status_code=404, detail=f"{resource_name} not found in this project")
+
+
+def _require_project_agent(db: Session, project: Project, agent_id: int, *, resource_name: str = "Agent") -> Agent:
+    agent = _get_agent_or_404(db, agent_id)
+    _require_project_scope(resource_name, agent.project_id, project.id)
+    return agent
+
+
+def _require_project_task(db: Session, project: Project, task_id: int, *, resource_name: str = "Task") -> Task:
+    task = _get_task_or_404(db, task_id)
+    _require_project_scope(resource_name, task.project_id, project.id)
+    return task
+
+
+def _require_project_message(db: Session, project: Project, message_id: int, *, resource_name: str = "Manager message") -> ManagerMessage:
+    message = _get_manager_message_or_404(db, message_id)
+    _require_project_scope(resource_name, message.project_id, project.id)
+    return message
 
 
 def _require_imported_project(project: Project) -> None:
@@ -806,7 +832,11 @@ async def scale_swarm(project_id: int, payload: SwarmScaleRequest, db: Session =
 
 
 @app.get("/api/projects/{project_id}/swarm/events", response_model=list[SwarmEventRead])
-def get_swarm_events(project_id: int, db: Session = Depends(get_db)) -> list[SwarmEventRead]:
+def get_swarm_events(
+    project_id: int,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> list[SwarmEventRead]:
     project = _get_project_or_404(db, project_id)
     return [SwarmEventRead(**item) for item in service.list_swarm_events(db, project)]
 
@@ -916,34 +946,55 @@ def create_change_request(project_id: int, payload: ChangeRequestCreate, db: Ses
 
 
 @app.get("/api/capabilities/benchmarks", response_model=list[CapabilityBenchmarkRead])
-def get_capability_benchmarks(db: Session = Depends(get_db)) -> list[CapabilityBenchmarkRead]:
+def get_capability_benchmarks(
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> list[CapabilityBenchmarkRead]:
     return [CapabilityBenchmarkRead.model_validate(item) for item in capability_service.list_benchmarks(db)]
 
 
 @app.post("/api/capabilities/benchmarks", response_model=CapabilityBenchmarkRead)
-def create_capability_benchmark(payload: CapabilityBenchmarkCreate, db: Session = Depends(get_db)) -> CapabilityBenchmarkRead:
+def create_capability_benchmark(
+    payload: CapabilityBenchmarkCreate,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> CapabilityBenchmarkRead:
     record = capability_service.record_benchmark(db, payload.model_dump())
     return CapabilityBenchmarkRead.model_validate(record)
 
 
 @app.get("/api/capabilities/matrix", response_model=list[CapabilityMatrixEntryRead])
-def get_capability_matrix(db: Session = Depends(get_db)) -> list[CapabilityMatrixEntryRead]:
+def get_capability_matrix(
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> list[CapabilityMatrixEntryRead]:
     return [CapabilityMatrixEntryRead(**item) for item in capability_service.capability_matrix(db)]
 
 
 @app.get("/api/agents/reputation", response_model=list[AgentReputationSummaryRead])
-def get_agent_reputation(db: Session = Depends(get_db)) -> list[AgentReputationSummaryRead]:
+def get_agent_reputation(
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> list[AgentReputationSummaryRead]:
     return [AgentReputationSummaryRead(**item) for item in reputation_service.summarize(db)]
 
 
 @app.get("/api/projects/{project_id}/agents/reputation", response_model=list[AgentReputationSummaryRead])
-def get_project_agent_reputation(project_id: int, db: Session = Depends(get_db)) -> list[AgentReputationSummaryRead]:
+def get_project_agent_reputation(
+    project_id: int,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> list[AgentReputationSummaryRead]:
     project = _get_project_or_404(db, project_id)
     return [AgentReputationSummaryRead(**item) for item in reputation_service.summarize(db, project)]
 
 
 @app.post("/api/agents/performance-record", response_model=AgentPerformanceRecordRead)
-def create_agent_performance_record(payload: AgentPerformanceRecordCreate, db: Session = Depends(get_db)) -> AgentPerformanceRecordRead:
+def create_agent_performance_record(
+    payload: AgentPerformanceRecordCreate,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> AgentPerformanceRecordRead:
     record = reputation_service.record(db, payload.model_dump())
     return AgentPerformanceRecordRead.model_validate(record)
 
@@ -991,8 +1042,17 @@ def apply_project_playbook(project_id: int, payload: ProjectPlaybookApplyRequest
 
 
 @app.post("/api/projects/{project_id}/context-packs/build", response_model=ContextPackRead)
-def build_context_pack(project_id: int, payload: ContextPackBuildRequest, db: Session = Depends(get_db)) -> ContextPackRead:
+def build_context_pack(
+    project_id: int,
+    payload: ContextPackBuildRequest,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> ContextPackRead:
     project = _get_project_or_404(db, project_id)
+    if payload.agent_id is not None:
+        _require_project_agent(db, project, payload.agent_id)
+    if payload.task_id is not None:
+        _require_project_task(db, project, payload.task_id)
     pack = context_pack_service.build_context_pack(
         db,
         project,
@@ -1028,8 +1088,17 @@ def get_project_risks(project_id: int, db: Session = Depends(get_db)) -> list[Ri
 
 
 @app.post("/api/projects/{project_id}/risks", response_model=RiskRecordRead)
-def create_project_risk(project_id: int, payload: RiskRecordCreate, db: Session = Depends(get_db)) -> RiskRecordRead:
+def create_project_risk(
+    project_id: int,
+    payload: RiskRecordCreate,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> RiskRecordRead:
     project = _get_project_or_404(db, project_id)
+    if payload.owner_agent_id is not None:
+        _require_project_agent(db, project, payload.owner_agent_id, resource_name="Risk owner agent")
+    if payload.related_task_id is not None:
+        _require_project_task(db, project, payload.related_task_id, resource_name="Risk related task")
     return RiskRecordRead.model_validate(risk_service.create_risk(db, project, payload.model_dump()))
 
 
@@ -1048,8 +1117,17 @@ def get_scope_creep(project_id: int, db: Session = Depends(get_db)) -> list[Scop
 
 
 @app.post("/api/projects/{project_id}/scope-creep/analyze", response_model=list[ScopeChangeSignalRead])
-def analyze_scope_creep(project_id: int, payload: ScopeChangeAnalyzeRequest, db: Session = Depends(get_db)) -> list[ScopeChangeSignalRead]:
+def analyze_scope_creep(
+    project_id: int,
+    payload: ScopeChangeAnalyzeRequest,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> list[ScopeChangeSignalRead]:
     project = _get_project_or_404(db, project_id)
+    if payload.related_task_id is not None:
+        _require_project_task(db, project, payload.related_task_id, resource_name="Scope change related task")
+    if payload.related_message_id is not None:
+        _require_project_message(db, project, payload.related_message_id, resource_name="Scope change related message")
     return [ScopeChangeSignalRead.model_validate(item) for item in scope_creep_service.analyze(db, project, payload.model_dump())]
 
 
@@ -1170,13 +1248,19 @@ def get_project_security_audit_log(project_id: int, db: Session = Depends(get_db
 
 
 @app.get("/api/dashboard/stream")
-async def stream_dashboard(after_id: int | None = Query(default=None)) -> StreamingResponse:
+async def stream_dashboard(
+    after_id: int | None = Query(default=None),
+    _: None = Depends(_require_bridge_token),
+) -> StreamingResponse:
     generator = service.events.stream_app(after_id)
     return StreamingResponse(generator, media_type="text/event-stream")
 
 
 @app.get("/api/dashboard/summary", response_model=DashboardSummaryRead)
-async def get_dashboard_summary(db: Session = Depends(get_db)) -> DashboardSummaryRead:
+async def get_dashboard_summary(
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> DashboardSummaryRead:
     return DashboardSummaryRead(**(await service.get_dashboard_summary(db)))
 
 
@@ -1821,6 +1905,10 @@ def create_project_snapshot(
     _: None = Depends(_require_bridge_token),
 ) -> ProjectSnapshotRead:
     project = _get_project_or_404(db, project_id)
+    if payload.created_before_task_id is not None:
+        _require_project_task(db, project, payload.created_before_task_id, resource_name="Snapshot task")
+    if payload.created_before_agent_id is not None:
+        _require_project_agent(db, project, payload.created_before_agent_id, resource_name="Snapshot agent")
     snapshot = service.create_project_snapshot(
         db,
         project,
@@ -1867,6 +1955,10 @@ def create_project_recovery_plan(
     _: None = Depends(_require_bridge_token),
 ) -> RecoveryPlanRead:
     project = _get_project_or_404(db, project_id)
+    if payload.related_agent_id is not None:
+        _require_project_agent(db, project, payload.related_agent_id, resource_name="Recovery plan agent")
+    if payload.related_task_id is not None:
+        _require_project_task(db, project, payload.related_task_id, resource_name="Recovery plan task")
     plan = service.create_recovery_plan(db, project, payload.model_dump())
     return RecoveryPlanRead.model_validate(plan)
 
@@ -1906,7 +1998,11 @@ def create_project(payload: ProjectCreate, db: Session = Depends(get_db)) -> Pro
 
 
 @app.post("/api/projects/import-folder", response_model=ImportFolderResponse)
-def import_existing_folder(payload: ImportFolderRequest, db: Session = Depends(get_db)) -> ImportFolderResponse:
+def import_existing_folder(
+    payload: ImportFolderRequest,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> ImportFolderResponse:
     try:
         folder = resolve_local_path(payload.folder_path, must_exist=True, must_be_dir=True)
     except PathValidationError as exc:
@@ -2100,7 +2196,11 @@ def choose_import_interview(project_id: int, payload: ImportInterviewChoiceReque
 
 
 @app.get("/api/projects/{project_id}/import-safety", response_model=ImportedCodebaseSafetyRead)
-def get_import_safety(project_id: int, db: Session = Depends(get_db)) -> ImportedCodebaseSafetyRead:
+def get_import_safety(
+    project_id: int,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> ImportedCodebaseSafetyRead:
     project = _get_project_or_404(db, project_id)
     _require_imported_project(project)
     safety = import_service.ensure_safety(db, project, create_if_missing=False)
@@ -2110,7 +2210,12 @@ def get_import_safety(project_id: int, db: Session = Depends(get_db)) -> Importe
 
 
 @app.patch("/api/projects/{project_id}/import-safety", response_model=ImportedCodebaseSafetyRead)
-def patch_import_safety(project_id: int, payload: ImportedCodebaseSafetyUpdate, db: Session = Depends(get_db)) -> ImportedCodebaseSafetyRead:
+def patch_import_safety(
+    project_id: int,
+    payload: ImportedCodebaseSafetyUpdate,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> ImportedCodebaseSafetyRead:
     project = _get_project_or_404(db, project_id)
     _require_imported_project(project)
     safety = import_service.update_safety(db, project, payload.model_dump(exclude_unset=True))
@@ -2119,7 +2224,12 @@ def patch_import_safety(project_id: int, payload: ImportedCodebaseSafetyUpdate, 
 
 
 @app.post("/api/projects/{project_id}/write-permission", response_model=ImportedCodebaseSafetyRead)
-def update_write_permission(project_id: int, payload: WritePermissionRequest, db: Session = Depends(get_db)) -> ImportedCodebaseSafetyRead:
+def update_write_permission(
+    project_id: int,
+    payload: WritePermissionRequest,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> ImportedCodebaseSafetyRead:
     project = _get_project_or_404(db, project_id)
     _require_imported_project(project)
     safety = import_service.update_safety(db, project, {"write_permission_status": payload.write_permission_status})
@@ -2128,19 +2238,32 @@ def update_write_permission(project_id: int, payload: WritePermissionRequest, db
 
 
 @app.get("/api/projects/{project_id}/agents-md/status", response_model=AgentInstructionsStatusRead)
-def get_agents_md_status(project_id: int, db: Session = Depends(get_db)) -> AgentInstructionsStatusRead:
+def get_agents_md_status(
+    project_id: int,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> AgentInstructionsStatusRead:
     project = _get_project_or_404(db, project_id)
     return AgentInstructionsStatusRead.model_validate(import_service.get_agents_status(db, project))
 
 
 @app.post("/api/projects/{project_id}/agents-md/propose", response_model=AgentsMdProposalRead)
-def propose_agents_md(project_id: int, db: Session = Depends(get_db)) -> AgentsMdProposalRead:
+def propose_agents_md(
+    project_id: int,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> AgentsMdProposalRead:
     project = _get_project_or_404(db, project_id)
     return AgentsMdProposalRead(**import_service.propose_agents_md(db, project))
 
 
 @app.post("/api/projects/{project_id}/manager/imported-codebase-request", response_model=ImportedCodebaseRequestRead)
-def imported_codebase_request(project_id: int, payload: ImportedCodebaseRequest, db: Session = Depends(get_db)) -> ImportedCodebaseRequestRead:
+def imported_codebase_request(
+    project_id: int,
+    payload: ImportedCodebaseRequest,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> ImportedCodebaseRequestRead:
     project = _get_project_or_404(db, project_id)
     return ImportedCodebaseRequestRead(**import_service.analyze_manager_request(db, project, message=payload.message))
 
@@ -2196,26 +2319,44 @@ def unpin_project(project_id: int, db: Session = Depends(get_db)) -> ProjectRead
 
 
 @app.get("/api/projects/{project_id}/workspace", response_model=ProjectWorkspaceRead)
-async def get_project_workspace(project_id: int, db: Session = Depends(get_db)) -> ProjectWorkspaceRead:
+async def get_project_workspace(
+    project_id: int,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> ProjectWorkspaceRead:
     project = _get_project_or_404(db, project_id)
     payload = await service.get_project_workspace(db, project)
     return ProjectWorkspaceRead(**payload)
 
 
 @app.get("/api/projects/{project_id}/action", response_model=ProjectActionRead)
-async def get_project_action(project_id: int, db: Session = Depends(get_db)) -> ProjectActionRead:
+async def get_project_action(
+    project_id: int,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> ProjectActionRead:
     project = _get_project_or_404(db, project_id)
     return ProjectActionRead(**(await service.get_project_action(db, project)))
 
 
 @app.get("/api/projects/{project_id}/actions", response_model=list[ProjectActionRead])
-async def get_project_actions(project_id: int, db: Session = Depends(get_db)) -> list[ProjectActionRead]:
+async def get_project_actions(
+    project_id: int,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> list[ProjectActionRead]:
     project = _get_project_or_404(db, project_id)
     return [ProjectActionRead(**item) for item in await service.list_project_actions(db, project)]
 
 
 @app.post("/api/projects/{project_id}/actions/{action_id}/resolve")
-def resolve_project_action(project_id: int, action_id: str, payload: ProjectActionResolveRequest, db: Session = Depends(get_db)) -> dict[str, Any]:
+def resolve_project_action(
+    project_id: int,
+    action_id: str,
+    payload: ProjectActionResolveRequest,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> dict[str, Any]:
     project = _get_project_or_404(db, project_id)
     try:
         return service.resolve_project_action(
@@ -2336,12 +2477,19 @@ def update_project_widgets(project_id: int, payload: WorkspaceWidgetsUpdate, db:
 
 
 @app.get("/api/handoffs", response_model=list[HandoffListItemRead])
-def list_handoffs(db: Session = Depends(get_db)) -> list[HandoffListItemRead]:
+def list_handoffs(
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> list[HandoffListItemRead]:
     return [HandoffListItemRead(**item) for item in service.list_handoffs(db)]
 
 
 @app.get("/api/projects/{project_id}/handoff", response_model=HandoffListItemRead)
-def get_project_handoff(project_id: int, db: Session = Depends(get_db)) -> HandoffListItemRead:
+def get_project_handoff(
+    project_id: int,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> HandoffListItemRead:
     project = _get_project_or_404(db, project_id)
     return HandoffListItemRead(**service.get_project_handoff_summary(db, project))
 
@@ -2352,12 +2500,20 @@ def diagnostics_reports() -> list[DiagnosticReportListItemRead]:
 
 
 @app.get("/api/tools", response_model=list[ToolCatalogItemRead])
-def get_tools(db: Session = Depends(get_db)) -> list[ToolCatalogItemRead]:
+def get_tools(
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> list[ToolCatalogItemRead]:
     return [ToolCatalogItemRead(**item) for item in service.get_tool_catalog(db)]
 
 
 @app.put("/api/tools/{tool_id}/permission", response_model=ToolPermissionRead)
-def update_tool_permission(tool_id: str, payload: ToolPermissionUpdate, db: Session = Depends(get_db)) -> ToolPermissionRead:
+def update_tool_permission(
+    tool_id: str,
+    payload: ToolPermissionUpdate,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> ToolPermissionRead:
     try:
         return ToolPermissionRead(**service.update_tool_permission(db, tool_id, payload.permission_policy))
     except ValueError as exc:
@@ -2365,12 +2521,19 @@ def update_tool_permission(tool_id: str, payload: ToolPermissionUpdate, db: Sess
 
 
 @app.get("/api/skills", response_model=list[SkillRead])
-async def get_skills(db: Session = Depends(get_db)) -> list[SkillRead]:
+async def get_skills(
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> list[SkillRead]:
     return [SkillRead(**item) for item in await service.list_skills(db)]
 
 
 @app.post("/api/projects/{project_id}/docs/generate", response_model=DocGenerationResponse)
-async def generate_docs(project_id: int, db: Session = Depends(get_db)) -> DocGenerationResponse:
+async def generate_docs(
+    project_id: int,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> DocGenerationResponse:
     project = _get_project_or_404(db, project_id)
     try:
         result = await service.generate_project_docs(db, project)
@@ -2380,7 +2543,12 @@ async def generate_docs(project_id: int, db: Session = Depends(get_db)) -> DocGe
 
 
 @app.post("/api/projects/{project_id}/interview/start", response_model=InterviewSessionRead)
-async def start_interview(project_id: int, payload: InterviewStartRequest, db: Session = Depends(get_db)) -> InterviewSessionRead:
+async def start_interview(
+    project_id: int,
+    payload: InterviewStartRequest,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> InterviewSessionRead:
     project = _get_project_or_404(db, project_id)
     session = await service.start_interview(db, project, payload.question_budget, payload.question_count)
     db.flush()
@@ -2389,14 +2557,22 @@ async def start_interview(project_id: int, payload: InterviewStartRequest, db: S
 
 
 @app.get("/api/projects/{project_id}/interview", response_model=InterviewSessionRead | None)
-def get_interview(project_id: int, db: Session = Depends(get_db)) -> InterviewSessionRead | None:
+def get_interview(
+    project_id: int,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> InterviewSessionRead | None:
     project = _get_project_or_404(db, project_id)
     session = db.scalar(select(InterviewSession).where(InterviewSession.project_id == project_id).order_by(InterviewSession.id.desc()))
     return _serialize_interview(project, session) if session else None
 
 
 @app.post("/api/projects/{project_id}/interview/generate-next", response_model=InterviewSessionRead)
-async def generate_next_interview(project_id: int, db: Session = Depends(get_db)) -> InterviewSessionRead:
+async def generate_next_interview(
+    project_id: int,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> InterviewSessionRead:
     project = _get_project_or_404(db, project_id)
     try:
         session = await service.generate_next_interview(db, project)
@@ -2408,7 +2584,12 @@ async def generate_next_interview(project_id: int, db: Session = Depends(get_db)
 
 
 @app.post("/api/interview/questions/{question_id}/answer", response_model=InterviewSessionRead)
-def answer_interview_question(question_id: int, payload: InterviewQuestionAnswerRequest, db: Session = Depends(get_db)) -> InterviewSessionRead:
+def answer_interview_question(
+    question_id: int,
+    payload: InterviewQuestionAnswerRequest,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> InterviewSessionRead:
     project = _get_project_or_404(db, payload.project_id)
     session = db.scalar(select(InterviewSession).where(InterviewSession.project_id == project.id).order_by(InterviewSession.id.desc()))
     if not session:
@@ -2432,7 +2613,12 @@ def answer_interview_question(question_id: int, payload: InterviewQuestionAnswer
 
 
 @app.post("/api/projects/{project_id}/interview/answer", response_model=InterviewSessionRead)
-def answer_interview(project_id: int, payload: InterviewAnswerRequest, db: Session = Depends(get_db)) -> InterviewSessionRead:
+def answer_interview(
+    project_id: int,
+    payload: InterviewAnswerRequest,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> InterviewSessionRead:
     project = _get_project_or_404(db, project_id)
     session = db.scalar(select(InterviewSession).where(InterviewSession.project_id == project_id).order_by(InterviewSession.id.desc()))
     if not session:
@@ -2456,7 +2642,11 @@ def answer_interview(project_id: int, payload: InterviewAnswerRequest, db: Sessi
 
 
 @app.post("/api/projects/{project_id}/interview/finish", response_model=InterviewSessionRead)
-def finish_interview(project_id: int, db: Session = Depends(get_db)) -> InterviewSessionRead:
+def finish_interview(
+    project_id: int,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> InterviewSessionRead:
     project = _get_project_or_404(db, project_id)
     try:
         session = service.finish_interview(db, project)
@@ -2468,13 +2658,22 @@ def finish_interview(project_id: int, db: Session = Depends(get_db)) -> Intervie
 
 
 @app.get("/api/projects/{project_id}/understanding", response_model=ProjectUnderstandingRead)
-def get_project_understanding(project_id: int, db: Session = Depends(get_db)) -> ProjectUnderstandingRead:
+def get_project_understanding(
+    project_id: int,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> ProjectUnderstandingRead:
     project = _get_project_or_404(db, project_id)
     return _serialize_understanding(project)
 
 
 @app.post("/api/projects/{project_id}/plan/generate", response_model=PlanRead)
-async def generate_plan(project_id: int, payload: PlanGenerateRequest, db: Session = Depends(get_db)) -> Plan:
+async def generate_plan(
+    project_id: int,
+    payload: PlanGenerateRequest,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> Plan:
     project = _get_project_or_404(db, project_id)
     plan = await service.generate_plan(db, project)
     db.flush()
@@ -2483,12 +2682,21 @@ async def generate_plan(project_id: int, payload: PlanGenerateRequest, db: Sessi
 
 
 @app.get("/api/projects/{project_id}/plan", response_model=PlanRead | None)
-def get_plan(project_id: int, db: Session = Depends(get_db)) -> Plan | None:
+def get_plan(
+    project_id: int,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> Plan | None:
     return db.scalar(select(Plan).where(Plan.project_id == project_id).order_by(Plan.version.desc()))
 
 
 @app.post("/api/projects/{project_id}/plan/approve", response_model=PlanRead)
-async def approve_plan(project_id: int, payload: PlanApproveRequest, db: Session = Depends(get_db)) -> Plan:
+async def approve_plan(
+    project_id: int,
+    payload: PlanApproveRequest,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> Plan:
     project = _get_project_or_404(db, project_id)
     plan = await service.approve_plan(db, project, payload.action, payload.note)
     db.flush()
@@ -2497,26 +2705,42 @@ async def approve_plan(project_id: int, payload: PlanApproveRequest, db: Session
 
 
 @app.get("/api/projects/{project_id}/agents", response_model=list[AgentRead])
-def get_agents(project_id: int, db: Session = Depends(get_db)) -> list[AgentRead]:
+def get_agents(
+    project_id: int,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> list[AgentRead]:
     _get_project_or_404(db, project_id)
     return [AgentRead(**item) for item in service._sorted_workspace_agents(db, project_id)]
 
 
 @app.get("/api/projects/{project_id}/reservations", response_model=list[ReservationRead])
-def get_reservations(project_id: int, db: Session = Depends(get_db)) -> list[PathReservation]:
+def get_reservations(
+    project_id: int,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> list[PathReservation]:
     _get_project_or_404(db, project_id)
     return service.list_reservations(db, project_id)
 
 
 @app.post("/api/projects/{project_id}/agents/start", response_model=AgentActionResponse)
-async def start_project_agents(project_id: int, db: Session = Depends(get_db)) -> AgentActionResponse:
+async def start_project_agents(
+    project_id: int,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> AgentActionResponse:
     project = _get_project_or_404(db, project_id)
     await service.start_idle_agents(db, project)
     return AgentActionResponse(ok=True, message="Started idle agents where work was available.")
 
 
 @app.post("/api/agents/{agent_id}/start", response_model=AgentActionResponse)
-async def start_agent(agent_id: int, db: Session = Depends(get_db)) -> AgentActionResponse:
+async def start_agent(
+    agent_id: int,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> AgentActionResponse:
     agent = _get_agent_or_404(db, agent_id)
     project = _get_project_or_404(db, agent.project_id)
     task = service._find_next_safe_task(db, project, agent)
@@ -2535,41 +2759,65 @@ async def start_agent(agent_id: int, db: Session = Depends(get_db)) -> AgentActi
 
 
 @app.post("/api/agents/{agent_id}/stop", response_model=AgentActionResponse)
-async def stop_agent(agent_id: int, db: Session = Depends(get_db)) -> AgentActionResponse:
+async def stop_agent(
+    agent_id: int,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> AgentActionResponse:
     agent = _get_agent_or_404(db, agent_id)
     await service.stop_agent(db, agent)
     return AgentActionResponse(ok=True, message="Agent stop requested.")
 
 
 @app.post("/api/agents/{agent_id}/pause", response_model=AgentActionResponse)
-async def pause_agent(agent_id: int, db: Session = Depends(get_db)) -> AgentActionResponse:
+async def pause_agent(
+    agent_id: int,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> AgentActionResponse:
     agent = _get_agent_or_404(db, agent_id)
     await service.pause_agent(db, agent)
     return AgentActionResponse(ok=True, message="Agent paused.")
 
 
 @app.get("/api/agents/{agent_id}/logs", response_model=LogRead)
-def get_agent_logs(agent_id: int, db: Session = Depends(get_db)) -> LogRead:
+def get_agent_logs(
+    agent_id: int,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> LogRead:
     agent = _get_agent_or_404(db, agent_id)
     path, content = service.read_logs(db, agent)
     return LogRead(agent_id=agent_id, logs_path=path, content=content)
 
 
 @app.get("/api/projects/{project_id}/tasks", response_model=list[TaskRead])
-def get_tasks(project_id: int, db: Session = Depends(get_db)) -> list[Task]:
+def get_tasks(
+    project_id: int,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> list[Task]:
     _get_project_or_404(db, project_id)
     return list(db.scalars(select(Task).where(Task.project_id == project_id).order_by(Task.priority.asc(), Task.id.asc())))
 
 
 @app.post("/api/projects/{project_id}/tasks/generate", response_model=TaskGenerationResponse)
-async def generate_tasks(project_id: int, db: Session = Depends(get_db)) -> TaskGenerationResponse:
+async def generate_tasks(
+    project_id: int,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> TaskGenerationResponse:
     project = _get_project_or_404(db, project_id)
     tasks, manager_mode_used = await service.generate_tasks(db, project)
     return TaskGenerationResponse(count=len(tasks), manager_mode_used=manager_mode_used)
 
 
 @app.post("/api/tasks/{task_id}/start", response_model=AgentActionResponse)
-async def start_task(task_id: int, db: Session = Depends(get_db)) -> AgentActionResponse:
+async def start_task(
+    task_id: int,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> AgentActionResponse:
     task = _get_task_or_404(db, task_id)
     project = _get_project_or_404(db, task.project_id)
     workers = list(db.scalars(select(Agent).where(Agent.project_id == project.id, Agent.kind == "worker")))
@@ -2601,14 +2849,23 @@ async def start_task(task_id: int, db: Session = Depends(get_db)) -> AgentAction
 
 
 @app.post("/api/tasks/{task_id}/complete", response_model=AgentActionResponse)
-async def complete_task(task_id: int, db: Session = Depends(get_db)) -> AgentActionResponse:
+async def complete_task(
+    task_id: int,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> AgentActionResponse:
     task = _get_task_or_404(db, task_id)
     await service.complete_task_by_user(db, task)
     return AgentActionResponse(ok=True, message="Task marked done.")
 
 
 @app.post("/api/runs/{run_id}/report", response_model=ManagerWorkerDecision)
-async def submit_run_report(run_id: int, payload: RunReportRequest, db: Session = Depends(get_db)) -> ManagerWorkerDecision:
+async def submit_run_report(
+    run_id: int,
+    payload: RunReportRequest,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> ManagerWorkerDecision:
     run = db.get(AgentRun, run_id)
     if not run:
         raise HTTPException(status_code=404, detail="Run not found")
@@ -2620,13 +2877,23 @@ async def submit_run_report(run_id: int, payload: RunReportRequest, db: Session 
 
 
 @app.get("/api/projects/{project_id}/events", response_model=list[EventRead])
-def get_events(project_id: int, after_id: int | None = Query(default=None), db: Session = Depends(get_db)) -> list[EventRead]:
+def get_events(
+    project_id: int,
+    after_id: int | None = Query(default=None),
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> list[EventRead]:
     _get_project_or_404(db, project_id)
     return service.events.list_events(db, project_id, after_id)
 
 
 @app.get("/api/projects/{project_id}/stream")
-async def stream_events(project_id: int, after_id: int | None = Query(default=None), db: Session = Depends(get_db)) -> StreamingResponse:
+async def stream_events(
+    project_id: int,
+    after_id: int | None = Query(default=None),
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> StreamingResponse:
     _get_project_or_404(db, project_id)
     generator = service.events.stream(project_id, after_id)
     return StreamingResponse(generator, media_type="text/event-stream")
