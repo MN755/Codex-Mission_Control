@@ -5282,7 +5282,7 @@ class MissionControlService:
             items = []
             warnings: list[str] = []
             for project in projects[:8]:
-                support = self._ensure_widget_support_records(db, project)
+                support = self._preview_widget_support_records(db, project)
                 budget = support["budget"]
                 items.append(
                     {
