@@ -8576,6 +8576,69 @@ class MissionControlService:
         db.flush()
         return spawned, retired
 
+    def _resize_swarm_plan(self, db: Session, project: Project, plan: SwarmPlan, *, direction: str, count: int, baseline_count: int | None) -> None:
+        preferences = self._ensure_swarm_preferences(db, project)
+        capacity = self._swarm_capacity_limit(preferences)
+        current_target = baseline_count if baseline_count is not None else plan.recommended_agent_count
+        if direction == "up":
+            target_count = min(capacity, max(1, current_target + count))
+        else:
+            target_count = max(1, min(capacity, current_target - count))
+
+        specs = self._swarm_specs_for_plan(db, plan.id)
+        manifest = self._workspace_manifest_summary(project)
+        buckets = self._repo_path_buckets(manifest)
+        existing_names = {spec.name.lower() for spec in specs}
+        next_priority = max((spec.priority for spec in specs), default=0) + 10
+
+        while len(specs) < target_count:
+            index = len(specs) + 1
+            archetype = "feature"
+            name = f"Scale-up Worker {index}"
+            while name.lower() in existing_names:
+                index += 1
+                name = f"Scale-up Worker {index}"
+            existing_names.add(name.lower())
+            allowed_paths, forbidden_paths = self._default_swarm_paths_for_archetype(archetype, buckets)
+            extra = SwarmAgentSpec(
+                swarm_plan_id=plan.id,
+                project_id=project.id,
+                archetype=archetype,
+                name=name,
+                mission=f"Add implementation capacity for {project.name}.",
+                model_policy="Prefer the default worker model.",
+                toolset_json=[],
+                allowed_paths_json=list(allowed_paths),
+                forbidden_paths_json=list(forbidden_paths),
+                spawn_phase="build_start",
+                retire_when="Retire when the extra scaling capacity is no longer needed.",
+                priority=next_priority,
+                status="planned",
+            )
+            next_priority += 10
+            db.add(extra)
+            db.flush()
+            specs.append(extra)
+            self._record_swarm_event(
+                db,
+                project,
+                event_type="agent_spec_created",
+                message=f"{extra.name} added to honor the requested swarm scale target.",
+                swarm_plan_id=plan.id,
+                metadata_json={"spec_id": extra.id, "archetype": extra.archetype, "scale_adjustment": direction},
+            )
+
+        ordered_specs = sorted(specs, key=lambda item: (item.priority, item.id))
+        for index, spec in enumerate(ordered_specs):
+            if index < target_count:
+                if spec.status == "deferred":
+                    spec.status = "planned"
+            elif spec.status in {"planned", "spawned"}:
+                spec.status = "deferred"
+
+        plan.recommended_agent_count = target_count
+        db.flush()
+
     def spawn_swarm_agents(self, db: Session, project: Project) -> dict[str, Any]:
         preferences = self._ensure_swarm_preferences(db, project)
         plan = self._current_swarm_plan_record(db, project.id)
@@ -8598,6 +8661,8 @@ class MissionControlService:
         }
 
     async def scale_swarm(self, db: Session, project: Project, *, direction: str, reason: str | None = None, count: int = 1) -> dict[str, Any]:
+        current_plan = self._current_swarm_plan_record(db, project.id)
+        baseline_count = current_plan.recommended_agent_count if current_plan is not None else None
         scale_hint = "up" if direction == "up" else "down"
         plan_payload = await self.create_swarm_plan(
             db,
@@ -8609,6 +8674,7 @@ class MissionControlService:
         plan = self._current_swarm_plan_record(db, project.id)
         if plan is None:
             raise ValueError("Swarm plan not found")
+        self._resize_swarm_plan(db, project, plan, direction=direction, count=count, baseline_count=baseline_count)
         preferences = self._ensure_swarm_preferences(db, project)
         if direction == "down" or not self._swarm_approval_required(plan, preferences):
             plan.approved_by_user = True
