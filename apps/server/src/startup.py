@@ -157,6 +157,61 @@ class StartupCoordinator:
                 None,
             )
 
+    def _preview_profile(self, db: Session) -> AppProfile:
+        profile = db.get(AppProfile, 1)
+        if profile is not None:
+            return profile
+        timestamp = _now()
+        return AppProfile(
+            id=1,
+            display_name=None,
+            install_id="missing-install-id",
+            preferred_provider_choice="codex",
+            preferred_start_mode="new_project",
+            selected_provider="codex",
+            auth_mode=None,
+            connected_accounts_json={},
+            first_run_completed=False,
+            setup_version_completed=None,
+            onboarding_completed=False,
+            default_runner_mode=DEFAULT_RUNNER_MODE,
+            manager_model=None,
+            default_worker_model=None,
+            manager_reasoning_effort=None,
+            default_worker_reasoning_effort=None,
+            sandbox_mode=DEFAULT_SANDBOX,
+            approval_policy=DEFAULT_APPROVAL_POLICY,
+            theme="system",
+            startup_behavior="dashboard",
+            notification_preferences_json={},
+            dashboard_widgets_json=[],
+            dashboard_widget_preferences_json={},
+            tool_permission_overrides_json={},
+            provider_endpoint=None,
+            adapter_command=None,
+            adapter_args_json=[],
+            recent_startup_error_json=None,
+            created_at=timestamp,
+            updated_at=timestamp,
+            last_opened_at=timestamp,
+        )
+
+    def _check_settings_preview(self, db: Session) -> tuple[dict[str, Any], AppProfile]:
+        profile = self._preview_profile(db)
+        return (
+            self._check(
+                "settings",
+                required=True,
+                status="passed",
+                summary="App startup state loaded.",
+                details={
+                    "first_run_completed": bool(profile.first_run_completed or profile.onboarding_completed),
+                    "selected_provider": normalize_provider(profile.selected_provider),
+                },
+            ),
+            profile,
+        )
+
     def _check_projects(self, db: Session) -> dict[str, Any]:
         try:
             project_count = db.scalar(select(func.count(Project.id))) or 0
@@ -359,7 +414,60 @@ class StartupCoordinator:
 
     def get_status(self, db: Session) -> dict[str, Any]:
         attempt = int((self.last_status or {}).get("startup_attempt") or 1)
-        return self.run_checks(db, attempt_number=max(attempt, 1), include_optional_checks=True)
+        return self.preview_status(db, attempt_number=max(attempt, 1), include_optional_checks=True)
+
+    def preview_status(self, db: Session, *, attempt_number: int, include_optional_checks: bool = True) -> dict[str, Any]:
+        profile = self._preview_profile(db)
+        payload = self._base_payload(profile, attempt=attempt_number)
+        settings_check, refreshed_profile = self._check_settings_preview(db)
+        profile = refreshed_profile or profile
+        payload["checks"].append(self._check_runtime_paths())
+        payload["checks"].append(self._check_database(db))
+        payload["checks"].append(settings_check)
+        payload["checks"].append(self._check_projects(db))
+        payload["checks"].append(self._check_backend_route())
+        if include_optional_checks:
+            payload["checks"].extend(self._provider_optional_checks(profile))
+        required_failures = [check for check in payload["checks"] if check["required"] and check["status"] == "failed"]
+        selected_provider = normalize_provider(profile.selected_provider)
+        provider_failure_names = self._selected_provider_failure_names(selected_provider)
+        degraded_checks = [
+            check
+            for check in payload["checks"]
+            if (not check["required"]) and check["name"] in provider_failure_names and check["status"] == "failed"
+        ]
+        payload["failed_checks"] = [check["name"] for check in payload["checks"] if check["status"] == "failed"]
+        payload["degraded_reasons"] = [check["summary"] for check in degraded_checks]
+        payload["last_completed_at"] = _now()
+        payload["checked_at"] = payload["last_completed_at"]
+        payload["status_source"] = "fresh"
+        if required_failures:
+            primary = required_failures[0]
+            payload["mode"] = "error"
+            payload["overall_status"] = "error"
+            payload["backend_ready"] = False
+            payload["recommended_route"] = "/startup-error"
+            payload["error_code"] = primary["error_code"] or "MC-UNKNOWN-UNEXPECTED-001"
+            payload["error_summary"] = primary["summary"]
+            return payload
+
+        payload["backend_ready"] = True
+        setup_completed = bool(profile.first_run_completed or profile.onboarding_completed)
+        if degraded_checks and include_optional_checks and setup_completed:
+            payload["mode"] = "degraded"
+            payload["overall_status"] = "degraded"
+            payload["recommended_route"] = "/dashboard"
+            payload["error_code"] = degraded_checks[0]["error_code"]
+            payload["error_summary"] = degraded_checks[0]["summary"]
+        elif setup_completed:
+            payload["mode"] = "regular"
+            payload["overall_status"] = "ready"
+            payload["recommended_route"] = "/dashboard"
+        else:
+            payload["mode"] = "first_time"
+            payload["overall_status"] = "ready"
+            payload["recommended_route"] = "/setup"
+        return payload
 
     def run_checks(self, db: Session, *, attempt_number: int, include_optional_checks: bool = True) -> dict[str, Any]:
         profile = get_or_create_app_profile(db)

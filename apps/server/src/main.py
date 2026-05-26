@@ -802,7 +802,7 @@ def get_settings(
     _: None = Depends(_require_bridge_token),
 ) -> ProjectSettingsRead:
     project = _get_project_or_404(db, project_id)
-    return service._project_settings(db, project)
+    return service._project_settings_preview(db, project)
 
 
 @app.put("/api/settings", response_model=ProjectSettingsRead)

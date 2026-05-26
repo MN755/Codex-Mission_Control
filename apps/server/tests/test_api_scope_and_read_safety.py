@@ -364,6 +364,33 @@ def test_widget_catalog_get_does_not_seed_or_overwrite_rows(client) -> None:
         db.close()
 
 
+def test_read_only_profile_backed_routes_do_not_create_app_profile(client) -> None:
+    project = _create_legacy_project("Profile Read Safety", "profile-read-safety")
+
+    db = SessionLocal()
+    try:
+        assert db.scalar(select(func.count(AppProfile.id))) == 0
+    finally:
+        db.close()
+
+    responses = [
+        client.get("/api/tools"),
+        client.get("/api/dashboard/summary"),
+        client.get(f"/api/settings?project_id={project}"),
+        client.get(f"/api/projects/{project}/action"),
+        client.get(f"/api/projects/{project}/actions"),
+        client.get(f"/api/projects/{project}/workspace"),
+    ]
+    for response in responses:
+        assert response.status_code == 200, response.text
+
+    db = SessionLocal()
+    try:
+        assert db.scalar(select(func.count(AppProfile.id))) == 0
+    finally:
+        db.close()
+
+
 def test_playbook_catalog_get_does_not_seed_or_overwrite_rows(client) -> None:
     init_db()
     db = SessionLocal()

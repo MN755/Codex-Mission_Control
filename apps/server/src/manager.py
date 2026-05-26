@@ -5282,7 +5282,7 @@ class MissionControlService:
             items = []
             warnings: list[str] = []
             for project in projects[:8]:
-                support = self._ensure_widget_support_records(db, project)
+                support = self._preview_widget_support_records(db, project)
                 budget = support["budget"]
                 items.append(
                     {
@@ -5407,10 +5407,18 @@ class MissionControlService:
             items = []
             for project in projects[:8]:
                 tasks = list(db.scalars(select(Task).where(Task.project_id == project.id).order_by(Task.priority.asc(), Task.id.asc())))
-                degraded = await self._workspace_degraded_notices(project, self._project_settings(db, project))
+                settings = self._project_settings_preview(db, project)
+                degraded = await self._workspace_degraded_notices(project, settings)
                 current_action = self._derive_current_action(db, project, degraded)
                 overview = self._project_overview(db, project, tasks, current_action)
-                support = self._ensure_widget_support_records(db, project, tasks=tasks, degraded_notices=degraded, current_action=current_action, overview=overview)
+                support = self._preview_widget_support_records(
+                    db,
+                    project,
+                    tasks=tasks,
+                    degraded_notices=degraded,
+                    current_action=current_action,
+                    overview=overview,
+                )
                 items.append(
                     {
                         "project_id": project.id,
@@ -6498,7 +6506,7 @@ class MissionControlService:
     async def get_widget_instance_data(self, db: Session, instance_id: int) -> dict[str, Any]:
         instance = self._widget_instance_or_error(db, instance_id)
         if instance.scope == "dashboard":
-            profile = self._app_profile(db)
+            profile = self._app_profile_preview(db)
             projects = self._ordered_projects(db, include_archived=False)
             active_builds = await self._dashboard_active_builds(db, projects)
             attention_items = await self._dashboard_attention_items(db, projects)
@@ -6523,7 +6531,7 @@ class MissionControlService:
         project = db.get(Project, instance.project_id)
         if project is None:
             raise ValueError("Project not found")
-        settings = self._project_settings(db, project)
+        settings = self._project_settings_preview(db, project)
         tasks = list(db.scalars(select(Task).where(Task.project_id == project.id).order_by(Task.priority.asc(), Task.id.asc())))
         degraded_notices = await self._workspace_degraded_notices(project, settings)
         current_action = self._derive_current_action(db, project, degraded_notices)
@@ -6539,7 +6547,7 @@ class MissionControlService:
         )
 
     async def get_dashboard_widget_summary(self, db: Session) -> dict[str, Any]:
-        profile = self._app_profile(db)
+        profile = self._app_profile_preview(db)
         instances = [item for item in self._dashboard_widget_instances(db, profile) if item.enabled]
         projects = self._ordered_projects(db, include_archived=False)
         active_builds = await self._dashboard_active_builds(db, projects)
@@ -6572,7 +6580,7 @@ class MissionControlService:
         }
 
     async def get_project_widget_summary(self, db: Session, project: Project) -> dict[str, Any]:
-        settings = self._project_settings(db, project)
+        settings = self._project_settings_preview(db, project)
         instances = [item for item in self._project_widget_instances(db, project, settings) if item.enabled]
         tasks = list(db.scalars(select(Task).where(Task.project_id == project.id).order_by(Task.priority.asc(), Task.id.asc())))
         degraded_notices = await self._workspace_degraded_notices(project, settings)
@@ -9669,8 +9677,8 @@ class MissionControlService:
         from startup import startup_service
         from runtime_paths import diagnostics_root
 
-        project_settings = self._project_settings(db, project) if project else None
-        app_profile = self._app_profile(db)
+        project_settings = self._project_settings_preview(db, project) if project else None
+        app_profile = self._app_profile_preview(db)
         selected_provider = provider_override or (project_settings.provider if project_settings else app_profile.selected_provider or "codex")
         adapter_command = (
             adapter_command_override
@@ -9734,7 +9742,7 @@ class MissionControlService:
         else:
             status["effective_runner_mode"] = app_profile.default_runner_mode or DEFAULT_RUNNER_MODE
         status["app_state_summary"] = app_profile
-        status["startup_summary"] = startup_service.get_status(db)
+        status["startup_summary"] = startup_service.last_status or startup_service.preview_status(db, attempt_number=1, include_optional_checks=True)
         status["diagnostics_directory"] = str(diagnostics_root())
         return status
 
@@ -9774,7 +9782,7 @@ class MissionControlService:
         for project in projects:
             if project.archived_at:
                 continue
-            settings = self._project_settings(db, project)
+            settings = self._project_settings_preview(db, project)
             degraded_notices = await self._workspace_degraded_notices(project, settings)
             action = self._derive_current_action(db, project, degraded_notices)
             if action["type"] == "no_action":
@@ -9846,7 +9854,7 @@ class MissionControlService:
             )
             pending_action: dict[str, Any] | None = None
             if project.status not in {"handoff_ready"}:
-                settings = self._project_settings(db, project)
+                settings = self._project_settings_preview(db, project)
                 degraded_notices = await self._workspace_degraded_notices(project, settings)
                 pending_action = self._derive_current_action(db, project, degraded_notices)
             stage = self._dashboard_stage(project, active_agent, pending_action)
@@ -9892,7 +9900,7 @@ class MissionControlService:
         return [{key: value for key, value in item.items() if key != "_priority"} for item in builds[:6]]
 
     async def get_dashboard_summary(self, db: Session) -> dict[str, Any]:
-        profile = self._app_profile(db)
+        profile = self._app_profile_preview(db)
         projects = self._ordered_projects(db, include_archived=True)
         sidebar_projects = self._sidebar_projects(projects)
         recent_projects = [project for project in projects if not project.archived_at][:3]
@@ -10012,7 +10020,7 @@ class MissionControlService:
         return self._serialize_handoff_record(db, project, self._latest_evidence_handoff(db, project.id))
 
     def get_tool_catalog(self, db: Session) -> list[dict[str, Any]]:
-        profile = self._app_profile(db)
+        profile = self._app_profile_preview(db)
         return catalog_with_permissions(
             provider=normalize_provider(profile.selected_provider),
             connected_accounts=dict(profile.connected_accounts_json or {}),
@@ -10293,12 +10301,12 @@ class MissionControlService:
         return self._manager_queue(db, project)
 
     async def get_project_action(self, db: Session, project: Project) -> dict[str, Any]:
-        settings = self._project_settings(db, project)
+        settings = self._project_settings_preview(db, project)
         degraded_notices = await self._workspace_degraded_notices(project, settings)
         return self._derive_current_action(db, project, degraded_notices)
 
     async def list_project_actions(self, db: Session, project: Project) -> list[dict[str, Any]]:
-        settings = self._project_settings(db, project)
+        settings = self._project_settings_preview(db, project)
         degraded_notices = await self._workspace_degraded_notices(project, settings)
         current = self._derive_current_action(db, project, degraded_notices)
         history = self._derive_action_history(db, project)
@@ -10382,7 +10390,7 @@ class MissionControlService:
         return normalized_option_id, normalized_selected_text
 
     async def get_project_workspace(self, db: Session, project: Project) -> dict[str, Any]:
-        settings = self._project_settings(db, project)
+        settings = self._project_settings_preview(db, project)
         swarm_preferences = self._swarm_preferences(project)
         tasks = list(db.scalars(select(Task).where(Task.project_id == project.id).order_by(Task.priority.asc(), Task.id.asc())))
         degraded_notices = await self._workspace_degraded_notices(project, settings)
