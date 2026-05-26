@@ -4981,7 +4981,7 @@ class MissionControlService:
                     "items": [
                         {
                             "title": category.replace("_", " "),
-                            "detail": f"{entry['provider']} / {entry['model']} • score {entry['score']}",
+                            "detail": f"{entry['provider']} / {entry['model']} â€¢ score {entry['score']}",
                         }
                         for category, entry in summary["top_categories"].items()
                     ],
@@ -4999,7 +4999,7 @@ class MissionControlService:
                     "items": [
                         {
                             "title": f"{item['archetype']} ({item['model'] or item['provider'] or 'default'})",
-                            "detail": f"success {int(item['success_rate'] * 100)}% • confidence {item['confidence']}",
+                            "detail": f"success {int(item['success_rate'] * 100)}% â€¢ confidence {item['confidence']}",
                         }
                         for item in reputation[:8]
                     ]
@@ -5021,7 +5021,7 @@ class MissionControlService:
                     "items": [
                         {
                             "title": item.summary,
-                            "detail": f"{item.severity} • {item.suggested_action} • {item.status}",
+                            "detail": f"{item.severity} â€¢ {item.suggested_action} â€¢ {item.status}",
                         }
                         for item in signals
                     ]
@@ -5038,7 +5038,7 @@ class MissionControlService:
                     "items": [
                         {
                             "title": item.key,
-                            "detail": f"{item.value_json} • {item.source}",
+                            "detail": f"{item.value_json} â€¢ {item.source}",
                         }
                         for item in preferences[:8]
                     ]
@@ -5144,7 +5144,7 @@ class MissionControlService:
                             "project_id": project.id,
                             "project_name": project.name,
                             "title": plan.trigger_summary,
-                            "detail": f"{plan.trigger_type} · {plan.status}",
+                            "detail": f"{plan.trigger_type} Â· {plan.status}",
                         }
                     )
             if not items:
@@ -5225,7 +5225,7 @@ class MissionControlService:
                     "items": [
                         {
                             "title": f"{item['archetype']} ({item['model'] or item['provider'] or 'default'})",
-                            "detail": f"success {int(item['success_rate'] * 100)}% • best: {', '.join(item['recommended_for']) or 'unknown'}",
+                            "detail": f"success {int(item['success_rate'] * 100)}% â€¢ best: {', '.join(item['recommended_for']) or 'unknown'}",
                             "weak_spots": item["avoid_for"],
                         }
                         for item in reputation[:8]
@@ -5260,7 +5260,7 @@ class MissionControlService:
                     "items": [
                         {
                             "title": item["title"],
-                            "detail": f"files {len(item['included_files_json'])} • docs {len(item['included_docs_json'])} • warnings {len(item['warnings_json'])}",
+                            "detail": f"files {len(item['included_files_json'])} â€¢ docs {len(item['included_docs_json'])} â€¢ warnings {len(item['warnings_json'])}",
                             "task_id": item["task_id"],
                             "agent_id": item["agent_id"],
                         }
@@ -5279,7 +5279,7 @@ class MissionControlService:
                     "items": [
                         {
                             "title": item.title,
-                            "detail": f"{item.severity}/{item.likelihood} • {item.status} • mitigation: {item.mitigation or 'none'}",
+                            "detail": f"{item.severity}/{item.likelihood} â€¢ {item.status} â€¢ mitigation: {item.mitigation or 'none'}",
                             "owner": item.owner_agent_id,
                         }
                         for item in risks[:10]
@@ -5353,7 +5353,7 @@ class MissionControlService:
                     "items": [
                         {
                             "title": item.summary,
-                            "detail": f"{item.severity} • {item.suggested_action} • {item.status}",
+                            "detail": f"{item.severity} â€¢ {item.suggested_action} â€¢ {item.status}",
                         }
                         for item in signals[:10]
                     ]
@@ -5388,9 +5388,9 @@ class MissionControlService:
                         {
                             "title": item["area"] if isinstance(item, dict) else item.area,
                             "detail": (
-                                f"{item['coverage_status']} • {item.get('evidence_summary') or 'No evidence recorded yet.'}"
+                                f"{item['coverage_status']} â€¢ {item.get('evidence_summary') or 'No evidence recorded yet.'}"
                                 if isinstance(item, dict)
-                                else f"{item.coverage_status} • {item.evidence_summary or 'No evidence recorded yet.'}"
+                                else f"{item.coverage_status} â€¢ {item.evidence_summary or 'No evidence recorded yet.'}"
                             ),
                         }
                         for item in items
@@ -5409,7 +5409,7 @@ class MissionControlService:
                     "items": [
                         {
                             "title": item.key,
-                            "detail": f"{item.value_json} • {item.source} • {item.scope}",
+                            "detail": f"{item.value_json} â€¢ {item.source} â€¢ {item.scope}",
                         }
                         for item in preferences[:10]
                     ]
@@ -10331,13 +10331,13 @@ class MissionControlService:
             raise ValueError("Question was already answered")
 
         option_map = {
-            str(option.get("id")): str(option.get("label"))
+            str(option.get("id")): str(option.get("label")).strip()
             for option in question.options_json
             if isinstance(option, dict) and option.get("id") and option.get("label")
         }
-        normalized_selected_text = (selected_text or option_map.get(option_id) or "").strip()
-        if not normalized_selected_text:
-            raise ValueError("Selected text is required")
+        canonical_selected_text = option_map.get(option_id)
+        if canonical_selected_text is None:
+            raise ValueError("Selected option is not valid for this question")
 
         project = db.get(Project, session.project_id)
         if not project:
@@ -10347,11 +10347,11 @@ class MissionControlService:
         question.project_id = canonical_project_id
         question.selected_option = option_id
         question.selected_option_id = option_id
-        question.selected_text = normalized_selected_text
+        question.selected_text = canonical_selected_text
         question.custom_answer = custom_answer.strip() if custom_answer and custom_answer.strip() else None
         question.status = "answered"
         question.answered_at = utc_now()
-        question.rationale = f"Answered during adaptive interview: {self._question_answer_text(question) or normalized_selected_text}"
+        question.rationale = f"Answered during adaptive interview: {self._question_answer_text(question) or canonical_selected_text}"
 
         self._append_local_answer_to_understanding(understanding, question)
         self._mirror_session_understanding(session, understanding)
