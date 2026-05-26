@@ -9558,6 +9558,11 @@ class MissionControlService:
 
     def update_settings(self, db: Session, project: Project, payload: ProjectSettingsUpdate) -> ProjectSettings:
         settings = self._ensure_project_settings(db, project)
+        requested_widgets = [item.strip() for item in payload.workspace_widgets_json if item and item.strip()]
+        invalid_widgets = [item for item in requested_widgets if item not in PROJECT_WIDGET_TYPES]
+        if invalid_widgets:
+            invalid_list = ", ".join(sorted(dict.fromkeys(invalid_widgets)))
+            raise ValueError(f"Unknown project widget(s): {invalid_list}")
         settings.provider = normalize_provider(payload.provider)
         settings.manager_model = payload.manager_model.strip() if payload.manager_model and payload.manager_model.strip() else None
         settings.default_worker_model = payload.default_worker_model.strip() if payload.default_worker_model and payload.default_worker_model.strip() else None
@@ -9582,7 +9587,7 @@ class MissionControlService:
         settings.runner_mode = payload.runner_mode
         settings.sandbox_mode = payload.sandbox_mode
         settings.approval_policy = payload.approval_policy
-        settings.workspace_widgets_json = [item.strip() for item in payload.workspace_widgets_json if item and item.strip()]
+        settings.workspace_widgets_json = requested_widgets
         settings.approval_overrides_json = dict(payload.approval_overrides_json or {})
         project.runner_mode = payload.runner_mode
         self.events.publish(
