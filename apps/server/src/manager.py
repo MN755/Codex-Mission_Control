@@ -1691,6 +1691,25 @@ class MissionControlService:
     def _dashboard_widgets(self, db: Session, profile: AppProfile) -> list[str]:
         return [instance.widget_type for instance in self._dashboard_widget_instances(db, profile) if instance.enabled]
 
+    def _validate_project_related_refs(
+        self,
+        db: Session,
+        project: Project,
+        *,
+        related_agent_id: int | None = None,
+        related_task_id: int | None = None,
+        agent_label: str = "Related agent",
+        task_label: str = "Related task",
+    ) -> None:
+        if related_agent_id is not None:
+            agent = db.get(Agent, related_agent_id)
+            if agent is None or agent.project_id != project.id:
+                raise ValueError(f"{agent_label} not found in this project")
+        if related_task_id is not None:
+            task = db.get(Task, related_task_id)
+            if task is None or task.project_id != project.id:
+                raise ValueError(f"{task_label} not found in this project")
+
     def _record_decision(
         self,
         db: Session,
@@ -1706,6 +1725,14 @@ class MissionControlService:
         related_agent_id: int | None = None,
         reversible: bool = False,
     ) -> DecisionRecord:
+        self._validate_project_related_refs(
+            db,
+            project,
+            related_agent_id=related_agent_id,
+            related_task_id=related_task_id,
+            agent_label="Decision related agent",
+            task_label="Decision related task",
+        )
         existing = db.scalar(
             select(DecisionRecord)
             .where(
@@ -6697,6 +6724,14 @@ class MissionControlService:
         resolved_at: datetime | None = None,
         metadata_json: dict[str, Any] | None = None,
     ) -> ManagerMessage:
+        self._validate_project_related_refs(
+            db,
+            project,
+            related_agent_id=related_agent_id,
+            related_task_id=related_task_id,
+            agent_label="Manager message related agent",
+            task_label="Manager message related task",
+        )
         message = ManagerMessage(
             project_id=project.id,
             role=role,
@@ -7405,6 +7440,14 @@ class MissionControlService:
         related_agent_id: int | None = None,
         metadata_json: dict[str, Any] | None = None,
     ) -> ManagerQuestion:
+        self._validate_project_related_refs(
+            db,
+            project,
+            related_agent_id=related_agent_id,
+            related_task_id=related_task_id,
+            agent_label="Manager question related agent",
+            task_label="Manager question related task",
+        )
         record = ManagerQuestion(
             project_id=project.id,
             question=question,
@@ -7438,6 +7481,14 @@ class MissionControlService:
         task_id: int | None = None,
         runner_ref: str | None = None,
     ) -> ApprovalRequest:
+        self._validate_project_related_refs(
+            db,
+            project,
+            related_agent_id=requesting_agent_id,
+            related_task_id=task_id,
+            agent_label="Approval requesting agent",
+            task_label="Approval related task",
+        )
         evaluation = security_service.evaluate_action(
             db,
             {
