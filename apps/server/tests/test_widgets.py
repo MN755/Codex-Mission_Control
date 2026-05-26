@@ -3,10 +3,12 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from fastapi.testclient import TestClient
 from sqlalchemy import select
 
 from conftest import sample_workspace
 from db import SessionLocal
+from main import app
 from models import AppEvent, AppProfile, DecisionRecord, PathLock, ProjectEvent, ProjectSettings
 
 
@@ -83,6 +85,18 @@ def test_project_widget_instances_seed_from_legacy_workspace_preferences(client)
 
     instances = client.get(f"/api/projects/{project_id}/widgets/instances").json()
     assert [item["widget_type"] for item in instances if item["enabled"]] == ["Repo Intelligence", "Validation Recipe"]
+
+
+def test_project_widget_preferences_require_bridge_auth(client) -> None:
+    project = create_project(client, "Protected Widget Preferences", "protected-widget-preferences")
+
+    with TestClient(app, raise_server_exceptions=False) as raw_client:
+        response = raw_client.post(
+            f"/api/projects/{project['id']}/widgets",
+            json={"widgets": ["Repo Intelligence"]},
+        )
+
+    assert response.status_code == 401
 
 
 def test_dashboard_widget_instance_crud_publishes_app_events(client) -> None:
