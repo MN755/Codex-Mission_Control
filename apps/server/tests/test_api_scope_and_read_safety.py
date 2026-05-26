@@ -18,6 +18,7 @@ from models import (
     ManagerAssumption,
     Project,
     ProjectPlaybook,
+    ProjectUnderstanding,
     RecoveryPlan,
     RepoIntelligenceSummary,
     SecurityPolicy,
@@ -159,6 +160,31 @@ def test_widget_catalog_get_does_not_seed_or_overwrite_rows(client) -> None:
         assert len(rows) == 1
         assert rows[0].id == existing_id
         assert rows[0].title == "Custom Needs Attention"
+    finally:
+        db.close()
+
+
+def test_manager_assumptions_widget_data_does_not_persist_rows(client) -> None:
+    project_id = _create_legacy_project("Manager Assumptions Widget", "manager-assumptions-widget")
+
+    db = SessionLocal()
+    try:
+        db.add(ProjectUnderstanding(project_id=project_id, summary="Known context", assumptions_json=["Need Python 3.10"]))
+        db.commit()
+    finally:
+        db.close()
+
+    widget = client.post(f"/api/projects/{project_id}/widgets/add", json={"widget_type": "Manager Assumptions"})
+    assert widget.status_code == 200, widget.text
+
+    response = client.get(f"/api/widgets/instances/{widget.json()['id']}/data")
+    assert response.status_code == 200, response.text
+    assert response.json()["status"] == "ready"
+
+    db = SessionLocal()
+    try:
+        row_count = db.scalar(select(func.count(ManagerAssumption.id)).where(ManagerAssumption.project_id == project_id))
+        assert row_count == 0
     finally:
         db.close()
 

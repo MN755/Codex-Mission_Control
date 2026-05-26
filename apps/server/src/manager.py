@@ -3765,6 +3765,56 @@ class MissionControlService:
             )
         )
 
+    def _preview_manager_assumptions(self, db: Session, project: Project) -> list[dict[str, Any]]:
+        items = [
+            {
+                "assumption": entry.assumption,
+                "reason": entry.reason,
+                "confidence": entry.confidence,
+                "status": entry.status,
+                "created_at": entry.created_at,
+            }
+            for entry in db.scalars(
+                select(ManagerAssumption)
+                .where(ManagerAssumption.project_id == project.id)
+                .order_by(ManagerAssumption.created_at.desc(), ManagerAssumption.id.desc())
+            )
+        ]
+        seen = {entry["assumption"] for entry in items}
+        understanding = project.understanding
+        if understanding is not None:
+            for assumption in [str(item).strip() for item in (understanding.assumptions_json or []) if str(item).strip()]:
+                if assumption in seen:
+                    continue
+                items.append(
+                    {
+                        "assumption": assumption,
+                        "reason": "Captured from the Manager's current project understanding.",
+                        "confidence": 60,
+                        "status": "active",
+                        "created_at": understanding.updated_at,
+                    }
+                )
+                seen.add(assumption)
+        auto_questions = db.scalars(
+            select(ManagerQuestion).where(ManagerQuestion.project_id == project.id, ManagerQuestion.status == "auto_decided").order_by(ManagerQuestion.id.asc())
+        )
+        for question in auto_questions:
+            assumption = f"{question.question} -> {question.selected_text or question.selected_option_id or 'Auto-decided'}"
+            if assumption in seen:
+                continue
+            items.append(
+                {
+                    "assumption": assumption,
+                    "reason": "Auto-decided by the Manager based on project context and configured thresholds.",
+                    "confidence": 55,
+                    "status": "active",
+                    "created_at": question.resolved_at or question.created_at,
+                }
+            )
+            seen.add(assumption)
+        return items[:12]
+
     def _scan_repo_intelligence(self, db: Session, project: Project) -> RepoIntelligenceSummary:
         summary = project.repo_intelligence
         if summary is None:
@@ -4616,6 +4666,11 @@ class MissionControlService:
         overview: dict[str, Any],
         degraded_notices: list[str],
     ) -> dict[str, Any]:
+        if instance.widget_type == "Manager Assumptions":
+            assumptions = self._preview_manager_assumptions(db, project)
+            if not assumptions:
+                return self._serialize_widget_data(instance, status="empty", empty_state="No active Manager assumptions are recorded right now.")
+            return self._serialize_widget_data(instance, status="ready", data_json={"items": assumptions})
         support = self._ensure_widget_support_records(
             db,
             project,
@@ -5306,24 +5361,6 @@ class MissionControlService:
                     "unindexed_areas": list(record.unindexed_areas_json or []),
                 },
                 warnings_json=["Some areas still need targeted scan coverage."] if record.unindexed_areas_json else [],
-            )
-        if instance.widget_type == "Manager Assumptions":
-            assumptions: list[ManagerAssumption] = support["assumptions"]
-            if not assumptions:
-                return self._serialize_widget_data(instance, status="empty", empty_state="No active Manager assumptions are recorded right now.")
-            return self._serialize_widget_data(
-                instance,
-                status="ready",
-                data_json={"items": [
-                    {
-                        "assumption": entry.assumption,
-                        "reason": entry.reason,
-                        "confidence": entry.confidence,
-                        "status": entry.status,
-                        "created_at": entry.created_at,
-                    }
-                    for entry in assumptions[:12]
-                ]},
             )
         if instance.widget_type == "Repo Intelligence":
             repo: RepoIntelligenceSummary = support["repo"]
