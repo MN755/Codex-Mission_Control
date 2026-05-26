@@ -1066,13 +1066,22 @@ def build_context_pack(
 
 
 @app.get("/api/projects/{project_id}/context-packs", response_model=list[ContextPackRead])
-def list_context_packs(project_id: int, db: Session = Depends(get_db)) -> list[ContextPackRead]:
+def list_context_packs(
+    project_id: int,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> list[ContextPackRead]:
     project = _get_project_or_404(db, project_id)
     return [ContextPackRead(**item) for item in context_pack_service.list_context_packs(db, project)]
 
 
 @app.get("/api/context-packs/{context_pack_id}", response_model=ContextPackRead)
-def get_context_pack(context_pack_id: int, project_id: int = Query(...), db: Session = Depends(get_db)) -> ContextPackRead:
+def get_context_pack(
+    context_pack_id: int,
+    project_id: int = Query(...),
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> ContextPackRead:
     try:
         pack = context_pack_service.get_context_pack(db, context_pack_id)
     except ValueError as exc:
