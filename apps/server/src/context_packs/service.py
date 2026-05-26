@@ -22,6 +22,32 @@ from models import (
 
 
 class ContextPackService:
+    def _validate_project_refs(
+        self,
+        db: Session,
+        project: Project,
+        *,
+        agent_id: int | None = None,
+        task_id: int | None = None,
+    ) -> tuple[Agent | None, Task | None]:
+        agent = None
+        if agent_id is not None:
+            agent = db.get(Agent, agent_id)
+            if agent is None:
+                raise ValueError("Context pack agent not found")
+            if agent.project_id != project.id:
+                raise ValueError("Context pack agent does not belong to this project")
+
+        task = None
+        if task_id is not None:
+            task = db.get(Task, task_id)
+            if task is None:
+                raise ValueError("Context pack task not found")
+            if task.project_id != project.id:
+                raise ValueError("Context pack task does not belong to this project")
+
+        return agent, task
+
     def _existing_doc_candidates(self, project: Project) -> list[str]:
         docs: list[str] = []
         if project.docs_path:
@@ -96,8 +122,7 @@ class ContextPackService:
         goal: str | None = None,
         token_budget_hint: int | None = None,
     ) -> dict[str, Any]:
-        agent = db.get(Agent, agent_id) if agent_id is not None else None
-        task = db.get(Task, task_id) if task_id is not None else None
+        agent, task = self._validate_project_refs(db, project, agent_id=agent_id, task_id=task_id)
         included_files = list(task.allowed_paths_json or []) if task is not None else ["apps/server/src", "apps/dashboard/src"]
         excluded_files = list(task.forbidden_paths_json or []) if task is not None else []
         decisions = list(
