@@ -704,6 +704,169 @@ def test_recovery_plans_get_is_read_only_and_preview_stays_non_persistent(client
         db.close()
 
 
+def test_project_widget_summary_stays_read_only_for_support_widgets(client, bridge_headers) -> None:
+    init_db()
+    db = SessionLocal()
+    try:
+        workspace_path = sample_workspace("widget-summary-read-only")
+        workspace = Path(workspace_path)
+        workspace.mkdir(parents=True, exist_ok=True)
+        (workspace / "README.md").write_text("# Widget Summary Read Safety\n", encoding="utf-8")
+
+        project = Project(
+            name="Widget Summary Read Safety",
+            idea="Keep summary reads non-persistent.",
+            workspace_path=workspace_path,
+            runner_mode="dry_run",
+            manager_mode="auto",
+        )
+        db.add(project)
+        db.flush()
+
+        manager = Agent(
+            project_id=project.id,
+            name="Manager AI",
+            role="Project orchestration",
+            kind="manager",
+            status="idle",
+            workspace_path=workspace_path,
+        )
+        blocked_worker = Agent(
+            project_id=project.id,
+            name="Blocked Worker",
+            role="Implementation",
+            kind="worker",
+            status="blocked",
+            current_action="Waiting on a conflict decision.",
+            last_report_summary="Blocked on path ownership.",
+            workspace_path=workspace_path,
+        )
+        finished_worker = Agent(
+            project_id=project.id,
+            name="Finished Worker",
+            role="Implementation",
+            kind="worker",
+            status="done",
+            workspace_path=workspace_path,
+        )
+        db.add_all([manager, blocked_worker, finished_worker])
+        db.flush()
+
+        blocked_task = Task(
+            project_id=project.id,
+            assigned_agent_id=blocked_worker.id,
+            title="Blocked backend task",
+            goal="Fix the blocked backend path.",
+            scope="Keep the scope small.",
+            agent_role="Implementation",
+            milestone="MVP",
+            allowed_paths_json=["apps/server/src/main.py"],
+            forbidden_paths_json=[],
+            validation_steps_json=["pytest -q"],
+            success_criteria_json=["Blocker resolved"],
+            estimated_complexity="small",
+            dependencies_json=[],
+            status="blocked",
+            priority=10,
+        )
+        finished_task = Task(
+            project_id=project.id,
+            assigned_agent_id=finished_worker.id,
+            title="Completed docs task",
+            goal="Finish the docs slice.",
+            scope="Keep the scope small.",
+            agent_role="Implementation",
+            milestone="MVP",
+            allowed_paths_json=["README.md"],
+            forbidden_paths_json=[],
+            validation_steps_json=["pytest -q"],
+            success_criteria_json=["Docs updated"],
+            estimated_complexity="small",
+            dependencies_json=[],
+            status="done",
+            priority=20,
+        )
+        db.add_all([blocked_task, finished_task])
+        db.flush()
+
+        db.add(
+            AgentRun(
+                agent_id=finished_worker.id,
+                task_id=finished_task.id,
+                runner_type="dry_run",
+                process_ref="summary-read-test",
+                status="done",
+                report_json={
+                    "summary": "Updated the docs successfully.",
+                    "tests_run": ["pytest -q"],
+                    "files_changed": ["README.md"],
+                },
+            )
+        )
+        db.add(
+            ProjectUnderstanding(
+                project_id=project.id,
+                summary="The project still needs stronger test coverage.",
+                assumptions_json=["Need test coverage"],
+                unknowns_json={"validation": ["Need a clearer smoke test path."]},
+            )
+        )
+        db.commit()
+        project_id = project.id
+    finally:
+        db.close()
+
+    added = client.post(
+        f"/api/projects/{project_id}/widgets/add",
+        json={"widget_type": "What Changed Timeline"},
+        headers=bridge_headers,
+    )
+    assert added.status_code == 200, added.text
+
+    db = SessionLocal()
+    try:
+        baseline = {
+            "assumptions": db.scalar(select(func.count(ManagerAssumption.id)).where(ManagerAssumption.project_id == project_id)),
+            "traces": db.scalar(select(func.count(AgentExecutionTrace.id)).where(AgentExecutionTrace.project_id == project_id)),
+            "load": db.scalar(select(func.count(AgentLoadSnapshot.id)).where(AgentLoadSnapshot.project_id == project_id)),
+            "stuck": db.scalar(select(func.count(AgentStuckSignal.id)).where(AgentStuckSignal.project_id == project_id)),
+            "recovery": db.scalar(select(func.count(RecoveryPlan.id)).where(RecoveryPlan.project_id == project_id)),
+            "repo": db.scalar(select(func.count(RepoIntelligenceSummary.project_id)).where(RepoIntelligenceSummary.project_id == project_id)),
+        }
+        assert baseline == {
+            "assumptions": 0,
+            "traces": 0,
+            "load": 0,
+            "stuck": 0,
+            "recovery": 0,
+            "repo": 0,
+        }
+    finally:
+        db.close()
+
+    response = client.get(f"/api/projects/{project_id}/widgets/summary", headers=bridge_headers)
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["scope"] == "project"
+    assert any(item["widget_type"] == "What Changed Timeline" for item in payload["instances"])
+    timeline_entry = next(item for item in payload["data"] if item["widget_type"] == "What Changed Timeline")
+    assert timeline_entry["status"] in {"ready", "empty"}
+
+    db = SessionLocal()
+    try:
+        after = {
+            "assumptions": db.scalar(select(func.count(ManagerAssumption.id)).where(ManagerAssumption.project_id == project_id)),
+            "traces": db.scalar(select(func.count(AgentExecutionTrace.id)).where(AgentExecutionTrace.project_id == project_id)),
+            "load": db.scalar(select(func.count(AgentLoadSnapshot.id)).where(AgentLoadSnapshot.project_id == project_id)),
+            "stuck": db.scalar(select(func.count(AgentStuckSignal.id)).where(AgentStuckSignal.project_id == project_id)),
+            "recovery": db.scalar(select(func.count(RecoveryPlan.id)).where(RecoveryPlan.project_id == project_id)),
+            "repo": db.scalar(select(func.count(RepoIntelligenceSummary.project_id)).where(RepoIntelligenceSummary.project_id == project_id)),
+        }
+        assert after == baseline
+    finally:
+        db.close()
+
+
 def test_project_widget_data_route_stays_read_only_for_preview_widgets(client, bridge_headers) -> None:
     workspace_root = Path(sample_workspace("widget-read-only-preview"))
     (workspace_root / "src").mkdir(parents=True, exist_ok=True)

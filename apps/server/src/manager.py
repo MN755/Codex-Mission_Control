@@ -4698,6 +4698,182 @@ class MissionControlService:
             "pending_approvals": pending_approvals,
         }
 
+    def _preview_widget_support_records(
+        self,
+        db: Session,
+        project: Project,
+        *,
+        tasks: list[Task] | None = None,
+        degraded_notices: list[str] | None = None,
+        current_action: dict[str, Any] | None = None,
+        overview: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        tasks = tasks or list(db.scalars(select(Task).where(Task.project_id == project.id).order_by(Task.priority.asc(), Task.id.asc())))
+        degraded_notices = degraded_notices or []
+        current_action = current_action or self._derive_current_action(db, project, degraded_notices)
+        overview = overview or self._project_overview(db, project, tasks, current_action)
+        preferences = project.swarm_preferences or self._swarm_preferences(project)
+        budget = project.swarm_budget or self._preview_swarm_budget(db, project)
+        contracts = list(project.agent_contracts or []) or self._preview_agent_contracts(db, project)
+        path_locks = list(project.path_locks or []) or self._preview_path_locks(db, project)
+        conflicts = self.list_conflicts(db, project)
+        confidence = list(project.project_confidence or []) or self._preview_project_confidence(project)
+        persisted_stuck_signals = list(
+            db.scalars(
+                select(AgentStuckSignal)
+                .where(AgentStuckSignal.project_id == project.id, AgentStuckSignal.resolved_at.is_(None))
+                .order_by(AgentStuckSignal.detected_at.desc())
+            )
+        )
+        stuck_signals: list[AgentStuckSignal] | list[dict[str, Any]] = persisted_stuck_signals or self._preview_stuck_signals(db, project)
+        recovery_preview = self.preview_recovery_plans(db, project)
+        recovery_plans = list(recovery_preview["persisted"])
+        review_gates = list(project.review_gates or []) or self._preview_review_gates(
+            db,
+            project,
+            tasks=tasks,
+            overview=overview,
+            testing_depth=preferences.testing_depth,
+            conflicts=conflicts,
+        )
+        model_policy = next(iter(project.model_policies or []), None) or self._preview_model_policy(db, project)
+        tool_routing = list(project.tool_routing_policies or []) or self._preview_tool_routing_policies(db, project)
+        sandbox_profiles = self._preview_sandbox_profiles(db, project)
+        assumptions = [
+            {
+                "assumption": entry.assumption,
+                "reason": entry.reason,
+                "confidence": entry.confidence,
+                "status": entry.status,
+                "created_at": entry.created_at,
+                "source": "persisted",
+            }
+            for entry in list(
+                db.scalars(
+                    select(ManagerAssumption)
+                    .where(ManagerAssumption.project_id == project.id)
+                    .order_by(ManagerAssumption.created_at.desc(), ManagerAssumption.id.desc())
+                )
+            )
+        ] or self._preview_manager_assumptions(db, project)
+        persisted_repo = project.repo_intelligence
+        persisted_has_signal = persisted_repo is not None and any(
+            [
+                persisted_repo.languages_json,
+                persisted_repo.frameworks_json,
+                persisted_repo.important_folders_json,
+                persisted_repo.entry_points_json,
+                persisted_repo.build_commands_json,
+                persisted_repo.test_commands_json,
+            ]
+        )
+        repo = (
+            {
+                "languages_json": list(persisted_repo.languages_json or []),
+                "frameworks_json": list(persisted_repo.frameworks_json or []),
+                "package_managers_json": list(persisted_repo.package_managers_json or []),
+                "entry_points_json": list(persisted_repo.entry_points_json or []),
+                "build_commands_json": list(persisted_repo.build_commands_json or []),
+                "test_commands_json": list(persisted_repo.test_commands_json or []),
+                "important_folders_json": list(persisted_repo.important_folders_json or []),
+                "docs_found_json": list(persisted_repo.docs_found_json or []),
+                "ci_config_json": list(persisted_repo.ci_config_json or []),
+                "deployment_config_json": list(persisted_repo.deployment_config_json or []),
+                "risky_files_json": list(persisted_repo.risky_files_json or []),
+                "last_indexed_at": persisted_repo.last_indexed_at,
+                "source": "persisted",
+            }
+            if persisted_has_signal
+            else {**self._preview_repo_intelligence(project), "source": "computed"}
+        )
+        validation_recipe = next(iter(project.validation_recipes or []), None) or self._preview_validation_recipe(db, project)
+        handoff_quality = project.handoff_quality_preference or HandoffQualityPreference(project_id=project.id)
+        traces = [
+            {
+                "id": trace.id,
+                "prompt_summary": trace.prompt_summary,
+                "response_summary": trace.response_summary,
+                "files_changed_json": list(trace.files_changed_json or []),
+                "commands_attempted_json": list(trace.commands_attempted_json or []),
+                "manager_decision_after": trace.manager_decision_after,
+                "redaction_status": trace.redaction_status,
+                "created_at": trace.created_at,
+                "source": "persisted",
+            }
+            for trace in list(
+                db.scalars(
+                    select(AgentExecutionTrace)
+                    .where(AgentExecutionTrace.project_id == project.id)
+                    .order_by(AgentExecutionTrace.created_at.desc(), AgentExecutionTrace.id.desc())
+                )
+            )
+        ] or self._preview_agent_execution_traces(db, project)
+        snapshots = self.list_snapshots(db, project)
+        agent_load = [
+            {
+                "agent_id": snapshot.agent_id,
+                "load_level": snapshot.load_level,
+                "active_task_count": snapshot.active_task_count,
+                "blocked_task_count": snapshot.blocked_task_count,
+                "idle_duration_seconds": snapshot.idle_duration_seconds,
+                "created_at": snapshot.created_at,
+                "source": "persisted",
+            }
+            for snapshot in list(
+                db.scalars(
+                    select(AgentLoadSnapshot)
+                    .where(AgentLoadSnapshot.project_id == project.id)
+                    .order_by(AgentLoadSnapshot.created_at.desc(), AgentLoadSnapshot.id.desc())
+                )
+            )
+        ] or self._preview_agent_load_snapshots(db, project)
+        timeline = self.list_timeline_events(db, project)
+        evidence = self.list_handoff_evidence(db, project)
+        latest_handoff = self._latest_evidence_handoff(db, project.id)
+        runbook = self.get_runbook(db, project)
+        decisions = list(project.decision_records or []) or self._preview_decision_records(db, project)
+        blocked_agents = [agent for agent in self._sorted_workspace_agents(db, project.id) if agent["display_status"] in {"blocked", "error"}]
+        pending_approvals = self.list_pending_approvals(db, project)
+        health = self._project_health(
+            project,
+            current_action=current_action,
+            overview=overview,
+            stuck_signals=stuck_signals,
+            review_gates=review_gates,
+            pending_approvals=pending_approvals,
+            blocked_agents=blocked_agents,
+            conflicts=conflicts,
+            evidence=evidence,
+        )
+        return {
+            "budget": budget,
+            "contracts": contracts,
+            "path_locks": path_locks,
+            "conflicts": conflicts,
+            "confidence": confidence,
+            "stuck_signals": stuck_signals,
+            "recovery_plans": recovery_plans,
+            "review_gates": review_gates,
+            "model_policy": model_policy,
+            "tool_routing": tool_routing,
+            "sandbox_profiles": sandbox_profiles,
+            "assumptions": assumptions,
+            "repo": repo,
+            "validation_recipe": validation_recipe,
+            "handoff_quality": handoff_quality,
+            "handoff_evidence": evidence,
+            "latest_handoff": latest_handoff,
+            "runbook": runbook,
+            "agent_traces": traces,
+            "snapshots": snapshots,
+            "agent_load": agent_load,
+            "timeline": timeline,
+            "decisions": decisions,
+            "health": health,
+            "blocked_agents": blocked_agents,
+            "pending_approvals": pending_approvals,
+        }
+
     def list_widget_catalog(self, db: Session, scope: str | None = None) -> list[dict[str, Any]]:
         catalog = self._widget_definitions_view(db)
         return [
@@ -5179,20 +5355,31 @@ class MissionControlService:
         current_action: dict[str, Any],
         overview: dict[str, Any],
         degraded_notices: list[str],
+        preview_support: bool = False,
     ) -> dict[str, Any]:
         support_records: dict[str, Any] | None = None
 
         def get_support() -> dict[str, Any]:
             nonlocal support_records
             if support_records is None:
-                support_records = self._ensure_widget_support_records(
-                    db,
-                    project,
-                    tasks=tasks,
-                    degraded_notices=degraded_notices,
-                    current_action=current_action,
-                    overview=overview,
-                )
+                if preview_support:
+                    support_records = self._preview_widget_support_records(
+                        db,
+                        project,
+                        tasks=tasks,
+                        degraded_notices=degraded_notices,
+                        current_action=current_action,
+                        overview=overview,
+                    )
+                else:
+                    support_records = self._ensure_widget_support_records(
+                        db,
+                        project,
+                        tasks=tasks,
+                        degraded_notices=degraded_notices,
+                        current_action=current_action,
+                        overview=overview,
+                    )
             return support_records
 
         swarm_plan = self._serialize_swarm_plan(db, project, self._current_swarm_plan_record(db, project.id))
@@ -6245,6 +6432,7 @@ class MissionControlService:
                 current_action=current_action,
                 overview=overview,
                 degraded_notices=degraded_notices,
+                preview_support=True,
             )
             for instance in instances
         ]
