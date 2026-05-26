@@ -215,6 +215,30 @@ def test_scaling_changes_plan_and_records_events(client) -> None:
     assert any(event["event_type"] == "swarm_scaled_down" for event in events)
 
 
+def test_repeated_spawn_keeps_existing_swarm_active(client) -> None:
+    project = create_project(client, "Idempotent Spawn Swarm", "swarm-idempotent-spawn")
+    update_swarm_preferences(client, project["id"], optimization_mode="balanced", swarm_aggressiveness="medium", max_agents=8, require_approval_above_agent_count=20)
+
+    plan = client.post(f"/api/projects/{project['id']}/swarm/plan", json={"goal": "Keep the swarm stable."}).json()
+    approve = client.post(f"/api/projects/{project['id']}/swarm/plan/{plan['id']}/approve")
+    assert approve.status_code == 200
+
+    first_spawn = client.post(f"/api/projects/{project['id']}/swarm/spawn")
+    assert first_spawn.status_code == 200
+    assert first_spawn.json()["agents_spawned"] == 5
+    assert first_spawn.json()["agents_retired"] == 0
+
+    second_spawn = client.post(f"/api/projects/{project['id']}/swarm/spawn")
+    assert second_spawn.status_code == 200
+    payload = second_spawn.json()
+    assert payload["agents_spawned"] == 0
+    assert payload["agents_retired"] == 0
+
+    agents = client.get(f"/api/projects/{project['id']}/agents").json()
+    assert len(agents) == 5
+    assert all(agent["status"] != "done" for agent in agents)
+
+
 def test_swarm_plan_rejects_nonexistent_milestone_id(client) -> None:
     project = create_project(client, "Swarm Missing Milestone", "swarm-missing-milestone")
 
