@@ -314,6 +314,13 @@ def _get_task_or_404(db: Session, task_id: int) -> Task:
     return task
 
 
+def _get_plan_or_404(db: Session, plan_id: int) -> Plan:
+    plan = db.get(Plan, plan_id)
+    if not plan:
+        raise HTTPException(status_code=404, detail="Plan not found")
+    return plan
+
+
 def _get_orchestration_or_404(db: Session, orchestration_id: int) -> OrchestrationSession:
     session = db.get(OrchestrationSession, orchestration_id)
     if not session:
@@ -833,6 +840,9 @@ async def create_swarm_plan(
     _: None = Depends(_require_bridge_token),
 ) -> SwarmPlanRead:
     project = _get_project_or_404(db, project_id)
+    if payload.milestone_id is not None:
+        milestone_plan = _get_plan_or_404(db, payload.milestone_id)
+        _require_project_scope("Plan", milestone_plan.project_id, project.id)
     return SwarmPlanRead(**(await service.create_swarm_plan(db, project, goal=payload.goal, milestone_id=payload.milestone_id)))
 
 
@@ -855,7 +865,10 @@ def approve_swarm_plan(
     _: None = Depends(_require_bridge_token),
 ) -> SwarmPlanRead:
     project = _get_project_or_404(db, project_id)
-    return SwarmPlanRead(**service.approve_swarm_plan(db, project, swarm_plan_id))
+    try:
+        return SwarmPlanRead(**service.approve_swarm_plan(db, project, swarm_plan_id))
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 @app.post("/api/projects/{project_id}/swarm/plan/{swarm_plan_id}/revise", response_model=SwarmPlanRead)
@@ -867,7 +880,10 @@ async def revise_swarm_plan(
     _: None = Depends(_require_bridge_token),
 ) -> SwarmPlanRead:
     project = _get_project_or_404(db, project_id)
-    return SwarmPlanRead(**(await service.revise_swarm_plan(db, project, swarm_plan_id, payload.note)))
+    try:
+        return SwarmPlanRead(**(await service.revise_swarm_plan(db, project, swarm_plan_id, payload.note)))
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 @app.post("/api/projects/{project_id}/swarm/spawn", response_model=SwarmSpawnResponse)
@@ -2813,7 +2829,12 @@ def get_manager_queue(
 
 
 @app.post("/api/projects/{project_id}/widgets", response_model=ProjectSettingsRead)
-def update_project_widgets(project_id: int, payload: WorkspaceWidgetsUpdate, db: Session = Depends(get_db)) -> ProjectSettingsRead:
+def update_project_widgets(
+    project_id: int,
+    payload: WorkspaceWidgetsUpdate,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> ProjectSettingsRead:
     project = _get_project_or_404(db, project_id)
     return service.update_workspace_widgets(db, project, payload.widgets)
 
@@ -3017,7 +3038,10 @@ async def generate_plan(
     _: None = Depends(_require_bridge_token),
 ) -> Plan:
     project = _get_project_or_404(db, project_id)
-    plan = await service.generate_plan(db, project)
+    try:
+        plan = await service.generate_plan(db, project)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     db.flush()
     db.refresh(plan)
     return plan
@@ -3040,7 +3064,12 @@ async def approve_plan(
     _: None = Depends(_require_bridge_token),
 ) -> Plan:
     project = _get_project_or_404(db, project_id)
-    plan = await service.approve_plan(db, project, payload.action, payload.note)
+    try:
+        plan = await service.approve_plan(db, project, payload.action, payload.note)
+    except ValueError as exc:
+        detail = str(exc)
+        status_code = 404 if "not found" in detail.lower() else 400
+        raise HTTPException(status_code=status_code, detail=detail) from exc
     db.flush()
     db.refresh(plan)
     return plan

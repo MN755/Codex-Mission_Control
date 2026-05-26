@@ -240,6 +240,7 @@ def test_runtime_and_project_control_routes_require_token(client) -> None:
         assert raw_client.get(f"/api/projects/{project_id}/swarm/simulations").status_code == 401
         assert raw_client.get(f"/api/projects/{project_id}/workspace").status_code == 401
         assert raw_client.get(f"/api/projects/{project_id}/actions").status_code == 401
+        assert raw_client.post(f"/api/projects/{project_id}/widgets", json={"widgets": ["Repo Intelligence"]}).status_code == 401
         assert raw_client.get(f"/api/projects/{project_id}/events").status_code == 401
         assert raw_client.get(f"/api/projects/{project_id}/stream").status_code == 401
         assert raw_client.get(f"/api/projects/{project_id}/reservations").status_code == 401
