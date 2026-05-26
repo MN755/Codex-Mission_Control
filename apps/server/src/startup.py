@@ -8,7 +8,7 @@ from urllib.request import urlopen
 from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
 
-from app_profile import complete_first_run, get_or_create_app_profile
+from app_profile import complete_first_run, get_app_profile_preview, get_or_create_app_profile
 from config import DEFAULT_APPROVAL_POLICY, DEFAULT_RUNNER_MODE, DEFAULT_SANDBOX
 from diagnostics import write_diagnostic_report
 from errors import MissionControlError
@@ -125,9 +125,9 @@ class StartupCoordinator:
             )
             return self._check("database", required=True, status="failed", summary=error.detail or str(exc), error=error)
 
-    def _check_settings(self, db: Session) -> tuple[dict[str, Any], AppProfile | None]:
+    def _check_settings(self, db: Session, *, persist_profile: bool) -> tuple[dict[str, Any], AppProfile | None]:
         try:
-            profile = get_or_create_app_profile(db)
+            profile = get_or_create_app_profile(db) if persist_profile else get_app_profile_preview(db)
             if not profile.install_id:
                 profile.install_id = "missing-install-id"
             if not profile.selected_provider:
@@ -357,14 +357,14 @@ class StartupCoordinator:
             "runtime_summary": matching.get("runtime_summary"),
         }
 
-    def get_status(self, db: Session) -> dict[str, Any]:
+    def get_status(self, db: Session, *, persist_profile: bool = True) -> dict[str, Any]:
         attempt = int((self.last_status or {}).get("startup_attempt") or 1)
-        return self.run_checks(db, attempt_number=max(attempt, 1), include_optional_checks=True)
+        return self.run_checks(db, attempt_number=max(attempt, 1), include_optional_checks=True, persist_profile=persist_profile)
 
-    def run_checks(self, db: Session, *, attempt_number: int, include_optional_checks: bool = True) -> dict[str, Any]:
-        profile = get_or_create_app_profile(db)
+    def run_checks(self, db: Session, *, attempt_number: int, include_optional_checks: bool = True, persist_profile: bool = True) -> dict[str, Any]:
+        profile = get_or_create_app_profile(db) if persist_profile else get_app_profile_preview(db)
         payload = self._base_payload(profile, attempt=attempt_number)
-        settings_check, refreshed_profile = self._check_settings(db)
+        settings_check, refreshed_profile = self._check_settings(db, persist_profile=persist_profile)
         profile = refreshed_profile or profile
         payload["checks"].append(self._check_runtime_paths())
         payload["checks"].append(self._check_database(db))
