@@ -5,6 +5,8 @@ from pathlib import Path
 from conftest import sample_workspace
 from db import SessionLocal
 from models import Plan
+from db import SessionLocal
+from models import Plan
 
 
 def create_project(client, name: str, workspace_name: str) -> dict:
@@ -298,3 +300,65 @@ def test_dry_run_swarm_behavior_changes_by_preference(client) -> None:
 
     assert sum(1 for archetype in fast_archetypes if archetype in {"feature", "backend", "integration"}) >= 3
     assert docs_archetypes.count("docs") >= 3
+
+
+def test_swarm_plan_rejects_nonexistent_milestone_plan(client) -> None:
+    project = create_project(client, "Bad Milestone", "bad-milestone")
+
+    response = client.post(
+        f"/api/projects/{project['id']}/swarm/plan",
+        json={"goal": "Plan safely.", "milestone_id": 999999},
+    )
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Milestone plan not found"
+
+
+def test_swarm_plan_rejects_foreign_milestone_plan(client) -> None:
+    project_one = create_project(client, "Milestone Scope One", "milestone-scope-one")
+    project_two = create_project(client, "Milestone Scope Two", "milestone-scope-two")
+
+    db = SessionLocal()
+    try:
+        foreign_plan = Plan(
+            project_id=project_two["id"],
+            version=1,
+            content_markdown="# Foreign Plan",
+            status="pending_approval",
+            summary_json={"milestones": ["foreign"]},
+        )
+        db.add(foreign_plan)
+        db.commit()
+        db.refresh(foreign_plan)
+        foreign_plan_id = foreign_plan.id
+    finally:
+        db.close()
+
+    response = client.post(
+        f"/api/projects/{project_one['id']}/swarm/plan",
+        json={"goal": "Plan safely.", "milestone_id": foreign_plan_id},
+    )
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Milestone plan not found in this project"
+
+
+def test_swarm_plan_approve_returns_not_found_for_unknown_project_plan(client) -> None:
+    project = create_project(client, "Approve Missing Plan", "approve-missing-plan")
+
+    response = client.post(f"/api/projects/{project['id']}/swarm/plan/999999/approve")
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Swarm plan not found in this project"
+
+
+def test_swarm_plan_revise_returns_not_found_for_unknown_project_plan(client) -> None:
+    project = create_project(client, "Revise Missing Plan", "revise-missing-plan")
+
+    response = client.post(
+        f"/api/projects/{project['id']}/swarm/plan/999999/revise",
+        json={"note": "Try again."},
+    )
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Swarm plan not found in this project"

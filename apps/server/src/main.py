@@ -386,6 +386,14 @@ def _require_project_message(db: Session, project: Project, message_id: int, *, 
     return message
 
 
+def _require_project_plan(db: Session, project: Project, plan_id: int, *, resource_name: str = "Plan") -> Plan:
+    plan = db.get(Plan, plan_id)
+    if not plan:
+        raise HTTPException(status_code=404, detail=f"{resource_name} not found")
+    _require_project_scope(resource_name, plan.project_id, project.id)
+    return plan
+
+
 def _require_imported_project(project: Project) -> None:
     if project.source_type != "existing_folder":
         raise HTTPException(status_code=400, detail="Import safety is only available for imported codebases")
@@ -841,8 +849,7 @@ async def create_swarm_plan(
 ) -> SwarmPlanRead:
     project = _get_project_or_404(db, project_id)
     if payload.milestone_id is not None:
-        milestone_plan = _get_plan_or_404(db, payload.milestone_id)
-        _require_project_scope("Plan", milestone_plan.project_id, project.id)
+        _require_project_plan(db, project, payload.milestone_id, resource_name="Milestone plan")
     return SwarmPlanRead(**(await service.create_swarm_plan(db, project, goal=payload.goal, milestone_id=payload.milestone_id)))
 
 
