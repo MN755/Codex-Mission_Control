@@ -4698,6 +4698,139 @@ class MissionControlService:
             "pending_approvals": pending_approvals,
         }
 
+    def _preview_widget_support_records(
+        self,
+        db: Session,
+        project: Project,
+        *,
+        tasks: list[Task] | None = None,
+        degraded_notices: list[str] | None = None,
+        current_action: dict[str, Any] | None = None,
+        overview: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        tasks = tasks or list(db.scalars(select(Task).where(Task.project_id == project.id).order_by(Task.priority.asc(), Task.id.asc())))
+        degraded_notices = degraded_notices or []
+        current_action = current_action or self._derive_current_action(db, project, degraded_notices)
+        overview = overview or self._project_overview(db, project, tasks, current_action)
+        budget = project.swarm_budget or self._preview_swarm_budget(db, project)
+        contracts = list(project.agent_contracts or []) or self._preview_agent_contracts(db, project)
+        path_locks = list(project.path_locks or []) or self._preview_path_locks(db, project)
+        conflicts = self.list_conflicts(db, project)
+        confidence = list(project.project_confidence or []) or self._preview_project_confidence(project)
+        persisted_stuck_signals = list(
+            db.scalars(
+                select(AgentStuckSignal)
+                .where(AgentStuckSignal.project_id == project.id, AgentStuckSignal.resolved_at.is_(None))
+                .order_by(AgentStuckSignal.detected_at.desc(), AgentStuckSignal.id.desc())
+            )
+        )
+        stuck_signals = persisted_stuck_signals or [
+            AgentStuckSignal(
+                project_id=project.id,
+                agent_id=item["agent_id"],
+                signal_type=item["signal_type"],
+                message=item["message"],
+                severity=item["severity"],
+                detected_at=item["detected_at"],
+            )
+            for item in self._preview_stuck_signals(db, project)
+        ]
+        preview_recovery = self.preview_recovery_plans(db, project)
+        review_gates = list(project.review_gates or []) or self._preview_review_gates(
+            db,
+            project,
+            tasks=tasks,
+            overview=overview,
+            testing_depth=self._swarm_preferences(project).testing_depth,
+            conflicts=conflicts,
+        )
+        model_policy = next(iter(project.model_policies or []), None) or self._preview_model_policy(db, project)
+        tool_routing = list(project.tool_routing_policies or []) or self._preview_tool_routing_policies(db, project)
+        sandbox_profiles = self._preview_sandbox_profiles(db, project)
+        assumptions = list(
+            db.scalars(
+                select(ManagerAssumption)
+                .where(ManagerAssumption.project_id == project.id)
+                .order_by(ManagerAssumption.created_at.desc(), ManagerAssumption.id.desc())
+            )
+        ) or self._preview_manager_assumptions(db, project)
+        repo = project.repo_intelligence or self._preview_repo_intelligence(project)
+        validation_recipe = next(iter(project.validation_recipes or []), None) or self._preview_validation_recipe(db, project)
+        handoff_quality = project.handoff_quality_preference or HandoffQualityPreference(project_id=project.id)
+        traces = list(
+            db.scalars(
+                select(AgentExecutionTrace)
+                .where(AgentExecutionTrace.project_id == project.id)
+                .order_by(AgentExecutionTrace.created_at.desc(), AgentExecutionTrace.id.desc())
+            )
+        )
+        snapshots = self.list_snapshots(db, project)
+        agent_load = list(
+            db.scalars(
+                select(AgentLoadSnapshot)
+                .where(AgentLoadSnapshot.project_id == project.id)
+                .order_by(AgentLoadSnapshot.created_at.desc(), AgentLoadSnapshot.id.desc())
+            )
+        ) or [
+            AgentLoadSnapshot(
+                project_id=project.id,
+                agent_id=item["agent_id"],
+                active_task_count=item["active_task_count"],
+                waiting_task_count=item["waiting_task_count"],
+                blocked_task_count=item["blocked_task_count"],
+                idle_duration_seconds=item["idle_duration_seconds"],
+                load_level=item["load_level"],
+                created_at=item["created_at"],
+            )
+            for item in self._preview_agent_load_snapshots(db, project)
+        ]
+        timeline = self.list_timeline_events(db, project)
+        evidence = self.list_handoff_evidence(db, project)
+        latest_handoff = self._latest_evidence_handoff(db, project.id)
+        runbook = self.get_runbook(db, project)
+        decisions = list(project.decision_records or []) or self._preview_decision_records(db, project)
+        blocked_agents = [agent for agent in self._sorted_workspace_agents(db, project.id) if agent["display_status"] in {"blocked", "error"}]
+        pending_approvals = self.list_pending_approvals(db, project)
+        health = self._project_health(
+            project,
+            current_action=current_action,
+            overview=overview,
+            stuck_signals=stuck_signals,
+            review_gates=review_gates,
+            pending_approvals=pending_approvals,
+            blocked_agents=blocked_agents,
+            conflicts=conflicts,
+            evidence=evidence,
+        )
+        return {
+            "budget": budget,
+            "contracts": contracts,
+            "path_locks": path_locks,
+            "conflicts": conflicts,
+            "confidence": confidence,
+            "stuck_signals": stuck_signals,
+            "recovery_plans": list(preview_recovery["persisted"]),
+            "review_gates": review_gates,
+            "model_policy": model_policy,
+            "tool_routing": tool_routing,
+            "sandbox_profiles": sandbox_profiles,
+            "assumptions": assumptions,
+            "repo": repo,
+            "validation_recipe": validation_recipe,
+            "handoff_quality": handoff_quality,
+            "handoff_evidence": evidence,
+            "latest_handoff": latest_handoff,
+            "runbook": runbook,
+            "agent_traces": traces,
+            "snapshots": snapshots,
+            "agent_load": agent_load,
+            "timeline": timeline,
+            "decisions": decisions,
+            "health": health,
+            "blocked_agents": blocked_agents,
+            "pending_approvals": pending_approvals,
+        }
+
     def list_widget_catalog(self, db: Session, scope: str | None = None) -> list[dict[str, Any]]:
         catalog = self._widget_definitions_view(db)
         return [
@@ -4981,7 +5114,7 @@ class MissionControlService:
                     "items": [
                         {
                             "title": category.replace("_", " "),
-                            "detail": f"{entry['provider']} / {entry['model']} • score {entry['score']}",
+                            "detail": f"{entry['provider']} / {entry['model']} â€¢ score {entry['score']}",
                         }
                         for category, entry in summary["top_categories"].items()
                     ],
@@ -4999,7 +5132,7 @@ class MissionControlService:
                     "items": [
                         {
                             "title": f"{item['archetype']} ({item['model'] or item['provider'] or 'default'})",
-                            "detail": f"success {int(item['success_rate'] * 100)}% • confidence {item['confidence']}",
+                            "detail": f"success {int(item['success_rate'] * 100)}% â€¢ confidence {item['confidence']}",
                         }
                         for item in reputation[:8]
                     ]
@@ -5021,7 +5154,7 @@ class MissionControlService:
                     "items": [
                         {
                             "title": item.summary,
-                            "detail": f"{item.severity} • {item.suggested_action} • {item.status}",
+                            "detail": f"{item.severity} â€¢ {item.suggested_action} â€¢ {item.status}",
                         }
                         for item in signals
                     ]
@@ -5038,7 +5171,7 @@ class MissionControlService:
                     "items": [
                         {
                             "title": item.key,
-                            "detail": f"{item.value_json} • {item.source}",
+                            "detail": f"{item.value_json} â€¢ {item.source}",
                         }
                         for item in preferences[:8]
                     ]
@@ -5144,7 +5277,7 @@ class MissionControlService:
                             "project_id": project.id,
                             "project_name": project.name,
                             "title": plan.trigger_summary,
-                            "detail": f"{plan.trigger_type} · {plan.status}",
+                            "detail": f"{plan.trigger_type} Â· {plan.status}",
                         }
                     )
             if not items:
@@ -5179,19 +5312,31 @@ class MissionControlService:
         current_action: dict[str, Any],
         overview: dict[str, Any],
         degraded_notices: list[str],
+        preview_support_only: bool = False,
     ) -> dict[str, Any]:
         support_records: dict[str, Any] | None = None
 
         def get_support() -> dict[str, Any]:
             nonlocal support_records
             if support_records is None:
-                support_records = self._ensure_widget_support_records(
-                    db,
-                    project,
-                    tasks=tasks,
-                    degraded_notices=degraded_notices,
-                    current_action=current_action,
-                    overview=overview,
+                support_records = (
+                    self._preview_widget_support_records(
+                        db,
+                        project,
+                        tasks=tasks,
+                        degraded_notices=degraded_notices,
+                        current_action=current_action,
+                        overview=overview,
+                    )
+                    if preview_support_only
+                    else self._ensure_widget_support_records(
+                        db,
+                        project,
+                        tasks=tasks,
+                        degraded_notices=degraded_notices,
+                        current_action=current_action,
+                        overview=overview,
+                    )
                 )
             return support_records
 
@@ -5225,7 +5370,7 @@ class MissionControlService:
                     "items": [
                         {
                             "title": f"{item['archetype']} ({item['model'] or item['provider'] or 'default'})",
-                            "detail": f"success {int(item['success_rate'] * 100)}% • best: {', '.join(item['recommended_for']) or 'unknown'}",
+                            "detail": f"success {int(item['success_rate'] * 100)}% â€¢ best: {', '.join(item['recommended_for']) or 'unknown'}",
                             "weak_spots": item["avoid_for"],
                         }
                         for item in reputation[:8]
@@ -5260,7 +5405,7 @@ class MissionControlService:
                     "items": [
                         {
                             "title": item["title"],
-                            "detail": f"files {len(item['included_files_json'])} • docs {len(item['included_docs_json'])} • warnings {len(item['warnings_json'])}",
+                            "detail": f"files {len(item['included_files_json'])} â€¢ docs {len(item['included_docs_json'])} â€¢ warnings {len(item['warnings_json'])}",
                             "task_id": item["task_id"],
                             "agent_id": item["agent_id"],
                         }
@@ -5279,7 +5424,7 @@ class MissionControlService:
                     "items": [
                         {
                             "title": item.title,
-                            "detail": f"{item.severity}/{item.likelihood} • {item.status} • mitigation: {item.mitigation or 'none'}",
+                            "detail": f"{item.severity}/{item.likelihood} â€¢ {item.status} â€¢ mitigation: {item.mitigation or 'none'}",
                             "owner": item.owner_agent_id,
                         }
                         for item in risks[:10]
@@ -5353,7 +5498,7 @@ class MissionControlService:
                     "items": [
                         {
                             "title": item.summary,
-                            "detail": f"{item.severity} • {item.suggested_action} • {item.status}",
+                            "detail": f"{item.severity} â€¢ {item.suggested_action} â€¢ {item.status}",
                         }
                         for item in signals[:10]
                     ]
@@ -5388,9 +5533,9 @@ class MissionControlService:
                         {
                             "title": item["area"] if isinstance(item, dict) else item.area,
                             "detail": (
-                                f"{item['coverage_status']} • {item.get('evidence_summary') or 'No evidence recorded yet.'}"
+                                f"{item['coverage_status']} â€¢ {item.get('evidence_summary') or 'No evidence recorded yet.'}"
                                 if isinstance(item, dict)
-                                else f"{item.coverage_status} • {item.evidence_summary or 'No evidence recorded yet.'}"
+                                else f"{item.coverage_status} â€¢ {item.evidence_summary or 'No evidence recorded yet.'}"
                             ),
                         }
                         for item in items
@@ -5409,7 +5554,7 @@ class MissionControlService:
                     "items": [
                         {
                             "title": item.key,
-                            "detail": f"{item.value_json} • {item.source} • {item.scope}",
+                            "detail": f"{item.value_json} â€¢ {item.source} â€¢ {item.scope}",
                         }
                         for item in preferences[:10]
                     ]
@@ -6246,6 +6391,7 @@ class MissionControlService:
                 current_action=current_action,
                 overview=overview,
                 degraded_notices=degraded_notices,
+                preview_support_only=True,
             )
             for instance in instances
         ]
