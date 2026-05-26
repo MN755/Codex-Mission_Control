@@ -408,6 +408,12 @@ def _require_bridge_token(request: Request) -> None:
         )
 
 
+def _http_exception_from_value_error(exc: ValueError) -> HTTPException:
+    detail = str(exc)
+    status_code = 404 if "not found" in detail.lower() else 400
+    return HTTPException(status_code=status_code, detail=detail)
+
+
 def _serialize_interview(project: Project, session: InterviewSession) -> InterviewSessionRead:
     understanding = service.get_project_understanding(project)
     generated_questions = session.questions_asked
@@ -3041,7 +3047,7 @@ async def generate_plan(
     try:
         plan = await service.generate_plan(db, project)
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise _http_exception_from_value_error(exc) from exc
     db.flush()
     db.refresh(plan)
     return plan
@@ -3067,9 +3073,7 @@ async def approve_plan(
     try:
         plan = await service.approve_plan(db, project, payload.action, payload.note)
     except ValueError as exc:
-        detail = str(exc)
-        status_code = 404 if "not found" in detail.lower() else 400
-        raise HTTPException(status_code=status_code, detail=detail) from exc
+        raise _http_exception_from_value_error(exc) from exc
     db.flush()
     db.refresh(plan)
     return plan
