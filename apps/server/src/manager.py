@@ -2179,7 +2179,7 @@ class MissionControlService:
             "dry_run": handoff.dry_run,
         }
 
-    def detect_conflicts(self, db: Session, project: Project) -> list[ConflictRecord]:
+    def _preview_conflicts(self, db: Session, project: Project) -> list[ConflictRecord]:
         reservations = self._active_reservations(db, project.id)
         tasks_by_id = {task.id: task for task in db.scalars(select(Task).where(Task.project_id == project.id))}
         existing = {
@@ -2190,7 +2190,8 @@ class MissionControlService:
                 .order_by(ConflictRecord.id.asc())
             )
         }
-        active_keys: set[tuple[str, str]] = set()
+        preview: dict[tuple[str, str], ConflictRecord] = {}
+        now = utc_now()
         by_path: dict[str, list[PathReservation]] = {}
         for reservation in reservations:
             by_path.setdefault(reservation.path, []).append(reservation)
@@ -2202,26 +2203,76 @@ class MissionControlService:
             conflict_type = "file_edit_collision" if "." in Path(path).name else "path_overlap"
             title = f"Parallel edit pressure on {path}"
             summary = f"{len(agent_ids)} agents currently claim the same path target."
-            key = (conflict_type, title)
-            active_keys.add(key)
+            persisted = existing.get((conflict_type, title))
+            preview[(conflict_type, title)] = ConflictRecord(
+                id=persisted.id if persisted else None,
+                project_id=project.id,
+                conflict_type=conflict_type,
+                title=title,
+                summary=summary,
+                involved_agent_ids_json=agent_ids,
+                involved_task_ids_json=task_ids,
+                affected_paths_json=[path],
+                severity="high",
+                status="manager_review",
+                suggested_resolution_json=[
+                    "serialize_tasks",
+                    "split_file_ownership",
+                    "spawn_conflict_resolver_agent",
+                    "ask_user",
+                ],
+                created_at=persisted.created_at if persisted else now,
+            )
+        for task in tasks_by_id.values():
+            if task.status != "waiting_on_paths":
+                continue
+            blocked_paths = [path for path in task.allowed_paths_json if path in by_path]
+            if not blocked_paths:
+                continue
+            title = f"Task dependency conflict for {task.title}"
+            persisted = existing.get(("task_dependency", title))
+            preview[("task_dependency", title)] = ConflictRecord(
+                id=persisted.id if persisted else None,
+                project_id=project.id,
+                conflict_type="task_dependency",
+                title=title,
+                summary=f"{task.title} is waiting on {len(blocked_paths)} locked path(s).",
+                involved_agent_ids_json=sorted({reservation.agent_id for path in blocked_paths for reservation in by_path.get(path, [])}),
+                involved_task_ids_json=[task.id],
+                affected_paths_json=blocked_paths[:10],
+                severity="medium",
+                status="detected",
+                suggested_resolution_json=["serialize_tasks", "split_file_ownership", "ask_user"],
+                created_at=persisted.created_at if persisted else now,
+            )
+        return sorted(preview.values(), key=lambda item: (item.created_at or now, item.id or 0), reverse=True)
+
+    def detect_conflicts(self, db: Session, project: Project) -> list[ConflictRecord]:
+        existing = {
+            (entry.conflict_type, entry.title): entry
+            for entry in db.scalars(
+                select(ConflictRecord)
+                .where(ConflictRecord.project_id == project.id, ConflictRecord.status != "resolved")
+                .order_by(ConflictRecord.id.asc())
+            )
+        }
+        preview_conflicts = self._preview_conflicts(db, project)
+        active_keys = {(entry.conflict_type, entry.title) for entry in preview_conflicts}
+        for preview in preview_conflicts:
+            key = (preview.conflict_type, preview.title)
             record = existing.get(key)
             if record is None:
                 record = ConflictRecord(
                     project_id=project.id,
-                    conflict_type=conflict_type,
-                    title=title,
-                    summary=summary,
-                    involved_agent_ids_json=agent_ids,
-                    involved_task_ids_json=task_ids,
-                    affected_paths_json=[path],
-                    severity="high",
-                    status="manager_review",
-                    suggested_resolution_json=[
-                        "serialize_tasks",
-                        "split_file_ownership",
-                        "spawn_conflict_resolver_agent",
-                        "ask_user",
-                    ],
+                    conflict_type=preview.conflict_type,
+                    title=preview.title,
+                    summary=preview.summary,
+                    involved_agent_ids_json=list(preview.involved_agent_ids_json or []),
+                    involved_task_ids_json=list(preview.involved_task_ids_json or []),
+                    affected_paths_json=list(preview.affected_paths_json or []),
+                    severity=preview.severity,
+                    status=preview.status,
+                    suggested_resolution_json=list(preview.suggested_resolution_json or []),
                 )
                 db.add(record)
                 self._record_manager_message(
@@ -2230,53 +2281,27 @@ class MissionControlService:
                     role="system",
                     message_type="blocker_report",
                     content_markdown=(
-                        f"Conflict detected: **{title}**\n\n"
-                        f"{summary}\n\n"
+                        f"Conflict detected: **{preview.title}**\n\n"
+                        f"{preview.summary}\n\n"
                         "Manager should pick a resolution strategy before parallel edits turn into a merge-conflict confetti cannon."
                     ),
-                    metadata_json={"conflict_type": conflict_type, "response_mode": "reliability_conflict"},
+                    metadata_json={"conflict_type": preview.conflict_type, "response_mode": "reliability_conflict"},
                 )
                 self._record_timeline_event(
                     db,
                     project,
                     event_type="conflict_detected",
-                    title=title,
-                    summary=summary,
+                    title=preview.title,
+                    summary=preview.summary,
                     severity="warning",
                 )
             else:
-                record.summary = summary
-                record.involved_agent_ids_json = agent_ids
-                record.involved_task_ids_json = task_ids
-                record.affected_paths_json = [path]
-                record.severity = "high"
-                record.status = "manager_review"
-        for task in tasks_by_id.values():
-            if task.status != "waiting_on_paths":
-                continue
-            blocked_paths = [path for path in task.allowed_paths_json if path in by_path]
-            if not blocked_paths:
-                continue
-            title = f"Task dependency conflict for {task.title}"
-            summary = f"{task.title} is waiting on {len(blocked_paths)} locked path(s)."
-            key = ("task_dependency", title)
-            active_keys.add(key)
-            record = existing.get(key)
-            if record is None:
-                db.add(
-                    ConflictRecord(
-                        project_id=project.id,
-                        conflict_type="task_dependency",
-                        title=title,
-                        summary=summary,
-                        involved_agent_ids_json=sorted({reservation.agent_id for path in blocked_paths for reservation in by_path.get(path, [])}),
-                        involved_task_ids_json=[task.id],
-                        affected_paths_json=blocked_paths[:10],
-                        severity="medium",
-                        status="detected",
-                        suggested_resolution_json=["serialize_tasks", "split_file_ownership", "ask_user"],
-                    )
-                )
+                record.summary = preview.summary
+                record.involved_agent_ids_json = list(preview.involved_agent_ids_json or [])
+                record.involved_task_ids_json = list(preview.involved_task_ids_json or [])
+                record.affected_paths_json = list(preview.affected_paths_json or [])
+                record.severity = preview.severity
+                record.status = preview.status
         for key, record in existing.items():
             if key not in active_keys and record.status != "resolved":
                 record.status = "dismissed"
@@ -5454,8 +5479,7 @@ class MissionControlService:
                 },
             )
         if instance.widget_type == "Conflict Resolver":
-            support = get_support()
-            conflicts: list[ConflictRecord] = [entry for entry in support["conflicts"] if entry.status not in {"resolved", "dismissed"}]
+            conflicts = self._preview_conflicts(db, project)
             if not conflicts:
                 return self._serialize_widget_data(instance, status="empty", empty_state="No active conflicts are recorded right now.")
             return self._serialize_widget_data(
