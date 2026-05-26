@@ -253,3 +253,13 @@ def test_project_widget_data_is_project_scoped_and_emits_project_events(client) 
         assert any(event.payload_json.get("project_id") == project_one["id"] for event in mirrored_app_events)
     finally:
         db.close()
+
+
+def test_profile_rejects_invalid_dashboard_widget_names(client) -> None:
+    nonexistent = client.put("/api/profile", json={"dashboard_widgets_json": ["Not A Widget"]})
+    assert nonexistent.status_code == 400
+    assert "Unknown dashboard widget" in nonexistent.json()["detail"]
+
+    wrong_scope = client.put("/api/profile", json={"dashboard_widgets_json": ["Repo Intelligence"]})
+    assert wrong_scope.status_code == 400
+    assert "Repo Intelligence" in wrong_scope.json()["detail"]
