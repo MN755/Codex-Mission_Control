@@ -193,6 +193,33 @@ def test_swarm_specs_are_project_scoped_and_events_are_recorded(client) -> None:
     assert any(event["event_type"] == "agent_spec_created" for event in events)
 
 
+def test_swarm_scale_count_changes_recommended_agent_target(client) -> None:
+    project = create_project(client, "Scale Count Swarm", "swarm-scale-count")
+    update_swarm_preferences(client, project["id"], optimization_mode="balanced", swarm_aggressiveness="large", max_agents=8, require_approval_above_agent_count=20)
+
+    initial_plan = client.post(f"/api/projects/{project['id']}/swarm/plan", json={"goal": "Start balanced."}).json()
+    approve = client.post(f"/api/projects/{project['id']}/swarm/plan/{initial_plan['id']}/approve")
+    assert approve.status_code == 200
+    spawn = client.post(f"/api/projects/{project['id']}/swarm/spawn")
+    assert spawn.status_code == 200
+
+    scale_down_one = client.post(
+        f"/api/projects/{project['id']}/swarm/scale",
+        json={"direction": "down", "reason": "One fewer lane.", "count": 1},
+    )
+    assert scale_down_one.status_code == 200
+    scale_one_payload = scale_down_one.json()
+    assert scale_one_payload["swarm_plan"]["recommended_agent_count"] == 4
+
+    scale_down_three = client.post(
+        f"/api/projects/{project['id']}/swarm/scale",
+        json={"direction": "down", "reason": "Three fewer lanes.", "count": 3},
+    )
+    assert scale_down_three.status_code == 200
+    scale_three_payload = scale_down_three.json()
+    assert scale_three_payload["swarm_plan"]["recommended_agent_count"] == 1
+
+
 def test_scaling_changes_plan_and_records_events(client) -> None:
     project = create_project(client, "Scale Swarm", "swarm-scale")
     update_swarm_preferences(client, project["id"], optimization_mode="balanced", swarm_aggressiveness="medium", max_agents=8, require_approval_above_agent_count=20)
