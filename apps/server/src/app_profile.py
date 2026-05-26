@@ -10,6 +10,7 @@ from models import AppProfile, utc_now
 from provider_support import normalize_provider
 from project_settings import normalize_provider_adapter_settings, normalize_provider_endpoint
 from schemas import AppProfileUpdate, CompleteFirstRunRequest
+from widget_catalog import DASHBOARD_WIDGET_TYPES
 
 
 DEFAULT_DISPLAY_NAME = "Operator"
@@ -164,7 +165,12 @@ def update_app_profile(db: Session, payload: AppProfileUpdate) -> AppProfile:
             key: bool(value) for key, value in payload.notification_preferences_json.items() if key.strip()
         } or dict(DEFAULT_NOTIFICATION_PREFERENCES)
     if payload.dashboard_widgets_json is not None:
-        profile.dashboard_widgets_json = [item.strip() for item in payload.dashboard_widgets_json if item and item.strip()]
+        requested_widgets = [item.strip() for item in payload.dashboard_widgets_json if item and item.strip()]
+        invalid_widgets = [item for item in requested_widgets if item not in DASHBOARD_WIDGET_TYPES]
+        if invalid_widgets:
+            invalid_list = ", ".join(sorted(dict.fromkeys(invalid_widgets)))
+            raise ValueError(f"Unknown dashboard widget(s): {invalid_list}")
+        profile.dashboard_widgets_json = requested_widgets
     if payload.dashboard_widget_preferences_json is not None:
         profile.dashboard_widget_preferences_json = {
             key: value for key, value in payload.dashboard_widget_preferences_json.items() if key.strip()
