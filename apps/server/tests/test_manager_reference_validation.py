@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import pytest
+from sqlalchemy import select, func
 
 from conftest import sample_workspace
 from db import SessionLocal, init_db
 from manager import service
-from models import Agent, HandoffEvidence, Project, ReviewGate, Task
+from models import Agent, ChangeRequest, EvidenceBasedHandoff, HandoffEvidence, Project, ProjectTimelineEvent, RecoveryPlan, ReviewGate, Task
 
 
 def _seed_project_pair() -> tuple[int, int, int, int, int, int]:
@@ -297,3 +298,42 @@ def test_review_gate_update_rejects_foreign_refs_and_missing_evidence() -> None:
             service.update_review_gate(db, gate.id, {"evidence_ids_json": [scoped_evidence.id, foreign_evidence.id, 999_999]})
     finally:
         db.close()
+
+
+def test_create_recovery_plan_rejects_missing_related_refs_without_persisting_partial_rows() -> None:
+    project_one_id, _, _, _, _, _ = _seed_project_pair()
+
+    db = SessionLocal()
+    try:
+        scoped_project = db.get(Project, project_one_id)
+        assert scoped_project is not None
+        baseline = db.scalar(select(func.count(RecoveryPlan.id)).where(RecoveryPlan.project_id == scoped_project.id))
+
+        with pytest.raises(ValueError, match="Recovery plan related task"):
+            service.create_recovery_plan(
+                db,
+                scoped_project,
+                {
+                    "trigger_type": "task_blocked",
+                    "trigger_summary": "Missing task should fail cleanly.",
+                    "related_task_id": 999_999,
+                    "suggested_actions_json": ["ask_user"],
+                },
+            )
+
+        with pytest.raises(ValueError, match="Recovery plan related agent"):
+            service.create_recovery_plan(
+                db,
+                scoped_project,
+                {
+                    "trigger_type": "agent_stuck",
+                    "trigger_summary": "Missing agent should fail cleanly.",
+                    "related_agent_id": 999_999,
+                    "suggested_actions_json": ["ask_user"],
+                },
+            )
+
+        assert db.scalar(select(func.count(RecoveryPlan.id)).where(RecoveryPlan.project_id == scoped_project.id)) == baseline
+    finally:
+        db.close()
+
