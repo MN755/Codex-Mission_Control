@@ -1710,6 +1710,44 @@ class MissionControlService:
             if task is None or task.project_id != project.id:
                 raise ValueError(f"{task_label} not found in this project")
 
+    def _validate_project_handoff_ref(
+        self,
+        db: Session,
+        project: Project,
+        *,
+        related_handoff_id: int | None = None,
+        handoff_label: str = "Related handoff",
+    ) -> None:
+        if related_handoff_id is None:
+            return
+        handoff = db.get(EvidenceBasedHandoff, related_handoff_id)
+        if handoff is None or handoff.project_id != project.id:
+            raise ValueError(f"{handoff_label} not found in this project")
+
+    def _validate_project_task_refs(
+        self,
+        db: Session,
+        project: Project,
+        *,
+        task_ids: list[int] | None = None,
+        task_label: str = "Related task",
+    ) -> list[int]:
+        normalized = [int(item) for item in (task_ids or [])]
+        if not normalized:
+            return normalized
+        valid_ids = set(
+            db.scalars(
+                select(Task.id).where(
+                    Task.project_id == project.id,
+                    Task.id.in_(normalized),
+                )
+            )
+        )
+        for task_id in normalized:
+            if task_id not in valid_ids:
+                raise ValueError(f"{task_label} not found in this project")
+        return normalized
+
     def _validate_project_evidence_refs(
         self,
         db: Session,
@@ -3690,11 +3728,29 @@ class MissionControlService:
         record = db.get(ChangeRequest, change_request_id)
         if record is None:
             raise ValueError("Change request not found")
+        project = db.get(Project, record.project_id)
+        if project is None:
+            raise ValueError("Project not found")
+        if "related_handoff_id" in payload and payload["related_handoff_id"] is not None:
+            self._validate_project_handoff_ref(
+                db,
+                project,
+                related_handoff_id=int(payload["related_handoff_id"]),
+                handoff_label="Change request related handoff",
+            )
+        related_task_ids: list[int] | None = None
+        if "related_tasks_json" in payload and payload["related_tasks_json"] is not None:
+            related_task_ids = self._validate_project_task_refs(
+                db,
+                project,
+                task_ids=payload["related_tasks_json"],
+                task_label="Change request related task",
+            )
         for field in ["classification", "impact_estimate", "status", "related_handoff_id"]:
             if field in payload and payload[field] is not None:
                 setattr(record, field, payload[field])
-        if "related_tasks_json" in payload and payload["related_tasks_json"] is not None:
-            record.related_tasks_json = [int(item) for item in payload["related_tasks_json"]]
+        if related_task_ids is not None:
+            record.related_tasks_json = related_task_ids
         db.flush()
         self.events.publish(db, record.project_id, "change_request_updated", {"project_id": record.project_id, "change_request_id": record.id, "status": record.status})
         return record
@@ -5383,7 +5439,7 @@ class MissionControlService:
                     "items": [
                         {
                             "title": category.replace("_", " "),
-                            "detail": f"{entry['provider']} / {entry['model']} • score {entry['score']}",
+                            "detail": f"{entry['provider']} / {entry['model']} â€¢ score {entry['score']}",
                         }
                         for category, entry in summary["top_categories"].items()
                     ],
@@ -5401,7 +5457,7 @@ class MissionControlService:
                     "items": [
                         {
                             "title": f"{item['archetype']} ({item['model'] or item['provider'] or 'default'})",
-                            "detail": f"success {int(item['success_rate'] * 100)}% • confidence {item['confidence']}",
+                            "detail": f"success {int(item['success_rate'] * 100)}% â€¢ confidence {item['confidence']}",
                         }
                         for item in reputation[:8]
                     ]
@@ -5423,7 +5479,7 @@ class MissionControlService:
                     "items": [
                         {
                             "title": item.summary,
-                            "detail": f"{item.severity} • {item.suggested_action} • {item.status}",
+                            "detail": f"{item.severity} â€¢ {item.suggested_action} â€¢ {item.status}",
                         }
                         for item in signals
                     ]
@@ -5440,7 +5496,7 @@ class MissionControlService:
                     "items": [
                         {
                             "title": item.key,
-                            "detail": f"{item.value_json} • {item.source}",
+                            "detail": f"{item.value_json} â€¢ {item.source}",
                         }
                         for item in preferences[:8]
                     ]
@@ -5554,7 +5610,7 @@ class MissionControlService:
                             "project_id": project.id,
                             "project_name": project.name,
                             "title": plan.trigger_summary,
-                            "detail": f"{plan.trigger_type} · {plan.status}",
+                            "detail": f"{plan.trigger_type} Â· {plan.status}",
                         }
                     )
             if not items:
@@ -5646,7 +5702,7 @@ class MissionControlService:
                     "items": [
                         {
                             "title": f"{item['archetype']} ({item['model'] or item['provider'] or 'default'})",
-                            "detail": f"success {int(item['success_rate'] * 100)}% • best: {', '.join(item['recommended_for']) or 'unknown'}",
+                            "detail": f"success {int(item['success_rate'] * 100)}% â€¢ best: {', '.join(item['recommended_for']) or 'unknown'}",
                             "weak_spots": item["avoid_for"],
                         }
                         for item in reputation[:8]
@@ -5681,7 +5737,7 @@ class MissionControlService:
                     "items": [
                         {
                             "title": item["title"],
-                            "detail": f"files {len(item['included_files_json'])} • docs {len(item['included_docs_json'])} • warnings {len(item['warnings_json'])}",
+                            "detail": f"files {len(item['included_files_json'])} â€¢ docs {len(item['included_docs_json'])} â€¢ warnings {len(item['warnings_json'])}",
                             "task_id": item["task_id"],
                             "agent_id": item["agent_id"],
                         }
@@ -5700,7 +5756,7 @@ class MissionControlService:
                     "items": [
                         {
                             "title": item.title,
-                            "detail": f"{item.severity}/{item.likelihood} • {item.status} • mitigation: {item.mitigation or 'none'}",
+                            "detail": f"{item.severity}/{item.likelihood} â€¢ {item.status} â€¢ mitigation: {item.mitigation or 'none'}",
                             "owner": item.owner_agent_id,
                         }
                         for item in risks[:10]
@@ -5774,7 +5830,7 @@ class MissionControlService:
                     "items": [
                         {
                             "title": item.summary,
-                            "detail": f"{item.severity} • {item.suggested_action} • {item.status}",
+                            "detail": f"{item.severity} â€¢ {item.suggested_action} â€¢ {item.status}",
                         }
                         for item in signals[:10]
                     ]
@@ -5809,9 +5865,9 @@ class MissionControlService:
                         {
                             "title": item["area"] if isinstance(item, dict) else item.area,
                             "detail": (
-                                f"{item['coverage_status']} • {item.get('evidence_summary') or 'No evidence recorded yet.'}"
+                                f"{item['coverage_status']} â€¢ {item.get('evidence_summary') or 'No evidence recorded yet.'}"
                                 if isinstance(item, dict)
-                                else f"{item.coverage_status} • {item.evidence_summary or 'No evidence recorded yet.'}"
+                                else f"{item.coverage_status} â€¢ {item.evidence_summary or 'No evidence recorded yet.'}"
                             ),
                         }
                         for item in items
@@ -5830,7 +5886,7 @@ class MissionControlService:
                     "items": [
                         {
                             "title": item.key,
-                            "detail": f"{item.value_json} • {item.source} • {item.scope}",
+                            "detail": f"{item.value_json} â€¢ {item.source} â€¢ {item.scope}",
                         }
                         for item in preferences[:10]
                     ]
