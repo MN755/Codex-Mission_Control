@@ -598,6 +598,70 @@ class MissionControlService:
     def _ensure_project_settings(self, db: Session, project: Project) -> ProjectSettings:
         return get_or_create_project_settings(db, project)
 
+    def _app_profile_preview(self, db: Session) -> AppProfile:
+        profile = db.get(AppProfile, 1)
+        if profile is not None:
+            return profile
+        timestamp = utc_now()
+        return AppProfile(
+            id=1,
+            display_name=None,
+            install_id=None,
+            preferred_provider_choice="codex",
+            preferred_start_mode="new_project",
+            selected_provider="codex",
+            auth_mode=None,
+            connected_accounts_json={},
+            first_run_completed=False,
+            setup_version_completed=None,
+            onboarding_completed=False,
+            default_runner_mode=DEFAULT_RUNNER_MODE,
+            manager_model=None,
+            default_worker_model=None,
+            manager_reasoning_effort=None,
+            default_worker_reasoning_effort=None,
+            sandbox_mode=DEFAULT_SANDBOX,
+            approval_policy=DEFAULT_APPROVAL_POLICY,
+            theme="system",
+            startup_behavior="dashboard",
+            notification_preferences_json={},
+            dashboard_widgets_json=[],
+            dashboard_widget_preferences_json={},
+            tool_permission_overrides_json={},
+            provider_endpoint=None,
+            adapter_command=None,
+            adapter_args_json=[],
+            recent_startup_error_json=None,
+            created_at=timestamp,
+            updated_at=timestamp,
+            last_opened_at=timestamp,
+        )
+
+    def _project_settings_preview(self, db: Session, project: Project) -> ProjectSettings:
+        if project.settings is not None:
+            return project.settings
+        profile = self._app_profile_preview(db)
+        timestamp = utc_now()
+        return ProjectSettings(
+            project_id=project.id,
+            provider=normalize_provider(profile.selected_provider or "codex"),
+            manager_model=profile.manager_model,
+            default_worker_model=profile.default_worker_model,
+            manager_reasoning_effort=profile.manager_reasoning_effort,
+            default_worker_reasoning_effort=profile.default_worker_reasoning_effort,
+            per_role_model_overrides_json={},
+            per_role_reasoning_overrides_json={},
+            adapter_command=profile.adapter_command,
+            adapter_args_json=list(profile.adapter_args_json or []),
+            runner_mode=project.runner_mode or profile.default_runner_mode or DEFAULT_RUNNER_MODE,
+            sandbox_mode=profile.sandbox_mode,
+            approval_policy=profile.approval_policy,
+            workspace_widgets_json=[],
+            approval_overrides_json={},
+            created_at=timestamp,
+            updated_at=timestamp,
+        )
+
     def _swarm_preferences(self, project: Project) -> SwarmPreferences:
         if project.swarm_preferences is not None:
             return project.swarm_preferences
@@ -662,8 +726,26 @@ class MissionControlService:
             db.flush()
         return sorted(existing.values(), key=lambda item: item.name.lower())
 
+    def _agent_archetypes_preview(self) -> list[AgentArchetype]:
+        return [
+            AgentArchetype(
+                name=str(payload["name"]),
+                purpose=str(payload["purpose"]),
+                default_guidelines=str(payload["default_guidelines"]),
+                default_tools_json=list(payload.get("default_tools_json") or []),
+                default_permissions_json=dict(payload.get("default_permissions_json") or {}),
+                spawn_triggers_json=list(payload.get("spawn_triggers_json") or []),
+                retirement_triggers_json=list(payload.get("retirement_triggers_json") or []),
+                risk_profile=str(payload.get("risk_profile") or "medium"),
+            )
+            for payload in AGENT_ARCHETYPE_CATALOG
+        ]
+
     def _archetype_lookup(self, db: Session) -> dict[str, AgentArchetype]:
         return {entry.name: entry for entry in self._ensure_agent_archetypes(db)}
+
+    def _archetype_lookup_preview(self) -> dict[str, AgentArchetype]:
+        return {entry.name: entry for entry in self._agent_archetypes_preview()}
 
     def _app_profile(self, db: Session) -> AppProfile:
         return get_or_create_app_profile(db)
@@ -3511,6 +3593,17 @@ class MissionControlService:
             db.add(budget)
             db.flush()
             project.swarm_budget = budget
+        return self._populate_swarm_budget(db, project, preferences=preferences, settings=settings, budget=budget)
+
+    def _populate_swarm_budget(
+        self,
+        db: Session,
+        project: Project,
+        *,
+        preferences: SwarmPreferences,
+        settings: ProjectSettings,
+        budget: SwarmBudget,
+    ) -> SwarmBudget:
         active_agents = [
             agent
             for agent in db.scalars(select(Agent).where(Agent.project_id == project.id).order_by(Agent.id.asc()))
@@ -3539,16 +3632,19 @@ class MissionControlService:
             budget.current_intensity = "medium"
         else:
             budget.current_intensity = "low"
-        db.flush()
         return budget
 
-    def _sync_agent_contracts(self, db: Session, project: Project) -> list[AgentContract]:
+    def _preview_swarm_budget(self, db: Session, project: Project) -> SwarmBudget:
+        preferences = project.swarm_preferences or self._swarm_preferences(project)
+        settings = project.settings or self._project_settings_preview(db, project)
+        budget = project.swarm_budget or SwarmBudget(project_id=project.id)
+        return self._populate_swarm_budget(db, project, preferences=preferences, settings=settings, budget=budget)
+
+    def _agent_contract_payloads(self, db: Session, project: Project) -> list[dict[str, Any]]:
         plan = self._current_swarm_plan_record(db, project.id)
         specs = self._swarm_specs_for_plan(db, plan.id) if plan is not None else []
         agents = list(db.scalars(select(Agent).where(Agent.project_id == project.id).order_by(Agent.id.asc())))
         agent_lookup = {agent.name: agent for agent in agents}
-        existing = {entry.agent_name: entry for entry in db.scalars(select(AgentContract).where(AgentContract.project_id == project.id))}
-        active_names: set[str] = set()
         sources: list[dict[str, Any]] = []
         if specs:
             for spec in specs:
@@ -3595,7 +3691,12 @@ class MissionControlService:
                         "status": "active" if agent.status not in {"done", "stopped"} else "retired",
                     }
                 )
-        for payload in sources:
+        return sources
+
+    def _sync_agent_contracts(self, db: Session, project: Project) -> list[AgentContract]:
+        existing = {entry.agent_name: entry for entry in db.scalars(select(AgentContract).where(AgentContract.project_id == project.id))}
+        active_names: set[str] = set()
+        for payload in self._agent_contract_payloads(db, project):
             active_names.add(str(payload["agent_name"]))
             contract = existing.get(str(payload["agent_name"]))
             if contract is None:
@@ -3619,6 +3720,41 @@ class MissionControlService:
                 contract.status = "retired"
         db.flush()
         return list(db.scalars(select(AgentContract).where(AgentContract.project_id == project.id).order_by(AgentContract.updated_at.desc(), AgentContract.id.asc())))
+
+    def _preview_agent_contracts(self, db: Session, project: Project) -> list[AgentContract]:
+        existing = {entry.agent_name: entry for entry in list(project.agent_contracts or [])}
+        active_names: set[str] = set()
+        now = utc_now()
+        for payload in self._agent_contract_payloads(db, project):
+            active_names.add(str(payload["agent_name"]))
+            contract = existing.get(str(payload["agent_name"]))
+            if contract is None:
+                contract = AgentContract(
+                    project_id=project.id,
+                    agent_name=str(payload["agent_name"]),
+                    archetype=str(payload["archetype"]),
+                    mission=str(payload["mission"]),
+                    expected_output=str(payload["expected_output"]),
+                    created_at=now,
+                    updated_at=now,
+                )
+                existing[contract.agent_name] = contract
+            contract.agent_id = payload["agent_id"]
+            contract.archetype = str(payload["archetype"])
+            contract.mission = str(payload["mission"])
+            contract.allowed_paths_json = list(payload["allowed_paths_json"])
+            contract.forbidden_paths_json = list(payload["forbidden_paths_json"])
+            contract.allowed_tools_json = list(payload["allowed_tools_json"])
+            contract.expected_output = str(payload["expected_output"])
+            contract.validation_required_json = list(payload["validation_required_json"])
+            contract.stop_conditions_json = list(payload["stop_conditions_json"])
+            contract.escalation_conditions_json = list(payload["escalation_conditions_json"])
+            contract.completion_report_schema_json = dict(payload["completion_report_schema_json"])
+            contract.status = str(payload["status"])
+        for name, contract in existing.items():
+            if name not in active_names and contract.status not in {"completed", "retired"}:
+                contract.status = "retired"
+        return sorted(existing.values(), key=lambda item: ((item.updated_at or item.created_at or now), item.id or 0), reverse=True)
 
     def _sync_path_locks(self, db: Session, project: Project) -> list[PathLock]:
         reservations = self.list_reservations(db, project.id)
@@ -3665,6 +3801,50 @@ class MissionControlService:
                 lock.released_at = utc_now()
         db.flush()
         return list(db.scalars(select(PathLock).where(PathLock.project_id == project.id).order_by(PathLock.status.asc(), PathLock.created_at.desc())))
+
+    def _preview_path_locks(self, db: Session, project: Project) -> list[PathLock]:
+        reservations = self.list_reservations(db, project.id)
+        tasks = list(db.scalars(select(Task).where(Task.project_id == project.id).order_by(Task.id.asc())))
+        now = utc_now()
+        preview = {
+            (entry.path_pattern, entry.owner_agent_id, entry.owner_task_id, entry.status): entry
+            for entry in list(project.path_locks or [])
+        }
+        active_keys: set[tuple[str, int | None, int | None, str]] = set()
+        for reservation in reservations:
+            key = (reservation.path, reservation.agent_id, reservation.task_id, "active")
+            active_keys.add(key)
+            if preview.get(key) is None:
+                preview[key] = PathLock(
+                    project_id=project.id,
+                    path_pattern=reservation.path,
+                    owner_agent_id=reservation.agent_id,
+                    owner_task_id=reservation.task_id,
+                    reason="Reserved for active task execution.",
+                    status="active",
+                    created_at=now,
+                )
+        for task in tasks:
+            if task.status != "waiting_on_paths":
+                continue
+            for path_pattern in task.allowed_paths_json or []:
+                key = (path_pattern, None, task.id, "waiting")
+                active_keys.add(key)
+                if preview.get(key) is None:
+                    preview[key] = PathLock(
+                        project_id=project.id,
+                        path_pattern=path_pattern,
+                        owner_agent_id=None,
+                        owner_task_id=task.id,
+                        reason=task.waiting_reason or "Waiting for path ownership to clear.",
+                        status="waiting",
+                        created_at=now,
+                    )
+        for key, lock in preview.items():
+            if key not in active_keys and lock.status != "released":
+                lock.status = "released"
+                lock.released_at = now
+        return sorted(preview.values(), key=lambda item: (item.status, item.created_at or now))
 
     def _sync_project_confidence(self, db: Session, project: Project) -> list[ProjectConfidence]:
         understanding = self._ensure_project_understanding(db, project)
@@ -4020,7 +4200,7 @@ class MissionControlService:
         return policy
 
     def _preview_model_policy(self, db: Session, project: Project) -> ModelPolicy:
-        settings = project.settings or self._project_settings(db, project)
+        settings = project.settings or self._project_settings_preview(db, project)
         policy = next(iter(project.model_policies or []), None) or ModelPolicy(project_id=project.id, policy_name="balanced")
         for field, value in self._model_policy_values(project, settings).items():
             setattr(policy, field, value)
@@ -4033,34 +4213,17 @@ class MissionControlService:
         *,
         settings: ProjectSettings,
         existing: dict[str, ToolRoutingPolicy] | None = None,
+        use_preview_archetypes: bool = False,
     ) -> list[ToolRoutingPolicy]:
-        profile = db.get(AppProfile, 1) or AppProfile(
-            id=1,
-            selected_provider="codex",
-            connected_accounts_json={},
-            tool_permission_overrides_json={},
-            adapter_args_json=[],
-            notification_preferences_json={},
-            dashboard_widgets_json=[],
-            dashboard_widget_preferences_json={},
-            preferred_provider_choice="codex",
-            preferred_start_mode="new_project",
-            first_run_completed=False,
-            onboarding_completed=False,
-            default_runner_mode=DEFAULT_RUNNER_MODE,
-            sandbox_mode=DEFAULT_SANDBOX,
-            approval_policy=DEFAULT_APPROVAL_POLICY,
-            theme="system",
-            startup_behavior="dashboard",
-        )
+        profile = self._app_profile_preview(db)
         tool_catalog = catalog_with_permissions(
             provider=settings.provider,
             connected_accounts=dict(profile.connected_accounts_json or {}),
             permission_overrides=dict(profile.tool_permission_overrides_json or {}),
         )
         availability_by_tool = {item["id"]: item for item in tool_catalog}
-        archetypes = self._archetype_lookup(db)
         existing = existing or {}
+        archetypes = self._archetype_lookup_preview() if use_preview_archetypes else self._archetype_lookup(db)
         for archetype_name in ["manager", "planner", "research", "frontend", "backend", "feature", "test", "reviewer", "security", "docs", "ops"]:
             entry = existing.get(archetype_name)
             if entry is None:
@@ -4107,9 +4270,9 @@ class MissionControlService:
         )
 
     def _preview_tool_routing_policies(self, db: Session, project: Project) -> list[ToolRoutingPolicy]:
-        settings = project.settings or self._project_settings(db, project)
+        settings = project.settings or self._project_settings_preview(db, project)
         existing = {entry.agent_archetype: entry for entry in list(project.tool_routing_policies or [])}
-        return self._tool_routing_entries(db, project, settings=settings, existing=existing)
+        return self._tool_routing_entries(db, project, settings=settings, existing=existing, use_preview_archetypes=True)
 
     def _default_sandbox_profiles(self) -> list[tuple[str, str, str, str, str, str, str, bool]]:
         return [
@@ -4360,56 +4523,19 @@ class MissionControlService:
         }
 
     def _sync_decision_records(self, db: Session, project: Project) -> list[DecisionRecord]:
-        approvals = db.scalars(
-            select(ApprovalRequest)
-            .where(ApprovalRequest.project_id == project.id, ApprovalRequest.status != "pending")
-            .order_by(ApprovalRequest.created_at.desc(), ApprovalRequest.id.desc())
-        )
-        for approval in approvals:
+        for decision in self._preview_decision_records(db, project, include_existing=False):
             self._record_decision(
                 db,
                 project,
-                decision_type=f"{approval.request_type}_approval",
-                title=approval.title,
-                decision=approval.status,
-                reason=approval.reason_short,
-                made_by="user",
-                impact_areas=["approvals", approval.request_type],
-                related_task_id=approval.task_id,
-                related_agent_id=approval.requesting_agent_id,
-                reversible=approval.status != "allowed_for_project",
-            )
-        questions = db.scalars(
-            select(ManagerQuestion)
-            .where(ManagerQuestion.project_id == project.id, ManagerQuestion.status != "pending")
-            .order_by(ManagerQuestion.created_at.desc(), ManagerQuestion.id.desc())
-        )
-        for question in questions:
-            self._record_decision(
-                db,
-                project,
-                decision_type="manager_question",
-                title=question.question[:220],
-                decision=question.selected_text or question.selected_option_id or question.status,
-                reason=question.manager_recommendation or "Resolved through the Manager queue.",
-                made_by="auto_manager" if question.status == "auto_decided" else "user",
-                impact_areas=["requirements"],
-                related_task_id=question.related_task_id,
-                related_agent_id=question.related_agent_id,
-                reversible=question.status != "auto_decided",
-            )
-        swarm_plan = self._current_swarm_plan_record(db, project.id)
-        if swarm_plan is not None:
-            self._record_decision(
-                db,
-                project,
-                decision_type="swarm_strategy",
-                title=f"Swarm strategy: {swarm_plan.mode}",
-                decision=swarm_plan.status,
-                reason=swarm_plan.strategy_summary,
-                made_by="user" if swarm_plan.approved_by_user else "manager",
-                impact_areas=["swarm"],
-                reversible=True,
+                decision_type=decision.decision_type,
+                title=decision.title,
+                decision=decision.decision,
+                reason=decision.reason,
+                made_by=decision.made_by,
+                impact_areas=list(decision.impact_area_json or []),
+                related_task_id=decision.related_task_id,
+                related_agent_id=decision.related_agent_id,
+                reversible=decision.reversible,
             )
         return list(
             db.scalars(
@@ -4418,6 +4544,73 @@ class MissionControlService:
                 .order_by(DecisionRecord.created_at.desc(), DecisionRecord.id.desc())
             )
         )
+
+    def _preview_decision_records(
+        self,
+        db: Session,
+        project: Project,
+        *,
+        include_existing: bool = True,
+    ) -> list[DecisionRecord]:
+        preview: dict[tuple[str, str], DecisionRecord] = {}
+        now = utc_now()
+        if include_existing:
+            for existing in list(project.decision_records or []):
+                preview[(existing.decision_type, existing.title)] = existing
+        approvals = db.scalars(
+            select(ApprovalRequest)
+            .where(ApprovalRequest.project_id == project.id, ApprovalRequest.status != "pending")
+            .order_by(ApprovalRequest.created_at.desc(), ApprovalRequest.id.desc())
+        )
+        for approval in approvals:
+            preview[(f"{approval.request_type}_approval", approval.title)] = DecisionRecord(
+                project_id=project.id,
+                decision_type=f"{approval.request_type}_approval",
+                title=approval.title,
+                decision=approval.status,
+                reason=approval.reason_short,
+                made_by="user",
+                impact_area_json=["approvals", approval.request_type],
+                related_task_id=approval.task_id,
+                related_agent_id=approval.requesting_agent_id,
+                reversible=approval.status != "allowed_for_project",
+                created_at=approval.created_at or now,
+            )
+        questions = db.scalars(
+            select(ManagerQuestion)
+            .where(ManagerQuestion.project_id == project.id, ManagerQuestion.status != "pending")
+            .order_by(ManagerQuestion.created_at.desc(), ManagerQuestion.id.desc())
+        )
+        for question in questions:
+            title = question.question[:220]
+            preview[("manager_question", title)] = DecisionRecord(
+                project_id=project.id,
+                decision_type="manager_question",
+                title=question.question[:220],
+                decision=question.selected_text or question.selected_option_id or question.status,
+                reason=question.manager_recommendation or "Resolved through the Manager queue.",
+                made_by="auto_manager" if question.status == "auto_decided" else "user",
+                impact_area_json=["requirements"],
+                related_task_id=question.related_task_id,
+                related_agent_id=question.related_agent_id,
+                reversible=question.status != "auto_decided",
+                created_at=question.resolved_at or question.created_at or now,
+            )
+        swarm_plan = self._current_swarm_plan_record(db, project.id)
+        if swarm_plan is not None:
+            title = f"Swarm strategy: {swarm_plan.mode}"
+            preview[("swarm_strategy", title)] = DecisionRecord(
+                project_id=project.id,
+                decision_type="swarm_strategy",
+                title=title,
+                decision=swarm_plan.status,
+                reason=swarm_plan.strategy_summary,
+                made_by="user" if swarm_plan.approved_by_user else "manager",
+                impact_area_json=["swarm"],
+                reversible=True,
+                created_at=swarm_plan.updated_at or swarm_plan.created_at or now,
+            )
+        return sorted(preview.values(), key=lambda item: (item.created_at or now, item.id or 0), reverse=True)
 
     def _ensure_widget_support_records(
         self,
@@ -5223,8 +5416,7 @@ class MissionControlService:
                 },
             )
         if instance.widget_type == "Swarm Budget":
-            support = get_support()
-            budget: SwarmBudget = support["budget"]
+            budget = project.swarm_budget or self._preview_swarm_budget(db, project)
             warnings = []
             if budget.current_intensity in {"high", "extreme"}:
                 warnings.append(f"Swarm intensity is {budget.current_intensity}. More agents are not free speed; they are coordination debt in nicer clothing.")
@@ -5405,8 +5597,7 @@ class MissionControlService:
                 warnings_json=list(rebalance["risks"][:3]),
             )
         if instance.widget_type == "Agent Contracts":
-            support = get_support()
-            contracts: list[AgentContract] = support["contracts"]
+            contracts = list(project.agent_contracts or []) or self._preview_agent_contracts(db, project)
             if not contracts:
                 return self._serialize_widget_data(instance, status="empty", empty_state="No active agent contracts exist yet.")
             return self._serialize_widget_data(
@@ -5430,8 +5621,7 @@ class MissionControlService:
                 },
             )
         if instance.widget_type == "Path Ownership Map":
-            support = get_support()
-            path_locks: list[PathLock] = support["path_locks"]
+            path_locks = list(project.path_locks or []) or self._preview_path_locks(db, project)
             if not path_locks:
                 return self._serialize_widget_data(instance, status="empty", empty_state="No path ownership data exists yet.")
             waiting = [entry for entry in path_locks if entry.status == "waiting"]
@@ -5454,8 +5644,7 @@ class MissionControlService:
                 warnings_json=warnings,
             )
         if instance.widget_type == "Decision Ledger":
-            support = get_support()
-            decisions: list[DecisionRecord] = support["decisions"]
+            decisions = list(project.decision_records or []) or self._preview_decision_records(db, project)
             if not decisions:
                 return self._serialize_widget_data(instance, status="empty", empty_state="No decisions have been recorded yet.")
             return self._serialize_widget_data(

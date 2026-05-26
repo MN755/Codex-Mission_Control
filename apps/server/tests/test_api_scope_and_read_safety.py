@@ -8,15 +8,19 @@ from conftest import sample_workspace
 from db import SessionLocal, init_db
 from models import (
     Agent,
+    AgentArchetype,
+    AgentContract,
     AgentExecutionTrace,
     AgentLoadSnapshot,
     AgentRun,
-    AgentArchetype,
     AgentStuckSignal,
+    AppProfile,
+    DecisionRecord,
     HandoffEvidence,
     ImportedCodebaseSafety,
     ManagerAssumption,
     ModelPolicy,
+    PathLock,
     Project,
     ProjectConfidence,
     ProjectPlaybook,
@@ -26,6 +30,7 @@ from models import (
     ReviewGate,
     SandboxProfile,
     SecurityPolicy,
+    SwarmBudget,
     SwarmPreferences,
     Task,
     ToolRoutingPolicy,
@@ -611,6 +616,10 @@ def test_project_widget_data_route_stays_read_only_for_preview_widgets(client, b
         "Tool Routing Policy",
         "Sandbox Profiles",
         "Validation Recipe",
+        "Swarm Budget",
+        "Agent Contracts",
+        "Path Ownership Map",
+        "Decision Ledger",
     ]
     instance_ids: list[int] = []
     for widget_type in widget_types:
@@ -642,6 +651,13 @@ def test_project_widget_data_route_stays_read_only_for_preview_widgets(client, b
         assert db.scalar(select(func.count(ToolRoutingPolicy.id)).where(ToolRoutingPolicy.project_id == project_id)) == 0
         assert db.scalar(select(func.count(SandboxProfile.id)).where(SandboxProfile.project_id.is_(None))) == 0
         assert db.scalar(select(func.count(ValidationRecipe.id)).where(ValidationRecipe.project_id == project_id)) == 0
+        assert db.scalar(select(func.count(SwarmBudget.project_id)).where(SwarmBudget.project_id == project_id)) == 0
+        assert db.scalar(select(func.count(SwarmPreferences.id)).where(SwarmPreferences.project_id == project_id)) == 0
+        assert db.scalar(select(func.count(AgentContract.id)).where(AgentContract.project_id == project_id)) == 0
+        assert db.scalar(select(func.count(PathLock.id)).where(PathLock.project_id == project_id)) == 0
+        assert db.scalar(select(func.count(DecisionRecord.id)).where(DecisionRecord.project_id == project_id)) == 0
+        assert db.scalar(select(func.count(AgentArchetype.id))) == 0
+        assert db.scalar(select(func.count(AppProfile.id))) == 0
     finally:
         db.close()
 
