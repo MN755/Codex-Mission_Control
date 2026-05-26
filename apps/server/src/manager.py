@@ -573,7 +573,7 @@ class MissionControlService:
     def _project_settings(self, db: Session, project: Project) -> ProjectSettings:
         if project.settings is not None:
             return project.settings
-        profile = self._app_profile(db)
+        profile = self._app_profile_preview(db)
         timestamp = utc_now()
         return ProjectSettings(
             project_id=project.id,
@@ -751,7 +751,7 @@ class MissionControlService:
         return get_or_create_app_profile(db)
 
     def _preferred_user_name(self, db: Session, project: Project | None = None) -> str:
-        profile = self._app_profile(db)
+        profile = self._app_profile_preview(db)
         if profile.display_name:
             return display_name_or_default(profile.display_name)
         if project and project.created_by:
@@ -5011,7 +5011,7 @@ class MissionControlService:
         ]
 
     def list_dashboard_widget_instances(self, db: Session) -> list[dict[str, Any]]:
-        profile = self._app_profile(db)
+        profile = self._app_profile_preview(db)
         return [self._serialize_widget_instance(item) for item in self._dashboard_widget_instances(db, profile)]
 
     def list_project_widget_instances(self, db: Session, project: Project) -> list[dict[str, Any]]:
@@ -6512,7 +6512,7 @@ class MissionControlService:
         )
 
     async def get_dashboard_widget_summary(self, db: Session) -> dict[str, Any]:
-        profile = self._app_profile(db)
+        profile = self._app_profile_preview(db)
         instances = [item for item in self._dashboard_widget_instances(db, profile) if item.enabled]
         projects = self._ordered_projects(db, include_archived=False)
         active_builds = await self._dashboard_active_builds(db, projects)
@@ -9619,7 +9619,7 @@ class MissionControlService:
         from runtime_paths import diagnostics_root
 
         project_settings = self._project_settings(db, project) if project else None
-        app_profile = self._app_profile(db)
+        app_profile = self._app_profile_preview(db)
         selected_provider = provider_override or (project_settings.provider if project_settings else app_profile.selected_provider or "codex")
         adapter_command = (
             adapter_command_override
@@ -9683,7 +9683,7 @@ class MissionControlService:
         else:
             status["effective_runner_mode"] = app_profile.default_runner_mode or DEFAULT_RUNNER_MODE
         status["app_state_summary"] = app_profile
-        status["startup_summary"] = startup_service.get_status(db)
+        status["startup_summary"] = startup_service.get_status(db, persist_profile=False)
         status["diagnostics_directory"] = str(diagnostics_root())
         return status
 
@@ -9841,7 +9841,7 @@ class MissionControlService:
         return [{key: value for key, value in item.items() if key != "_priority"} for item in builds[:6]]
 
     async def get_dashboard_summary(self, db: Session) -> dict[str, Any]:
-        profile = self._app_profile(db)
+        profile = self._app_profile_preview(db)
         projects = self._ordered_projects(db, include_archived=True)
         sidebar_projects = self._sidebar_projects(projects)
         recent_projects = [project for project in projects if not project.archived_at][:3]
@@ -9961,7 +9961,7 @@ class MissionControlService:
         return self._serialize_handoff_record(db, project, self._latest_evidence_handoff(db, project.id))
 
     def get_tool_catalog(self, db: Session) -> list[dict[str, Any]]:
-        profile = self._app_profile(db)
+        profile = self._app_profile_preview(db)
         return catalog_with_permissions(
             provider=normalize_provider(profile.selected_provider),
             connected_accounts=dict(profile.connected_accounts_json or {}),
