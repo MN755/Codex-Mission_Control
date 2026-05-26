@@ -5,7 +5,7 @@ import pytest
 from conftest import sample_workspace
 from db import SessionLocal, init_db
 from manager import service
-from models import Agent, HandoffEvidence, Project, ReviewGate, Task
+from models import Agent, ChangeRequest, EvidenceBasedHandoff, HandoffEvidence, Project, ProjectTimelineEvent, RecoveryPlan, ReviewGate, Task
 
 
 def _seed_project_pair() -> tuple[int, int, int, int, int, int]:
@@ -295,5 +295,226 @@ def test_review_gate_update_rejects_foreign_refs_and_missing_evidence() -> None:
             service.update_review_gate(db, gate.id, {"related_agent_id": foreign_agent_id})
         with pytest.raises(ValueError, match="Review gate evidence"):
             service.update_review_gate(db, gate.id, {"evidence_ids_json": [scoped_evidence.id, foreign_evidence.id, 999_999]})
+    finally:
+        db.close()
+
+
+def test_create_recovery_plan_rejects_foreign_and_missing_related_refs_before_persisting() -> None:
+    project_one_id, _, _, foreign_agent_id, _, foreign_task_id = _seed_project_pair()
+
+    db = SessionLocal()
+    try:
+        scoped_project = db.get(Project, project_one_id)
+        assert scoped_project is not None
+
+        with pytest.raises(ValueError, match="Recovery plan related agent"):
+            service.create_recovery_plan(
+                db,
+                scoped_project,
+                {
+                    "trigger_type": "agent_stuck",
+                    "trigger_summary": "Foreign agent should be rejected.",
+                    "related_agent_id": foreign_agent_id,
+                    "suggested_actions_json": ["ask_user"],
+                },
+            )
+        with pytest.raises(ValueError, match="Recovery plan related task"):
+            service.create_recovery_plan(
+                db,
+                scoped_project,
+                {
+                    "trigger_type": "task_blocked",
+                    "trigger_summary": "Foreign task should be rejected.",
+                    "related_task_id": foreign_task_id,
+                    "suggested_actions_json": ["ask_user"],
+                },
+            )
+        with pytest.raises(ValueError, match="Recovery plan related agent"):
+            service.create_recovery_plan(
+                db,
+                scoped_project,
+                {
+                    "trigger_type": "agent_stuck",
+                    "trigger_summary": "Missing agent should be rejected.",
+                    "related_agent_id": 999_999,
+                    "suggested_actions_json": ["ask_user"],
+                },
+            )
+        with pytest.raises(ValueError, match="Recovery plan related task"):
+            service.create_recovery_plan(
+                db,
+                scoped_project,
+                {
+                    "trigger_type": "task_blocked",
+                    "trigger_summary": "Missing task should be rejected.",
+                    "related_task_id": 999_999,
+                    "suggested_actions_json": ["ask_user"],
+                },
+            )
+        assert db.query(RecoveryPlan).filter(RecoveryPlan.project_id == scoped_project.id).count() == 0
+    finally:
+        db.close()
+
+
+def test_create_timeline_event_rejects_foreign_and_missing_related_refs() -> None:
+    project_one_id, project_two_id, agent_one_id, foreign_agent_id, task_one_id, foreign_task_id = _seed_project_pair()
+
+    db = SessionLocal()
+    try:
+        scoped_project = db.get(Project, project_one_id)
+        foreign_project = db.get(Project, project_two_id)
+        assert scoped_project is not None
+        assert foreign_project is not None
+        scoped_handoff = EvidenceBasedHandoff(
+            project_id=scoped_project.id,
+            title="Scoped handoff",
+            summary="Valid handoff",
+            what_was_built="- feature",
+            how_to_run="- run",
+            how_to_use="- use",
+            tests_run_json=[],
+            known_limitations_json=[],
+            suggested_next_steps_json=[],
+            evidence_ids_json=[],
+            confidence_level="medium",
+            dry_run=True,
+        )
+        foreign_handoff = EvidenceBasedHandoff(
+            project_id=foreign_project.id,
+            title="Foreign handoff",
+            summary="Invalid handoff",
+            what_was_built="- foreign",
+            how_to_run="- run",
+            how_to_use="- use",
+            tests_run_json=[],
+            known_limitations_json=[],
+            suggested_next_steps_json=[],
+            evidence_ids_json=[],
+            confidence_level="medium",
+            dry_run=True,
+        )
+        db.add_all([scoped_handoff, foreign_handoff])
+        db.flush()
+
+        valid = service.create_timeline_event(
+            db,
+            scoped_project,
+            {
+                "event_type": "status_update",
+                "title": "Valid event",
+                "summary": "This one is scoped correctly.",
+                "related_agent_id": agent_one_id,
+                "related_task_id": task_one_id,
+                "related_handoff_id": scoped_handoff.id,
+            },
+        )
+        assert valid.project_id == scoped_project.id
+
+        with pytest.raises(ValueError, match="Timeline event related agent"):
+            service.create_timeline_event(
+                db,
+                scoped_project,
+                {"event_type": "status_update", "title": "Bad agent", "summary": "Nope", "related_agent_id": foreign_agent_id},
+            )
+        with pytest.raises(ValueError, match="Timeline event related task"):
+            service.create_timeline_event(
+                db,
+                scoped_project,
+                {"event_type": "status_update", "title": "Bad task", "summary": "Nope", "related_task_id": foreign_task_id},
+            )
+        with pytest.raises(ValueError, match="Timeline event related handoff"):
+            service.create_timeline_event(
+                db,
+                scoped_project,
+                {"event_type": "status_update", "title": "Bad handoff", "summary": "Nope", "related_handoff_id": foreign_handoff.id},
+            )
+        with pytest.raises(ValueError, match="Timeline event related agent"):
+            service.create_timeline_event(
+                db,
+                scoped_project,
+                {"event_type": "status_update", "title": "Missing agent", "summary": "Nope", "related_agent_id": 999_999},
+            )
+        with pytest.raises(ValueError, match="Timeline event related task"):
+            service.create_timeline_event(
+                db,
+                scoped_project,
+                {"event_type": "status_update", "title": "Missing task", "summary": "Nope", "related_task_id": 999_999},
+            )
+        with pytest.raises(ValueError, match="Timeline event related handoff"):
+            service.create_timeline_event(
+                db,
+                scoped_project,
+                {"event_type": "status_update", "title": "Missing handoff", "summary": "Nope", "related_handoff_id": 999_999},
+            )
+        assert db.query(ProjectTimelineEvent).filter(ProjectTimelineEvent.project_id == scoped_project.id).count() == 1
+    finally:
+        db.close()
+
+
+def test_update_change_request_rejects_foreign_and_missing_related_refs() -> None:
+    project_one_id, project_two_id, _, _, task_one_id, foreign_task_id = _seed_project_pair()
+
+    db = SessionLocal()
+    try:
+        scoped_project = db.get(Project, project_one_id)
+        foreign_project = db.get(Project, project_two_id)
+        assert scoped_project is not None
+        assert foreign_project is not None
+        scoped_handoff = EvidenceBasedHandoff(
+            project_id=scoped_project.id,
+            title="Scoped handoff",
+            summary="Valid handoff",
+            what_was_built="- feature",
+            how_to_run="- run",
+            how_to_use="- use",
+            tests_run_json=[],
+            known_limitations_json=[],
+            suggested_next_steps_json=[],
+            evidence_ids_json=[],
+            confidence_level="medium",
+            dry_run=True,
+        )
+        foreign_handoff = EvidenceBasedHandoff(
+            project_id=foreign_project.id,
+            title="Foreign handoff",
+            summary="Invalid handoff",
+            what_was_built="- foreign",
+            how_to_run="- run",
+            how_to_use="- use",
+            tests_run_json=[],
+            known_limitations_json=[],
+            suggested_next_steps_json=[],
+            evidence_ids_json=[],
+            confidence_level="medium",
+            dry_run=True,
+        )
+        request = ChangeRequest(
+            project_id=scoped_project.id,
+            request_text="Tighten the workflow.",
+            classification="needs_triage",
+            impact_estimate="unknown",
+            status="new",
+            related_tasks_json=[],
+            related_handoff_id=None,
+        )
+        db.add_all([scoped_handoff, foreign_handoff, request])
+        db.flush()
+
+        updated = service.update_change_request(
+            db,
+            request.id,
+            {"related_tasks_json": [task_one_id], "related_handoff_id": scoped_handoff.id, "status": "triaged"},
+        )
+        assert updated.related_tasks_json == [task_one_id]
+        assert updated.related_handoff_id == scoped_handoff.id
+
+        with pytest.raises(ValueError, match="Change request related task"):
+            service.update_change_request(db, request.id, {"related_tasks_json": [foreign_task_id]})
+        with pytest.raises(ValueError, match="Change request related handoff"):
+            service.update_change_request(db, request.id, {"related_handoff_id": foreign_handoff.id})
+        with pytest.raises(ValueError, match="Change request related task"):
+            service.update_change_request(db, request.id, {"related_tasks_json": [999_999]})
+        with pytest.raises(ValueError, match="Change request related handoff"):
+            service.update_change_request(db, request.id, {"related_handoff_id": 999_999})
     finally:
         db.close()

@@ -1734,6 +1734,45 @@ class MissionControlService:
                 raise ValueError(f"{evidence_label} not found in this project")
         return normalized
 
+    def _validate_project_task_refs(
+        self,
+        db: Session,
+        project: Project,
+        *,
+        task_ids: list[int] | None = None,
+        task_label: str = "Related task",
+    ) -> list[int]:
+        normalized = [int(item) for item in (task_ids or [])]
+        if not normalized:
+            return normalized
+        valid_ids = set(
+            db.scalars(
+                select(Task.id).where(
+                    Task.project_id == project.id,
+                    Task.id.in_(normalized),
+                )
+            )
+        )
+        for task_id in normalized:
+            if task_id not in valid_ids:
+                raise ValueError(f"{task_label} not found in this project")
+        return normalized
+
+    def _validate_project_handoff_ref(
+        self,
+        db: Session,
+        project: Project,
+        *,
+        related_handoff_id: int | None = None,
+        handoff_label: str = "Related handoff",
+    ) -> int | None:
+        if related_handoff_id is None:
+            return None
+        handoff = db.get(EvidenceBasedHandoff, int(related_handoff_id))
+        if handoff is None or handoff.project_id != project.id:
+            raise ValueError(f"{handoff_label} not found in this project")
+        return handoff.id
+
     def _record_decision(
         self,
         db: Session,
@@ -1804,6 +1843,20 @@ class MissionControlService:
         related_task_id: int | None = None,
         related_handoff_id: int | None = None,
     ) -> ProjectTimelineEvent:
+        self._validate_project_related_refs(
+            db,
+            project,
+            related_agent_id=related_agent_id,
+            related_task_id=related_task_id,
+            agent_label="Timeline event related agent",
+            task_label="Timeline event related task",
+        )
+        related_handoff_id = self._validate_project_handoff_ref(
+            db,
+            project,
+            related_handoff_id=related_handoff_id,
+            handoff_label="Timeline event related handoff",
+        )
         existing = db.scalar(
             select(ProjectTimelineEvent)
             .where(
@@ -2882,6 +2935,14 @@ class MissionControlService:
         }
 
     def create_recovery_plan(self, db: Session, project: Project, payload: dict[str, Any]) -> RecoveryPlan:
+        self._validate_project_related_refs(
+            db,
+            project,
+            related_agent_id=payload.get("related_agent_id"),
+            related_task_id=payload.get("related_task_id"),
+            agent_label="Recovery plan related agent",
+            task_label="Recovery plan related task",
+        )
         plan = RecoveryPlan(
             project_id=project.id,
             trigger_type=str(payload["trigger_type"]).strip(),
@@ -3690,11 +3751,34 @@ class MissionControlService:
         record = db.get(ChangeRequest, change_request_id)
         if record is None:
             raise ValueError("Change request not found")
+        project = db.get(Project, record.project_id)
+        if project is None:
+            raise ValueError("Project not found for change request")
+        related_handoff_id = (
+            self._validate_project_handoff_ref(
+                db,
+                project,
+                related_handoff_id=payload.get("related_handoff_id"),
+                handoff_label="Change request related handoff",
+            )
+            if "related_handoff_id" in payload
+            else None
+        )
+        related_tasks_json = (
+            self._validate_project_task_refs(
+                db,
+                project,
+                task_ids=payload.get("related_tasks_json"),
+                task_label="Change request related task",
+            )
+            if "related_tasks_json" in payload and payload["related_tasks_json"] is not None
+            else None
+        )
         for field in ["classification", "impact_estimate", "status", "related_handoff_id"]:
             if field in payload and payload[field] is not None:
-                setattr(record, field, payload[field])
-        if "related_tasks_json" in payload and payload["related_tasks_json"] is not None:
-            record.related_tasks_json = [int(item) for item in payload["related_tasks_json"]]
+                setattr(record, field, related_handoff_id if field == "related_handoff_id" else payload[field])
+        if related_tasks_json is not None:
+            record.related_tasks_json = related_tasks_json
         db.flush()
         self.events.publish(db, record.project_id, "change_request_updated", {"project_id": record.project_id, "change_request_id": record.id, "status": record.status})
         return record
