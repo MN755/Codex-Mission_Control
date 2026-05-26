@@ -2,13 +2,34 @@ from __future__ import annotations
 
 from typing import Any
 
+from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from models import Project, RiskRecord, utc_now
+from models import Agent, Project, RiskRecord, Task, utc_now
 
 
 class RiskService:
+    def _validate_owner_agent(self, db: Session, project: Project, owner_agent_id: int | None) -> int | None:
+        if owner_agent_id is None:
+            return None
+        agent = db.get(Agent, owner_agent_id)
+        if agent is None:
+            raise HTTPException(status_code=404, detail="Owner agent not found")
+        if agent.project_id != project.id:
+            raise HTTPException(status_code=404, detail="Owner agent not found in this project")
+        return agent.id
+
+    def _validate_related_task(self, db: Session, project: Project, related_task_id: int | None) -> int | None:
+        if related_task_id is None:
+            return None
+        task = db.get(Task, related_task_id)
+        if task is None:
+            raise HTTPException(status_code=404, detail="Related task not found")
+        if task.project_id != project.id:
+            raise HTTPException(status_code=404, detail="Related task not found in this project")
+        return task.id
+
     def list_risks(self, db: Session, project: Project) -> list[RiskRecord]:
         return list(
             db.scalars(
@@ -19,6 +40,8 @@ class RiskService:
         )
 
     def create_risk(self, db: Session, project: Project, payload: dict[str, Any]) -> RiskRecord:
+        owner_agent_id = self._validate_owner_agent(db, project, payload.get("owner_agent_id"))
+        related_task_id = self._validate_related_task(db, project, payload.get("related_task_id"))
         normalized_title = " ".join(str(payload["title"]).split())
         existing = db.scalar(
             select(RiskRecord)
@@ -37,10 +60,10 @@ class RiskService:
             description=str(payload["description"]).strip(),
             severity=str(payload.get("severity") or "medium"),
             likelihood=str(payload.get("likelihood") or "medium"),
-            owner_agent_id=payload.get("owner_agent_id"),
+            owner_agent_id=owner_agent_id,
             mitigation=(str(payload["mitigation"]).strip() if payload.get("mitigation") else None),
             status=str(payload.get("status") or "open"),
-            related_task_id=payload.get("related_task_id"),
+            related_task_id=related_task_id,
             created_by=str(payload.get("created_by") or "manager"),
         )
         db.add(record)
@@ -100,7 +123,7 @@ class RiskService:
         rows = [
             {
                 "title": item.title,
-                "detail": f"{item.severity}/{item.likelihood} • {item.status}",
+                "detail": f"{item.severity}/{item.likelihood} â€¢ {item.status}",
                 "project_id": item.project_id,
                 "status": item.status,
             }
