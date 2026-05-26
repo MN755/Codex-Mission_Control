@@ -2293,6 +2293,134 @@ class MissionControlService:
             self.events.publish(db, project.id, "conflict_detected", {"project_id": project.id, "count": len([item for item in conflicts if item.status != "resolved"])})
         return conflicts
 
+    def _preview_conflicts(self, db: Session, project: Project) -> list[ConflictRecord]:
+        reservations = self._active_reservations(db, project.id)
+        tasks_by_id = {task.id: task for task in db.scalars(select(Task).where(Task.project_id == project.id))}
+        existing_rows = list(
+            db.scalars(
+                select(ConflictRecord)
+                .where(ConflictRecord.project_id == project.id, ConflictRecord.status != "resolved")
+                .order_by(ConflictRecord.id.asc())
+            )
+        )
+        existing = {(entry.conflict_type, entry.title): entry for entry in existing_rows}
+        preview: dict[tuple[str, str], ConflictRecord] = {}
+        active_keys: set[tuple[str, str]] = set()
+        now = utc_now()
+
+        def clone_conflict(
+            *,
+            template: ConflictRecord | None = None,
+            conflict_type: str,
+            title: str,
+            summary: str,
+            involved_agent_ids: list[int],
+            involved_task_ids: list[int],
+            affected_paths: list[str],
+            severity: str,
+            status: str,
+            suggested_resolution: list[str],
+        ) -> ConflictRecord:
+            record = ConflictRecord(
+                project_id=project.id,
+                conflict_type=conflict_type,
+                title=title,
+                summary=summary,
+                involved_agent_ids_json=involved_agent_ids,
+                involved_task_ids_json=involved_task_ids,
+                affected_paths_json=affected_paths,
+                severity=severity,
+                status=status,
+                suggested_resolution_json=suggested_resolution,
+                selected_resolution=template.selected_resolution if template is not None else None,
+            )
+            if template is not None:
+                record.id = template.id
+                record.created_at = template.created_at
+                record.resolved_at = template.resolved_at
+            else:
+                record.created_at = now
+            return record
+
+        by_path: dict[str, list[PathReservation]] = {}
+        for reservation in reservations:
+            by_path.setdefault(reservation.path, []).append(reservation)
+
+        for path, items in by_path.items():
+            agent_ids = sorted({item.agent_id for item in items})
+            task_ids = sorted({item.task_id for item in items})
+            if len(agent_ids) < 2:
+                continue
+            conflict_type = "file_edit_collision" if "." in Path(path).name else "path_overlap"
+            title = f"Parallel edit pressure on {path}"
+            summary = f"{len(agent_ids)} agents currently claim the same path target."
+            key = (conflict_type, title)
+            active_keys.add(key)
+            preview[key] = clone_conflict(
+                template=existing.get(key),
+                conflict_type=conflict_type,
+                title=title,
+                summary=summary,
+                involved_agent_ids=agent_ids,
+                involved_task_ids=task_ids,
+                affected_paths=[path],
+                severity="high",
+                status="manager_review",
+                suggested_resolution=[
+                    "serialize_tasks",
+                    "split_file_ownership",
+                    "spawn_conflict_resolver_agent",
+                    "ask_user",
+                ],
+            )
+
+        for task in tasks_by_id.values():
+            if task.status != "waiting_on_paths":
+                continue
+            blocked_paths = [path for path in task.allowed_paths_json if path in by_path]
+            if not blocked_paths:
+                continue
+            title = f"Task dependency conflict for {task.title}"
+            summary = f"{task.title} is waiting on {len(blocked_paths)} locked path(s)."
+            key = ("task_dependency", title)
+            active_keys.add(key)
+            preview[key] = clone_conflict(
+                template=existing.get(key),
+                conflict_type="task_dependency",
+                title=title,
+                summary=summary,
+                involved_agent_ids=sorted({reservation.agent_id for path in blocked_paths for reservation in by_path.get(path, [])}),
+                involved_task_ids=[task.id],
+                affected_paths=blocked_paths[:10],
+                severity="medium",
+                status="detected",
+                suggested_resolution=["serialize_tasks", "split_file_ownership", "ask_user"],
+            )
+
+        for key, record in existing.items():
+            if key in preview or record.status == "resolved":
+                continue
+            preview[key] = clone_conflict(
+                template=record,
+                conflict_type=record.conflict_type,
+                title=record.title,
+                summary=record.summary,
+                involved_agent_ids=list(record.involved_agent_ids_json or []),
+                involved_task_ids=list(record.involved_task_ids_json or []),
+                affected_paths=list(record.affected_paths_json or []),
+                severity=record.severity,
+                status=record.status,
+                suggested_resolution=list(record.suggested_resolution_json or []),
+            )
+
+        def sort_key(item: ConflictRecord) -> tuple[datetime, int]:
+            created_at = item.created_at or now
+            if created_at.tzinfo is None:
+                created_at = created_at.replace(tzinfo=timezone.utc)
+            return (created_at, item.id or 0)
+
+        return sorted(preview.values(), key=sort_key, reverse=True)
+
     def resolve_conflict(self, db: Session, conflict_id: int, resolution: str) -> ConflictRecord:
         conflict = db.get(ConflictRecord, conflict_id)
         if conflict is None:
@@ -4716,7 +4844,7 @@ class MissionControlService:
         budget = project.swarm_budget or self._preview_swarm_budget(db, project)
         contracts = list(project.agent_contracts or []) or self._preview_agent_contracts(db, project)
         path_locks = list(project.path_locks or []) or self._preview_path_locks(db, project)
-        conflicts = self.list_conflicts(db, project)
+        conflicts = self._preview_conflicts(db, project)
         confidence = list(project.project_confidence or []) or self._preview_project_confidence(project)
         persisted_stuck_signals = list(
             db.scalars(
