@@ -3,13 +3,34 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from models import ChangeRequest, Project, ScopeChangeSignal, utc_now
+from models import ChangeRequest, ManagerMessage, Project, ScopeChangeSignal, Task, utc_now
 
 
 class ScopeCreepService:
+    def _validate_related_task(self, db: Session, project: Project, related_task_id: int | None) -> int | None:
+        if related_task_id is None:
+            return None
+        task = db.get(Task, related_task_id)
+        if task is None:
+            raise HTTPException(status_code=404, detail="Related task not found")
+        if task.project_id != project.id:
+            raise HTTPException(status_code=404, detail="Related task not found in this project")
+        return task.id
+
+    def _validate_related_message(self, db: Session, project: Project, related_message_id: int | None) -> int | None:
+        if related_message_id is None:
+            return None
+        message = db.get(ManagerMessage, related_message_id)
+        if message is None:
+            raise HTTPException(status_code=404, detail="Related message not found")
+        if message.project_id != project.id:
+            raise HTTPException(status_code=404, detail="Related message not found in this project")
+        return message.id
+
     def recent_signals(self, db: Session, limit: int = 10) -> list[ScopeChangeSignal]:
         return list(
             db.scalars(
@@ -41,6 +62,8 @@ class ScopeCreepService:
 
     def analyze(self, db: Session, project: Project, payload: dict[str, Any]) -> list[ScopeChangeSignal]:
         created: list[ScopeChangeSignal] = []
+        related_task_id = self._validate_related_task(db, project, payload.get("related_task_id"))
+        related_message_id = self._validate_related_message(db, project, payload.get("related_message_id"))
         summaries: list[tuple[str, str, int | None, int | None]] = []
         explicit_summary = str(payload.get("summary") or "").strip()
         if explicit_summary:
@@ -48,8 +71,8 @@ class ScopeCreepService:
                 (
                     str(payload.get("source") or "manager"),
                     explicit_summary,
-                    payload.get("related_task_id"),
-                    payload.get("related_message_id"),
+                    related_task_id,
+                    related_message_id,
                 )
             )
         else:
