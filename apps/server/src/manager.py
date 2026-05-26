@@ -10330,14 +10330,7 @@ class MissionControlService:
         if question.status == "answered":
             raise ValueError("Question was already answered")
 
-        option_map = {
-            str(option.get("id")): str(option.get("label"))
-            for option in question.options_json
-            if isinstance(option, dict) and option.get("id") and option.get("label")
-        }
-        normalized_selected_text = (selected_text or option_map.get(option_id) or "").strip()
-        if not normalized_selected_text:
-            raise ValueError("Selected text is required")
+        normalized_option_id, normalized_selected_text = self._normalize_interview_answer(question, option_id)
 
         project = db.get(Project, session.project_id)
         if not project:
@@ -10345,8 +10338,8 @@ class MissionControlService:
         understanding = self._ensure_project_understanding(db, project)
 
         question.project_id = canonical_project_id
-        question.selected_option = option_id
-        question.selected_option_id = option_id
+        question.selected_option = normalized_option_id
+        question.selected_option_id = normalized_option_id
         question.selected_text = normalized_selected_text
         question.custom_answer = custom_answer.strip() if custom_answer and custom_answer.strip() else None
         question.status = "answered"
@@ -10385,12 +10378,23 @@ class MissionControlService:
             {
                 "session_id": session.id,
                 "question_id": question_id,
-                "option_id": option_id,
+                "option_id": normalized_option_id,
                 "category": question.category,
                 "custom_answer": question.custom_answer,
             },
         )
         return session
+
+    def _normalize_interview_answer(self, question: InterviewQuestion, option_id: str) -> tuple[str, str]:
+        option_map = {
+            str(option.get("id")): str(option.get("label"))
+            for option in (question.options_json or [])
+            if isinstance(option, dict) and option.get("id") and option.get("label")
+        }
+        normalized_option_id = str(option_id or "").strip()
+        if not normalized_option_id or normalized_option_id not in option_map:
+            raise ValueError("Interview option is not valid.")
+        return normalized_option_id, option_map[normalized_option_id]
 
     def finish_interview(self, db: Session, project: Project) -> InterviewSession:
         session = self._latest_session(db, project.id)
