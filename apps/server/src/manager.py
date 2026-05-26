@@ -4255,14 +4255,21 @@ class MissionControlService:
         overview: dict[str, Any],
         degraded_notices: list[str],
     ) -> dict[str, Any]:
-        support = self._ensure_widget_support_records(
-            db,
-            project,
-            tasks=tasks,
-            degraded_notices=degraded_notices,
-            current_action=current_action,
-            overview=overview,
-        )
+        support: dict[str, Any] | None = None
+
+        def ensure_support() -> dict[str, Any]:
+            nonlocal support
+            if support is None:
+                support = self._ensure_widget_support_records(
+                    db,
+                    project,
+                    tasks=tasks,
+                    degraded_notices=degraded_notices,
+                    current_action=current_action,
+                    overview=overview,
+                )
+            return support
+
         swarm_plan = self._serialize_swarm_plan(db, project, self._current_swarm_plan_record(db, project.id))
         if instance.widget_type == "Swarm Strategy":
             if swarm_plan is None:
@@ -4355,7 +4362,7 @@ class MissionControlService:
                 },
             )
         if instance.widget_type == "Security Policy":
-            policy = security_service.get_policy(db, project=project)
+            policy = security_service.get_policy(db, project=project, create_if_missing=False)
             return self._serialize_widget_data(
                 instance,
                 status="ready",
@@ -4484,6 +4491,7 @@ class MissionControlService:
                 },
             )
         if instance.widget_type == "Swarm Budget":
+            support = ensure_support()
             budget: SwarmBudget = support["budget"]
             warnings = []
             if budget.current_intensity in {"high", "extreme"}:
@@ -4505,6 +4513,7 @@ class MissionControlService:
                 warnings_json=warnings,
             )
         if instance.widget_type == "Conflict Resolver":
+            support = ensure_support()
             conflicts: list[ConflictRecord] = [entry for entry in support["conflicts"] if entry.status not in {"resolved", "dismissed"}]
             if not conflicts:
                 return self._serialize_widget_data(instance, status="empty", empty_state="No active conflicts are recorded right now.")
@@ -4528,6 +4537,7 @@ class MissionControlService:
                 },
             )
         if instance.widget_type == "Evidence Handoff":
+            support = ensure_support()
             latest_handoff: EvidenceBasedHandoff | None = support["latest_handoff"]
             evidence: list[HandoffEvidence] = support["handoff_evidence"]
             if latest_handoff is None and not evidence:
@@ -4551,6 +4561,7 @@ class MissionControlService:
                 warnings_json=missing_evidence,
             )
         if instance.widget_type == "Runbook":
+            support = ensure_support()
             runbook: Runbook | None = support["runbook"]
             if runbook is None:
                 return self._serialize_widget_data(instance, status="empty", empty_state="No runbook has been generated yet.")
@@ -4579,6 +4590,7 @@ class MissionControlService:
                 warnings_json=[f"Missing section: {section}" for section in missing_sections[:4]],
             )
         if instance.widget_type == "Agent Black Box":
+            support = ensure_support()
             traces: list[AgentExecutionTrace] = support["agent_traces"]
             if not traces:
                 return self._serialize_widget_data(instance, status="empty", empty_state="No agent execution traces have been recorded yet.")
@@ -4602,6 +4614,7 @@ class MissionControlService:
                 },
             )
         if instance.widget_type == "Snapshots":
+            support = ensure_support()
             snapshots: list[ProjectSnapshot] = support["snapshots"]
             if not snapshots:
                 return self._serialize_widget_data(instance, status="empty", empty_state="No snapshots have been recorded for this project yet.")
@@ -4623,6 +4636,7 @@ class MissionControlService:
                 },
             )
         if instance.widget_type == "Agent Load Balancer":
+            support = ensure_support()
             load_snapshots: list[AgentLoadSnapshot] = support["agent_load"]
             if not load_snapshots:
                 return self._serialize_widget_data(instance, status="empty", empty_state="No agent load snapshots exist yet.")
@@ -4639,6 +4653,7 @@ class MissionControlService:
                 warnings_json=list(rebalance["risks"][:3]),
             )
         if instance.widget_type == "Agent Contracts":
+            support = ensure_support()
             contracts: list[AgentContract] = support["contracts"]
             if not contracts:
                 return self._serialize_widget_data(instance, status="empty", empty_state="No active agent contracts exist yet.")
@@ -4663,6 +4678,7 @@ class MissionControlService:
                 },
             )
         if instance.widget_type == "Path Ownership Map":
+            support = ensure_support()
             path_locks: list[PathLock] = support["path_locks"]
             if not path_locks:
                 return self._serialize_widget_data(instance, status="empty", empty_state="No path ownership data exists yet.")
@@ -4686,6 +4702,7 @@ class MissionControlService:
                 warnings_json=warnings,
             )
         if instance.widget_type == "Decision Ledger":
+            support = ensure_support()
             decisions: list[DecisionRecord] = support["decisions"]
             if not decisions:
                 return self._serialize_widget_data(instance, status="empty", empty_state="No decisions have been recorded yet.")
@@ -4707,6 +4724,7 @@ class MissionControlService:
                 ]},
             )
         if instance.widget_type == "Confidence Tracker":
+            support = ensure_support()
             confidence: list[ProjectConfidence] = support["confidence"]
             return self._serialize_widget_data(
                 instance,
@@ -4725,6 +4743,7 @@ class MissionControlService:
                 },
             )
         if instance.widget_type == "Failure Recovery":
+            support = ensure_support()
             plans: list[RecoveryPlan] = support["recovery_plans"]
             open_plans = [entry for entry in plans if entry.resolved_at is None]
             if not open_plans:
@@ -4745,6 +4764,7 @@ class MissionControlService:
                 ]},
             )
         if instance.widget_type == "Agent Stuck Detection":
+            support = ensure_support()
             signals: list[AgentStuckSignal] = support["stuck_signals"]
             if not signals:
                 return self._serialize_widget_data(instance, status="empty", empty_state="No agents appear stuck right now.")
@@ -4763,6 +4783,7 @@ class MissionControlService:
                 ]},
             )
         if instance.widget_type == "Merge / Review Gates":
+            support = ensure_support()
             gates: list[ReviewGate] = support["review_gates"]
             return self._serialize_widget_data(
                 instance,
@@ -4780,8 +4801,10 @@ class MissionControlService:
                 ]},
             )
         if instance.widget_type == "Project Health Score":
+            support = ensure_support()
             return self._serialize_widget_data(instance, status="warning" if support["health"]["state"] in {"blocked", "unstable", "needs_review"} else "ready", data_json=support["health"])
         if instance.widget_type == "Model Assignment Policy":
+            support = ensure_support()
             policy: ModelPolicy = support["model_policy"]
             return self._serialize_widget_data(
                 instance,
@@ -4800,6 +4823,7 @@ class MissionControlService:
                 },
             )
         if instance.widget_type == "Tool Routing Policy":
+            support = ensure_support()
             policies: list[ToolRoutingPolicy] = support["tool_routing"]
             return self._serialize_widget_data(
                 instance,
@@ -4816,6 +4840,7 @@ class MissionControlService:
                 ]},
             )
         if instance.widget_type == "Sandbox Profiles":
+            support = ensure_support()
             profiles: list[SandboxProfile] = support["sandbox_profiles"]
             settings = self._project_settings(db, project)
             current_profile_name = "balanced" if settings.sandbox_mode == "workspace-write" else "strict"
@@ -4947,6 +4972,7 @@ class MissionControlService:
                 warnings_json=["Some areas still need targeted scan coverage."] if record.unindexed_areas_json else [],
             )
         if instance.widget_type == "Manager Assumptions":
+            support = ensure_support()
             assumptions: list[ManagerAssumption] = support["assumptions"]
             if not assumptions:
                 return self._serialize_widget_data(instance, status="empty", empty_state="No active Manager assumptions are recorded right now.")
@@ -4965,6 +4991,7 @@ class MissionControlService:
                 ]},
             )
         if instance.widget_type == "Repo Intelligence":
+            support = ensure_support()
             repo: RepoIntelligenceSummary = support["repo"]
             if not repo.languages_json and not repo.frameworks_json and not repo.important_folders_json:
                 return self._serialize_widget_data(instance, status="empty", empty_state="Repository intelligence is not available yet. Re-index after the workspace exists.")
@@ -4987,6 +5014,7 @@ class MissionControlService:
                 },
             )
         if instance.widget_type == "Validation Recipe":
+            support = ensure_support()
             recipe: ValidationRecipe = support["validation_recipe"]
             return self._serialize_widget_data(
                 instance,
@@ -5001,6 +5029,7 @@ class MissionControlService:
                 },
             )
         if instance.widget_type == "Handoff Quality":
+            support = ensure_support()
             handoff_quality: HandoffQualityPreference = support["handoff_quality"]
             return self._serialize_widget_data(
                 instance,
@@ -5044,6 +5073,7 @@ class MissionControlService:
         if instance.widget_type == "Handoff Progress":
             return self._serialize_widget_data(instance, status="ready", data_json=overview)
         if instance.widget_type == "What Changed Timeline":
+            support = ensure_support()
             items = [
                 {
                     "title": entry.title,
@@ -5062,6 +5092,7 @@ class MissionControlService:
                 return self._serialize_widget_data(instance, status="empty", empty_state="No agent reports have been routed to the Manager yet.")
             return self._serialize_widget_data(instance, status="ready", data_json={"items": messages})
         if instance.widget_type == "Parallelism Safety Meter":
+            support = ensure_support()
             path_locks: list[PathLock] = support["path_locks"]
             active_locks = [entry for entry in path_locks if entry.status == "active"]
             waiting_locks = [entry for entry in path_locks if entry.status == "waiting"]

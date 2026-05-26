@@ -7,7 +7,21 @@ from sqlalchemy import select
 
 from conftest import sample_workspace
 from db import SessionLocal
-from models import AppEvent, AppProfile, DecisionRecord, PathLock, ProjectEvent, ProjectSettings
+from models import (
+    AppEvent,
+    AppProfile,
+    DecisionRecord,
+    ModelPolicy,
+    PathLock,
+    ProjectConfidence,
+    ProjectEvent,
+    ProjectSettings,
+    ReviewGate,
+    SandboxProfile,
+    SecurityPolicy,
+    ToolRoutingPolicy,
+    ValidationRecipe,
+)
 
 
 def create_project(client, name: str, workspace_name: str, workspace_path: str | None = None) -> dict:
@@ -251,5 +265,42 @@ def test_project_widget_data_is_project_scoped_and_emits_project_events(client) 
             )
         )
         assert any(event.payload_json.get("project_id") == project_one["id"] for event in mirrored_app_events)
+    finally:
+        db.close()
+
+
+def test_security_policy_widget_data_read_does_not_seed_support_records(client) -> None:
+    project = create_project(client, "Security Widget Read", "security-widget-read")
+    instance = client.post(
+        f"/api/projects/{project['id']}/widgets/add",
+        json={"widget_type": "Security Policy"},
+    ).json()
+
+    db = SessionLocal()
+    try:
+        db.query(SecurityPolicy).delete()
+        db.query(ProjectConfidence).delete()
+        db.query(ReviewGate).delete()
+        db.query(ModelPolicy).delete()
+        db.query(ToolRoutingPolicy).delete()
+        db.query(SandboxProfile).delete()
+        db.query(ValidationRecipe).delete()
+        db.commit()
+    finally:
+        db.close()
+
+    response = client.get(f"/api/widgets/instances/{instance['id']}/data")
+    assert response.status_code == 200
+    assert response.json()["status"] == "ready"
+
+    db = SessionLocal()
+    try:
+        assert db.query(SecurityPolicy).count() == 0
+        assert db.query(ProjectConfidence).count() == 0
+        assert db.query(ReviewGate).count() == 0
+        assert db.query(ModelPolicy).count() == 0
+        assert db.query(ToolRoutingPolicy).count() == 0
+        assert db.query(SandboxProfile).count() == 0
+        assert db.query(ValidationRecipe).count() == 0
     finally:
         db.close()
