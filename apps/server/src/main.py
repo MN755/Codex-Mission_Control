@@ -1153,7 +1153,11 @@ def list_swarm_simulations(project_id: int, db: Session = Depends(get_db)) -> li
 
 
 @app.get("/api/projects/{project_id}/validation-coverage", response_model=list[ValidationCoverageAreaRead])
-def get_validation_coverage(project_id: int, db: Session = Depends(get_db)) -> list[ValidationCoverageAreaRead]:
+def get_validation_coverage(
+    project_id: int,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> list[ValidationCoverageAreaRead]:
     project = _get_project_or_404(db, project_id)
     coverage = validation_coverage_service.list_coverage(db, project)
     if coverage:
@@ -1162,7 +1166,11 @@ def get_validation_coverage(project_id: int, db: Session = Depends(get_db)) -> l
 
 
 @app.post("/api/projects/{project_id}/validation-coverage/recompute", response_model=list[ValidationCoverageAreaRead])
-def recompute_validation_coverage(project_id: int, db: Session = Depends(get_db)) -> list[ValidationCoverageAreaRead]:
+def recompute_validation_coverage(
+    project_id: int,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> list[ValidationCoverageAreaRead]:
     project = _get_project_or_404(db, project_id)
     return [ValidationCoverageAreaRead.model_validate(item) for item in validation_coverage_service.recompute(db, project)]
 
