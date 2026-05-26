@@ -16,6 +16,7 @@ from models import (
     HandoffEvidence,
     ImportedCodebaseSafety,
     ManagerAssumption,
+    PathLock,
     Project,
     ProjectPlaybook,
     ProjectUnderstanding,
@@ -70,6 +71,68 @@ def _create_legacy_project(name: str, workspace_name: str) -> int:
         )
         db.commit()
         return project.id
+    finally:
+        db.close()
+
+
+def test_path_ownership_widget_data_does_not_persist_locks(client, bridge_headers) -> None:
+    init_db()
+    db = SessionLocal()
+    try:
+        project = Project(
+            name="Path Ownership Widget",
+            idea="Keep lock previews read-only",
+            workspace_path=sample_workspace("path-ownership-widget"),
+            runner_mode="dry_run",
+            manager_mode="auto",
+        )
+        db.add(project)
+        db.flush()
+        db.add(Agent(project_id=project.id, name="Manager AI", role="Project orchestration", kind="manager", status="idle", workspace_path=project.workspace_path))
+        worker = Agent(project_id=project.id, name="Worker One", role="Implementation", kind="worker", status="idle", workspace_path=project.workspace_path)
+        db.add(worker)
+        db.flush()
+        db.add(
+            Task(
+                project_id=project.id,
+                assigned_agent_id=worker.id,
+                title="Wait for src ownership",
+                goal="Avoid collisions",
+                scope="Lock preview",
+                agent_role="Implementation",
+                milestone="MVP",
+                allowed_paths_json=["src"],
+                forbidden_paths_json=[],
+                validation_steps_json=[],
+                success_criteria_json=["Path unlocked"],
+                estimated_complexity="small",
+                dependencies_json=[],
+                status="waiting_on_paths",
+                waiting_reason="Blocked on src ownership.",
+                priority=1,
+            )
+        )
+        db.commit()
+        project_id = project.id
+    finally:
+        db.close()
+
+    added = client.post(
+        f"/api/projects/{project_id}/widgets/add",
+        json={"widget_type": "Path Ownership Map"},
+        headers=bridge_headers,
+    )
+    assert added.status_code == 200, added.text
+
+    response = client.get(f"/api/widgets/instances/{added.json()['id']}/data", headers=bridge_headers)
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["status"] == "warning"
+    assert payload["data_json"]["locks"][0]["path_pattern"] == "src"
+
+    db = SessionLocal()
+    try:
+        assert db.scalar(select(func.count(PathLock.id)).where(PathLock.project_id == project_id)) == 0
     finally:
         db.close()
 
