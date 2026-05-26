@@ -785,7 +785,7 @@ class BridgeRuntimeService:
         pending = self.get_pending_decisions(db, project=project, orchestration=orchestration)
         current_action = await service.get_project_action(db, project)
         system_status = await service.get_system_status(db, project)
-        health = service.get_project_health(db, project)
+        health = service._preview_widget_support_records(db, project, current_action=current_action)["health"]
         handoff = service.get_project_handoff_summary(db, project)
         active_agents = list(
             db.scalars(
