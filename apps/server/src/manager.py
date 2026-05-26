@@ -5436,6 +5436,23 @@ class MissionControlService:
                 },
                 warnings_json=warnings,
             )
+        if instance.widget_type == "Parallelism Safety Meter":
+            path_locks = self._preview_path_locks(db, project)
+            active_locks = [entry for entry in path_locks if entry.status == "active"]
+            waiting_locks = [entry for entry in path_locks if entry.status == "waiting"]
+            risk = swarm_plan["path_conflict_risk"] if swarm_plan else "low"
+            score = max(0, 100 - (len(waiting_locks) * 15) - (30 if risk == "high" else 15 if risk == "medium" else 0))
+            return self._serialize_widget_data(
+                instance,
+                status="warning" if waiting_locks or risk == "high" else "ready",
+                data_json={
+                    "score": score,
+                    "active_locks": len(active_locks),
+                    "waiting_locks": len(waiting_locks),
+                    "path_conflict_risk": risk,
+                    "coordination_risk": swarm_plan["coordination_risk"] if swarm_plan else "low",
+                },
+            )
         if instance.widget_type == "Conflict Resolver":
             support = get_support()
             conflicts: list[ConflictRecord] = [entry for entry in support["conflicts"] if entry.status not in {"resolved", "dismissed"}]
@@ -6121,24 +6138,6 @@ class MissionControlService:
             if not messages:
                 return self._serialize_widget_data(instance, status="empty", empty_state="No agent reports have been routed to the Manager yet.")
             return self._serialize_widget_data(instance, status="ready", data_json={"items": messages})
-        if instance.widget_type == "Parallelism Safety Meter":
-            support = get_support()
-            path_locks: list[PathLock] = support["path_locks"]
-            active_locks = [entry for entry in path_locks if entry.status == "active"]
-            waiting_locks = [entry for entry in path_locks if entry.status == "waiting"]
-            risk = swarm_plan["path_conflict_risk"] if swarm_plan else "low"
-            score = max(0, 100 - (len(waiting_locks) * 15) - (30 if risk == "high" else 15 if risk == "medium" else 0))
-            return self._serialize_widget_data(
-                instance,
-                status="warning" if waiting_locks or risk == "high" else "ready",
-                data_json={
-                    "score": score,
-                    "active_locks": len(active_locks),
-                    "waiting_locks": len(waiting_locks),
-                    "path_conflict_risk": risk,
-                    "coordination_risk": swarm_plan["coordination_risk"] if swarm_plan else "low",
-                },
-            )
         if instance.widget_type == "Human Attention Queue":
             pending_questions = self.list_pending_questions(db, project)
             pending_approvals = self.list_pending_approvals(db, project)

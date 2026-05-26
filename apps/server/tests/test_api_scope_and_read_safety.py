@@ -18,15 +18,20 @@ from models import (
     AppProfile,
     CodebaseMap,
     CodebaseUnderstanding,
+    ConflictRecord,
     DecisionRecord,
     HandoffEvidence,
     ImportedCodebaseSafety,
+    ManagerMessage,
     ManagerAssumption,
     ModelPolicy,
     PathLock,
+    PathReservation,
     Project,
     ProjectConfidence,
     ProjectPlaybook,
+    ProjectEvent,
+    ProjectTimelineEvent,
     ProjectUnderstanding,
     RecoveryPlan,
     RepoIntelligenceSummary,
@@ -133,6 +138,137 @@ def test_project_widget_data_route_keeps_import_and_security_widgets_read_only(c
         assert db.scalar(select(func.count(ImportedCodebaseSafety.project_id)).where(ImportedCodebaseSafety.project_id == project_id)) == 0
         assert db.scalar(select(func.count(AgentInstructionsStatus.project_id)).where(AgentInstructionsStatus.project_id == project_id)) == 0
         assert db.scalar(select(func.count(SecurityPolicy.id)).where(SecurityPolicy.project_id == project_id)) == 0
+    finally:
+        db.close()
+
+
+def test_parallelism_safety_meter_data_is_read_only(client, bridge_headers) -> None:
+    project = _create_project(client, "Parallelism Read Safety", "parallelism-read-safety")
+    project_id = project["id"]
+
+    db = SessionLocal()
+    try:
+        worker_one = Agent(
+            project_id=project_id,
+            name="Worker One",
+            role="Implementation",
+            kind="worker",
+            status="running",
+            workspace_path=project["workspace_path"],
+        )
+        worker_two = Agent(
+            project_id=project_id,
+            name="Worker Two",
+            role="Implementation",
+            kind="worker",
+            status="running",
+            workspace_path=project["workspace_path"],
+        )
+        db.add_all([worker_one, worker_two])
+        db.flush()
+
+        task_one = Task(
+            project_id=project_id,
+            assigned_agent_id=worker_one.id,
+            title="Edit API contract",
+            goal="Update backend contract safely.",
+            scope="Keep the change narrow.",
+            agent_role="Implementation",
+            milestone="MVP",
+            allowed_paths_json=["apps/server/src/main.py"],
+            forbidden_paths_json=[],
+            validation_steps_json=["pytest -q"],
+            success_criteria_json=["Contract updated"],
+            estimated_complexity="small",
+            dependencies_json=[],
+            status="in_progress",
+            priority=10,
+        )
+        task_two = Task(
+            project_id=project_id,
+            assigned_agent_id=worker_two.id,
+            title="Edit API docs",
+            goal="Update docs safely.",
+            scope="Keep the change narrow.",
+            agent_role="Implementation",
+            milestone="MVP",
+            allowed_paths_json=["apps/server/src/main.py"],
+            forbidden_paths_json=[],
+            validation_steps_json=["pytest -q"],
+            success_criteria_json=["Docs updated"],
+            estimated_complexity="small",
+            dependencies_json=[],
+            status="in_progress",
+            priority=20,
+        )
+        db.add_all([task_one, task_two])
+        db.flush()
+
+        db.add_all(
+            [
+                PathReservation(project_id=project_id, task_id=task_one.id, agent_id=worker_one.id, path="apps/server/src/main.py"),
+                PathReservation(project_id=project_id, task_id=task_two.id, agent_id=worker_two.id, path="apps/server/src/main.py"),
+                ConflictRecord(
+                    project_id=project_id,
+                    conflict_type="task_dependency",
+                    title="Old inactive conflict",
+                    summary="This should not be dismissed by a GET route.",
+                    involved_agent_ids_json=[worker_one.id],
+                    involved_task_ids_json=[task_one.id],
+                    affected_paths_json=["docs/README.md"],
+                    severity="medium",
+                    status="detected",
+                    suggested_resolution_json=["ask_user"],
+                ),
+            ]
+        )
+        db.commit()
+    finally:
+        db.close()
+
+    added = client.post(
+        f"/api/projects/{project_id}/widgets/add",
+        json={"widget_type": "Parallelism Safety Meter"},
+        headers=bridge_headers,
+    )
+    assert added.status_code == 200, added.text
+    instance_id = added.json()["id"]
+
+    db = SessionLocal()
+    try:
+        baseline = {
+            "conflicts": db.scalar(select(func.count(ConflictRecord.id)).where(ConflictRecord.project_id == project_id)),
+            "messages": db.scalar(select(func.count(ManagerMessage.id)).where(ManagerMessage.project_id == project_id)),
+            "timeline": db.scalar(select(func.count(ProjectTimelineEvent.id)).where(ProjectTimelineEvent.project_id == project_id)),
+            "events": db.scalar(select(func.count(ProjectEvent.id)).where(ProjectEvent.project_id == project_id)),
+        }
+    finally:
+        db.close()
+
+    response = client.get(f"/api/widgets/instances/{instance_id}/data", headers=bridge_headers)
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["status"] in {"ready", "warning"}
+    assert payload["data_json"]["active_locks"] == 2
+    assert payload["data_json"]["waiting_locks"] == 0
+
+    db = SessionLocal()
+    try:
+        after = {
+            "conflicts": db.scalar(select(func.count(ConflictRecord.id)).where(ConflictRecord.project_id == project_id)),
+            "messages": db.scalar(select(func.count(ManagerMessage.id)).where(ManagerMessage.project_id == project_id)),
+            "timeline": db.scalar(select(func.count(ProjectTimelineEvent.id)).where(ProjectTimelineEvent.project_id == project_id)),
+            "events": db.scalar(select(func.count(ProjectEvent.id)).where(ProjectEvent.project_id == project_id)),
+        }
+        assert after == baseline
+
+        stale_conflict = db.scalar(
+            select(ConflictRecord)
+            .where(ConflictRecord.project_id == project_id, ConflictRecord.title == "Old inactive conflict")
+            .order_by(ConflictRecord.id.desc())
+        )
+        assert stale_conflict is not None
+        assert stale_conflict.status == "detected"
     finally:
         db.close()
 
