@@ -3617,6 +3617,48 @@ class MissionControlService:
         db.flush()
         return list(db.scalars(select(AgentContract).where(AgentContract.project_id == project.id).order_by(AgentContract.updated_at.desc(), AgentContract.id.asc())))
 
+    def _preview_agent_contracts(self, db: Session, project: Project) -> list[dict[str, Any]]:
+        plan = self._current_swarm_plan_record(db, project.id)
+        specs = self._swarm_specs_for_plan(db, plan.id) if plan is not None else []
+        agents = list(db.scalars(select(Agent).where(Agent.project_id == project.id).order_by(Agent.id.asc())))
+        agent_lookup = {agent.name: agent for agent in agents}
+        contracts: list[dict[str, Any]] = []
+        if specs:
+            for spec in specs:
+                contracts.append(
+                    {
+                        "id": None,
+                        "agent_name": spec.name,
+                        "archetype": spec.archetype,
+                        "mission": spec.mission,
+                        "allowed_paths_json": list(spec.allowed_paths_json or []),
+                        "forbidden_paths_json": list(spec.forbidden_paths_json or []),
+                        "allowed_tools_json": list(spec.toolset_json or []),
+                        "expected_output": f"Complete the {spec.name} mission and report changed files, validations, blockers, and recommended next steps.",
+                        "status": "active" if spec.status in {"spawned", "planned"} else spec.status,
+                        "agent_id": agent_lookup.get(spec.name).id if agent_lookup.get(spec.name) else None,
+                    }
+                )
+        else:
+            for agent in agents:
+                if agent.kind != "worker":
+                    continue
+                contracts.append(
+                    {
+                        "id": None,
+                        "agent_name": agent.name,
+                        "archetype": agent.archetype or "feature",
+                        "mission": agent.mission or agent.role,
+                        "allowed_paths_json": list(agent.locked_paths_json or []),
+                        "forbidden_paths_json": [],
+                        "allowed_tools_json": [],
+                        "expected_output": f"Complete the current mission for {agent.name} and report status cleanly.",
+                        "status": "active" if agent.status not in {"done", "stopped"} else "retired",
+                        "agent_id": agent.id,
+                    }
+                )
+        return contracts
+
     def _sync_path_locks(self, db: Session, project: Project) -> list[PathLock]:
         reservations = self.list_reservations(db, project.id)
         tasks = list(db.scalars(select(Task).where(Task.project_id == project.id).order_by(Task.id.asc())))
@@ -4597,7 +4639,7 @@ class MissionControlService:
                     "items": [
                         {
                             "title": category.replace("_", " "),
-                            "detail": f"{entry['provider']} / {entry['model']} • score {entry['score']}",
+                            "detail": f"{entry['provider']} / {entry['model']} â€¢ score {entry['score']}",
                         }
                         for category, entry in summary["top_categories"].items()
                     ],
@@ -4615,7 +4657,7 @@ class MissionControlService:
                     "items": [
                         {
                             "title": f"{item['archetype']} ({item['model'] or item['provider'] or 'default'})",
-                            "detail": f"success {int(item['success_rate'] * 100)}% • confidence {item['confidence']}",
+                            "detail": f"success {int(item['success_rate'] * 100)}% â€¢ confidence {item['confidence']}",
                         }
                         for item in reputation[:8]
                     ]
@@ -4637,7 +4679,7 @@ class MissionControlService:
                     "items": [
                         {
                             "title": item.summary,
-                            "detail": f"{item.severity} • {item.suggested_action} • {item.status}",
+                            "detail": f"{item.severity} â€¢ {item.suggested_action} â€¢ {item.status}",
                         }
                         for item in signals
                     ]
@@ -4654,7 +4696,7 @@ class MissionControlService:
                     "items": [
                         {
                             "title": item.key,
-                            "detail": f"{item.value_json} • {item.source}",
+                            "detail": f"{item.value_json} â€¢ {item.source}",
                         }
                         for item in preferences[:8]
                     ]
@@ -4760,7 +4802,7 @@ class MissionControlService:
                             "project_id": project.id,
                             "project_name": project.name,
                             "title": plan.trigger_summary,
-                            "detail": f"{plan.trigger_type} · {plan.status}",
+                            "detail": f"{plan.trigger_type} Â· {plan.status}",
                         }
                     )
             if not items:
@@ -4841,7 +4883,7 @@ class MissionControlService:
                     "items": [
                         {
                             "title": f"{item['archetype']} ({item['model'] or item['provider'] or 'default'})",
-                            "detail": f"success {int(item['success_rate'] * 100)}% • best: {', '.join(item['recommended_for']) or 'unknown'}",
+                            "detail": f"success {int(item['success_rate'] * 100)}% â€¢ best: {', '.join(item['recommended_for']) or 'unknown'}",
                             "weak_spots": item["avoid_for"],
                         }
                         for item in reputation[:8]
@@ -4876,7 +4918,7 @@ class MissionControlService:
                     "items": [
                         {
                             "title": item["title"],
-                            "detail": f"files {len(item['included_files_json'])} • docs {len(item['included_docs_json'])} • warnings {len(item['warnings_json'])}",
+                            "detail": f"files {len(item['included_files_json'])} â€¢ docs {len(item['included_docs_json'])} â€¢ warnings {len(item['warnings_json'])}",
                             "task_id": item["task_id"],
                             "agent_id": item["agent_id"],
                         }
@@ -4895,7 +4937,7 @@ class MissionControlService:
                     "items": [
                         {
                             "title": item.title,
-                            "detail": f"{item.severity}/{item.likelihood} • {item.status} • mitigation: {item.mitigation or 'none'}",
+                            "detail": f"{item.severity}/{item.likelihood} â€¢ {item.status} â€¢ mitigation: {item.mitigation or 'none'}",
                             "owner": item.owner_agent_id,
                         }
                         for item in risks[:10]
@@ -4969,7 +5011,7 @@ class MissionControlService:
                     "items": [
                         {
                             "title": item.summary,
-                            "detail": f"{item.severity} • {item.suggested_action} • {item.status}",
+                            "detail": f"{item.severity} â€¢ {item.suggested_action} â€¢ {item.status}",
                         }
                         for item in signals[:10]
                     ]
@@ -5004,9 +5046,9 @@ class MissionControlService:
                         {
                             "title": item["area"] if isinstance(item, dict) else item.area,
                             "detail": (
-                                f"{item['coverage_status']} • {item.get('evidence_summary') or 'No evidence recorded yet.'}"
+                                f"{item['coverage_status']} â€¢ {item.get('evidence_summary') or 'No evidence recorded yet.'}"
                                 if isinstance(item, dict)
-                                else f"{item.coverage_status} • {item.evidence_summary or 'No evidence recorded yet.'}"
+                                else f"{item.coverage_status} â€¢ {item.evidence_summary or 'No evidence recorded yet.'}"
                             ),
                         }
                         for item in items
@@ -5025,7 +5067,7 @@ class MissionControlService:
                     "items": [
                         {
                             "title": item.key,
-                            "detail": f"{item.value_json} • {item.source} • {item.scope}",
+                            "detail": f"{item.value_json} â€¢ {item.source} â€¢ {item.scope}",
                         }
                         for item in preferences[:10]
                     ]
@@ -5214,8 +5256,7 @@ class MissionControlService:
                 warnings_json=list(rebalance["risks"][:3]),
             )
         if instance.widget_type == "Agent Contracts":
-            support = get_support()
-            contracts: list[AgentContract] = support["contracts"]
+            contracts = self._preview_agent_contracts(db, project)
             if not contracts:
                 return self._serialize_widget_data(instance, status="empty", empty_state="No active agent contracts exist yet.")
             return self._serialize_widget_data(
@@ -5224,15 +5265,15 @@ class MissionControlService:
                 data_json={
                     "items": [
                         {
-                            "id": entry.id,
-                            "agent_name": entry.agent_name,
-                            "archetype": entry.archetype,
-                            "mission": entry.mission,
-                            "allowed_paths": list(entry.allowed_paths_json or []),
-                            "forbidden_paths": list(entry.forbidden_paths_json or []),
-                            "allowed_tools": list(entry.allowed_tools_json or []),
-                            "status": entry.status,
-                            "expected_output": entry.expected_output,
+                            "id": entry["id"],
+                            "agent_name": entry["agent_name"],
+                            "archetype": entry["archetype"],
+                            "mission": entry["mission"],
+                            "allowed_paths": list(entry["allowed_paths_json"]),
+                            "forbidden_paths": list(entry["forbidden_paths_json"]),
+                            "allowed_tools": list(entry["allowed_tools_json"]),
+                            "status": entry["status"],
+                            "expected_output": entry["expected_output"],
                         }
                         for entry in contracts[:12]
                     ]
