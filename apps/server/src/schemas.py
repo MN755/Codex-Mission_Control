@@ -1460,6 +1460,29 @@ class AgentStuckSignalRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class RecoveryPlanPreviewItemRead(BaseModel):
+    project_id: int
+    trigger_type: str
+    trigger_summary: str
+    related_agent_id: int | None = None
+    related_task_id: int | None = None
+    suggested_actions_json: list[str] = Field(default_factory=list)
+    status: str = "proposed"
+    source: Literal["computed"] = "computed"
+
+
+class RecoveryPlanPreviewSummaryRead(BaseModel):
+    project_id: int
+    current_action: dict[str, Any] = Field(default_factory=dict)
+    blocked_task_count: int = 0
+    stuck_signal_count: int = 0
+    persisted: list[RecoveryPlanRead] = Field(default_factory=list)
+    derived_candidates: list[RecoveryPlanPreviewItemRead] = Field(default_factory=list)
+    stored_count: int = 0
+    derived_candidate_count: int = 0
+    generated_at: datetime
+
+
 class ReviewGateRead(BaseModel):
     id: int
     project_id: int
@@ -1812,6 +1835,27 @@ class HandoffEvidenceRead(BaseModel):
     metadata_json: dict[str, Any] = Field(default_factory=dict)
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class HandoffEvidencePreviewItemRead(BaseModel):
+    project_id: int
+    evidence_type: str
+    claim: str
+    summary: str
+    source_path: str | None = None
+    command: str | None = None
+    status: str
+    metadata_json: dict[str, Any] = Field(default_factory=dict)
+    derived_from_run_id: int | None = None
+
+
+class HandoffEvidencePreviewSummaryRead(BaseModel):
+    project_id: int
+    persisted: list[HandoffEvidenceRead] = Field(default_factory=list)
+    derived_candidates: list[HandoffEvidencePreviewItemRead] = Field(default_factory=list)
+    stored_count: int = 0
+    derived_candidate_count: int = 0
+    generated_at: datetime
 
 
 class EvidenceBasedHandoffRead(BaseModel):

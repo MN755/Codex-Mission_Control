@@ -93,6 +93,7 @@ from schemas import (
     EventDigestWindow,
     EventRead,
     HandoffEvidenceCreate,
+    HandoffEvidencePreviewSummaryRead,
     HandoffEvidenceRead,
     HandoffListItemRead,
     HeadlessAutowireRequest,
@@ -161,6 +162,7 @@ from schemas import (
     ProjectSettingsUpdate,
     RecoveryPlanCreate,
     RecoveryPlanRead,
+    RecoveryPlanPreviewSummaryRead,
     RecoveryPlanSelectRequest,
     ReservationRead,
     ResumeWorkspaceRead,
@@ -1921,6 +1923,25 @@ def get_project_handoff_evidence(
     return [HandoffEvidenceRead.model_validate(item) for item in service.list_handoff_evidence(db, project)]
 
 
+@app.get("/api/projects/{project_id}/handoff/evidence/preview", response_model=HandoffEvidencePreviewSummaryRead)
+def preview_project_handoff_evidence(
+    project_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> HandoffEvidencePreviewSummaryRead:
+    project = _get_project_or_404(db, project_id)
+    preview = service.preview_handoff_evidence(db, project)
+    return HandoffEvidencePreviewSummaryRead(
+        project_id=project.id,
+        persisted=[HandoffEvidenceRead.model_validate(item) for item in preview["persisted"]],
+        derived_candidates=preview["derived_candidates"],
+        stored_count=preview["stored_count"],
+        derived_candidate_count=preview["derived_candidate_count"],
+        generated_at=preview["generated_at"],
+    )
+
+
 @app.post("/api/projects/{project_id}/handoff/evidence", response_model=HandoffEvidenceRead)
 def create_project_handoff_evidence(
     project_id: int,
@@ -2181,6 +2202,28 @@ def get_project_recovery_plans(
 ) -> list[RecoveryPlanRead]:
     project = _get_project_or_404(db, project_id)
     return [RecoveryPlanRead.model_validate(plan) for plan in service.list_recovery_plans(db, project)]
+
+
+@app.get("/api/projects/{project_id}/recovery-plans/preview", response_model=RecoveryPlanPreviewSummaryRead)
+def preview_project_recovery_plans(
+    project_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> RecoveryPlanPreviewSummaryRead:
+    project = _get_project_or_404(db, project_id)
+    preview = service.preview_recovery_plans(db, project)
+    return RecoveryPlanPreviewSummaryRead(
+        project_id=project.id,
+        current_action=preview["current_action"],
+        blocked_task_count=preview["blocked_task_count"],
+        stuck_signal_count=preview["stuck_signal_count"],
+        persisted=[RecoveryPlanRead.model_validate(item) for item in preview["persisted"]],
+        derived_candidates=preview["derived_candidates"],
+        stored_count=preview["stored_count"],
+        derived_candidate_count=preview["derived_candidate_count"],
+        generated_at=preview["generated_at"],
+    )
 
 
 @app.post("/api/projects/{project_id}/recovery-plans", response_model=RecoveryPlanRead)

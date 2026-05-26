@@ -1712,6 +1712,17 @@ class MissionControlService:
             return "- Not recorded."
         return "\n".join(f"- {item}" for item in cleaned)
 
+    @staticmethod
+    def _handoff_evidence_key(
+        *,
+        evidence_type: str,
+        claim: str,
+        summary: str,
+        source_path: str | None,
+        command: str | None,
+    ) -> tuple[str, str, str, str | None, str | None]:
+        return (evidence_type, claim, summary, source_path, command)
+
     def _handoff_evidence_or_create(
         self,
         db: Session,
@@ -1959,6 +1970,72 @@ class MissionControlService:
                 .order_by(HandoffEvidence.created_at.desc(), HandoffEvidence.id.desc())
             )
         )
+
+    def _derive_handoff_evidence_preview(self, db: Session, project: Project) -> list[dict[str, Any]]:
+        agent_ids = [agent.id for agent in db.scalars(select(Agent).where(Agent.project_id == project.id))]
+        runs = list(db.scalars(select(AgentRun).where(AgentRun.agent_id.in_(agent_ids)).order_by(AgentRun.id.asc()))) if agent_ids else []
+        preview_rows: list[dict[str, Any]] = []
+        seen_keys: set[tuple[str, str, str, str | None, str | None]] = set()
+        for run in runs:
+            raw_report = run.report_json or {}
+            tests_run = [str(item) for item in raw_report.get("tests_run", []) if str(item).strip()]
+            files_changed = [str(item) for item in raw_report.get("files_changed", []) if str(item).strip()]
+            candidates: list[dict[str, Any]] = []
+            if files_changed:
+                candidates.append(
+                    {
+                        "project_id": project.id,
+                        "evidence_type": "file_change",
+                        "claim": redact_text(f"Recorded file changes from run {run.id}"),
+                        "summary": redact_text(", ".join(files_changed[:6])),
+                        "source_path": run.logs_path or run.event_log_path,
+                        "command": None,
+                        "status": "passed" if run.status not in {"error", "failed"} else "failed",
+                        "metadata_json": redact_value({"run_id": run.id, "files_changed": files_changed[:20]}),
+                        "derived_from_run_id": run.id,
+                    }
+                )
+            for test_name in tests_run:
+                candidates.append(
+                    {
+                        "project_id": project.id,
+                        "evidence_type": "test_result",
+                        "claim": redact_text(test_name),
+                        "summary": redact_text(f"Recorded from run {run.id}."),
+                        "source_path": run.logs_path or run.stdout_path,
+                        "command": redact_text(test_name),
+                        "status": "passed" if run.status not in {"error", "failed"} and run.exit_code in {None, 0} else "failed",
+                        "metadata_json": redact_value({"run_id": run.id, "runner_type": run.runner_type}),
+                        "derived_from_run_id": run.id,
+                    }
+                )
+            if raw_report.get("summary"):
+                candidates.append(
+                    {
+                        "project_id": project.id,
+                        "evidence_type": "report",
+                        "claim": redact_text(f"Worker report from run {run.id}"),
+                        "summary": redact_text(str(raw_report.get("summary"))),
+                        "source_path": run.logs_path,
+                        "command": None,
+                        "status": "passed" if run.status not in {"error", "failed"} else "failed",
+                        "metadata_json": redact_value({"run_id": run.id, "runner_type": run.runner_type}),
+                        "derived_from_run_id": run.id,
+                    }
+                )
+            for candidate in candidates:
+                key = self._handoff_evidence_key(
+                    evidence_type=str(candidate["evidence_type"]),
+                    claim=str(candidate["claim"]),
+                    summary=str(candidate["summary"]),
+                    source_path=candidate.get("source_path"),
+                    command=candidate.get("command"),
+                )
+                if key in seen_keys:
+                    continue
+                seen_keys.add(key)
+                preview_rows.append(candidate)
+        return preview_rows
 
     def _missing_handoff_evidence(self, review_gates: list[ReviewGate], evidence: list[HandoffEvidence]) -> list[str]:
         missing: list[str] = []
@@ -2218,7 +2295,6 @@ class MissionControlService:
         return evidence
 
     def list_handoff_evidence(self, db: Session, project: Project) -> list[HandoffEvidence]:
-        self._ensure_derived_handoff_evidence(db, project)
         return list(
             db.scalars(
                 select(HandoffEvidence)
@@ -2226,6 +2302,39 @@ class MissionControlService:
                 .order_by(HandoffEvidence.created_at.desc(), HandoffEvidence.id.desc())
             )
         )
+
+    def preview_handoff_evidence(self, db: Session, project: Project) -> dict[str, Any]:
+        persisted = self.list_handoff_evidence(db, project)
+        persisted_keys = {
+            self._handoff_evidence_key(
+                evidence_type=item.evidence_type,
+                claim=item.claim,
+                summary=item.summary,
+                source_path=item.source_path,
+                command=item.command,
+            )
+            for item in persisted
+        }
+        derived_candidates = [
+            item
+            for item in self._derive_handoff_evidence_preview(db, project)
+            if self._handoff_evidence_key(
+                evidence_type=str(item["evidence_type"]),
+                claim=str(item["claim"]),
+                summary=str(item["summary"]),
+                source_path=item.get("source_path"),
+                command=item.get("command"),
+            )
+            not in persisted_keys
+        ]
+        return {
+            "project_id": project.id,
+            "persisted": persisted,
+            "derived_candidates": derived_candidates,
+            "stored_count": len(persisted),
+            "derived_candidate_count": len(derived_candidates),
+            "generated_at": utc_now(),
+        }
 
     def generate_evidence_handoff(self, db: Session, project: Project) -> EvidenceBasedHandoff:
         tasks = list(db.scalars(select(Task).where(Task.project_id == project.id).order_by(Task.priority.asc(), Task.id.asc())))
@@ -2535,8 +2644,13 @@ class MissionControlService:
         return plan
 
     def list_recovery_plans(self, db: Session, project: Project) -> list[RecoveryPlan]:
-        support = self._ensure_widget_support_records(db, project)
-        return support["recovery_plans"]
+        return list(
+            db.scalars(
+                select(RecoveryPlan)
+                .where(RecoveryPlan.project_id == project.id)
+                .order_by(RecoveryPlan.created_at.desc(), RecoveryPlan.id.desc())
+            )
+        )
 
     def select_recovery_action(self, db: Session, plan_id: int, action: str) -> RecoveryPlan:
         plan = db.get(RecoveryPlan, plan_id)
@@ -2566,6 +2680,279 @@ class MissionControlService:
 
     def get_agent_load(self, db: Session, project: Project) -> list[AgentLoadSnapshot]:
         return self._sync_agent_load_snapshots(db, project)
+
+    def _derive_current_action_preview(self, db: Session, project: Project, degraded_notices: list[str]) -> dict[str, Any]:
+        pending_approval = db.scalar(
+            select(ApprovalRequest)
+            .where(ApprovalRequest.project_id == project.id, ApprovalRequest.status == "pending")
+            .order_by(ApprovalRequest.created_at.asc())
+        )
+        if pending_approval:
+            request_label = "tool approval" if pending_approval.request_type != "command" else "command approval"
+            return {
+                "id": f"approval-{pending_approval.id}",
+                "project_id": project.id,
+                "type": "tool_approval" if pending_approval.request_type != "command" else "command_approval",
+                "severity": "warning",
+                "title": f"Action needed: approve {request_label}.",
+                "message": pending_approval.reason_short,
+                "requesting_agent_id": pending_approval.requesting_agent_id,
+                "related_task_id": pending_approval.task_id,
+                "command_id": pending_approval.id if pending_approval.request_type == "command" else None,
+                "tool_request_id": pending_approval.id if pending_approval.request_type != "command" else None,
+                "question_id": None,
+                "created_at": pending_approval.created_at,
+                "expires_at": None,
+                "auto_decide_at": None,
+                "resolved_at": None,
+                "actions_json": [{"id": "approve_once", "label": "Approve once"}, {"id": "deny", "label": "Deny"}],
+            }
+        pending_question = db.scalar(
+            select(ManagerQuestion)
+            .where(ManagerQuestion.project_id == project.id, ManagerQuestion.status == "pending")
+            .order_by(ManagerQuestion.created_at.asc())
+        )
+        if pending_question:
+            return {
+                "id": f"question-{pending_question.id}",
+                "project_id": project.id,
+                "type": "manager_question",
+                "severity": "warning" if pending_question.impact == "high" else "info",
+                "title": "Manager question: choose an option.",
+                "message": pending_question.question,
+                "requesting_agent_id": pending_question.related_agent_id,
+                "related_task_id": pending_question.related_task_id,
+                "command_id": None,
+                "tool_request_id": None,
+                "question_id": pending_question.id,
+                "created_at": pending_question.created_at,
+                "expires_at": pending_question.auto_decide_at,
+                "auto_decide_at": pending_question.auto_decide_at,
+                "resolved_at": None,
+                "actions_json": list(pending_question.options_json or []),
+            }
+        if project.status == "paused":
+            return {
+                "id": f"paused-{project.id}",
+                "project_id": project.id,
+                "type": "paused",
+                "severity": "warning",
+                "title": "Project paused.",
+                "message": "New work assignment is paused until you resume the project.",
+                "requesting_agent_id": None,
+                "related_task_id": None,
+                "command_id": None,
+                "tool_request_id": None,
+                "question_id": None,
+                "created_at": project.updated_at,
+                "expires_at": None,
+                "auto_decide_at": None,
+                "resolved_at": None,
+                "actions_json": [],
+            }
+        blocked_task = db.scalar(
+            select(Task)
+            .where(Task.project_id == project.id, Task.status.in_(["blocked", "waiting_on_paths"]))
+            .order_by(Task.priority.asc(), Task.id.asc())
+        )
+        if blocked_task:
+            return {
+                "id": f"task-{blocked_task.id}",
+                "project_id": project.id,
+                "type": "blocker",
+                "severity": "danger",
+                "title": "Blocked",
+                "message": blocked_task.waiting_reason or f"{blocked_task.title} is blocked.",
+                "requesting_agent_id": None,
+                "related_task_id": blocked_task.id,
+                "command_id": None,
+                "tool_request_id": None,
+                "question_id": None,
+                "created_at": blocked_task.updated_at,
+                "expires_at": None,
+                "auto_decide_at": None,
+                "resolved_at": None,
+                "actions_json": [],
+            }
+        if degraded_notices:
+            return {
+                "id": f"degraded-{project.id}",
+                "project_id": project.id,
+                "type": "degraded",
+                "severity": "warning",
+                "title": degraded_notices[0],
+                "message": "Mission Control can still continue in degraded mode.",
+                "requesting_agent_id": None,
+                "related_task_id": None,
+                "command_id": None,
+                "tool_request_id": None,
+                "question_id": None,
+                "created_at": utc_now(),
+                "expires_at": None,
+                "auto_decide_at": None,
+                "resolved_at": None,
+                "actions_json": [],
+            }
+        if project.status == "handoff_ready":
+            return {
+                "id": f"handoff-{project.id}",
+                "project_id": project.id,
+                "type": "handoff_ready",
+                "severity": "success",
+                "title": "Ready for handoff.",
+                "message": "The manager considers this project ready for the final handoff.",
+                "requesting_agent_id": None,
+                "related_task_id": None,
+                "command_id": None,
+                "tool_request_id": None,
+                "question_id": None,
+                "created_at": project.updated_at,
+                "expires_at": None,
+                "auto_decide_at": None,
+                "resolved_at": None,
+                "actions_json": [],
+            }
+        working_agents = db.scalar(select(func.count(Agent.id)).where(Agent.project_id == project.id, Agent.kind == "worker", Agent.status.in_(["working", "starting"]))) or 0
+        return {
+            "id": f"no-action-{project.id}",
+            "project_id": project.id,
+            "type": "no_action",
+            "severity": "info",
+            "title": f"No action needed. {working_agents} agents are working." if working_agents else "No action needed.",
+            "message": "The manager is monitoring the workspace and will ask if anything needs a decision.",
+            "requesting_agent_id": None,
+            "related_task_id": None,
+            "command_id": None,
+            "tool_request_id": None,
+            "question_id": None,
+            "created_at": project.updated_at,
+            "expires_at": None,
+            "auto_decide_at": None,
+            "resolved_at": None,
+            "actions_json": [],
+        }
+
+    def _preview_stuck_signals(self, db: Session, project: Project) -> list[dict[str, Any]]:
+        agents = list(db.scalars(select(Agent).where(Agent.project_id == project.id).order_by(Agent.id.asc())))
+        now = utc_now()
+        preview_rows: list[dict[str, Any]] = []
+        for agent in agents:
+            signal_type: str | None = None
+            message: str | None = None
+            severity = "medium"
+            last_update = agent.last_update
+            if last_update.tzinfo is None:
+                last_update = last_update.replace(tzinfo=timezone.utc)
+            if agent.status in {"blocked", "error"}:
+                signal_type = "repeated_error"
+                message = agent.last_report_summary or agent.current_action or f"{agent.name} is blocked."
+                severity = "high"
+            elif agent.status in {"working", "starting"} and (now - last_update) > timedelta(minutes=20):
+                signal_type = "no_output_for_threshold"
+                message = f"No meaningful update from {agent.name} in more than 20 minutes."
+            elif agent.failure_count >= 3:
+                signal_type = "task_timeout"
+                message = f"{agent.name} has failed or timed out repeatedly."
+                severity = "high"
+            if signal_type is None or message is None:
+                continue
+            preview_rows.append(
+                {
+                    "project_id": project.id,
+                    "agent_id": agent.id,
+                    "signal_type": signal_type,
+                    "message": message,
+                    "severity": severity,
+                    "detected_at": now,
+                }
+            )
+        return preview_rows
+
+    def _recovery_plan_trigger_specs(
+        self,
+        *,
+        current_action: dict[str, Any],
+        stuck_signal_count: int,
+        first_stuck_agent_id: int | None,
+        tasks: list[Task],
+    ) -> list[tuple[str, str, int | None, int | None, list[str]]]:
+        triggers: list[tuple[str, str, int | None, int | None, list[str]]] = []
+        blocked_tasks = [task for task in tasks if task.status == "blocked"]
+        if current_action["type"] in {"blocker", "error", "degraded"}:
+            triggers.append(
+                (
+                    current_action["type"],
+                    str(current_action["message"]),
+                    current_action.get("requesting_agent_id"),
+                    current_action.get("related_task_id"),
+                    ["Retry same agent", "Spawn Debug Agent", "Simplify scope", "Ask user / ask Manager"],
+                )
+            )
+        if blocked_tasks:
+            triggers.append(
+                (
+                    "blocked_task",
+                    f"{len(blocked_tasks)} task(s) are blocked.",
+                    blocked_tasks[0].assigned_agent_id if blocked_tasks else None,
+                    blocked_tasks[0].id if blocked_tasks else None,
+                    ["Retry same agent", "Split task", "Simplify scope", "Ask user / ask Manager"],
+                )
+            )
+        if stuck_signal_count:
+            triggers.append(
+                (
+                    "stuck_agents",
+                    f"{stuck_signal_count} agent(s) may be stuck.",
+                    first_stuck_agent_id,
+                    None,
+                    ["Retry same agent", "Spawn Debug Agent", "Split task", "Ask user / ask Manager"],
+                )
+            )
+        return triggers
+
+    def preview_recovery_plans(self, db: Session, project: Project) -> dict[str, Any]:
+        tasks = list(db.scalars(select(Task).where(Task.project_id == project.id).order_by(Task.priority.asc(), Task.id.asc())))
+        degraded_notices: list[str] = []
+        current_action = self._derive_current_action_preview(db, project, degraded_notices)
+        stuck_signals = self._preview_stuck_signals(db, project)
+        candidates = [
+            {
+                "project_id": project.id,
+                "trigger_type": trigger_type,
+                "trigger_summary": summary,
+                "related_agent_id": related_agent_id,
+                "related_task_id": related_task_id,
+                "suggested_actions_json": actions,
+                "status": "proposed",
+                "source": "computed",
+            }
+            for trigger_type, summary, related_agent_id, related_task_id, actions in self._recovery_plan_trigger_specs(
+                current_action=current_action,
+                stuck_signal_count=len(stuck_signals),
+                first_stuck_agent_id=stuck_signals[0]["agent_id"] if stuck_signals else None,
+                tasks=tasks,
+            )
+        ]
+        persisted = self.list_recovery_plans(db, project)
+        active_keys = {
+            (plan.trigger_type, plan.trigger_summary)
+            for plan in persisted
+            if plan.resolved_at is None
+        }
+        derived_candidates = [
+            item for item in candidates if (str(item["trigger_type"]), str(item["trigger_summary"])) not in active_keys
+        ]
+        return {
+            "project_id": project.id,
+            "current_action": current_action,
+            "blocked_task_count": sum(1 for task in tasks if task.status == "blocked"),
+            "stuck_signal_count": len(stuck_signals),
+            "persisted": persisted,
+            "derived_candidates": derived_candidates,
+            "stored_count": len(persisted),
+            "derived_candidate_count": len(derived_candidates),
+            "generated_at": utc_now(),
+        }
 
     def build_agent_rebalance_plan(self, db: Session, project: Project) -> dict[str, Any]:
         snapshots = self._sync_agent_load_snapshots(db, project)
@@ -3097,38 +3484,12 @@ class MissionControlService:
         stuck_signals: list[AgentStuckSignal],
         tasks: list[Task],
     ) -> list[RecoveryPlan]:
-        triggers: list[tuple[str, str, int | None, int | None, list[str]]] = []
-        blocked_tasks = [task for task in tasks if task.status == "blocked"]
-        if current_action["type"] in {"blocker", "error", "degraded"}:
-            triggers.append(
-                (
-                    current_action["type"],
-                    str(current_action["message"]),
-                    current_action.get("requesting_agent_id"),
-                    current_action.get("related_task_id"),
-                    ["Retry same agent", "Spawn Debug Agent", "Simplify scope", "Ask user / ask Manager"],
-                )
-            )
-        if blocked_tasks:
-            triggers.append(
-                (
-                    "blocked_task",
-                    f"{len(blocked_tasks)} task(s) are blocked.",
-                    blocked_tasks[0].assigned_agent_id if blocked_tasks else None,
-                    blocked_tasks[0].id if blocked_tasks else None,
-                    ["Retry same agent", "Split task", "Simplify scope", "Ask user / ask Manager"],
-                )
-            )
-        if stuck_signals:
-            triggers.append(
-                (
-                    "stuck_agents",
-                    f"{len(stuck_signals)} agent(s) may be stuck.",
-                    stuck_signals[0].agent_id if stuck_signals else None,
-                    None,
-                    ["Retry same agent", "Spawn Debug Agent", "Split task", "Ask user / ask Manager"],
-                )
-            )
+        triggers = self._recovery_plan_trigger_specs(
+            current_action=current_action,
+            stuck_signal_count=len(stuck_signals),
+            first_stuck_agent_id=stuck_signals[0].agent_id if stuck_signals else None,
+            tasks=tasks,
+        )
         existing = {
             (entry.trigger_type, entry.trigger_summary): entry
             for entry in db.scalars(select(RecoveryPlan).where(RecoveryPlan.project_id == project.id, RecoveryPlan.resolved_at.is_(None)))

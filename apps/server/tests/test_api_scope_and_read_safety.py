@@ -8,12 +8,21 @@ from conftest import sample_workspace
 from db import SessionLocal, init_db
 from models import (
     Agent,
+    AgentExecutionTrace,
+    AgentLoadSnapshot,
+    AgentRun,
     AgentArchetype,
+    AgentStuckSignal,
+    HandoffEvidence,
     ImportedCodebaseSafety,
+    ManagerAssumption,
     Project,
     ProjectPlaybook,
+    RecoveryPlan,
+    RepoIntelligenceSummary,
     SecurityPolicy,
     SwarmPreferences,
+    Task,
     ValidationCoverageArea,
     WidgetDefinition,
 )
@@ -357,3 +366,171 @@ def test_project_routes_reject_invalid_related_resource_ids(client) -> None:
         },
     )
     assert invalid_recovery_agent.status_code == 404
+
+
+def test_handoff_evidence_get_is_read_only_and_preview_derives_without_persisting(client, bridge_headers) -> None:
+    init_db()
+    db = SessionLocal()
+    try:
+        workspace_path = sample_workspace("handoff-evidence-preview")
+        project = Project(
+            name="Handoff Evidence Preview",
+            idea="Verify read safety for handoff evidence",
+            workspace_path=workspace_path,
+            runner_mode="dry_run",
+            manager_mode="auto",
+        )
+        db.add(project)
+        db.flush()
+        db.add(Agent(project_id=project.id, name="Manager AI", role="Project orchestration", kind="manager", status="idle", workspace_path=workspace_path))
+        worker = Agent(
+            project_id=project.id,
+            name="Builder Agent",
+            role="Implementation",
+            kind="worker",
+            status="done",
+            workspace_path=workspace_path,
+        )
+        db.add(worker)
+        db.flush()
+        task = Task(
+            project_id=project.id,
+            assigned_agent_id=worker.id,
+            title="Ship the core flow",
+            goal="Implement the workflow",
+            scope="Keep the test scope small.",
+            agent_role="Implementation",
+            milestone="MVP",
+            allowed_paths_json=["src"],
+            forbidden_paths_json=[],
+            validation_steps_json=["pytest -q"],
+            success_criteria_json=["Workflow works"],
+            estimated_complexity="small",
+            dependencies_json=[],
+            status="done",
+            priority=10,
+        )
+        db.add(task)
+        db.flush()
+        db.add(
+            AgentRun(
+                agent_id=worker.id,
+                task_id=task.id,
+                runner_type="dry_run",
+                process_ref="dry-test",
+                status="done",
+                report_json={
+                    "summary": "Implemented the first useful slice.",
+                    "tests_run": ["pytest -q"],
+                    "files_changed": ["src/app.py"],
+                },
+            )
+        )
+        db.commit()
+        project_id = project.id
+    finally:
+        db.close()
+
+    response = client.get(f"/api/projects/{project_id}/handoff/evidence", headers=bridge_headers)
+    assert response.status_code == 200, response.text
+    assert response.json() == []
+
+    preview = client.get(f"/api/projects/{project_id}/handoff/evidence/preview", headers=bridge_headers)
+    assert preview.status_code == 200, preview.text
+    payload = preview.json()
+    assert payload["project_id"] == project_id
+    assert payload["stored_count"] == 0
+    assert payload["derived_candidate_count"] == 3
+    assert payload["persisted"] == []
+    assert {item["evidence_type"] for item in payload["derived_candidates"]} == {"file_change", "test_result", "report"}
+
+    db = SessionLocal()
+    try:
+        handoff_evidence_count = db.scalar(select(func.count(HandoffEvidence.id)).where(HandoffEvidence.project_id == project_id))
+        assert handoff_evidence_count == 0
+    finally:
+        db.close()
+
+
+def test_recovery_plans_get_is_read_only_and_preview_stays_non_persistent(client, bridge_headers) -> None:
+    init_db()
+    db = SessionLocal()
+    try:
+        workspace_path = sample_workspace("recovery-plan-preview")
+        project = Project(
+            name="Recovery Preview",
+            idea="Verify read safety for recovery plans",
+            workspace_path=workspace_path,
+            runner_mode="dry_run",
+            manager_mode="auto",
+        )
+        db.add(project)
+        db.flush()
+        db.add(Agent(project_id=project.id, name="Manager AI", role="Project orchestration", kind="manager", status="idle", workspace_path=workspace_path))
+        worker = Agent(
+            project_id=project.id,
+            name="Verifier Agent",
+            role="Validation",
+            kind="worker",
+            status="blocked",
+            workspace_path=workspace_path,
+            current_action="Waiting for a fix path.",
+        )
+        db.add(worker)
+        db.flush()
+        db.add(
+            Task(
+                project_id=project.id,
+                assigned_agent_id=worker.id,
+                title="Unblock verifier",
+                goal="Recover from the blocked worker state",
+                scope="Recovery-only test scope.",
+                agent_role="Validation",
+                milestone="MVP",
+                allowed_paths_json=["tests"],
+                forbidden_paths_json=[],
+                validation_steps_json=["pytest -q"],
+                success_criteria_json=["Verifier unblocked"],
+                estimated_complexity="small",
+                dependencies_json=[],
+                status="blocked",
+                waiting_reason="Verifier is blocked on a missing fix.",
+                priority=10,
+            )
+        )
+        db.commit()
+        project_id = project.id
+    finally:
+        db.close()
+
+    response = client.get(f"/api/projects/{project_id}/recovery-plans", headers=bridge_headers)
+    assert response.status_code == 200, response.text
+    assert response.json() == []
+
+    preview = client.get(f"/api/projects/{project_id}/recovery-plans/preview", headers=bridge_headers)
+    assert preview.status_code == 200, preview.text
+    payload = preview.json()
+    assert payload["project_id"] == project_id
+    assert payload["stored_count"] == 0
+    assert payload["blocked_task_count"] == 1
+    assert payload["stuck_signal_count"] == 1
+    assert payload["persisted"] == []
+    assert payload["derived_candidate_count"] >= 2
+    assert {item["trigger_type"] for item in payload["derived_candidates"]} >= {"blocker", "blocked_task", "stuck_agents"}
+
+    db = SessionLocal()
+    try:
+        recovery_plan_count = db.scalar(select(func.count(RecoveryPlan.id)).where(RecoveryPlan.project_id == project_id))
+        stuck_signal_count = db.scalar(select(func.count(AgentStuckSignal.id)).where(AgentStuckSignal.project_id == project_id))
+        assumption_count = db.scalar(select(func.count(ManagerAssumption.id)).where(ManagerAssumption.project_id == project_id))
+        repo_summary_count = db.scalar(select(func.count(RepoIntelligenceSummary.project_id)).where(RepoIntelligenceSummary.project_id == project_id))
+        trace_count = db.scalar(select(func.count(AgentExecutionTrace.id)).where(AgentExecutionTrace.project_id == project_id))
+        load_snapshot_count = db.scalar(select(func.count(AgentLoadSnapshot.id)).where(AgentLoadSnapshot.project_id == project_id))
+        assert recovery_plan_count == 0
+        assert stuck_signal_count == 0
+        assert assumption_count == 0
+        assert repo_summary_count == 0
+        assert trace_count == 0
+        assert load_snapshot_count == 0
+    finally:
+        db.close()
