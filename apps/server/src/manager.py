@@ -1691,6 +1691,29 @@ class MissionControlService:
     def _dashboard_widgets(self, db: Session, profile: AppProfile) -> list[str]:
         return [instance.widget_type for instance in self._dashboard_widget_instances(db, profile) if instance.enabled]
 
+    def _validate_project_agent_task_refs(
+        self,
+        db: Session,
+        project: Project,
+        *,
+        agent_id: int | None = None,
+        task_id: int | None = None,
+        agent_name: str = "Agent",
+        task_name: str = "Task",
+    ) -> None:
+        if agent_id is not None:
+            agent = db.get(Agent, agent_id)
+            if agent is None:
+                raise ValueError(f"{agent_name} not found")
+            if agent.project_id != project.id:
+                raise ValueError(f"{agent_name} does not belong to this project")
+        if task_id is not None:
+            task = db.get(Task, task_id)
+            if task is None:
+                raise ValueError(f"{task_name} not found")
+            if task.project_id != project.id:
+                raise ValueError(f"{task_name} does not belong to this project")
+
     def _record_decision(
         self,
         db: Session,
@@ -6569,6 +6592,14 @@ class MissionControlService:
         resolved_at: datetime | None = None,
         metadata_json: dict[str, Any] | None = None,
     ) -> ManagerMessage:
+        self._validate_project_agent_task_refs(
+            db,
+            project,
+            agent_id=related_agent_id,
+            task_id=related_task_id,
+            agent_name="Manager message related agent",
+            task_name="Manager message related task",
+        )
         message = ManagerMessage(
             project_id=project.id,
             role=role,
@@ -7277,6 +7308,14 @@ class MissionControlService:
         related_agent_id: int | None = None,
         metadata_json: dict[str, Any] | None = None,
     ) -> ManagerQuestion:
+        self._validate_project_agent_task_refs(
+            db,
+            project,
+            agent_id=related_agent_id,
+            task_id=related_task_id,
+            agent_name="Manager question related agent",
+            task_name="Manager question related task",
+        )
         record = ManagerQuestion(
             project_id=project.id,
             question=question,
