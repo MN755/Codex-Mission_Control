@@ -2879,7 +2879,10 @@ def update_project_widgets(
     _: None = Depends(_require_bridge_token),
 ) -> ProjectSettingsRead:
     project = _get_project_or_404(db, project_id)
-    return service.update_workspace_widgets(db, project, payload.widgets)
+    try:
+        return service.update_workspace_widgets(db, project, payload.widgets)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @app.get("/api/handoffs", response_model=list[HandoffListItemRead])
