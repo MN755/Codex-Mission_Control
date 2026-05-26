@@ -24,8 +24,10 @@ from codex_runner.cli_runner import CliCodexRunner
 from codex_runner.dry_run_runner import DryRunRunner
 from codex_runner.external_adapter_runner import ExternalAdapterRunner
 from config import (
+    DEFAULT_APPROVAL_POLICY,
     DEFAULT_MANAGER_MODE,
     DEFAULT_RUNNER_MODE,
+    DEFAULT_SANDBOX,
     WORKTREE_ROOT,
 )
 from context_packs import context_pack_service
@@ -3665,6 +3667,30 @@ class MissionControlService:
 
     def _sync_project_confidence(self, db: Session, project: Project) -> list[ProjectConfidence]:
         understanding = self._ensure_project_understanding(db, project)
+        existing = {
+            entry.category: entry
+            for entry in db.scalars(select(ProjectConfidence).where(ProjectConfidence.project_id == project.id))
+        }
+        entries = self._project_confidence_entries(project, understanding, existing=existing)
+        for entry in entries:
+            if entry.id is None:
+                db.add(entry)
+        db.flush()
+        return list(
+            db.scalars(
+                select(ProjectConfidence)
+                .where(ProjectConfidence.project_id == project.id)
+                .order_by(ProjectConfidence.confidence_score.asc(), ProjectConfidence.category.asc())
+            )
+        )
+
+    def _project_confidence_entries(
+        self,
+        project: Project,
+        understanding: ProjectUnderstanding,
+        *,
+        existing: dict[str, ProjectConfidence] | None = None,
+    ) -> list[ProjectConfidence]:
         default_categories = [
             "architecture",
             "UI requirements",
@@ -3677,14 +3703,13 @@ class MissionControlService:
             "performance",
             "user goals",
         ]
-        existing = {entry.category: entry for entry in db.scalars(select(ProjectConfidence).where(ProjectConfidence.project_id == project.id))}
+        existing = existing or {}
         confidence_map = self._normalize_confidence_map(dict(understanding.confidence_by_category_json or {}))
         unknowns_map = dict(understanding.unknowns_json or {})
         for category in default_categories:
             entry = existing.get(category)
             if entry is None:
                 entry = ProjectConfidence(project_id=project.id, category=category, reason="Confidence has not been assessed yet.")
-                db.add(entry)
                 existing[category] = entry
             raw_score = confidence_map.get(category) or confidence_map.get(category.lower()) or 0.0
             score = int(round(float(raw_score) * 100)) if raw_score <= 1 else int(raw_score)
@@ -3701,8 +3726,15 @@ class MissionControlService:
                 entry.reason = f"{category} is partially understood but still needs clarification."
             else:
                 entry.reason = f"{category} is still underspecified."
-        db.flush()
-        return list(db.scalars(select(ProjectConfidence).where(ProjectConfidence.project_id == project.id).order_by(ProjectConfidence.confidence_score.asc(), ProjectConfidence.category.asc())))
+        return sorted(existing.values(), key=lambda item: (item.confidence_score, item.category.lower()))
+
+    def _preview_project_confidence(self, project: Project) -> list[ProjectConfidence]:
+        understanding = self._project_understanding(project)
+        existing = {
+            entry.category: entry
+            for entry in list(project.project_confidence or [])
+        }
+        return self._project_confidence_entries(project, understanding, existing=existing)
 
     def _ensure_stuck_signals(self, db: Session, project: Project) -> list[AgentStuckSignal]:
         agents = list(db.scalars(select(Agent).where(Agent.project_id == project.id).order_by(Agent.id.asc())))
@@ -3812,23 +3844,22 @@ class MissionControlService:
             )
         )
 
-    def _sync_review_gates(
+    def _review_gate_requirements(
         self,
-        db: Session,
         project: Project,
         *,
         tasks: list[Task],
         overview: dict[str, Any],
         testing_depth: str,
+        latest_handoff: EvidenceBasedHandoff | None,
         conflicts: list[ConflictRecord] | None = None,
-    ) -> list[ReviewGate]:
+    ) -> dict[str, dict[str, Any]]:
         conflicts = conflicts or []
         task_status_counts = Counter(task.status for task in tasks)
-        latest_handoff = self._latest_evidence_handoff(db, project.id)
         latest_handoff_evidence_ids = list(latest_handoff.evidence_ids_json or []) if latest_handoff is not None else []
         unresolved_conflicts = [entry for entry in conflicts if entry.status not in {"resolved", "dismissed"}]
         missing_evidence = list((project.final_report_json or {}).get("missing_evidence") or [])
-        requirements = {
+        return {
             "code_review": {
                 "title": "Code review gate",
                 "required": True,
@@ -3878,12 +3909,19 @@ class MissionControlService:
                 "evidence_ids": [],
             },
         }
-        existing = {entry.gate_type: entry for entry in db.scalars(select(ReviewGate).where(ReviewGate.project_id == project.id))}
+
+    def _review_gate_entries(
+        self,
+        project: Project,
+        requirements: dict[str, dict[str, Any]],
+        *,
+        existing: dict[str, ReviewGate] | None = None,
+    ) -> list[ReviewGate]:
+        existing = existing or {}
         for gate_type, payload in requirements.items():
             gate = existing.get(gate_type)
             if gate is None:
                 gate = ReviewGate(project_id=project.id, gate_type=gate_type, title=payload["title"])
-                db.add(gate)
                 existing[gate_type] = gate
             gate.title = payload["title"]
             gate.required = bool(payload["required"])
@@ -3891,8 +3929,82 @@ class MissionControlService:
             gate.status = str(payload["status"])
             gate.result_summary = str(payload["summary"])
             gate.evidence_ids_json = list(payload.get("evidence_ids", []))
+        return sorted(existing.values(), key=lambda item: (not item.required, item.gate_type))
+
+    def _sync_review_gates(
+        self,
+        db: Session,
+        project: Project,
+        *,
+        tasks: list[Task],
+        overview: dict[str, Any],
+        testing_depth: str,
+        conflicts: list[ConflictRecord] | None = None,
+    ) -> list[ReviewGate]:
+        latest_handoff = self._latest_evidence_handoff(db, project.id)
+        requirements = self._review_gate_requirements(
+            project,
+            tasks=tasks,
+            overview=overview,
+            testing_depth=testing_depth,
+            latest_handoff=latest_handoff,
+            conflicts=conflicts,
+        )
+        existing = {
+            entry.gate_type: entry
+            for entry in db.scalars(select(ReviewGate).where(ReviewGate.project_id == project.id))
+        }
+        gates = self._review_gate_entries(project, requirements, existing=existing)
+        for gate in gates:
+            if gate.id is None:
+                db.add(gate)
         db.flush()
         return list(db.scalars(select(ReviewGate).where(ReviewGate.project_id == project.id).order_by(ReviewGate.required.desc(), ReviewGate.gate_type.asc())))
+
+    def _preview_review_gates(
+        self,
+        db: Session,
+        project: Project,
+        *,
+        tasks: list[Task],
+        overview: dict[str, Any],
+        testing_depth: str,
+        conflicts: list[ConflictRecord] | None = None,
+    ) -> list[ReviewGate]:
+        latest_handoff = self._latest_evidence_handoff(db, project.id)
+        requirements = self._review_gate_requirements(
+            project,
+            tasks=tasks,
+            overview=overview,
+            testing_depth=testing_depth,
+            latest_handoff=latest_handoff,
+            conflicts=conflicts,
+        )
+        existing = {entry.gate_type: entry for entry in list(project.review_gates or [])}
+        return self._review_gate_entries(project, requirements, existing=existing)
+
+    def _model_policy_values(self, project: Project, settings: ProjectSettings) -> dict[str, Any]:
+        provider = settings.provider
+        fallback = default_label(provider)
+        worker_default = settings.default_worker_model or fallback
+        return {
+            "policy_name": (
+                "local_first"
+                if provider in {"ollama", "claude_code"} or settings.runner_mode == "dry_run"
+                else "custom"
+                if settings.manager_model or settings.default_worker_model
+                else "balanced"
+            ),
+            "manager_model": settings.manager_model or resolve_manager_settings(project, settings).effective_model_label,
+            "coding_model": settings.per_role_model_overrides_json.get("feature") or worker_default,
+            "docs_model": settings.per_role_model_overrides_json.get("docs") or worker_default,
+            "review_model": settings.per_role_model_overrides_json.get("reviewer") or worker_default,
+            "test_model": settings.per_role_model_overrides_json.get("test") or worker_default,
+            "research_model": settings.per_role_model_overrides_json.get("research") or worker_default,
+            "security_model": settings.per_role_model_overrides_json.get("security") or worker_default,
+            "fallback_model": fallback,
+            "notes": "Mirrors current Project Settings so widgets can summarize role-to-model routing honestly.",
+        }
 
     def _ensure_model_policy(self, db: Session, project: Project) -> ModelPolicy:
         settings = self._project_settings(db, project)
@@ -3901,31 +4013,45 @@ class MissionControlService:
             policy = ModelPolicy(project_id=project.id, policy_name="balanced")
             db.add(policy)
             db.flush()
-        provider = settings.provider
-        policy.policy_name = (
-            "local_first"
-            if provider in {"ollama", "claude_code"} or settings.runner_mode == "dry_run"
-            else "custom"
-            if settings.manager_model or settings.default_worker_model
-            else "balanced"
-        )
-        fallback = default_label(provider)
-        worker_default = settings.default_worker_model or fallback
-        policy.manager_model = settings.manager_model or resolve_manager_settings(project, settings).effective_model_label
-        policy.coding_model = settings.per_role_model_overrides_json.get("feature") or worker_default
-        policy.docs_model = settings.per_role_model_overrides_json.get("docs") or worker_default
-        policy.review_model = settings.per_role_model_overrides_json.get("reviewer") or worker_default
-        policy.test_model = settings.per_role_model_overrides_json.get("test") or worker_default
-        policy.research_model = settings.per_role_model_overrides_json.get("research") or worker_default
-        policy.security_model = settings.per_role_model_overrides_json.get("security") or worker_default
-        policy.fallback_model = fallback
-        policy.notes = "Mirrors current Project Settings so widgets can summarize role-to-model routing honestly."
+        for field, value in self._model_policy_values(project, settings).items():
+            setattr(policy, field, value)
         db.flush()
         return policy
 
-    def _ensure_tool_routing_policies(self, db: Session, project: Project) -> list[ToolRoutingPolicy]:
-        settings = self._project_settings(db, project)
-        profile = self._app_profile(db)
+    def _preview_model_policy(self, db: Session, project: Project) -> ModelPolicy:
+        settings = project.settings or self._project_settings(db, project)
+        policy = next(iter(project.model_policies or []), None) or ModelPolicy(project_id=project.id, policy_name="balanced")
+        for field, value in self._model_policy_values(project, settings).items():
+            setattr(policy, field, value)
+        return policy
+
+    def _tool_routing_entries(
+        self,
+        db: Session,
+        project: Project,
+        *,
+        settings: ProjectSettings,
+        existing: dict[str, ToolRoutingPolicy] | None = None,
+    ) -> list[ToolRoutingPolicy]:
+        profile = db.get(AppProfile, 1) or AppProfile(
+            id=1,
+            selected_provider="codex",
+            connected_accounts_json={},
+            tool_permission_overrides_json={},
+            adapter_args_json=[],
+            notification_preferences_json={},
+            dashboard_widgets_json=[],
+            dashboard_widget_preferences_json={},
+            preferred_provider_choice="codex",
+            preferred_start_mode="new_project",
+            first_run_completed=False,
+            onboarding_completed=False,
+            default_runner_mode=DEFAULT_RUNNER_MODE,
+            sandbox_mode=DEFAULT_SANDBOX,
+            approval_policy=DEFAULT_APPROVAL_POLICY,
+            theme="system",
+            startup_behavior="dashboard",
+        )
         tool_catalog = catalog_with_permissions(
             provider=settings.provider,
             connected_accounts=dict(profile.connected_accounts_json or {}),
@@ -3933,14 +4059,11 @@ class MissionControlService:
         )
         availability_by_tool = {item["id"]: item for item in tool_catalog}
         archetypes = self._archetype_lookup(db)
-        existing = {
-            entry.agent_archetype: entry for entry in db.scalars(select(ToolRoutingPolicy).where(ToolRoutingPolicy.project_id == project.id))
-        }
+        existing = existing or {}
         for archetype_name in ["manager", "planner", "research", "frontend", "backend", "feature", "test", "reviewer", "security", "docs", "ops"]:
             entry = existing.get(archetype_name)
             if entry is None:
                 entry = ToolRoutingPolicy(project_id=project.id, agent_archetype=archetype_name)
-                db.add(entry)
                 existing[archetype_name] = entry
             defaults = list((archetypes.get(archetype_name).default_tools_json if archetypes.get(archetype_name) else []) or [])
             allowed: list[str] = []
@@ -3961,6 +4084,18 @@ class MissionControlService:
             entry.requires_approval_tools_json = approval
             entry.blocked_tools_json = blocked
             entry.notes = "Derived from agent archetype defaults and current Skills & Tools availability."
+        return sorted(existing.values(), key=lambda item: item.agent_archetype.lower())
+
+    def _ensure_tool_routing_policies(self, db: Session, project: Project) -> list[ToolRoutingPolicy]:
+        settings = self._project_settings(db, project)
+        existing = {
+            entry.agent_archetype: entry
+            for entry in db.scalars(select(ToolRoutingPolicy).where(ToolRoutingPolicy.project_id == project.id))
+        }
+        entries = self._tool_routing_entries(db, project, settings=settings, existing=existing)
+        for entry in entries:
+            if entry.id is None:
+                db.add(entry)
         db.flush()
         return list(
             db.scalars(
@@ -3970,8 +4105,13 @@ class MissionControlService:
             )
         )
 
-    def _ensure_sandbox_profiles(self, db: Session, project: Project) -> list[SandboxProfile]:
-        defaults = [
+    def _preview_tool_routing_policies(self, db: Session, project: Project) -> list[ToolRoutingPolicy]:
+        settings = project.settings or self._project_settings(db, project)
+        existing = {entry.agent_archetype: entry for entry in list(project.tool_routing_policies or [])}
+        return self._tool_routing_entries(db, project, settings=settings, existing=existing)
+
+    def _default_sandbox_profiles(self) -> list[tuple[str, str, str, str, str, str, str, bool]]:
+        return [
             ("strict", "Tightest filesystem and command posture.", "blocked", "read_only", "ask_every_time", "blocked", "blocked", False),
             ("balanced", "Good default for normal local builds.", "limited", "workspace_write", "on_request", "limited", "blocked", True),
             ("build_friendly", "Looser workspace writes for active implementation.", "limited", "workspace_write", "on_request", "limited", "blocked", False),
@@ -3979,12 +4119,16 @@ class MissionControlService:
             ("research", "Network-friendly profile for research and planning work.", "limited", "read_only", "on_request", "limited", "blocked", False),
             ("local_only", "No network and local writes only.", "blocked", "workspace_write", "on_request", "blocked", "blocked", False),
         ]
-        existing = {entry.name: entry for entry in db.scalars(select(SandboxProfile).where(SandboxProfile.project_id.is_(None)))}
-        for name, description, network, file_write, command_approval, external_tool, deployment, is_default in defaults:
+
+    def _sandbox_profile_entries(
+        self,
+        existing: dict[str, SandboxProfile] | None = None,
+    ) -> list[SandboxProfile]:
+        existing = existing or {}
+        for name, description, network, file_write, command_approval, external_tool, deployment, is_default in self._default_sandbox_profiles():
             entry = existing.get(name)
             if entry is None:
                 entry = SandboxProfile(name=name, description=description, network_policy=network, file_write_policy=file_write, command_approval_policy=command_approval, external_tool_policy=external_tool, deployment_policy=deployment, is_default=is_default)
-                db.add(entry)
                 existing[name] = entry
             else:
                 entry.description = description
@@ -3994,8 +4138,26 @@ class MissionControlService:
                 entry.external_tool_policy = external_tool
                 entry.deployment_policy = deployment
                 entry.is_default = is_default
+        return sorted(
+            existing.values(),
+            key=lambda item: (item.id is None, item.id if item.id is not None else item.name.lower()),
+        )
+
+    def _ensure_sandbox_profiles(self, db: Session, project: Project) -> list[SandboxProfile]:
+        existing = {entry.name: entry for entry in db.scalars(select(SandboxProfile).where(SandboxProfile.project_id.is_(None)))}
+        entries = self._sandbox_profile_entries(existing=existing)
+        for entry in entries:
+            if entry.id is None:
+                db.add(entry)
         db.flush()
         return list(db.scalars(select(SandboxProfile).where(SandboxProfile.project_id.is_(None)).order_by(SandboxProfile.id.asc())))
+
+    def _preview_sandbox_profiles(self, db: Session, project: Project) -> list[SandboxProfile]:
+        existing = {
+            entry.name: entry
+            for entry in db.scalars(select(SandboxProfile).where(SandboxProfile.project_id.is_(None)).order_by(SandboxProfile.id.asc()))
+        }
+        return self._sandbox_profile_entries(existing=existing)
 
     def _ensure_manager_assumptions(self, db: Session, project: Project) -> list[ManagerAssumption]:
         understanding = self._ensure_project_understanding(db, project)
@@ -4074,19 +4236,47 @@ class MissionControlService:
             db.flush()
         repo = self._scan_repo_intelligence(db, project)
         preferences = self._ensure_swarm_preferences(db, project)
+        recipe.steps_json = self._validation_recipe_steps(repo.build_commands_json, repo.test_commands_json, preferences.testing_depth)
+        recipe.status = "active"
+        db.flush()
+        return recipe
+
+    def _validation_recipe_steps(
+        self,
+        build_commands: list[str] | None,
+        test_commands: list[str] | None,
+        testing_depth: str,
+    ) -> list[dict[str, Any]]:
         steps: list[dict[str, Any]] = []
-        for command in repo.build_commands_json[:1]:
+        for command in list(build_commands or [])[:1]:
             steps.append({"title": "Build the project", "command": command, "type": "build", "requires_approval": True, "status": "pending"})
-        for command in repo.test_commands_json[:1]:
+        for command in list(test_commands or [])[:1]:
             steps.append({"title": "Run automated tests", "command": command, "type": "test", "requires_approval": True, "status": "pending"})
-        if preferences.testing_depth != "minimal":
+        if testing_depth != "minimal":
             steps.append({"title": "Run smoke validation", "command": None, "type": "smoke", "requires_approval": False, "status": "pending"})
         steps.append({"title": "Review docs and handoff notes", "command": None, "type": "docs", "requires_approval": False, "status": "pending"})
         if not steps:
             steps.append({"title": "Manual validation still needs to be defined.", "command": None, "type": "manual", "requires_approval": False, "status": "pending"})
-        recipe.steps_json = steps
+        return steps
+
+    def _preview_validation_recipe(self, db: Session, project: Project) -> ValidationRecipe:
+        recipe = next(iter(project.validation_recipes or []), None) or ValidationRecipe(project_id=project.id, name="Default validation recipe", status="draft")
+        repo = project.repo_intelligence
+        repo_payload = (
+            {
+                "build_commands_json": list(repo.build_commands_json or []),
+                "test_commands_json": list(repo.test_commands_json or []),
+            }
+            if repo is not None
+            else self._preview_repo_intelligence(project)
+        )
+        preferences = project.swarm_preferences or self._swarm_preferences(project)
+        recipe.steps_json = self._validation_recipe_steps(
+            repo_payload.get("build_commands_json"),
+            repo_payload.get("test_commands_json"),
+            preferences.testing_depth,
+        )
         recipe.status = "active"
-        db.flush()
         return recipe
 
     def _ensure_handoff_quality(self, db: Session, project: Project) -> HandoffQualityPreference:
@@ -5285,8 +5475,7 @@ class MissionControlService:
                 ]},
             )
         if instance.widget_type == "Confidence Tracker":
-            support = get_support()
-            confidence: list[ProjectConfidence] = support["confidence"]
+            confidence = list(project.project_confidence or []) or self._preview_project_confidence(project)
             return self._serialize_widget_data(
                 instance,
                 status="ready",
@@ -5375,8 +5564,15 @@ class MissionControlService:
                 data_json={"items": signals[:10]},
             )
         if instance.widget_type == "Merge / Review Gates":
-            support = get_support()
-            gates: list[ReviewGate] = support["review_gates"]
+            preferences = project.swarm_preferences or self._swarm_preferences(project)
+            gates = list(project.review_gates or []) or self._preview_review_gates(
+                db,
+                project,
+                tasks=tasks,
+                overview=overview,
+                testing_depth=preferences.testing_depth,
+                conflicts=self.list_conflicts(db, project),
+            )
             return self._serialize_widget_data(
                 instance,
                 status="warning" if any(entry.status == "failed" for entry in gates) else "ready",
@@ -5396,8 +5592,7 @@ class MissionControlService:
             support = get_support()
             return self._serialize_widget_data(instance, status="warning" if support["health"]["state"] in {"blocked", "unstable", "needs_review"} else "ready", data_json=support["health"])
         if instance.widget_type == "Model Assignment Policy":
-            support = get_support()
-            policy: ModelPolicy = support["model_policy"]
+            policy = next(iter(project.model_policies or []), None) or self._preview_model_policy(db, project)
             return self._serialize_widget_data(
                 instance,
                 status="ready",
@@ -5415,8 +5610,7 @@ class MissionControlService:
                 },
             )
         if instance.widget_type == "Tool Routing Policy":
-            support = get_support()
-            policies: list[ToolRoutingPolicy] = support["tool_routing"]
+            policies = list(project.tool_routing_policies or []) or self._preview_tool_routing_policies(db, project)
             return self._serialize_widget_data(
                 instance,
                 status="ready",
@@ -5432,8 +5626,7 @@ class MissionControlService:
                 ]},
             )
         if instance.widget_type == "Sandbox Profiles":
-            support = get_support()
-            profiles: list[SandboxProfile] = support["sandbox_profiles"]
+            profiles = self._preview_sandbox_profiles(db, project)
             settings = self._project_settings(db, project)
             current_profile_name = "balanced" if settings.sandbox_mode == "workspace-write" else "strict"
             current_profile = next((entry for entry in profiles if entry.name == current_profile_name), profiles[0] if profiles else None)
@@ -5651,8 +5844,7 @@ class MissionControlService:
                 },
             )
         if instance.widget_type == "Validation Recipe":
-            support = get_support()
-            recipe: ValidationRecipe = support["validation_recipe"]
+            recipe = next(iter(project.validation_recipes or []), None) or self._preview_validation_recipe(db, project)
             return self._serialize_widget_data(
                 instance,
                 status="ready",

@@ -16,15 +16,21 @@ from models import (
     HandoffEvidence,
     ImportedCodebaseSafety,
     ManagerAssumption,
+    ModelPolicy,
     Project,
+    ProjectConfidence,
     ProjectPlaybook,
     ProjectUnderstanding,
     RecoveryPlan,
     RepoIntelligenceSummary,
+    ReviewGate,
+    SandboxProfile,
     SecurityPolicy,
     SwarmPreferences,
     Task,
+    ToolRoutingPolicy,
     ValidationCoverageArea,
+    ValidationRecipe,
     WidgetDefinition,
 )
 
@@ -599,6 +605,12 @@ def test_project_widget_data_route_stays_read_only_for_preview_widgets(client, b
         "Failure Recovery",
         "Agent Stuck Detection",
         "Repo Intelligence",
+        "Confidence Tracker",
+        "Merge / Review Gates",
+        "Model Assignment Policy",
+        "Tool Routing Policy",
+        "Sandbox Profiles",
+        "Validation Recipe",
     ]
     instance_ids: list[int] = []
     for widget_type in widget_types:
@@ -624,6 +636,12 @@ def test_project_widget_data_route_stays_read_only_for_preview_widgets(client, b
         assert db.scalar(select(func.count(AgentStuckSignal.id)).where(AgentStuckSignal.project_id == project_id)) == 0
         assert db.scalar(select(func.count(RecoveryPlan.id)).where(RecoveryPlan.project_id == project_id)) == 0
         assert db.scalar(select(func.count(RepoIntelligenceSummary.project_id)).where(RepoIntelligenceSummary.project_id == project_id)) == 0
+        assert db.scalar(select(func.count(ProjectConfidence.id)).where(ProjectConfidence.project_id == project_id)) == 0
+        assert db.scalar(select(func.count(ReviewGate.id)).where(ReviewGate.project_id == project_id)) == 0
+        assert db.scalar(select(func.count(ModelPolicy.id)).where(ModelPolicy.project_id == project_id)) == 0
+        assert db.scalar(select(func.count(ToolRoutingPolicy.id)).where(ToolRoutingPolicy.project_id == project_id)) == 0
+        assert db.scalar(select(func.count(SandboxProfile.id)).where(SandboxProfile.project_id.is_(None))) == 0
+        assert db.scalar(select(func.count(ValidationRecipe.id)).where(ValidationRecipe.project_id == project_id)) == 0
     finally:
         db.close()
 
