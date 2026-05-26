@@ -13,6 +13,7 @@ from models import (
     AgentRun,
     AgentArchetype,
     AgentStuckSignal,
+    AppProfile,
     HandoffEvidence,
     ImportedCodebaseSafety,
     ManagerAssumption,
@@ -22,6 +23,7 @@ from models import (
     RecoveryPlan,
     RepoIntelligenceSummary,
     SecurityPolicy,
+    SwarmBudget,
     SwarmPreferences,
     Task,
     ValidationCoverageArea,
@@ -70,6 +72,31 @@ def _create_legacy_project(name: str, workspace_name: str) -> int:
         )
         db.commit()
         return project.id
+    finally:
+        db.close()
+
+
+def test_swarm_budget_widget_data_does_not_persist_budget_defaults(client, bridge_headers) -> None:
+    project_id = _create_legacy_project("Swarm Budget Widget", "swarm-budget-widget")
+
+    added = client.post(
+        f"/api/projects/{project_id}/widgets/add",
+        json={"widget_type": "Swarm Budget"},
+        headers=bridge_headers,
+    )
+    assert added.status_code == 200, added.text
+
+    response = client.get(f"/api/widgets/instances/{added.json()['id']}/data", headers=bridge_headers)
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["status"] in {"ready", "warning"}
+    assert payload["data_json"]["max_agents"] >= 1
+
+    db = SessionLocal()
+    try:
+        assert db.scalar(select(func.count(SwarmBudget.project_id)).where(SwarmBudget.project_id == project_id)) == 0
+        assert db.scalar(select(func.count(SwarmPreferences.project_id)).where(SwarmPreferences.project_id == project_id)) == 0
+        assert db.scalar(select(func.count(AppProfile.id))) == 0
     finally:
         db.close()
 
