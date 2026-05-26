@@ -1420,7 +1420,7 @@ def get_security_policy(
     db: Session = Depends(get_db),
     _: None = Depends(_require_bridge_token),
 ) -> SecurityPolicyRead:
-    return SecurityPolicyRead.model_validate(security_service.get_policy(db))
+    return SecurityPolicyRead.model_validate(security_service.get_policy(db, create_if_missing=False))
 
 
 @app.put("/api/security/policy", response_model=SecurityPolicyRead)
@@ -1440,7 +1440,7 @@ def get_project_security_policy(
     _: None = Depends(_require_bridge_token),
 ) -> SecurityPolicyRead:
     project = _get_project_or_404(db, project_id)
-    return SecurityPolicyRead.model_validate(security_service.get_policy(db, project=project))
+    return SecurityPolicyRead.model_validate(security_service.get_policy(db, project=project, create_if_missing=False))
 
 
 @app.put("/api/projects/{project_id}/security/policy", response_model=SecurityPolicyRead)

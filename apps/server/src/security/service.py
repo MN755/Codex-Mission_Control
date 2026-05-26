@@ -36,7 +36,15 @@ class SecurityService:
         record = db.scalar(query.order_by(SecurityPolicy.id.asc()))
         if record is None:
             if not create_if_missing:
-                return SecurityPolicy(scope=scope, project_id=project.id if project is not None else None, **DEFAULT_SECURITY_POLICY)
+                timestamp = utc_now()
+                return SecurityPolicy(
+                    id=0,
+                    scope=scope,
+                    project_id=project.id if project is not None else None,
+                    created_at=timestamp,
+                    updated_at=timestamp,
+                    **DEFAULT_SECURITY_POLICY,
+                )
             record = SecurityPolicy(scope=scope, project_id=project.id if project is not None else None, **DEFAULT_SECURITY_POLICY)
             db.add(record)
             db.flush()

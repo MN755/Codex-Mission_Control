@@ -6,7 +6,7 @@ from conftest import sample_workspace
 from db import SessionLocal
 from diagnostics import open_folder
 from manager import service
-from models import ApprovalRequest, Project
+from models import ApprovalRequest, Project, SecurityPolicy
 from runtime_paths import diagnostics_root
 from security import redact_text, redact_value, risk_classifier, security_service
 from security.path_validation import PathValidationError, resolve_local_path, resolve_relative_to_root
@@ -140,11 +140,23 @@ def test_frontend_static_resolver_rejects_sibling_prefix_escape(monkeypatch, tmp
 
 
 def test_security_policy_defaults_and_project_override(client) -> None:
+    db = SessionLocal()
+    try:
+        assert db.query(SecurityPolicy).count() == 0
+    finally:
+        db.close()
+
     global_policy = client.get("/api/security/policy")
     assert global_policy.status_code == 200
     assert global_policy.json()["scope"] == "global"
     assert global_policy.json()["default_command_policy"] == "ask"
     assert global_policy.json()["deployment_policy"] == "deny"
+
+    db = SessionLocal()
+    try:
+        assert db.query(SecurityPolicy).count() == 0
+    finally:
+        db.close()
 
     project = create_project(client, "Security Policy", "security-policy")
     project_policy = client.get(f"/api/projects/{project['id']}/security/policy")
@@ -152,6 +164,12 @@ def test_security_policy_defaults_and_project_override(client) -> None:
     assert project_policy.json()["scope"] == "project"
     assert project_policy.json()["project_id"] == project["id"]
     assert project_policy.json()["high_risk_requires_user"] is True
+
+    db = SessionLocal()
+    try:
+        assert db.query(SecurityPolicy).count() == 0
+    finally:
+        db.close()
 
     updated = client.put(
         f"/api/projects/{project['id']}/security/policy",
@@ -171,6 +189,12 @@ def test_security_policy_defaults_and_project_override(client) -> None:
     assert updated.status_code == 200
     assert updated.json()["default_command_policy"] == "allow_low_risk"
     assert updated.json()["auto_approve_low_risk"] is True
+
+    db = SessionLocal()
+    try:
+        assert db.query(SecurityPolicy).count() == 1
+    finally:
+        db.close()
 
 
 def test_security_risk_assess_endpoint_persists_redacted_record(client) -> None:
