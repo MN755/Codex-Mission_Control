@@ -156,6 +156,15 @@ def test_privileged_headless_and_status_routes_require_token() -> None:
     with TestClient(app) as raw_client:
         assert raw_client.get("/api/system/status").status_code == 401
         assert raw_client.get("/api/profile").status_code == 401
+        assert raw_client.get("/api/diagnostics/identity").status_code == 401
+        assert raw_client.get("/api/headless/config").status_code == 401
+        assert raw_client.get("/api/runners/status").status_code == 401
+        assert raw_client.get("/api/system/auth-state").status_code == 401
+        assert raw_client.post("/api/system/auth/login/chatgpt", json={"device_auth": True}).status_code == 401
+        assert raw_client.post("/api/system/auth/login/device").status_code == 401
+        assert raw_client.post("/api/system/auth/login/api-key", json={"api_key": "test-key"}).status_code == 401
+        assert raw_client.post("/api/system/auth/logout").status_code == 401
+        assert raw_client.get("/api/system/auth-jobs/example").status_code == 401
         assert raw_client.get("/api/plugin/health").status_code == 401
         assert raw_client.post("/api/plugin/health/check").status_code == 401
         assert raw_client.get("/api/headless/health").status_code == 401
@@ -163,38 +172,87 @@ def test_privileged_headless_and_status_routes_require_token() -> None:
         assert raw_client.post("/api/headless/repair", json={}).status_code == 401
         assert raw_client.post("/api/startup/check", json={"attempt_number": 1, "include_optional_checks": True}).status_code == 401
         assert raw_client.post("/api/startup/retry", json={"attempt_number": 1, "failed_check": "runtime_paths", "retry_mode": "full"}).status_code == 401
+        assert raw_client.get("/api/startup/status").status_code == 401
+        assert raw_client.post("/api/startup/complete-first-run").status_code == 401
+        assert raw_client.post("/api/startup/diagnostics", json={"include_support_bundle": True}).status_code == 401
+        assert raw_client.post("/api/startup/open-diagnostics-folder").status_code == 401
+        assert raw_client.get("/api/diagnostics/reports").status_code == 401
 
 
-def test_runtime_and_project_control_routes_require_token() -> None:
+def test_runtime_and_project_control_routes_require_token(client) -> None:
+    project = client.post(
+        "/api/projects",
+        json={
+            "name": "Auth Surface",
+            "idea": "Lock down route access",
+            "workspace_path": sample_workspace("auth-surface"),
+            "provider": "codex",
+            "runner_mode": "dry_run",
+            "manager_mode": "auto",
+        },
+    ).json()
+    project_id = project["id"]
+
     with TestClient(app) as raw_client:
-        project = raw_client.post(
+        assert raw_client.post(
             "/api/projects",
             json={
-                "name": "Auth Surface",
-                "idea": "Lock down route access",
-                "workspace_path": sample_workspace("auth-surface"),
+                "name": "Unauthenticated Create",
+                "idea": "Should fail",
+                "workspace_path": sample_workspace("unauth-create"),
                 "provider": "codex",
                 "runner_mode": "dry_run",
                 "manager_mode": "auto",
             },
-        ).json()
-        project_id = project["id"]
-
+        ).status_code == 401
+        assert raw_client.get(f"/api/projects/{project_id}").status_code == 401
+        assert raw_client.patch(f"/api/projects/{project_id}", json={"name": "Nope"}).status_code == 401
+        assert raw_client.post(f"/api/projects/{project_id}/open").status_code == 401
+        assert raw_client.post(f"/api/projects/{project_id}/pause").status_code == 401
+        assert raw_client.post(f"/api/projects/{project_id}/resume").status_code == 401
+        assert raw_client.post(f"/api/projects/{project_id}/archive").status_code == 401
         assert raw_client.get("/api/dashboard/summary").status_code == 401
         assert raw_client.get("/api/dashboard/stream").status_code == 401
+        assert raw_client.get("/api/settings", params={"project_id": project_id}).status_code == 401
+        assert raw_client.get(f"/api/projects/{project_id}/swarm/preferences").status_code == 401
+        assert raw_client.post(f"/api/projects/{project_id}/swarm/plan").status_code == 401
+        assert raw_client.post(f"/api/projects/{project_id}/swarm/spawn").status_code == 401
+        assert raw_client.get("/api/playbooks").status_code == 401
+        assert raw_client.post(f"/api/projects/{project_id}/playbook/suggest").status_code == 401
+        assert raw_client.get("/api/preferences").status_code == 401
+        assert raw_client.get("/api/security/policy").status_code == 401
         assert raw_client.get("/api/tools").status_code == 401
         assert raw_client.get("/api/skills").status_code == 401
         assert raw_client.get("/api/handoffs").status_code == 401
+        assert raw_client.get("/api/agent-archetypes").status_code == 401
+        assert raw_client.get("/api/widgets/catalog").status_code == 401
+        assert raw_client.get("/api/widgets/instances", params={"scope": "dashboard"}).status_code == 401
         assert raw_client.get("/api/capabilities/matrix").status_code == 401
         assert raw_client.get("/api/capabilities/benchmarks").status_code == 401
         assert raw_client.get("/api/agents/reputation").status_code == 401
+        assert raw_client.post(f"/api/projects/{project_id}/change-requests", json={"request_text": "Make it better"}).status_code == 401
+        assert raw_client.get(f"/api/projects/{project_id}/context-packs").status_code == 401
+        assert raw_client.get("/api/context-packs/1", params={"project_id": project_id}).status_code == 401
+        assert raw_client.get(f"/api/projects/{project_id}/risks").status_code == 401
+        assert raw_client.get(f"/api/projects/{project_id}/scope-creep").status_code == 401
+        assert raw_client.post("/api/scope-creep/1/resolve", params={"project_id": project_id}, json={"status": "accepted"}).status_code == 401
+        assert raw_client.post(f"/api/projects/{project_id}/swarm/simulate-launch").status_code == 401
+        assert raw_client.get(f"/api/projects/{project_id}/swarm/simulations").status_code == 401
         assert raw_client.get(f"/api/projects/{project_id}/workspace").status_code == 401
         assert raw_client.get(f"/api/projects/{project_id}/actions").status_code == 401
         assert raw_client.get(f"/api/projects/{project_id}/events").status_code == 401
         assert raw_client.get(f"/api/projects/{project_id}/stream").status_code == 401
         assert raw_client.get(f"/api/projects/{project_id}/reservations").status_code == 401
         assert raw_client.get(f"/api/projects/{project_id}/swarm/events").status_code == 401
+        assert raw_client.get(f"/api/projects/{project_id}/questions/pending").status_code == 401
+        assert raw_client.get(f"/api/projects/{project_id}/approvals/pending").status_code == 401
+        assert raw_client.get(f"/api/projects/{project_id}/manager/messages").status_code == 401
+        assert raw_client.get(f"/api/projects/{project_id}/manager/queue").status_code == 401
         assert raw_client.post(f"/api/projects/{project_id}/docs/generate").status_code == 401
         assert raw_client.post(f"/api/projects/{project_id}/interview/start", json={"question_budget": 4}).status_code == 401
         assert raw_client.post(f"/api/projects/{project_id}/plan/generate", json={"force_rebuild": True}).status_code == 401
+        assert raw_client.get(f"/api/projects/{project_id}/tasks").status_code == 401
+        assert raw_client.get(f"/api/projects/{project_id}/agents").status_code == 401
+        assert raw_client.post(f"/api/projects/{project_id}/manager/message", json={"message": "What next?"}).status_code == 401
+        assert raw_client.post(f"/api/projects/{project_id}/manager/next-step").status_code == 401
         assert raw_client.post("/api/projects/import-folder", json={"folder_path": sample_workspace("auth-import"), "import_mode": "linked"}).status_code == 401

@@ -6,7 +6,17 @@ from sqlalchemy import func, select
 
 from conftest import sample_workspace
 from db import SessionLocal, init_db
-from models import Agent, AgentArchetype, ImportedCodebaseSafety, Project, SecurityPolicy, SwarmPreferences, ValidationCoverageArea
+from models import (
+    Agent,
+    AgentArchetype,
+    ImportedCodebaseSafety,
+    Project,
+    ProjectPlaybook,
+    SecurityPolicy,
+    SwarmPreferences,
+    ValidationCoverageArea,
+    WidgetDefinition,
+)
 
 
 def _create_project(client, name: str, workspace_name: str) -> dict:
@@ -101,6 +111,83 @@ def test_validation_coverage_get_returns_preview_without_persisting_rows(client)
     try:
         row_count = db.scalar(select(func.count(ValidationCoverageArea.id)).where(ValidationCoverageArea.project_id == project_id))
         assert row_count == 0
+    finally:
+        db.close()
+
+
+def test_widget_catalog_get_does_not_seed_or_overwrite_rows(client) -> None:
+    init_db()
+    db = SessionLocal()
+    try:
+        existing = WidgetDefinition(
+            widget_type="Needs Attention",
+            title="Custom Needs Attention",
+            description="Keep operator override intact.",
+            scope="dashboard",
+            default_area="dashboard_main",
+            default_size="large",
+            category="ops",
+            requires_project=False,
+            requires_tool=None,
+            coming_soon=False,
+            risk_level="low",
+        )
+        db.add(existing)
+        db.commit()
+        existing_id = existing.id
+    finally:
+        db.close()
+
+    response = client.get("/api/widgets/catalog")
+    assert response.status_code == 200, response.text
+    catalog = response.json()
+    custom = next(item for item in catalog if item["widget_type"] == "Needs Attention")
+    assert custom["title"] == "Custom Needs Attention"
+
+    db = SessionLocal()
+    try:
+        rows = list(db.scalars(select(WidgetDefinition).order_by(WidgetDefinition.id.asc())))
+        assert len(rows) == 1
+        assert rows[0].id == existing_id
+        assert rows[0].title == "Custom Needs Attention"
+    finally:
+        db.close()
+
+
+def test_playbook_catalog_get_does_not_seed_or_overwrite_rows(client) -> None:
+    init_db()
+    db = SessionLocal()
+    try:
+        existing = ProjectPlaybook(
+            key="local_desktop_app",
+            name="Custom Desktop Playbook",
+            description="Keep custom playbook edits intact.",
+            suggested_interview_categories_json=["custom"],
+            suggested_swarm_mode="balanced",
+            suggested_agent_archetypes_json=["backend"],
+            suggested_validation_recipe_json=[{"title": "Custom"}],
+            common_risks_json=["custom risk"],
+            suggested_docs_json=["CUSTOM.md"],
+            typical_structure_json=["custom"],
+        )
+        db.add(existing)
+        db.commit()
+        existing_id = existing.id
+    finally:
+        db.close()
+
+    response = client.get("/api/playbooks")
+    assert response.status_code == 200, response.text
+    catalog = response.json()
+    custom = next(item for item in catalog if item["key"] == "local_desktop_app")
+    assert custom["name"] == "Custom Desktop Playbook"
+
+    db = SessionLocal()
+    try:
+        rows = list(db.scalars(select(ProjectPlaybook).order_by(ProjectPlaybook.id.asc())))
+        assert len(rows) == 1
+        assert rows[0].id == existing_id
+        assert rows[0].name == "Custom Desktop Playbook"
     finally:
         db.close()
 

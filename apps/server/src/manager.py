@@ -1472,35 +1472,46 @@ class MissionControlService:
             "updated_at": updated_at or instance.updated_at,
         }
 
-    def _ensure_widget_definitions(self, db: Session) -> list[WidgetDefinition]:
+    def _widget_definition_snapshot(
+        self,
+        payload: dict[str, Any],
+        override: WidgetDefinition | None = None,
+        *,
+        synthetic_id: int,
+    ) -> WidgetDefinition:
+        return WidgetDefinition(
+            id=override.id if override is not None else synthetic_id,
+            widget_type=str(override.widget_type if override is not None else payload["widget_type"]),
+            title=str(override.title if override is not None else payload["title"]),
+            description=str(override.description if override is not None else payload["description"]),
+            scope=str(override.scope if override is not None else payload["scope"]),
+            default_area=str(override.default_area if override is not None else payload["default_area"]),
+            default_size=str(override.default_size if override is not None else payload["default_size"]),
+            category=str(override.category if override is not None else payload["category"]),
+            requires_project=bool(override.requires_project if override is not None else payload.get("requires_project", False)),
+            requires_tool=override.requires_tool if override is not None else (str(payload["requires_tool"]) if payload.get("requires_tool") else None),
+            coming_soon=bool(override.coming_soon if override is not None else payload.get("coming_soon", False)),
+            risk_level=override.risk_level if override is not None else (str(payload["risk_level"]) if payload.get("risk_level") else None),
+        )
+
+    def _widget_definitions_view(self, db: Session) -> list[WidgetDefinition]:
         existing = {item.widget_type: item for item in db.scalars(select(WidgetDefinition).order_by(WidgetDefinition.widget_type.asc()))}
-        changed = False
-        for payload in WIDGET_CATALOG:
+        merged: list[WidgetDefinition] = []
+        seen: set[str] = set()
+        for index, payload in enumerate(WIDGET_CATALOG, start=1):
             widget_type = str(payload["widget_type"])
-            definition = existing.get(widget_type)
-            if definition is None:
-                definition = WidgetDefinition(widget_type=widget_type)
-                db.add(definition)
-                existing[widget_type] = definition
-                changed = True
-            definition.title = str(payload["title"])
-            definition.description = str(payload["description"])
-            definition.scope = str(payload["scope"])
-            definition.default_area = str(payload["default_area"])
-            definition.default_size = str(payload["default_size"])
-            definition.category = str(payload["category"])
-            definition.requires_project = bool(payload.get("requires_project", False))
-            definition.requires_tool = str(payload["requires_tool"]) if payload.get("requires_tool") else None
-            definition.coming_soon = bool(payload.get("coming_soon", False))
-            definition.risk_level = str(payload["risk_level"]) if payload.get("risk_level") else None
-        if changed:
-            db.flush()
-        return sorted(existing.values(), key=lambda item: (item.scope, item.title.lower()))
+            merged.append(self._widget_definition_snapshot(payload, existing.get(widget_type), synthetic_id=-index))
+            seen.add(widget_type)
+        for widget_type, definition in existing.items():
+            if widget_type in seen:
+                continue
+            merged.append(self._widget_definition_snapshot({"widget_type": widget_type}, definition, synthetic_id=definition.id))
+        return sorted(merged, key=lambda item: (item.scope, item.title.lower()))
 
     def _widget_catalog_for_scope(self, db: Session, scope: str) -> list[dict[str, Any]]:
         return [
             self._serialize_widget_definition(definition)
-            for definition in self._ensure_widget_definitions(db)
+            for definition in self._widget_definitions_view(db)
             if definition.scope == scope
         ]
 
@@ -1530,7 +1541,7 @@ class MissionControlService:
         project_id: int | None,
         widget_types: list[str],
     ) -> list[WidgetInstance]:
-        definitions = {item.widget_type: item for item in self._ensure_widget_definitions(db)}
+        definitions = {item.widget_type: item for item in self._widget_definitions_view(db)}
         allowed_widget_types = DASHBOARD_WIDGET_TYPES if scope == "dashboard" else PROJECT_WIDGET_TYPES
         instances: list[WidgetInstance] = []
         area_counts: Counter[str] = Counter()
@@ -1567,7 +1578,6 @@ class MissionControlService:
         settings.workspace_widgets_json = [instance.widget_type for instance in instances if instance.enabled]
 
     def _dashboard_widget_instances(self, db: Session, profile: AppProfile) -> list[WidgetInstance]:
-        self._ensure_widget_definitions(db)
         instances = self._widget_instances_query(db, scope="dashboard", project_id=None)
         if not instances:
             configured = [item for item in (profile.dashboard_widgets_json or []) if item in DASHBOARD_WIDGET_TYPES]
@@ -1580,7 +1590,6 @@ class MissionControlService:
         return instances
 
     def _project_widget_instances(self, db: Session, project: Project, settings: ProjectSettings) -> list[WidgetInstance]:
-        self._ensure_widget_definitions(db)
         instances = self._widget_instances_query(db, scope="project", project_id=project.id)
         if not instances:
             configured = [item for item in (settings.workspace_widgets_json or []) if item in PROJECT_WIDGET_TYPES]
@@ -3765,7 +3774,7 @@ class MissionControlService:
         }
 
     def list_widget_catalog(self, db: Session, scope: str | None = None) -> list[dict[str, Any]]:
-        catalog = self._ensure_widget_definitions(db)
+        catalog = self._widget_definitions_view(db)
         return [
             self._serialize_widget_definition(definition)
             for definition in catalog
@@ -3787,8 +3796,7 @@ class MissionControlService:
         return instance
 
     def _widget_definition_or_error(self, db: Session, widget_type: str) -> WidgetDefinition:
-        self._ensure_widget_definitions(db)
-        definition = db.scalar(select(WidgetDefinition).where(WidgetDefinition.widget_type == widget_type))
+        definition = next((item for item in self._widget_definitions_view(db) if item.widget_type == widget_type), None)
         if definition is None:
             raise ValueError("Unknown widget type")
         return definition

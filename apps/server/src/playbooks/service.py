@@ -140,26 +140,63 @@ DEFAULT_PLAYBOOKS: list[dict[str, Any]] = [
 
 
 class PlaybookService:
-    def ensure_playbooks(self, db: Session) -> list[ProjectPlaybook]:
+    def _playbook_snapshot(
+        self,
+        payload: dict[str, Any],
+        override: ProjectPlaybook | None = None,
+        *,
+        synthetic_id: int,
+    ) -> ProjectPlaybook:
+        timestamp = utc_now()
+        return ProjectPlaybook(
+            id=override.id if override is not None else synthetic_id,
+            key=str(override.key if override is not None else payload["key"]),
+            name=str(override.name if override is not None else payload["name"]),
+            description=str(override.description if override is not None else payload["description"]),
+            suggested_interview_categories_json=list(
+                override.suggested_interview_categories_json
+                if override is not None
+                else payload.get("suggested_interview_categories_json", [])
+            ),
+            suggested_swarm_mode=override.suggested_swarm_mode if override is not None else payload.get("suggested_swarm_mode"),
+            suggested_agent_archetypes_json=list(
+                override.suggested_agent_archetypes_json
+                if override is not None
+                else payload.get("suggested_agent_archetypes_json", [])
+            ),
+            suggested_validation_recipe_json=list(
+                override.suggested_validation_recipe_json
+                if override is not None
+                else payload.get("suggested_validation_recipe_json", [])
+            ),
+            common_risks_json=list(override.common_risks_json if override is not None else payload.get("common_risks_json", [])),
+            suggested_docs_json=list(override.suggested_docs_json if override is not None else payload.get("suggested_docs_json", [])),
+            typical_structure_json=list(
+                override.typical_structure_json if override is not None else payload.get("typical_structure_json", [])
+            ),
+            created_at=override.created_at if override is not None else timestamp,
+            updated_at=override.updated_at if override is not None else timestamp,
+        )
+
+    def _playbook_views(self, db: Session) -> list[ProjectPlaybook]:
         existing = {item.key: item for item in db.scalars(select(ProjectPlaybook).order_by(ProjectPlaybook.key.asc()))}
-        for payload in DEFAULT_PLAYBOOKS:
-            record = existing.get(payload["key"])
-            if record is None:
-                record = ProjectPlaybook()
-                db.add(record)
-                existing[payload["key"]] = record
-            for key, value in payload.items():
-                setattr(record, key, value)
-        db.flush()
-        return list(db.scalars(select(ProjectPlaybook).order_by(ProjectPlaybook.key.asc())))
+        merged: list[ProjectPlaybook] = []
+        seen: set[str] = set()
+        for index, payload in enumerate(DEFAULT_PLAYBOOKS, start=1):
+            playbook_key = str(payload["key"])
+            merged.append(self._playbook_snapshot(payload, existing.get(playbook_key), synthetic_id=-index))
+            seen.add(playbook_key)
+        for playbook_key, record in existing.items():
+            if playbook_key in seen:
+                continue
+            merged.append(self._playbook_snapshot({"key": playbook_key}, record, synthetic_id=record.id))
+        return sorted(merged, key=lambda item: item.name.lower())
 
     def list_playbooks(self, db: Session) -> list[ProjectPlaybook]:
-        self.ensure_playbooks(db)
-        return list(db.scalars(select(ProjectPlaybook).order_by(ProjectPlaybook.name.asc())))
+        return self._playbook_views(db)
 
     def get_playbook(self, db: Session, playbook_key: str) -> ProjectPlaybook | None:
-        self.ensure_playbooks(db)
-        return db.scalar(select(ProjectPlaybook).where(ProjectPlaybook.key == playbook_key))
+        return next((item for item in self._playbook_views(db) if item.key == playbook_key), None)
 
     def _selection(self, db: Session, project_id: int) -> ProjectPlaybookSelection | None:
         return db.get(ProjectPlaybookSelection, project_id)
