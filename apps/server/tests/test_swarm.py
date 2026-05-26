@@ -215,6 +215,60 @@ def test_scaling_changes_plan_and_records_events(client) -> None:
     assert any(event["event_type"] == "swarm_scaled_down" for event in events)
 
 
+def test_repeated_spawn_keeps_existing_swarm_active(client) -> None:
+    project = create_project(client, "Repeat Spawn Swarm", "swarm-repeat-spawn")
+    update_swarm_preferences(client, project["id"], optimization_mode="balanced", swarm_aggressiveness="medium", max_agents=8, require_approval_above_agent_count=20)
+
+    plan = client.post(f"/api/projects/{project['id']}/swarm/plan", json={"goal": "Keep the current swarm stable."}).json()
+    approve = client.post(f"/api/projects/{project['id']}/swarm/plan/{plan['id']}/approve")
+    assert approve.status_code == 200
+
+    first_spawn = client.post(f"/api/projects/{project['id']}/swarm/spawn")
+    assert first_spawn.status_code == 200
+    first_payload = first_spawn.json()
+    active_before = first_payload["swarm_plan"]["active_agent_count"]
+    assert active_before >= 1
+    assert first_payload["agents_retired"] == 0
+
+    second_spawn = client.post(f"/api/projects/{project['id']}/swarm/spawn")
+    assert second_spawn.status_code == 200
+    second_payload = second_spawn.json()
+    assert second_payload["agents_spawned"] == 0
+    assert second_payload["agents_retired"] == 0
+    assert second_payload["swarm_plan"]["active_agent_count"] == active_before
+
+
+def test_swarm_scale_count_changes_recommended_agent_target(client) -> None:
+    project = create_project(client, "Scale Count Swarm", "swarm-scale-count")
+    update_swarm_preferences(client, project["id"], optimization_mode="balanced", swarm_aggressiveness="medium", max_agents=8, require_approval_above_agent_count=20)
+
+    original_plan = client.post(f"/api/projects/{project['id']}/swarm/plan", json={"goal": "Start balanced."}).json()
+    approve = client.post(f"/api/projects/{project['id']}/swarm/plan/{original_plan['id']}/approve")
+    assert approve.status_code == 200
+    spawn = client.post(f"/api/projects/{project['id']}/swarm/spawn")
+    assert spawn.status_code == 200
+    baseline = spawn.json()["swarm_plan"]["active_agent_count"]
+    assert baseline >= 1
+
+    scale_up = client.post(
+        f"/api/projects/{project['id']}/swarm/scale",
+        json={"direction": "up", "reason": "Need more lanes.", "count": 2},
+    )
+    assert scale_up.status_code == 200
+    scale_up_payload = scale_up.json()
+    assert scale_up_payload["swarm_plan"]["recommended_agent_count"] == min(8, baseline + 2)
+    active_after_up = scale_up_payload["swarm_plan"]["active_agent_count"]
+
+    scale_down = client.post(
+        f"/api/projects/{project['id']}/swarm/scale",
+        json={"direction": "down", "reason": "Trim coordination overhead.", "count": 2},
+    )
+    assert scale_down.status_code == 200
+    scale_down_payload = scale_down.json()
+    assert scale_down_payload["swarm_plan"]["recommended_agent_count"] == max(1, active_after_up - 2)
+    assert scale_down_payload["swarm_plan"]["active_agent_count"] <= baseline
+
+
 def test_swarm_plan_rejects_nonexistent_milestone_id(client) -> None:
     project = create_project(client, "Swarm Missing Milestone", "swarm-missing-milestone")
 

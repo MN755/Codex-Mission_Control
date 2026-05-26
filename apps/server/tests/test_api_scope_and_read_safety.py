@@ -12,9 +12,12 @@ from models import (
     AgentContract,
     AgentExecutionTrace,
     AgentLoadSnapshot,
+    AgentInstructionsStatus,
     AgentRun,
     AgentStuckSignal,
     AppProfile,
+    CodebaseMap,
+    CodebaseUnderstanding,
     DecisionRecord,
     HandoffEvidence,
     ImportedCodebaseSafety,
@@ -81,6 +84,55 @@ def _create_legacy_project(name: str, workspace_name: str) -> int:
         )
         db.commit()
         return project.id
+    finally:
+        db.close()
+
+
+def test_project_widget_data_route_keeps_import_and_security_widgets_read_only(client, bridge_headers) -> None:
+    workspace = Path(sample_workspace("widget-import-read-only"))
+    workspace.mkdir(parents=True, exist_ok=True)
+    project_id = _create_legacy_project("Widget Import Read Safety", "widget-import-read-only")
+
+    db = SessionLocal()
+    try:
+        project = db.get(Project, project_id)
+        assert project is not None
+        project.source_type = "existing_folder"
+        project.source_path = workspace.as_posix()
+        project.write_permission_status = "read_only"
+        db.commit()
+    finally:
+        db.close()
+
+    widget_types = [
+        "Codebase Map",
+        "Codebase Understanding",
+        "Imported Codebase Safety",
+        "AGENTS.md Status",
+        "Security Policy",
+    ]
+    instance_ids: list[int] = []
+    for widget_type in widget_types:
+        added = client.post(
+            f"/api/projects/{project_id}/widgets/add",
+            json={"widget_type": widget_type},
+            headers=bridge_headers,
+        )
+        assert added.status_code == 200, added.text
+        instance_ids.append(added.json()["id"])
+
+    for instance_id in instance_ids:
+        response = client.get(f"/api/widgets/instances/{instance_id}/data", headers=bridge_headers)
+        assert response.status_code == 200, response.text
+        assert response.json()["status"] in {"ready", "warning", "empty"}
+
+    db = SessionLocal()
+    try:
+        assert db.scalar(select(func.count(CodebaseMap.project_id)).where(CodebaseMap.project_id == project_id)) == 0
+        assert db.scalar(select(func.count(CodebaseUnderstanding.project_id)).where(CodebaseUnderstanding.project_id == project_id)) == 0
+        assert db.scalar(select(func.count(ImportedCodebaseSafety.project_id)).where(ImportedCodebaseSafety.project_id == project_id)) == 0
+        assert db.scalar(select(func.count(AgentInstructionsStatus.project_id)).where(AgentInstructionsStatus.project_id == project_id)) == 0
+        assert db.scalar(select(func.count(SecurityPolicy.id)).where(SecurityPolicy.project_id == project_id)) == 0
     finally:
         db.close()
 
@@ -602,7 +654,6 @@ def test_project_widget_data_route_stays_read_only_for_preview_widgets(client, b
         project_id = project.id
     finally:
         db.close()
-
     widget_types = [
         "Manager Assumptions",
         "Agent Black Box",

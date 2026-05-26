@@ -522,14 +522,72 @@ class ImportedCodebaseService:
             "generation_mode": "deterministic_scanner",
         }
 
-    def get_codebase_map(self, db: Session, project: Project) -> CodebaseMap:
-        return self._ensure_codebase_map(db, project)
+    def get_codebase_map(self, db: Session, project: Project, *, create_if_missing: bool = True) -> CodebaseMap:
+        if create_if_missing:
+            return self._ensure_codebase_map(db, project)
+        record = project.codebase_map
+        if record is not None:
+            return record
+        return CodebaseMap(
+            project_id=project.id,
+            source_path=project.source_path or project.workspace_path,
+            languages_json=[],
+            frameworks_json=[],
+            package_managers_json=[],
+            build_tools_json=[],
+            test_frameworks_json=[],
+            entry_points_json=[],
+            build_commands_json=[],
+            test_commands_json=[],
+            important_folders_json=[],
+            docs_json=[],
+            agent_instructions_json=[],
+            config_files_json=[],
+            ci_config_json=[],
+            deployment_config_json=[],
+            git_status_json={},
+            risk_flags_json=[],
+            scan_depth="shallow",
+            codebase_size="small",
+            recommended_scan_strategy="standard",
+            indexed_areas_json=[],
+            unindexed_areas_json=[],
+        )
 
-    def get_codebase_understanding(self, db: Session, project: Project) -> CodebaseUnderstanding:
-        return self._ensure_codebase_understanding(db, project)
+    def get_codebase_understanding(self, db: Session, project: Project, *, create_if_missing: bool = True) -> CodebaseUnderstanding:
+        if create_if_missing:
+            return self._ensure_codebase_understanding(db, project)
+        record = project.codebase_understanding
+        if record is not None:
+            return record
+        return CodebaseUnderstanding(
+            project_id=project.id,
+            summary="",
+            architecture_summary="",
+            detected_stack_json=[],
+            likely_run_instructions_json=[],
+            likely_test_instructions_json=[],
+            risk_summary="",
+            missing_context_json=[],
+            suggested_next_steps_json=[],
+            recommended_interview_mode="quick",
+            confidence_by_area_json={},
+            generation_mode="deterministic_scanner",
+        )
 
-    def get_agents_status(self, db: Session, project: Project) -> AgentInstructionsStatus:
-        return self._ensure_agents_status(db, project)
+    def get_agents_status(self, db: Session, project: Project, *, create_if_missing: bool = True) -> AgentInstructionsStatus:
+        if create_if_missing:
+            return self._ensure_agents_status(db, project)
+        record = project.agents_md_status
+        if record is not None:
+            return record
+        return AgentInstructionsStatus(
+            project_id=project.id,
+            has_agents_md=False,
+            agents_md_path=None,
+            summary="",
+            recommended_action="none",
+        )
 
     def choose_interview_mode(self, db: Session, project: Project, *, choice: str) -> tuple[str, list[InterviewQuestion], str]:
         understanding = self._ensure_codebase_understanding(db, project)

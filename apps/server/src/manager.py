@@ -5287,7 +5287,7 @@ class MissionControlService:
                 },
             )
         if instance.widget_type == "Security Policy":
-            policy = security_service.get_policy(db, project=project)
+            policy = security_service.get_policy(db, project=project, create_if_missing=False)
             return self._serialize_widget_data(
                 instance,
                 status="ready",
@@ -5851,7 +5851,7 @@ class MissionControlService:
                 },
             )
         if instance.widget_type == "Codebase Map":
-            record: CodebaseMap = import_service.get_codebase_map(db, project)
+            record: CodebaseMap = import_service.get_codebase_map(db, project, create_if_missing=False)
             if not record.languages_json and not record.frameworks_json and not record.important_folders_json and project.source_type == "idea":
                 return self._serialize_widget_data(instance, status="empty", empty_state="This project was started from an idea, so imported-codebase mapping is not active.")
             if not record.languages_json and not record.frameworks_json and not record.important_folders_json:
@@ -5875,7 +5875,7 @@ class MissionControlService:
                 },
             )
         if instance.widget_type == "Codebase Understanding":
-            record: CodebaseUnderstanding = import_service.get_codebase_understanding(db, project)
+            record: CodebaseUnderstanding = import_service.get_codebase_understanding(db, project, create_if_missing=False)
             if not record.summary:
                 return self._serialize_widget_data(instance, status="empty", empty_state="Codebase understanding is not available yet.")
             return self._serialize_widget_data(
@@ -5896,7 +5896,18 @@ class MissionControlService:
                 },
             )
         if instance.widget_type == "Imported Codebase Safety":
-            safety: ImportedCodebaseSafety = import_service.ensure_safety(db, project)
+            safety = import_service.ensure_safety(db, project, create_if_missing=False) or ImportedCodebaseSafety(
+                project_id=project.id,
+                read_only_scan_completed=False,
+                write_permission_status=project.write_permission_status or "read_only",
+                require_snapshot_before_edits=True,
+                require_approval_for_dependency_changes=True,
+                require_approval_for_test_commands=True,
+                require_approval_for_build_commands=True,
+                require_approval_for_formatting=True,
+                require_approval_for_package_file_changes=True,
+                destructive_commands_blocked=True,
+            )
             if project.source_type == "idea":
                 return self._serialize_widget_data(instance, status="empty", empty_state="Imported-codebase safety mode is only relevant for imported repos.")
             return self._serialize_widget_data(
@@ -5916,7 +5927,7 @@ class MissionControlService:
                 warnings_json=["Write permission is still read-only."] if safety.write_permission_status == "read_only" else [],
             )
         if instance.widget_type == "AGENTS.md Status":
-            status_record: AgentInstructionsStatus = import_service.get_agents_status(db, project)
+            status_record: AgentInstructionsStatus = import_service.get_agents_status(db, project, create_if_missing=False)
             if project.source_type == "idea" and not status_record.has_agents_md:
                 return self._serialize_widget_data(instance, status="empty", empty_state="AGENTS.md status is mainly useful for imported repos.")
             return self._serialize_widget_data(
@@ -6820,6 +6831,22 @@ class MissionControlService:
             summary[spec.status] = summary.get(spec.status, 0) + 1
         return summary
 
+    def _swarm_target_specs(
+        self,
+        specs: list[SwarmAgentSpec],
+        *,
+        recommended_agent_count: int,
+        activate_deferred: bool,
+    ) -> list[SwarmAgentSpec]:
+        eligible = [
+            spec
+            for spec in sorted(specs, key=lambda item: (item.priority, item.id))
+            if spec.status in {"planned", "spawned"} or (activate_deferred and spec.status == "deferred")
+        ]
+        if not eligible:
+            return []
+        return eligible[: max(1, recommended_agent_count)]
+
     def _swarm_launch_readiness(
         self,
         db: Session,
@@ -6842,6 +6869,12 @@ class MissionControlService:
         else:
             wave_label = "No launch recommendation"
             next_step = "Revise the swarm plan before spawning more workers."
+        immediate_specs = self._swarm_target_specs(
+            specs,
+            recommended_agent_count=plan.recommended_agent_count,
+            activate_deferred=False,
+        )
+        immediate_ids = {spec.id for spec in immediate_specs}
         readiness = {
             "safe_to_launch_count": simulation.safe_to_launch_count,
             "should_wait_count": simulation.should_wait_count,
@@ -6849,8 +6882,14 @@ class MissionControlService:
             "conflict_warnings": list(simulation.conflict_warnings_json or []),
             "bottlenecks": list(simulation.bottlenecks_json or []),
             "recommended_launch_order": launch_order,
-            "immediate_specs": len([spec for spec in specs if spec.status in {"planned", "spawned"}]),
-            "deferred_specs": len([spec for spec in specs if spec.status == "deferred"]),
+            "immediate_specs": len(immediate_specs),
+            "deferred_specs": len(
+                [
+                    spec
+                    for spec in specs
+                    if spec.id not in immediate_ids and spec.status in {"planned", "deferred", "spawned"}
+                ]
+            ),
         }
         return readiness, wave_label, next_step
 
@@ -8697,11 +8736,11 @@ class MissionControlService:
             for agent in db.scalars(select(Agent).where(Agent.project_id == project.id, Agent.kind == "worker").order_by(Agent.id.asc()))
         }
         specs = self._swarm_specs_for_plan(db, plan.id)
-        target_specs = [
-            spec
-            for spec in specs
-            if spec.status == "planned" or (activate_deferred and spec.status == "deferred")
-        ]
+        target_specs = self._swarm_target_specs(
+            specs,
+            recommended_agent_count=plan.recommended_agent_count,
+            activate_deferred=activate_deferred,
+        )
         spawned = 0
         retired = 0
         target_names = {spec.name for spec in target_specs}
@@ -8787,6 +8826,19 @@ class MissionControlService:
         }
 
     async def scale_swarm(self, db: Session, project: Project, *, direction: str, reason: str | None = None, count: int = 1) -> dict[str, Any]:
+        current_plan = self._current_swarm_plan_record(db, project.id)
+        active_agent_count = 0
+        if current_plan is not None:
+            active_agent_count = db.scalar(
+                select(func.count(Agent.id)).where(
+                    Agent.project_id == project.id,
+                    Agent.kind == "worker",
+                    Agent.swarm_plan_id == current_plan.id,
+                    ~Agent.status.in_(["done", "stopped"]),
+                )
+            ) or 0
+        baseline_count = active_agent_count or (current_plan.recommended_agent_count if current_plan is not None else 0) or 1
+        desired_count = baseline_count + count if direction == "up" else baseline_count - count
         scale_hint = "up" if direction == "up" else "down"
         plan_payload = await self.create_swarm_plan(
             db,
@@ -8799,6 +8851,9 @@ class MissionControlService:
         if plan is None:
             raise ValueError("Swarm plan not found")
         preferences = self._ensure_swarm_preferences(db, project)
+        plan.recommended_agent_count = max(1, min(preferences.max_agents, desired_count))
+        plan.updated_at = utc_now()
+        db.flush()
         if direction == "down" or not self._swarm_approval_required(plan, preferences):
             plan.approved_by_user = True
             plan.status = "approved"
@@ -8817,7 +8872,7 @@ class MissionControlService:
             event_type="swarm_scaled_up" if direction == "up" else "swarm_scaled_down",
             message=sync["message"],
             swarm_plan_id=plan.id,
-            metadata_json={"direction": direction, "count": count, "reason": reason},
+            metadata_json={"direction": direction, "count": count, "reason": reason, "baseline_count": baseline_count, "desired_count": plan.recommended_agent_count},
         )
         return sync
 
