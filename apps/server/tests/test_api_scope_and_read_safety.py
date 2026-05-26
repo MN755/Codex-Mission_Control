@@ -15,15 +15,20 @@ from models import (
     AgentRun,
     AgentStuckSignal,
     AppProfile,
+    ConflictRecord,
     DecisionRecord,
     HandoffEvidence,
     ImportedCodebaseSafety,
+    ManagerMessage,
     ManagerAssumption,
     ModelPolicy,
+    PathReservation,
     PathLock,
     Project,
     ProjectConfidence,
+    ProjectEvent,
     ProjectPlaybook,
+    ProjectTimelineEvent,
     ProjectUnderstanding,
     RecoveryPlan,
     RepoIntelligenceSummary,
@@ -90,6 +95,131 @@ def test_agent_archetypes_get_does_not_seed_rows(client) -> None:
     db = SessionLocal()
     try:
         assert db.scalar(select(func.count(AgentArchetype.id))) == 0
+    finally:
+        db.close()
+
+
+def test_parallelism_safety_widget_data_stays_read_only(client, bridge_headers) -> None:
+    init_db()
+    db = SessionLocal()
+    try:
+        project = Project(
+            name="Parallelism Widget Read Safety",
+            idea="Keep conflict previews transient.",
+            workspace_path=sample_workspace("parallelism-widget-read-safety"),
+            runner_mode="dry_run",
+            manager_mode="auto",
+        )
+        db.add(project)
+        db.flush()
+        agents = [
+            Agent(project_id=project.id, name="Agent A", role="Builder", kind="worker", status="working", workspace_path=project.workspace_path),
+            Agent(project_id=project.id, name="Agent B", role="Builder", kind="worker", status="working", workspace_path=project.workspace_path),
+        ]
+        db.add_all(agents)
+        db.flush()
+        tasks = [
+            Task(project_id=project.id, title="Task A", goal="Edit the shared file.", scope="Task A scope.", status="working", priority=10, allowed_paths_json=["src/conflict.py"]),
+            Task(project_id=project.id, title="Task B", goal="Edit the shared file.", scope="Task B scope.", status="working", priority=20, allowed_paths_json=["src/conflict.py"]),
+        ]
+        db.add_all(tasks)
+        db.flush()
+        db.add_all(
+            [
+                PathReservation(project_id=project.id, agent_id=agents[0].id, task_id=tasks[0].id, path="src/conflict.py"),
+                PathReservation(project_id=project.id, agent_id=agents[1].id, task_id=tasks[1].id, path="src/conflict.py"),
+            ]
+        )
+        db.commit()
+        project_id = project.id
+    finally:
+        db.close()
+
+    added = client.post(
+        f"/api/projects/{project_id}/widgets/add",
+        json={"widget_type": "Parallelism Safety Meter"},
+        headers=bridge_headers,
+    )
+    assert added.status_code == 200, added.text
+    instance_id = added.json()["id"]
+
+    db = SessionLocal()
+    try:
+        before = {
+            "conflicts": db.scalar(select(func.count(ConflictRecord.id)).where(ConflictRecord.project_id == project_id)),
+            "messages": db.scalar(select(func.count(ManagerMessage.id)).where(ManagerMessage.project_id == project_id)),
+            "timeline": db.scalar(select(func.count(ProjectTimelineEvent.id)).where(ProjectTimelineEvent.project_id == project_id)),
+            "events": db.scalar(select(func.count(ProjectEvent.id)).where(ProjectEvent.project_id == project_id)),
+        }
+    finally:
+        db.close()
+
+    response = client.get(f"/api/widgets/instances/{instance_id}/data", headers=bridge_headers)
+    assert response.status_code == 200, response.text
+    assert response.json()["status"] == "ready"
+
+    db = SessionLocal()
+    try:
+        after = {
+            "conflicts": db.scalar(select(func.count(ConflictRecord.id)).where(ConflictRecord.project_id == project_id)),
+            "messages": db.scalar(select(func.count(ManagerMessage.id)).where(ManagerMessage.project_id == project_id)),
+            "timeline": db.scalar(select(func.count(ProjectTimelineEvent.id)).where(ProjectTimelineEvent.project_id == project_id)),
+            "events": db.scalar(select(func.count(ProjectEvent.id)).where(ProjectEvent.project_id == project_id)),
+        }
+        assert after == before
+    finally:
+        db.close()
+
+
+def test_parallelism_safety_widget_data_does_not_dismiss_conflicts_on_read(client, bridge_headers) -> None:
+    init_db()
+    db = SessionLocal()
+    try:
+        project = Project(
+            name="Parallelism Widget Conflict Scope",
+            idea="Keep conflict rows stable until an explicit action changes them.",
+            workspace_path=sample_workspace("parallelism-widget-conflict-scope"),
+            runner_mode="dry_run",
+            manager_mode="auto",
+        )
+        db.add(project)
+        db.flush()
+        conflict = ConflictRecord(
+            project_id=project.id,
+            conflict_type="path_overlap",
+            title="Parallel edit pressure on src/orphan.py",
+            summary="Stale conflict record.",
+            involved_agent_ids_json=[1, 2],
+            involved_task_ids_json=[1, 2],
+            affected_paths_json=["src/orphan.py"],
+            severity="high",
+            status="manager_review",
+            suggested_resolution_json=["serialize_tasks"],
+        )
+        db.add(conflict)
+        db.commit()
+        project_id = project.id
+        conflict_id = conflict.id
+    finally:
+        db.close()
+
+    added = client.post(
+        f"/api/projects/{project_id}/widgets/add",
+        json={"widget_type": "Parallelism Safety Meter"},
+        headers=bridge_headers,
+    )
+    assert added.status_code == 200, added.text
+    instance_id = added.json()["id"]
+
+    response = client.get(f"/api/widgets/instances/{instance_id}/data", headers=bridge_headers)
+    assert response.status_code == 200, response.text
+
+    db = SessionLocal()
+    try:
+        conflict = db.get(ConflictRecord, conflict_id)
+        assert conflict is not None
+        assert conflict.status == "manager_review"
+        assert conflict.resolved_at is None
     finally:
         db.close()
 
