@@ -5410,7 +5410,14 @@ class MissionControlService:
                 degraded = await self._workspace_degraded_notices(project, self._project_settings(db, project))
                 current_action = self._derive_current_action(db, project, degraded)
                 overview = self._project_overview(db, project, tasks, current_action)
-                support = self._ensure_widget_support_records(db, project, tasks=tasks, degraded_notices=degraded, current_action=current_action, overview=overview)
+                support = self._preview_widget_support_records(
+                    db,
+                    project,
+                    tasks=tasks,
+                    degraded_notices=degraded,
+                    current_action=current_action,
+                    overview=overview,
+                )
                 items.append(
                     {
                         "project_id": project.id,
