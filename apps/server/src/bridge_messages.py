@@ -1265,7 +1265,7 @@ class BridgeRuntimeService:
                         project_id=decision.project_id,
                         orchestration_id=decision.orchestration_id,
                     )
-                service.answer_question(
+                resolved_question = service.answer_question(
                     db,
                     question.id,
                     option_id=option_id,
@@ -1274,7 +1274,11 @@ class BridgeRuntimeService:
                 )
                 decision.status = "answered"
                 decision.answered_at = utc_now()
-                decision.answer_json = {"option_id": option_id, "selected_text": selected_text, "free_text": free_text}
+                decision.answer_json = {
+                    "option_id": resolved_question.selected_option_id or option_id,
+                    "selected_text": resolved_question.selected_text or selected_text,
+                    "free_text": free_text,
+                }
                 db.flush()
         elif decision.source_kind == "approval_request" and decision.source_id is not None:
             if decision.orchestration_id is not None:

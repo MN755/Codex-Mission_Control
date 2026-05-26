@@ -777,7 +777,13 @@ class OrchestrationCoordinator:
                     project_id=decision.project_id,
                     orchestration_id=decision.orchestration_id,
                 )
-            service.answer_question(db, question.id, option_id=option_id, selected_text=selected_text, project_id=question.project_id)
+            resolved_question = service.answer_question(
+                db,
+                question.id,
+                option_id=option_id,
+                selected_text=selected_text,
+                project_id=question.project_id,
+            )
         elif decision.source_kind == "approval_request" and decision.source_id is not None:
             approval = db.get(ApprovalRequest, decision.source_id)
             if approval is None:
@@ -831,9 +837,14 @@ class OrchestrationCoordinator:
             )
         decision.status = "answered"
         decision.answered_at = utc_now()
+        canonical_option_id = option_id
+        canonical_selected_text = selected_text
+        if decision.source_kind == "manager_question" and decision.source_id is not None:
+            canonical_option_id = resolved_question.selected_option_id or option_id
+            canonical_selected_text = resolved_question.selected_text or selected_text
         decision.answer_json = {
-            "option_id": option_id,
-            "selected_text": selected_text,
+            "option_id": canonical_option_id,
+            "selected_text": canonical_selected_text,
             "free_text": free_text,
         }
         if session is not None:

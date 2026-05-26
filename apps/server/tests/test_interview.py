@@ -238,3 +238,57 @@ def test_canonical_answer_route_enforces_project_scope(client, monkeypatch) -> N
     )
 
     assert bad_answer.status_code == 404 or bad_answer.status_code == 400
+
+
+def test_project_interview_answer_rejects_invalid_option(client, monkeypatch) -> None:
+    project = _create_project(client, name="Interview Invalid", runner_mode="auto")
+
+    async def fake_resolve(*args, **kwargs):
+        return (
+            _turn("Interview summary.", [_question("product goal", 1)], more_questions_needed=True),
+            "codex",
+        )
+
+    monkeypatch.setattr(service, "_resolve_manager_model", fake_resolve)
+
+    session = client.post(f"/api/projects/{project['id']}/interview/start", json={"question_budget": 6}).json()
+    question = session["questions"][0]
+    response = client.post(
+        f"/api/projects/{project['id']}/interview/answer",
+        json={
+            "question_id": question["id"],
+            "option_id": "bogus",
+            "selected_text": "Bogus",
+        },
+    )
+
+    assert response.status_code == 400
+    assert "option id is not valid" in response.json()["detail"].lower()
+
+
+def test_project_interview_answer_canonicalizes_selected_text(client, monkeypatch) -> None:
+    project = _create_project(client, name="Interview Canonical", runner_mode="auto")
+
+    async def fake_resolve(*args, **kwargs):
+        return (
+            _turn("Interview summary.", [_question("product goal", 1)], more_questions_needed=True),
+            "codex",
+        )
+
+    monkeypatch.setattr(service, "_resolve_manager_model", fake_resolve)
+
+    session = client.post(f"/api/projects/{project['id']}/interview/start", json={"question_budget": 6}).json()
+    question = session["questions"][0]
+    response = client.post(
+        f"/api/projects/{project['id']}/interview/answer",
+        json={
+            "question_id": question["id"],
+            "option_id": question["options"][0]["id"],
+            "selected_text": "Nope",
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    answered_question = next(item for item in response.json()["questions"] if item["id"] == question["id"])
+    assert answered_question["selected_option_id"] == question["options"][0]["id"]
+    assert answered_question["selected_text"] == question["options"][0]["label"]

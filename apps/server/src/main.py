@@ -2796,7 +2796,8 @@ def answer_question(
         )
         return ManagerQuestionRead(**service._serialize_question(question))
     except ValueError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+        status_code = 404 if "not found" in str(exc).lower() else 400
+        raise HTTPException(status_code=status_code, detail=str(exc)) from exc
 
 
 @app.post("/api/questions/{question_id}/auto-decide", response_model=ManagerQuestionRead)
