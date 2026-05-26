@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import pytest
+from sqlalchemy import select, func
 
 from conftest import sample_workspace
 from db import SessionLocal, init_db
 from manager import service
-from models import Agent, HandoffEvidence, Project, ReviewGate, Task
+from models import Agent, ChangeRequest, EvidenceBasedHandoff, HandoffEvidence, Project, ProjectTimelineEvent, RecoveryPlan, ReviewGate, Task
 
 
 def _seed_project_pair() -> tuple[int, int, int, int, int, int]:
@@ -295,5 +296,53 @@ def test_review_gate_update_rejects_foreign_refs_and_missing_evidence() -> None:
             service.update_review_gate(db, gate.id, {"related_agent_id": foreign_agent_id})
         with pytest.raises(ValueError, match="Review gate evidence"):
             service.update_review_gate(db, gate.id, {"evidence_ids_json": [scoped_evidence.id, foreign_evidence.id, 999_999]})
+    finally:
+        db.close()
+
+
+def test_create_timeline_event_rejects_missing_refs() -> None:
+    project_one_id, _, _, _, _, _ = _seed_project_pair()
+
+    db = SessionLocal()
+    try:
+        scoped_project = db.get(Project, project_one_id)
+        assert scoped_project is not None
+        handoff = EvidenceBasedHandoff(
+            project_id=scoped_project.id,
+            title="Scoped handoff",
+            summary="Valid handoff for control coverage.",
+            what_was_built="Feature",
+            how_to_run="pytest",
+            how_to_use="Read it",
+            tests_run_json=[],
+            known_limitations_json=[],
+            suggested_next_steps_json=[],
+            evidence_ids_json=[],
+            confidence_level="medium",
+            dry_run=True,
+        )
+        db.add(handoff)
+        db.flush()
+
+        with pytest.raises(ValueError, match="Timeline event related agent"):
+            service.create_timeline_event(
+                db,
+                scoped_project,
+                {"event_type": "note", "title": "Bad agent", "summary": "Nope.", "related_agent_id": 999_999},
+            )
+        with pytest.raises(ValueError, match="Timeline event related task"):
+            service.create_timeline_event(
+                db,
+                scoped_project,
+                {"event_type": "note", "title": "Bad task", "summary": "Nope.", "related_task_id": 999_999},
+            )
+        with pytest.raises(ValueError, match="Timeline event related handoff"):
+            service.create_timeline_event(
+                db,
+                scoped_project,
+                {"event_type": "note", "title": "Bad handoff", "summary": "Nope.", "related_handoff_id": handoff.id + 999_999},
+            )
+
+        assert db.scalar(select(func.count(ProjectTimelineEvent.id)).where(ProjectTimelineEvent.project_id == scoped_project.id)) == 0
     finally:
         db.close()
