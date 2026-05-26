@@ -2882,6 +2882,14 @@ class MissionControlService:
         }
 
     def create_recovery_plan(self, db: Session, project: Project, payload: dict[str, Any]) -> RecoveryPlan:
+        self._validate_project_related_refs(
+            db,
+            project,
+            related_agent_id=payload.get("related_agent_id"),
+            related_task_id=payload.get("related_task_id"),
+            agent_label="Recovery plan related agent",
+            task_label="Recovery plan related task",
+        )
         plan = RecoveryPlan(
             project_id=project.id,
             trigger_type=str(payload["trigger_type"]).strip(),
