@@ -5094,7 +5094,7 @@ class MissionControlService:
                 },
             )
         if instance.widget_type == "Security Policy":
-            policy = security_service.get_policy(db, project=project)
+            policy = security_service.get_policy(db, project=project, create_if_missing=False)
             return self._serialize_widget_data(
                 instance,
                 status="ready",
@@ -5662,7 +5662,7 @@ class MissionControlService:
                 },
             )
         if instance.widget_type == "Codebase Map":
-            record: CodebaseMap = import_service.get_codebase_map(db, project)
+            record: CodebaseMap = import_service.peek_codebase_map(db, project)
             if not record.languages_json and not record.frameworks_json and not record.important_folders_json and project.source_type == "idea":
                 return self._serialize_widget_data(instance, status="empty", empty_state="This project was started from an idea, so imported-codebase mapping is not active.")
             if not record.languages_json and not record.frameworks_json and not record.important_folders_json:
@@ -5686,7 +5686,7 @@ class MissionControlService:
                 },
             )
         if instance.widget_type == "Codebase Understanding":
-            record: CodebaseUnderstanding = import_service.get_codebase_understanding(db, project)
+            record: CodebaseUnderstanding = import_service.peek_codebase_understanding(db, project)
             if not record.summary:
                 return self._serialize_widget_data(instance, status="empty", empty_state="Codebase understanding is not available yet.")
             return self._serialize_widget_data(
@@ -5707,7 +5707,7 @@ class MissionControlService:
                 },
             )
         if instance.widget_type == "Imported Codebase Safety":
-            safety: ImportedCodebaseSafety = import_service.ensure_safety(db, project)
+            safety: ImportedCodebaseSafety = import_service.peek_safety(db, project)
             if project.source_type == "idea":
                 return self._serialize_widget_data(instance, status="empty", empty_state="Imported-codebase safety mode is only relevant for imported repos.")
             return self._serialize_widget_data(
@@ -5727,7 +5727,7 @@ class MissionControlService:
                 warnings_json=["Write permission is still read-only."] if safety.write_permission_status == "read_only" else [],
             )
         if instance.widget_type == "AGENTS.md Status":
-            status_record: AgentInstructionsStatus = import_service.get_agents_status(db, project)
+            status_record: AgentInstructionsStatus = import_service.peek_agents_status(db, project)
             if project.source_type == "idea" and not status_record.has_agents_md:
                 return self._serialize_widget_data(instance, status="empty", empty_state="AGENTS.md status is mainly useful for imported repos.")
             return self._serialize_widget_data(
@@ -5742,7 +5742,7 @@ class MissionControlService:
                 warnings_json=["AGENTS.md is missing."] if not status_record.has_agents_md else [],
             )
         if instance.widget_type == "Scan Coverage":
-            record: CodebaseMap = import_service.get_codebase_map(db, project)
+            record: CodebaseMap = import_service.peek_codebase_map(db, project)
             if not record.scan_depth:
                 return self._serialize_widget_data(instance, status="empty", empty_state="Scan coverage is not available yet.")
             return self._serialize_widget_data(
