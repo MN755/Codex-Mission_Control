@@ -1990,7 +1990,7 @@ def get_subagent_policy(
     db: Session = Depends(get_db),
     _: None = Depends(_require_bridge_token),
 ) -> SubagentPolicyRead:
-    return SubagentPolicyRead(**subagent_planner_service._serialize_policy(subagent_planner_service.ensure_policy(db)))
+    return SubagentPolicyRead(**subagent_planner_service._serialize_policy(subagent_planner_service.get_policy(db, create_if_missing=False)))
 
 
 @app.put("/api/subagent-policy", response_model=SubagentPolicyRead)

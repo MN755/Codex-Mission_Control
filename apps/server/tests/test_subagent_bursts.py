@@ -6,7 +6,7 @@ from pathlib import Path
 from bridge_formatter import format_pending_decision_message
 from conftest import sample_workspace, wait_for
 from db import SessionLocal
-from models import Project
+from models import Project, SubagentPolicy
 from models import utc_now
 from subagent_planner import BURST_TEMPLATES
 
@@ -34,6 +34,12 @@ def _create_project(client, name: str, workspace_name: str) -> dict:
 
 
 def test_default_subagent_policy_is_read_only_and_no_command(client) -> None:
+    db = SessionLocal()
+    try:
+        assert db.query(SubagentPolicy).count() == 0
+    finally:
+        db.close()
+
     response = client.get("/api/subagent-policy", headers=_bridge_headers())
     assert response.status_code == 200, response.text
     payload = response.json()
@@ -43,6 +49,12 @@ def test_default_subagent_policy_is_read_only_and_no_command(client) -> None:
     assert payload["allow_file_edits"] is False
     assert payload["allow_commands"] is False
     assert payload["require_user_approval_above_count"] == 3
+
+    db = SessionLocal()
+    try:
+        assert db.query(SubagentPolicy).count() == 0
+    finally:
+        db.close()
 
 
 def test_burst_templates_exist() -> None:
@@ -282,6 +294,12 @@ def test_burst_policy_honors_command_and_file_edit_allowances(client) -> None:
     assert payload["batch"]["manual_prompt_text"].startswith("Spawn short-lived Codex subagents for the following bounded tasks.")
     assert "Commands are allowed when needed for bounded validation." in payload["batch"]["manual_prompt_text"]
     assert "File edits are allowed only inside the assigned paths." in payload["batch"]["manual_prompt_text"]
+
+    db = SessionLocal()
+    try:
+        assert db.query(SubagentPolicy).count() == 1
+    finally:
+        db.close()
 
 
 def test_custom_agent_generation_reflects_current_subagent_policy(client) -> None:
