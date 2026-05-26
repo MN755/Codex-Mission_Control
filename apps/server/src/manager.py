@@ -2868,6 +2868,284 @@ class MissionControlService:
             )
         return preview_rows
 
+    def _preview_agent_execution_traces(self, db: Session, project: Project) -> list[dict[str, Any]]:
+        agent_ids = [agent.id for agent in db.scalars(select(Agent).where(Agent.project_id == project.id))]
+        if not agent_ids:
+            return []
+        runs = list(
+            db.scalars(
+                select(AgentRun)
+                .where(AgentRun.agent_id.in_(agent_ids))
+                .order_by(AgentRun.started_at.desc(), AgentRun.id.desc())
+            )
+        )
+        tasks_by_id = {task.id: task for task in db.scalars(select(Task).where(Task.project_id == project.id))}
+        agents_by_id = {agent.id: agent for agent in db.scalars(select(Agent).where(Agent.project_id == project.id))}
+        preview_rows: list[dict[str, Any]] = []
+        for run in runs:
+            agent = agents_by_id.get(run.agent_id)
+            task = tasks_by_id.get(run.task_id) if run.task_id is not None else None
+            raw_report = self._redact_payload(run.report_json or {})
+            files_changed = [str(item) for item in (raw_report.get("files_changed") or []) if str(item).strip()]
+            tests_run = [str(item) for item in (raw_report.get("tests_run") or []) if str(item).strip()]
+            prompt_bits = [agent.mission if agent and agent.mission else None, task.goal if task else None, task.scope if task else None]
+            prompt_summary = " | ".join(bit for bit in prompt_bits if bit) or f"{agent.name if agent else 'Worker'} executed a recorded run."
+            preview_rows.append(
+                {
+                    "id": None,
+                    "project_id": project.id,
+                    "agent_id": run.agent_id,
+                    "task_id": run.task_id,
+                    "run_id": run.id,
+                    "prompt_summary": prompt_summary[:1000],
+                    "response_summary": str(raw_report.get("summary") or run.status or "Run completed.")[:1000],
+                    "files_changed_json": files_changed[:40],
+                    "commands_attempted_json": ([f"runner:{run.runner_type}"] if run.runner_type else []) + tests_run[:3],
+                    "manager_decision_after": run.manager_action,
+                    "redaction_status": "redacted_summary",
+                    "created_at": run.started_at or run.finished_at or utc_now(),
+                    "source": "computed",
+                }
+            )
+        return preview_rows
+
+    def _preview_agent_load_snapshots(self, db: Session, project: Project) -> list[dict[str, Any]]:
+        agents = list(db.scalars(select(Agent).where(Agent.project_id == project.id).order_by(Agent.id.asc())))
+        tasks = list(db.scalars(select(Task).where(Task.project_id == project.id).order_by(Task.id.asc())))
+        now = utc_now()
+        preview_rows: list[dict[str, Any]] = []
+        for agent in agents:
+            if agent.kind != "worker":
+                continue
+            active_task_count = sum(1 for task in tasks if task.assigned_agent_id == agent.id and task.status == "working")
+            waiting_task_count = sum(1 for task in tasks if task.assigned_agent_id == agent.id and task.status in {"assigned", "waiting_on_paths", "needs_review"})
+            blocked_task_count = sum(1 for task in tasks if task.assigned_agent_id == agent.id and task.status == "blocked")
+            idle_duration_seconds = None
+            if agent.status in {"idle", "waiting", "done", "stopped"}:
+                last_update = agent.last_update if agent.last_update.tzinfo else agent.last_update.replace(tzinfo=timezone.utc)
+                idle_duration_seconds = max(0, int((now - last_update).total_seconds()))
+            if blocked_task_count or agent.status in {"blocked", "error"}:
+                load_level = "blocked"
+            elif active_task_count >= 3:
+                load_level = "heavy"
+            elif active_task_count >= 1 or waiting_task_count >= 2:
+                load_level = "normal"
+            elif waiting_task_count == 1:
+                load_level = "light"
+            else:
+                load_level = "idle"
+            preview_rows.append(
+                {
+                    "id": None,
+                    "project_id": project.id,
+                    "agent_id": agent.id,
+                    "active_task_count": active_task_count,
+                    "waiting_task_count": waiting_task_count,
+                    "blocked_task_count": blocked_task_count,
+                    "idle_duration_seconds": idle_duration_seconds,
+                    "load_level": load_level,
+                    "created_at": now,
+                    "source": "computed",
+                }
+            )
+        return preview_rows
+
+    def _preview_agent_rebalance_plan(self, db: Session, project: Project) -> dict[str, Any]:
+        snapshots = self._preview_agent_load_snapshots(db, project)
+        agents_by_id = {agent.id: agent for agent in db.scalars(select(Agent).where(Agent.project_id == project.id))}
+        overloaded = [snap for snap in snapshots if snap["load_level"] in {"heavy", "blocked"}]
+        idle = [snap for snap in snapshots if snap["load_level"] == "idle"]
+        suggested_reassignments: list[dict[str, Any]] = []
+        for overloaded_entry, idle_entry in zip(overloaded, idle):
+            overloaded_agent = agents_by_id.get(overloaded_entry["agent_id"])
+            idle_agent = agents_by_id.get(idle_entry["agent_id"])
+            if not overloaded_agent or not idle_agent:
+                continue
+            suggested_reassignments.append(
+                {
+                    "from_agent_id": overloaded_agent.id,
+                    "from_agent_name": overloaded_agent.name,
+                    "to_agent_id": idle_agent.id,
+                    "to_agent_name": idle_agent.name,
+                    "note": "Reassign only if the task boundaries and path locks stay compatible.",
+                }
+            )
+        return {
+            "overloaded_agents": [
+                {
+                    "agent_id": snap["agent_id"],
+                    "agent_name": agents_by_id.get(snap["agent_id"]).name if agents_by_id.get(snap["agent_id"]) else f"Agent {snap['agent_id']}",
+                    "load_level": snap["load_level"],
+                    "active_task_count": snap["active_task_count"],
+                    "blocked_task_count": snap["blocked_task_count"],
+                }
+                for snap in overloaded
+            ],
+            "idle_agents": [
+                {
+                    "agent_id": snap["agent_id"],
+                    "agent_name": agents_by_id.get(snap["agent_id"]).name if agents_by_id.get(snap["agent_id"]) else f"Agent {snap['agent_id']}",
+                    "load_level": snap["load_level"],
+                    "idle_duration_seconds": snap["idle_duration_seconds"],
+                }
+                for snap in idle
+            ],
+            "suggested_reassignments": suggested_reassignments,
+            "risks": [
+                "Do not rebalance high-risk work without checking contracts and path locks.",
+                "Idle agents are not free if their archetype does not match the task.",
+            ],
+        }
+
+    def _preview_manager_assumptions(self, db: Session, project: Project) -> list[dict[str, Any]]:
+        understanding = self._project_understanding(project)
+        assumptions = [str(item).strip() for item in (understanding.assumptions_json or []) if str(item).strip()]
+        preview_rows: list[dict[str, Any]] = [
+            {
+                "assumption": assumption,
+                "reason": "Captured from the Manager's current project understanding.",
+                "confidence": 60,
+                "status": "active",
+                "created_at": understanding.updated_at,
+                "source": "computed",
+            }
+            for assumption in assumptions
+        ]
+        for question in db.scalars(
+            select(ManagerQuestion).where(ManagerQuestion.project_id == project.id, ManagerQuestion.status == "auto_decided").order_by(ManagerQuestion.id.asc())
+        ):
+            preview_rows.append(
+                {
+                    "assumption": f"{question.question} -> {question.selected_text or question.selected_option_id or 'Auto-decided'}",
+                    "reason": "Auto-decided by the Manager based on project context and configured thresholds.",
+                    "confidence": 55,
+                    "status": "active",
+                    "created_at": question.resolved_at or question.created_at,
+                    "source": "computed",
+                }
+            )
+        return preview_rows
+
+    def _compute_repo_intelligence_payload(self, project: Project) -> dict[str, Any]:
+        root = Path(project.workspace_path)
+        if not root.exists() or not root.is_dir():
+            return {
+                "languages_json": [],
+                "frameworks_json": [],
+                "package_managers_json": [],
+                "entry_points_json": [],
+                "build_commands_json": [],
+                "test_commands_json": [],
+                "important_folders_json": [],
+                "risky_files_json": [],
+                "docs_found_json": [],
+                "ci_config_json": [],
+                "deployment_config_json": [],
+                "last_indexed_at": utc_now(),
+            }
+        file_paths = [path for path in root.rglob("*") if path.is_file()][:1200]
+        extensions = Counter(path.suffix.lower() for path in file_paths)
+        language_map = {
+            ".py": "Python",
+            ".ts": "TypeScript",
+            ".tsx": "TypeScript",
+            ".js": "JavaScript",
+            ".jsx": "JavaScript",
+            ".go": "Go",
+            ".rs": "Rust",
+            ".java": "Java",
+            ".cs": "C#",
+            ".rb": "Ruby",
+        }
+        languages = sorted({language for ext, language in language_map.items() if extensions.get(ext)})
+        frameworks: set[str] = set()
+        package_managers: set[str] = set()
+        build_commands: list[str] = []
+        test_commands: list[str] = []
+        entry_points: list[str] = []
+        package_json = root / "package.json"
+        if package_json.exists():
+            try:
+                package_data = json.loads(package_json.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                package_data = {}
+            deps = {
+                **dict(package_data.get("dependencies") or {}),
+                **dict(package_data.get("devDependencies") or {}),
+            }
+            if "react" in deps:
+                frameworks.add("React")
+            if "vite" in deps:
+                frameworks.add("Vite")
+            if "next" in deps:
+                frameworks.add("Next.js")
+            if "fastify" in deps:
+                frameworks.add("Fastify")
+            if "express" in deps:
+                frameworks.add("Express")
+            scripts = dict(package_data.get("scripts") or {})
+            if scripts.get("build"):
+                build_commands.append(f"npm run build ({scripts['build']})")
+            if scripts.get("test"):
+                test_commands.append(f"npm run test ({scripts['test']})")
+            if (root / "package-lock.json").exists():
+                package_managers.add("npm")
+            if (root / "pnpm-lock.yaml").exists():
+                package_managers.add("pnpm")
+            if (root / "yarn.lock").exists():
+                package_managers.add("yarn")
+        pyproject = root / "pyproject.toml"
+        if pyproject.exists():
+            package_managers.add("pip")
+            try:
+                pyproject_text = pyproject.read_text(encoding="utf-8").lower()
+            except OSError:
+                pyproject_text = ""
+            if "fastapi" in pyproject_text:
+                frameworks.add("FastAPI")
+            if "django" in pyproject_text:
+                frameworks.add("Django")
+            if "flask" in pyproject_text:
+                frameworks.add("Flask")
+        requirements = root / "requirements.txt"
+        if requirements.exists():
+            package_managers.add("pip")
+            try:
+                requirements_text = requirements.read_text(encoding="utf-8").lower()
+            except OSError:
+                requirements_text = ""
+            if "fastapi" in requirements_text:
+                frameworks.add("FastAPI")
+        for candidate in ["main.py", "app.py", "manage.py", "src/main.ts", "src/main.tsx", "src/index.tsx", "src/index.ts", "server.py"]:
+            if (root / candidate).exists():
+                entry_points.append(candidate)
+        important_folders = [folder.name for folder in root.iterdir() if folder.is_dir() and folder.name in {"src", "app", "apps", "server", "client", "docs", "tests", "scripts"}]
+        risky_files = [str(path.relative_to(root)) for path in file_paths if path.name.lower().startswith(".env") or "secret" in path.name.lower()][:12]
+        docs_found = [str(path.relative_to(root)) for path in file_paths if path.suffix.lower() == ".md" and ("readme" in path.name.lower() or "docs" in path.parts)]
+        ci_config = [str(path.relative_to(root)) for path in file_paths if ".github" in path.parts or path.name.lower() in {"azure-pipelines.yml", "azure-pipelines.yaml", ".gitlab-ci.yml"}]
+        deployment_config = [
+            str(path.relative_to(root))
+            for path in file_paths
+            if path.name.lower() in {"dockerfile", "docker-compose.yml", "docker-compose.yaml", "vercel.json", "fly.toml", "render.yaml", "netlify.toml"}
+        ]
+        return {
+            "languages_json": languages,
+            "frameworks_json": sorted(frameworks),
+            "package_managers_json": sorted(package_managers),
+            "entry_points_json": entry_points,
+            "build_commands_json": build_commands,
+            "test_commands_json": test_commands,
+            "important_folders_json": important_folders,
+            "risky_files_json": risky_files,
+            "docs_found_json": docs_found[:20],
+            "ci_config_json": ci_config[:20],
+            "deployment_config_json": deployment_config[:20],
+            "last_indexed_at": utc_now(),
+        }
+
+    def _preview_repo_intelligence(self, project: Project) -> dict[str, Any]:
+        return self._compute_repo_intelligence_payload(project)
+
     def _recovery_plan_trigger_specs(
         self,
         *,
@@ -3772,117 +4050,19 @@ class MissionControlService:
             db.add(summary)
             db.flush()
             project.repo_intelligence = summary
-        root = Path(project.workspace_path)
-        if not root.exists() or not root.is_dir():
-            summary.languages_json = []
-            summary.frameworks_json = []
-            summary.package_managers_json = []
-            summary.entry_points_json = []
-            summary.build_commands_json = []
-            summary.test_commands_json = []
-            summary.important_folders_json = []
-            summary.risky_files_json = []
-            summary.docs_found_json = []
-            summary.ci_config_json = []
-            summary.deployment_config_json = []
-            db.flush()
-            return summary
-        file_paths = [path for path in root.rglob("*") if path.is_file()][:1200]
-        extensions = Counter(path.suffix.lower() for path in file_paths)
-        language_map = {
-            ".py": "Python",
-            ".ts": "TypeScript",
-            ".tsx": "TypeScript",
-            ".js": "JavaScript",
-            ".jsx": "JavaScript",
-            ".go": "Go",
-            ".rs": "Rust",
-            ".java": "Java",
-            ".cs": "C#",
-            ".rb": "Ruby",
-        }
-        languages = sorted({language for ext, language in language_map.items() if extensions.get(ext)})
-        frameworks: set[str] = set()
-        package_managers: set[str] = set()
-        build_commands: list[str] = []
-        test_commands: list[str] = []
-        entry_points: list[str] = []
-        package_json = root / "package.json"
-        if package_json.exists():
-            try:
-                package_data = json.loads(package_json.read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError):
-                package_data = {}
-            deps = {
-                **dict(package_data.get("dependencies") or {}),
-                **dict(package_data.get("devDependencies") or {}),
-            }
-            if "react" in deps:
-                frameworks.add("React")
-            if "vite" in deps:
-                frameworks.add("Vite")
-            if "next" in deps:
-                frameworks.add("Next.js")
-            if "fastify" in deps:
-                frameworks.add("Fastify")
-            if "express" in deps:
-                frameworks.add("Express")
-            scripts = dict(package_data.get("scripts") or {})
-            if scripts.get("build"):
-                build_commands.append(f"npm run build ({scripts['build']})")
-            if scripts.get("test"):
-                test_commands.append(f"npm run test ({scripts['test']})")
-            if (root / "package-lock.json").exists():
-                package_managers.add("npm")
-            if (root / "pnpm-lock.yaml").exists():
-                package_managers.add("pnpm")
-            if (root / "yarn.lock").exists():
-                package_managers.add("yarn")
-        pyproject = root / "pyproject.toml"
-        if pyproject.exists():
-            package_managers.add("pip")
-            try:
-                pyproject_text = pyproject.read_text(encoding="utf-8").lower()
-            except OSError:
-                pyproject_text = ""
-            if "fastapi" in pyproject_text:
-                frameworks.add("FastAPI")
-            if "django" in pyproject_text:
-                frameworks.add("Django")
-            if "flask" in pyproject_text:
-                frameworks.add("Flask")
-        requirements = root / "requirements.txt"
-        if requirements.exists():
-            package_managers.add("pip")
-            try:
-                requirements_text = requirements.read_text(encoding="utf-8").lower()
-            except OSError:
-                requirements_text = ""
-            if "fastapi" in requirements_text:
-                frameworks.add("FastAPI")
-        for candidate in ["main.py", "app.py", "manage.py", "src/main.ts", "src/main.tsx", "src/index.tsx", "src/index.ts", "server.py"]:
-            if (root / candidate).exists():
-                entry_points.append(candidate)
-        important_folders = [folder.name for folder in root.iterdir() if folder.is_dir() and folder.name in {"src", "app", "apps", "server", "client", "docs", "tests", "scripts"}]
-        risky_files = [str(path.relative_to(root)) for path in file_paths if path.name.lower().startswith(".env") or "secret" in path.name.lower()][:12]
-        docs_found = [str(path.relative_to(root)) for path in file_paths if path.suffix.lower() == ".md" and ("readme" in path.name.lower() or "docs" in path.parts)]
-        ci_config = [str(path.relative_to(root)) for path in file_paths if ".github" in path.parts or path.name.lower() in {"azure-pipelines.yml", "azure-pipelines.yaml", ".gitlab-ci.yml"}]
-        deployment_config = [
-            str(path.relative_to(root))
-            for path in file_paths
-            if path.name.lower() in {"dockerfile", "docker-compose.yml", "docker-compose.yaml", "vercel.json", "fly.toml", "render.yaml", "netlify.toml"}
-        ]
-        summary.languages_json = languages
-        summary.frameworks_json = sorted(frameworks)
-        summary.package_managers_json = sorted(package_managers)
-        summary.entry_points_json = entry_points
-        summary.build_commands_json = build_commands
-        summary.test_commands_json = test_commands
-        summary.important_folders_json = important_folders
-        summary.risky_files_json = risky_files
-        summary.docs_found_json = docs_found[:20]
-        summary.ci_config_json = ci_config[:20]
-        summary.deployment_config_json = deployment_config[:20]
+        payload = self._compute_repo_intelligence_payload(project)
+        summary.languages_json = list(payload["languages_json"])
+        summary.frameworks_json = list(payload["frameworks_json"])
+        summary.package_managers_json = list(payload["package_managers_json"])
+        summary.entry_points_json = list(payload["entry_points_json"])
+        summary.build_commands_json = list(payload["build_commands_json"])
+        summary.test_commands_json = list(payload["test_commands_json"])
+        summary.important_folders_json = list(payload["important_folders_json"])
+        summary.risky_files_json = list(payload["risky_files_json"])
+        summary.docs_found_json = list(payload["docs_found_json"])
+        summary.ci_config_json = list(payload["ci_config_json"])
+        summary.deployment_config_json = list(payload["deployment_config_json"])
+        summary.last_indexed_at = payload["last_indexed_at"]
         db.flush()
         return summary
 
@@ -4616,14 +4796,21 @@ class MissionControlService:
         overview: dict[str, Any],
         degraded_notices: list[str],
     ) -> dict[str, Any]:
-        support = self._ensure_widget_support_records(
-            db,
-            project,
-            tasks=tasks,
-            degraded_notices=degraded_notices,
-            current_action=current_action,
-            overview=overview,
-        )
+        support_records: dict[str, Any] | None = None
+
+        def get_support() -> dict[str, Any]:
+            nonlocal support_records
+            if support_records is None:
+                support_records = self._ensure_widget_support_records(
+                    db,
+                    project,
+                    tasks=tasks,
+                    degraded_notices=degraded_notices,
+                    current_action=current_action,
+                    overview=overview,
+                )
+            return support_records
+
         swarm_plan = self._serialize_swarm_plan(db, project, self._current_swarm_plan_record(db, project.id))
         if instance.widget_type == "Swarm Strategy":
             if swarm_plan is None:
@@ -4845,6 +5032,7 @@ class MissionControlService:
                 },
             )
         if instance.widget_type == "Swarm Budget":
+            support = get_support()
             budget: SwarmBudget = support["budget"]
             warnings = []
             if budget.current_intensity in {"high", "extreme"}:
@@ -4866,6 +5054,7 @@ class MissionControlService:
                 warnings_json=warnings,
             )
         if instance.widget_type == "Conflict Resolver":
+            support = get_support()
             conflicts: list[ConflictRecord] = [entry for entry in support["conflicts"] if entry.status not in {"resolved", "dismissed"}]
             if not conflicts:
                 return self._serialize_widget_data(instance, status="empty", empty_state="No active conflicts are recorded right now.")
@@ -4889,6 +5078,7 @@ class MissionControlService:
                 },
             )
         if instance.widget_type == "Evidence Handoff":
+            support = get_support()
             latest_handoff: EvidenceBasedHandoff | None = support["latest_handoff"]
             evidence: list[HandoffEvidence] = support["handoff_evidence"]
             if latest_handoff is None and not evidence:
@@ -4912,6 +5102,7 @@ class MissionControlService:
                 warnings_json=missing_evidence,
             )
         if instance.widget_type == "Runbook":
+            support = get_support()
             runbook: Runbook | None = support["runbook"]
             if runbook is None:
                 return self._serialize_widget_data(instance, status="empty", empty_state="No runbook has been generated yet.")
@@ -4940,29 +5131,52 @@ class MissionControlService:
                 warnings_json=[f"Missing section: {section}" for section in missing_sections[:4]],
             )
         if instance.widget_type == "Agent Black Box":
-            traces: list[AgentExecutionTrace] = support["agent_traces"]
+            traces = [
+                {
+                    "id": trace.id,
+                    "title": trace.prompt_summary,
+                    "detail": trace.response_summary,
+                    "files_changed": list(trace.files_changed_json or []),
+                    "commands_attempted": list(trace.commands_attempted_json or []),
+                    "manager_decision_after": trace.manager_decision_after,
+                    "redaction_status": trace.redaction_status,
+                    "created_at": trace.created_at,
+                    "source": "persisted",
+                }
+                for trace in list(
+                    db.scalars(
+                        select(AgentExecutionTrace)
+                        .where(AgentExecutionTrace.project_id == project.id)
+                        .order_by(AgentExecutionTrace.created_at.desc(), AgentExecutionTrace.id.desc())
+                    )
+                )
+            ]
+            if not traces:
+                traces = [
+                    {
+                        "id": trace["id"],
+                        "title": trace["prompt_summary"],
+                        "detail": trace["response_summary"],
+                        "files_changed": list(trace["files_changed_json"]),
+                        "commands_attempted": list(trace["commands_attempted_json"]),
+                        "manager_decision_after": trace["manager_decision_after"],
+                        "redaction_status": trace["redaction_status"],
+                        "created_at": trace["created_at"],
+                        "source": trace["source"],
+                    }
+                    for trace in self._preview_agent_execution_traces(db, project)
+                ]
             if not traces:
                 return self._serialize_widget_data(instance, status="empty", empty_state="No agent execution traces have been recorded yet.")
             return self._serialize_widget_data(
                 instance,
                 status="ready",
                 data_json={
-                    "items": [
-                        {
-                            "id": trace.id,
-                            "title": trace.prompt_summary,
-                            "detail": trace.response_summary,
-                            "files_changed": list(trace.files_changed_json or []),
-                            "commands_attempted": list(trace.commands_attempted_json or []),
-                            "manager_decision_after": trace.manager_decision_after,
-                            "redaction_status": trace.redaction_status,
-                            "created_at": trace.created_at,
-                        }
-                        for trace in traces[:10]
-                    ]
+                    "items": traces[:10]
                 },
             )
         if instance.widget_type == "Snapshots":
+            support = get_support()
             snapshots: list[ProjectSnapshot] = support["snapshots"]
             if not snapshots:
                 return self._serialize_widget_data(instance, status="empty", empty_state="No snapshots have been recorded for this project yet.")
@@ -4984,10 +5198,10 @@ class MissionControlService:
                 },
             )
         if instance.widget_type == "Agent Load Balancer":
-            load_snapshots: list[AgentLoadSnapshot] = support["agent_load"]
+            load_snapshots = self._preview_agent_load_snapshots(db, project)
             if not load_snapshots:
                 return self._serialize_widget_data(instance, status="empty", empty_state="No agent load snapshots exist yet.")
-            rebalance = self.build_agent_rebalance_plan(db, project)
+            rebalance = self._preview_agent_rebalance_plan(db, project)
             return self._serialize_widget_data(
                 instance,
                 status="warning" if rebalance["overloaded_agents"] else "ready",
@@ -5000,6 +5214,7 @@ class MissionControlService:
                 warnings_json=list(rebalance["risks"][:3]),
             )
         if instance.widget_type == "Agent Contracts":
+            support = get_support()
             contracts: list[AgentContract] = support["contracts"]
             if not contracts:
                 return self._serialize_widget_data(instance, status="empty", empty_state="No active agent contracts exist yet.")
@@ -5024,6 +5239,7 @@ class MissionControlService:
                 },
             )
         if instance.widget_type == "Path Ownership Map":
+            support = get_support()
             path_locks: list[PathLock] = support["path_locks"]
             if not path_locks:
                 return self._serialize_widget_data(instance, status="empty", empty_state="No path ownership data exists yet.")
@@ -5047,6 +5263,7 @@ class MissionControlService:
                 warnings_json=warnings,
             )
         if instance.widget_type == "Decision Ledger":
+            support = get_support()
             decisions: list[DecisionRecord] = support["decisions"]
             if not decisions:
                 return self._serialize_widget_data(instance, status="empty", empty_state="No decisions have been recorded yet.")
@@ -5068,6 +5285,7 @@ class MissionControlService:
                 ]},
             )
         if instance.widget_type == "Confidence Tracker":
+            support = get_support()
             confidence: list[ProjectConfidence] = support["confidence"]
             return self._serialize_widget_data(
                 instance,
@@ -5086,44 +5304,78 @@ class MissionControlService:
                 },
             )
         if instance.widget_type == "Failure Recovery":
-            plans: list[RecoveryPlan] = support["recovery_plans"]
-            open_plans = [entry for entry in plans if entry.resolved_at is None]
+            preview = self.preview_recovery_plans(db, project)
+            open_plans = [
+                {
+                    "id": entry.id,
+                    "trigger_type": entry.trigger_type,
+                    "trigger_summary": entry.trigger_summary,
+                    "suggested_actions": list(entry.suggested_actions_json or []),
+                    "selected_action": entry.selected_action,
+                    "status": entry.status,
+                    "source": "persisted",
+                }
+                for entry in preview["persisted"]
+                if entry.resolved_at is None
+            ]
+            if not open_plans:
+                open_plans = [
+                    {
+                        "id": None,
+                        "trigger_type": entry["trigger_type"],
+                        "trigger_summary": entry["trigger_summary"],
+                        "suggested_actions": list(entry["suggested_actions_json"]),
+                        "selected_action": None,
+                        "status": entry["status"],
+                        "source": entry["source"],
+                    }
+                    for entry in preview["derived_candidates"]
+                ]
             if not open_plans:
                 return self._serialize_widget_data(instance, status="empty", empty_state="No recovery proposals are active right now.")
             return self._serialize_widget_data(
                 instance,
                 status="warning",
-                data_json={"items": [
-                    {
-                        "id": entry.id,
-                        "trigger_type": entry.trigger_type,
-                        "trigger_summary": entry.trigger_summary,
-                        "suggested_actions": list(entry.suggested_actions_json or []),
-                        "selected_action": entry.selected_action,
-                        "status": entry.status,
-                    }
-                    for entry in open_plans[:8]
-                ]},
+                data_json={"items": open_plans[:8]},
             )
         if instance.widget_type == "Agent Stuck Detection":
-            signals: list[AgentStuckSignal] = support["stuck_signals"]
+            persisted_signals = list(
+                db.scalars(
+                    select(AgentStuckSignal)
+                    .where(AgentStuckSignal.project_id == project.id, AgentStuckSignal.resolved_at.is_(None))
+                    .order_by(AgentStuckSignal.detected_at.desc())
+                )
+            )
+            signals = [
+                {
+                    "agent_id": entry.agent_id,
+                    "signal_type": entry.signal_type,
+                    "message": entry.message,
+                    "severity": entry.severity,
+                    "detected_at": entry.detected_at,
+                    "source": "persisted",
+                }
+                for entry in persisted_signals
+            ] or [
+                {
+                    "agent_id": entry["agent_id"],
+                    "signal_type": entry["signal_type"],
+                    "message": entry["message"],
+                    "severity": entry["severity"],
+                    "detected_at": entry["detected_at"],
+                    "source": "computed",
+                }
+                for entry in self._preview_stuck_signals(db, project)
+            ]
             if not signals:
                 return self._serialize_widget_data(instance, status="empty", empty_state="No agents appear stuck right now.")
             return self._serialize_widget_data(
                 instance,
                 status="warning",
-                data_json={"items": [
-                    {
-                        "agent_id": entry.agent_id,
-                        "signal_type": entry.signal_type,
-                        "message": entry.message,
-                        "severity": entry.severity,
-                        "detected_at": entry.detected_at,
-                    }
-                    for entry in signals[:10]
-                ]},
+                data_json={"items": signals[:10]},
             )
         if instance.widget_type == "Merge / Review Gates":
+            support = get_support()
             gates: list[ReviewGate] = support["review_gates"]
             return self._serialize_widget_data(
                 instance,
@@ -5141,8 +5393,10 @@ class MissionControlService:
                 ]},
             )
         if instance.widget_type == "Project Health Score":
+            support = get_support()
             return self._serialize_widget_data(instance, status="warning" if support["health"]["state"] in {"blocked", "unstable", "needs_review"} else "ready", data_json=support["health"])
         if instance.widget_type == "Model Assignment Policy":
+            support = get_support()
             policy: ModelPolicy = support["model_policy"]
             return self._serialize_widget_data(
                 instance,
@@ -5161,6 +5415,7 @@ class MissionControlService:
                 },
             )
         if instance.widget_type == "Tool Routing Policy":
+            support = get_support()
             policies: list[ToolRoutingPolicy] = support["tool_routing"]
             return self._serialize_widget_data(
                 instance,
@@ -5177,6 +5432,7 @@ class MissionControlService:
                 ]},
             )
         if instance.widget_type == "Sandbox Profiles":
+            support = get_support()
             profiles: list[SandboxProfile] = support["sandbox_profiles"]
             settings = self._project_settings(db, project)
             current_profile_name = "balanced" if settings.sandbox_mode == "workspace-write" else "strict"
@@ -5308,7 +5564,23 @@ class MissionControlService:
                 warnings_json=["Some areas still need targeted scan coverage."] if record.unindexed_areas_json else [],
             )
         if instance.widget_type == "Manager Assumptions":
-            assumptions: list[ManagerAssumption] = support["assumptions"]
+            assumptions = [
+                {
+                    "assumption": entry.assumption,
+                    "reason": entry.reason,
+                    "confidence": entry.confidence,
+                    "status": entry.status,
+                    "created_at": entry.created_at,
+                    "source": "persisted",
+                }
+                for entry in list(
+                    db.scalars(
+                        select(ManagerAssumption)
+                        .where(ManagerAssumption.project_id == project.id)
+                        .order_by(ManagerAssumption.created_at.desc(), ManagerAssumption.id.desc())
+                    )
+                )
+            ] or self._preview_manager_assumptions(db, project)
             if not assumptions:
                 return self._serialize_widget_data(instance, status="empty", empty_state="No active Manager assumptions are recorded right now.")
             return self._serialize_widget_data(
@@ -5316,38 +5588,70 @@ class MissionControlService:
                 status="ready",
                 data_json={"items": [
                     {
-                        "assumption": entry.assumption,
-                        "reason": entry.reason,
-                        "confidence": entry.confidence,
-                        "status": entry.status,
-                        "created_at": entry.created_at,
+                        "assumption": entry["assumption"],
+                        "reason": entry["reason"],
+                        "confidence": entry["confidence"],
+                        "status": entry["status"],
+                        "created_at": entry["created_at"],
+                        "source": entry["source"],
                     }
                     for entry in assumptions[:12]
                 ]},
             )
         if instance.widget_type == "Repo Intelligence":
-            repo: RepoIntelligenceSummary = support["repo"]
-            if not repo.languages_json and not repo.frameworks_json and not repo.important_folders_json:
+            repo = None
+            persisted_repo = project.repo_intelligence
+            persisted_has_signal = persisted_repo is not None and any(
+                [
+                    persisted_repo.languages_json,
+                    persisted_repo.frameworks_json,
+                    persisted_repo.important_folders_json,
+                    persisted_repo.entry_points_json,
+                    persisted_repo.build_commands_json,
+                    persisted_repo.test_commands_json,
+                ]
+            )
+            if persisted_repo is not None and persisted_has_signal:
+                repo = {
+                    "languages_json": list(persisted_repo.languages_json or []),
+                    "frameworks_json": list(persisted_repo.frameworks_json or []),
+                    "package_managers_json": list(persisted_repo.package_managers_json or []),
+                    "entry_points_json": list(persisted_repo.entry_points_json or []),
+                    "build_commands_json": list(persisted_repo.build_commands_json or []),
+                    "test_commands_json": list(persisted_repo.test_commands_json or []),
+                    "important_folders_json": list(persisted_repo.important_folders_json or []),
+                    "docs_found_json": list(persisted_repo.docs_found_json or []),
+                    "ci_config_json": list(persisted_repo.ci_config_json or []),
+                    "deployment_config_json": list(persisted_repo.deployment_config_json or []),
+                    "risky_files_json": list(persisted_repo.risky_files_json or []),
+                    "last_indexed_at": persisted_repo.last_indexed_at,
+                    "source": "persisted",
+                }
+            else:
+                repo = {**self._preview_repo_intelligence(project), "source": "computed"}
+            if not repo["languages_json"] and not repo["frameworks_json"] and not repo["important_folders_json"]:
                 return self._serialize_widget_data(instance, status="empty", empty_state="Repository intelligence is not available yet. Re-index after the workspace exists.")
             return self._serialize_widget_data(
                 instance,
                 status="ready",
                 data_json={
-                    "languages": list(repo.languages_json or []),
-                    "frameworks": list(repo.frameworks_json or []),
-                    "package_managers": list(repo.package_managers_json or []),
-                    "entry_points": list(repo.entry_points_json or []),
-                    "build_commands": list(repo.build_commands_json or []),
-                    "test_commands": list(repo.test_commands_json or []),
-                    "important_folders": list(repo.important_folders_json or []),
-                    "docs_found": list(repo.docs_found_json or []),
-                    "ci_config": list(repo.ci_config_json or []),
-                    "deployment_config": list(repo.deployment_config_json or []),
-                    "risky_files": list(repo.risky_files_json or []),
-                    "last_indexed_at": repo.last_indexed_at,
+                    "languages": list(repo["languages_json"]),
+                    "frameworks": list(repo["frameworks_json"]),
+                    "package_managers": list(repo["package_managers_json"]),
+                    "entry_points": list(repo["entry_points_json"]),
+                    "build_commands": list(repo["build_commands_json"]),
+                    "test_commands": list(repo["test_commands_json"]),
+                    "important_folders": list(repo["important_folders_json"]),
+                    "docs_found": list(repo["docs_found_json"]),
+                    "ci_config": list(repo["ci_config_json"]),
+                    "deployment_config": list(repo["deployment_config_json"]),
+                    "risky_files": list(repo["risky_files_json"]),
+                    "last_indexed_at": repo["last_indexed_at"],
+                    "source": repo["source"],
                 },
             )
         if instance.widget_type == "Validation Recipe":
+            support = get_support()
             recipe: ValidationRecipe = support["validation_recipe"]
             return self._serialize_widget_data(
                 instance,
@@ -5362,6 +5666,7 @@ class MissionControlService:
                 },
             )
         if instance.widget_type == "Handoff Quality":
+            support = get_support()
             handoff_quality: HandoffQualityPreference = support["handoff_quality"]
             return self._serialize_widget_data(
                 instance,
@@ -5405,6 +5710,7 @@ class MissionControlService:
         if instance.widget_type == "Handoff Progress":
             return self._serialize_widget_data(instance, status="ready", data_json=overview)
         if instance.widget_type == "What Changed Timeline":
+            support = get_support()
             items = [
                 {
                     "title": entry.title,
@@ -5423,6 +5729,7 @@ class MissionControlService:
                 return self._serialize_widget_data(instance, status="empty", empty_state="No agent reports have been routed to the Manager yet.")
             return self._serialize_widget_data(instance, status="ready", data_json={"items": messages})
         if instance.widget_type == "Parallelism Safety Meter":
+            support = get_support()
             path_locks: list[PathLock] = support["path_locks"]
             active_locks = [entry for entry in path_locks if entry.status == "active"]
             waiting_locks = [entry for entry in path_locks if entry.status == "waiting"]

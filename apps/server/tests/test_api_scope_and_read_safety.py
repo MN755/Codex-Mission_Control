@@ -18,6 +18,7 @@ from models import (
     ManagerAssumption,
     Project,
     ProjectPlaybook,
+    ProjectUnderstanding,
     RecoveryPlan,
     RepoIntelligenceSummary,
     SecurityPolicy,
@@ -500,6 +501,129 @@ def test_recovery_plans_get_is_read_only_and_preview_stays_non_persistent(client
         )
         db.commit()
         project_id = project.id
+    finally:
+        db.close()
+
+
+def test_project_widget_data_route_stays_read_only_for_preview_widgets(client, bridge_headers) -> None:
+    workspace_root = Path(sample_workspace("widget-read-only-preview"))
+    (workspace_root / "src").mkdir(parents=True, exist_ok=True)
+    (workspace_root / "tests").mkdir(parents=True, exist_ok=True)
+    (workspace_root / "package.json").write_text(
+        '{"dependencies":{"react":"^19.0.0","vite":"^6.0.0"},"scripts":{"build":"vite build","test":"vitest run"}}',
+        encoding="utf-8",
+    )
+    (workspace_root / "package-lock.json").write_text("{}", encoding="utf-8")
+    (workspace_root / "src" / "main.tsx").write_text("export const main = true;\n", encoding="utf-8")
+    (workspace_root / "README.md").write_text("# Widget Preview\n", encoding="utf-8")
+
+    init_db()
+    db = SessionLocal()
+    try:
+        project = Project(
+            name="Widget Preview Project",
+            idea="Exercise read-only project widgets",
+            workspace_path=workspace_root.as_posix(),
+            runner_mode="dry_run",
+            manager_mode="auto",
+        )
+        db.add(project)
+        db.flush()
+        db.add(
+            ProjectUnderstanding(
+                project_id=project.id,
+                summary="Manager assumptions exist only in understanding, not as rows.",
+                known_facts_json={},
+                unknowns_json={},
+                assumptions_json=["Need Python 3.10"],
+                constraints_json=[],
+                confidence_by_category_json={},
+            )
+        )
+        db.add(Agent(project_id=project.id, name="Manager AI", role="Project orchestration", kind="manager", status="idle", workspace_path=project.workspace_path))
+        worker = Agent(
+            project_id=project.id,
+            name="Preview Worker",
+            role="Implementation",
+            kind="worker",
+            status="blocked",
+            workspace_path=project.workspace_path,
+            current_action="Waiting for a missing fix.",
+            failure_count=3,
+        )
+        db.add(worker)
+        db.flush()
+        task = Task(
+            project_id=project.id,
+            assigned_agent_id=worker.id,
+            title="Fix the preview lane",
+            goal="Unblock the worker",
+            scope="Read-only preview test scope.",
+            agent_role="Implementation",
+            milestone="MVP",
+            allowed_paths_json=["src"],
+            forbidden_paths_json=[],
+            validation_steps_json=["vitest run"],
+            success_criteria_json=["Worker unblocked"],
+            estimated_complexity="small",
+            dependencies_json=[],
+            status="blocked",
+            waiting_reason="Needs a real fix.",
+            priority=10,
+        )
+        db.add(task)
+        db.flush()
+        db.add(
+            AgentRun(
+                agent_id=worker.id,
+                task_id=task.id,
+                runner_type="dry_run",
+                process_ref="preview-run",
+                status="done",
+                report_json={
+                    "summary": "Recorded a blocked implementation pass.",
+                    "tests_run": ["vitest run"],
+                    "files_changed": ["src/main.tsx"],
+                },
+            )
+        )
+        db.commit()
+        project_id = project.id
+    finally:
+        db.close()
+
+    widget_types = [
+        "Manager Assumptions",
+        "Agent Black Box",
+        "Agent Load Balancer",
+        "Failure Recovery",
+        "Agent Stuck Detection",
+        "Repo Intelligence",
+    ]
+    instance_ids: list[int] = []
+    for widget_type in widget_types:
+        added = client.post(
+            f"/api/projects/{project_id}/widgets/add",
+            json={"widget_type": widget_type},
+            headers=bridge_headers,
+        )
+        assert added.status_code == 200, added.text
+        instance_ids.append(added.json()["id"])
+
+    for instance_id in instance_ids:
+        response = client.get(f"/api/widgets/instances/{instance_id}/data", headers=bridge_headers)
+        assert response.status_code == 200, response.text
+        payload = response.json()
+        assert payload["status"] in {"ready", "warning", "empty"}
+
+    db = SessionLocal()
+    try:
+        assert db.scalar(select(func.count(ManagerAssumption.id)).where(ManagerAssumption.project_id == project_id)) == 0
+        assert db.scalar(select(func.count(AgentExecutionTrace.id)).where(AgentExecutionTrace.project_id == project_id)) == 0
+        assert db.scalar(select(func.count(AgentLoadSnapshot.id)).where(AgentLoadSnapshot.project_id == project_id)) == 0
+        assert db.scalar(select(func.count(AgentStuckSignal.id)).where(AgentStuckSignal.project_id == project_id)) == 0
+        assert db.scalar(select(func.count(RecoveryPlan.id)).where(RecoveryPlan.project_id == project_id)) == 0
+        assert db.scalar(select(func.count(RepoIntelligenceSummary.project_id)).where(RepoIntelligenceSummary.project_id == project_id)) == 0
     finally:
         db.close()
 
