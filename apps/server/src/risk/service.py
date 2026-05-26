@@ -5,10 +5,27 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from models import Project, RiskRecord, utc_now
+from models import Agent, Project, RiskRecord, Task, utc_now
 
 
 class RiskService:
+    def _validate_related_refs(self, db: Session, project_id: int, payload: dict[str, Any]) -> None:
+        owner_agent_id = payload.get("owner_agent_id")
+        if owner_agent_id is not None:
+            agent = db.get(Agent, owner_agent_id)
+            if agent is None:
+                raise ValueError("Risk owner agent not found")
+            if agent.project_id != project_id:
+                raise ValueError("Risk owner agent does not belong to this project")
+
+        related_task_id = payload.get("related_task_id")
+        if related_task_id is not None:
+            task = db.get(Task, related_task_id)
+            if task is None:
+                raise ValueError("Risk related task not found")
+            if task.project_id != project_id:
+                raise ValueError("Risk related task does not belong to this project")
+
     def list_risks(self, db: Session, project: Project) -> list[RiskRecord]:
         return list(
             db.scalars(
@@ -19,6 +36,7 @@ class RiskService:
         )
 
     def create_risk(self, db: Session, project: Project, payload: dict[str, Any]) -> RiskRecord:
+        self._validate_related_refs(db, project.id, payload)
         normalized_title = " ".join(str(payload["title"]).split())
         existing = db.scalar(
             select(RiskRecord)
@@ -51,6 +69,7 @@ class RiskService:
         record = db.get(RiskRecord, risk_id)
         if record is None:
             raise ValueError("Risk not found")
+        self._validate_related_refs(db, record.project_id, payload)
         for field in [
             "title",
             "description",
