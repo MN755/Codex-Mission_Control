@@ -810,7 +810,10 @@ def update_settings(
     _: None = Depends(_require_bridge_token),
 ) -> ProjectSettingsRead:
     project = _get_project_or_404(db, project_id)
-    return service.update_settings(db, project, payload)
+    try:
+        return service.update_settings(db, project, payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @app.get("/api/projects/{project_id}/swarm/preferences", response_model=SwarmPreferencesRead)
