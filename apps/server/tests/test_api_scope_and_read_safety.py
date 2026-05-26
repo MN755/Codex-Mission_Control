@@ -163,6 +163,40 @@ def test_widget_catalog_get_does_not_seed_or_overwrite_rows(client) -> None:
         db.close()
 
 
+def test_agent_load_widget_data_does_not_persist_rows(client) -> None:
+    project_id = _create_legacy_project("Agent Load Widget", "agent-load-widget")
+
+    db = SessionLocal()
+    try:
+        db.add(
+            Agent(
+                project_id=project_id,
+                name="Worker",
+                role="Build",
+                kind="worker",
+                status="idle",
+                workspace_path=sample_workspace("agent-load-widget"),
+            )
+        )
+        db.commit()
+    finally:
+        db.close()
+
+    widget = client.post(f"/api/projects/{project_id}/widgets/add", json={"widget_type": "Agent Load Balancer"})
+    assert widget.status_code == 200, widget.text
+
+    response = client.get(f"/api/widgets/instances/{widget.json()['id']}/data")
+    assert response.status_code == 200, response.text
+    assert response.json()["status"] == "ready"
+
+    db = SessionLocal()
+    try:
+        row_count = db.scalar(select(func.count(AgentLoadSnapshot.id)).where(AgentLoadSnapshot.project_id == project_id))
+        assert row_count == 0
+    finally:
+        db.close()
+
+
 def test_playbook_catalog_get_does_not_seed_or_overwrite_rows(client) -> None:
     init_db()
     db = SessionLocal()

@@ -1850,6 +1850,44 @@ class MissionControlService:
             )
         )
 
+    def _preview_agent_load(self, db: Session, project: Project) -> list[dict[str, Any]]:
+        agents = list(db.scalars(select(Agent).where(Agent.project_id == project.id).order_by(Agent.id.asc())))
+        tasks = list(db.scalars(select(Task).where(Task.project_id == project.id).order_by(Task.id.asc())))
+        now = utc_now()
+        snapshots: list[dict[str, Any]] = []
+        for agent in agents:
+            if agent.kind != "worker":
+                continue
+            active_task_count = sum(1 for task in tasks if task.assigned_agent_id == agent.id and task.status == "working")
+            waiting_task_count = sum(1 for task in tasks if task.assigned_agent_id == agent.id and task.status in {"assigned", "waiting_on_paths", "needs_review"})
+            blocked_task_count = sum(1 for task in tasks if task.assigned_agent_id == agent.id and task.status == "blocked")
+            idle_duration_seconds = None
+            if agent.status in {"idle", "waiting", "done", "stopped"}:
+                last_update = agent.last_update if agent.last_update.tzinfo else agent.last_update.replace(tzinfo=timezone.utc)
+                idle_duration_seconds = max(0, int((now - last_update).total_seconds()))
+            if blocked_task_count or agent.status in {"blocked", "error"}:
+                load_level = "blocked"
+            elif active_task_count >= 3:
+                load_level = "heavy"
+            elif active_task_count >= 1 or waiting_task_count >= 2:
+                load_level = "normal"
+            elif waiting_task_count == 1:
+                load_level = "light"
+            else:
+                load_level = "idle"
+            snapshots.append(
+                {
+                    "agent_id": agent.id,
+                    "agent_name": agent.name,
+                    "active_task_count": active_task_count,
+                    "waiting_task_count": waiting_task_count,
+                    "blocked_task_count": blocked_task_count,
+                    "idle_duration_seconds": idle_duration_seconds,
+                    "load_level": load_level,
+                }
+            )
+        return snapshots
+
     def _sync_agent_load_snapshots(self, db: Session, project: Project) -> list[AgentLoadSnapshot]:
         agents = list(db.scalars(select(Agent).where(Agent.project_id == project.id).order_by(Agent.id.asc())))
         tasks = list(db.scalars(select(Task).where(Task.project_id == project.id).order_by(Task.id.asc())))
@@ -4616,6 +4654,55 @@ class MissionControlService:
         overview: dict[str, Any],
         degraded_notices: list[str],
     ) -> dict[str, Any]:
+        if instance.widget_type == "Agent Load Balancer":
+            load_snapshots = self._preview_agent_load(db, project)
+            if not load_snapshots:
+                return self._serialize_widget_data(instance, status="empty", empty_state="No agent load snapshots exist yet.")
+            overloaded = [snap for snap in load_snapshots if snap["load_level"] in {"heavy", "blocked"}]
+            idle = [snap for snap in load_snapshots if snap["load_level"] == "idle"]
+            suggested_reassignments: list[dict[str, Any]] = []
+            for overloaded_entry, idle_entry in zip(overloaded, idle):
+                suggested_reassignments.append(
+                    {
+                        "from_agent_id": overloaded_entry["agent_id"],
+                        "from_agent_name": overloaded_entry["agent_name"],
+                        "to_agent_id": idle_entry["agent_id"],
+                        "to_agent_name": idle_entry["agent_name"],
+                        "note": "Reassign only if the task boundaries and path locks stay compatible.",
+                    }
+                )
+            risks = [
+                "Do not rebalance high-risk work without checking contracts and path locks.",
+                "Idle agents are not free if their archetype does not match the task.",
+            ]
+            return self._serialize_widget_data(
+                instance,
+                status="warning" if overloaded else "ready",
+                data_json={
+                    "idle_agents": [
+                        {
+                            "agent_id": snap["agent_id"],
+                            "agent_name": snap["agent_name"],
+                            "load_level": snap["load_level"],
+                            "idle_duration_seconds": snap["idle_duration_seconds"],
+                        }
+                        for snap in idle
+                    ],
+                    "overloaded_agents": [
+                        {
+                            "agent_id": snap["agent_id"],
+                            "agent_name": snap["agent_name"],
+                            "load_level": snap["load_level"],
+                            "active_task_count": snap["active_task_count"],
+                            "blocked_task_count": snap["blocked_task_count"],
+                        }
+                        for snap in overloaded
+                    ],
+                    "suggested_reassignments": suggested_reassignments,
+                    "risks": risks,
+                },
+                warnings_json=risks[:3],
+            )
         support = self._ensure_widget_support_records(
             db,
             project,
@@ -4982,22 +5069,6 @@ class MissionControlService:
                         for entry in snapshots[:8]
                     ]
                 },
-            )
-        if instance.widget_type == "Agent Load Balancer":
-            load_snapshots: list[AgentLoadSnapshot] = support["agent_load"]
-            if not load_snapshots:
-                return self._serialize_widget_data(instance, status="empty", empty_state="No agent load snapshots exist yet.")
-            rebalance = self.build_agent_rebalance_plan(db, project)
-            return self._serialize_widget_data(
-                instance,
-                status="warning" if rebalance["overloaded_agents"] else "ready",
-                data_json={
-                    "idle_agents": rebalance["idle_agents"],
-                    "overloaded_agents": rebalance["overloaded_agents"],
-                    "suggested_reassignments": rebalance["suggested_reassignments"],
-                    "risks": rebalance["risks"],
-                },
-                warnings_json=list(rebalance["risks"][:3]),
             )
         if instance.widget_type == "Agent Contracts":
             contracts: list[AgentContract] = support["contracts"]
