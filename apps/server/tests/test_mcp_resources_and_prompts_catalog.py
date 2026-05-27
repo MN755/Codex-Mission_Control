@@ -31,6 +31,9 @@ EXPECTED_RESOURCES = [
     "mission-control://projects/{project_id}/validation-summary",
     "mission-control://projects/{project_id}/decision-ledger",
     "mission-control://projects/{project_id}/path-locks",
+    "mission-control://projects/{project_id}/operator-snapshot",
+    "mission-control://projects/{project_id}/instincts",
+    "mission-control://projects/{project_id}/verification-brief",
 ]
 
 EXPECTED_PROMPTS = [
@@ -110,5 +113,6 @@ def test_docs_explain_resources_prompts_and_headless_boundary() -> None:
     assert "localhost" in runtime_content.lower()
     assert "mission_control_attach_workspace" in tools_content
     assert "mission-control://projects/{project_id}/decision-ledger" in resources_content
+    assert "mission-control://projects/{project_id}/operator-snapshot" in resources_content
     assert "attach_current_workspace" in prompts_content
     assert "Invalid answers are rejected" in pending_content

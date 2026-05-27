@@ -25,6 +25,9 @@ Mission Control resources are read-only context surfaces for Codex chat.
 - `mission-control://projects/{project_id}/validation-summary`
 - `mission-control://projects/{project_id}/decision-ledger`
 - `mission-control://projects/{project_id}/path-locks`
+- `mission-control://projects/{project_id}/operator-snapshot`
+- `mission-control://projects/{project_id}/instincts`
+- `mission-control://projects/{project_id}/verification-brief`
 
 ## Why These Exist
 
@@ -33,3 +36,4 @@ Mission Control resources are read-only context surfaces for Codex chat.
 - handoff supports final bridge summaries
 - codebase map supports imported repo understanding
 - diagnostics, risk register, decision ledger, and path locks support stuck-run debugging without exposing raw internals
+- operator snapshot, instincts, and verification brief give Codex or Claude chat a higher-signal operator surface for current state, execution rules, and release readiness
