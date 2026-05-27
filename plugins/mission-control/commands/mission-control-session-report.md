@@ -15,3 +15,4 @@ Include:
 - Recommended next action.
 
 Ground every claim in Mission Control status, event digest, handoff, or validation summary.
+Prefer operator snapshot, verification brief, and instincts preview when those resources are available.

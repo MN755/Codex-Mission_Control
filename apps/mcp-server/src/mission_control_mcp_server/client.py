@@ -416,6 +416,15 @@ class MissionControlDaemonClient:
     def get_path_locks(self, project_id: int) -> list[dict[str, Any]]:
         return self._request("GET", f"/api/projects/{project_id}/path-locks")
 
+    def get_operator_snapshot(self, project_id: int) -> dict[str, Any]:
+        return self._request("GET", f"/api/projects/{project_id}/operator-snapshot")
+
+    def get_instincts_preview(self, project_id: int) -> dict[str, Any]:
+        return self._request("GET", f"/api/projects/{project_id}/instincts/preview")
+
+    def get_verification_brief(self, project_id: int) -> dict[str, Any]:
+        return self._request("GET", f"/api/projects/{project_id}/verification-brief")
+
     def get_codebase_map(self, project_id: int) -> dict[str, Any]:
         return self._request("GET", f"/api/projects/{project_id}/codebase-map", requires_token=False)
 
@@ -805,6 +814,60 @@ class MissionControlDaemonClient:
             ],
         }
 
+    def _summarize_operator_snapshot(self, project_id: int, snapshot: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "project_id": project_id,
+            "project_name": snapshot.get("project_name"),
+            "project_status": snapshot.get("project_status"),
+            "overall_status": snapshot.get("overall_status"),
+            "orchestration_status": snapshot.get("orchestration_status"),
+            "handoff_status": snapshot.get("handoff_status"),
+            "current_action": snapshot.get("current_action"),
+            "pending_approvals_count": snapshot.get("pending_approvals_count", 0),
+            "pending_questions_count": snapshot.get("pending_questions_count", 0),
+            "active_agent_count": snapshot.get("active_agent_count", 0),
+            "current_focus": list(snapshot.get("current_focus") or [])[:6],
+            "top_risks": list(snapshot.get("top_risks") or [])[:6],
+            "recent_events": list(snapshot.get("recent_events") or [])[:6],
+            "validation_gap_count": snapshot.get("validation_gap_count", 0),
+            "swarm_mode": snapshot.get("swarm_mode"),
+            "recommended_next_action": snapshot.get("recommended_next_action"),
+            "performance_note": snapshot.get("performance_note"),
+            "generated_at": snapshot.get("generated_at"),
+        }
+
+    def _summarize_instincts_preview(self, project_id: int, preview: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "project_id": project_id,
+            "instinct_count": preview.get("instinct_count", 0),
+            "instincts": [
+                {
+                    "key": instinct.get("key"),
+                    "title": instinct.get("title"),
+                    "trigger": self._safe_short(instinct.get("trigger")),
+                    "rule": self._safe_short(instinct.get("rule")),
+                    "confidence": instinct.get("confidence"),
+                    "tags": list(instinct.get("tags") or [])[:6],
+                    "evidence": list(instinct.get("evidence") or [])[:4],
+                }
+                for instinct in list(preview.get("instincts") or [])[:6]
+            ],
+            "generated_at": preview.get("generated_at"),
+        }
+
+    def _summarize_verification_brief(self, project_id: int, brief: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "project_id": project_id,
+            "readiness": brief.get("readiness"),
+            "required_checks": list(brief.get("required_checks") or [])[:8],
+            "recommended_checks": list(brief.get("recommended_checks") or [])[:8],
+            "evidence_gaps": list(brief.get("evidence_gaps") or [])[:8],
+            "release_blockers": list(brief.get("release_blockers") or [])[:8],
+            "handoff_warnings": list(brief.get("handoff_warnings") or [])[:8],
+            "loop_strategy": list(brief.get("loop_strategy") or [])[:6],
+            "generated_at": brief.get("generated_at"),
+        }
+
     def _summarize_handoff(self, project_id: int, payload: dict[str, Any]) -> dict[str, Any]:
         handoff = payload.get("handoff") if "handoff" in payload else payload
         return {
@@ -1027,4 +1090,10 @@ class MissionControlDaemonClient:
                 return self._summarize_decision_ledger(project_id, self.get_decision_ledger(project_id))
             if kind == "path-locks":
                 return self._summarize_path_locks(project_id, self.get_path_locks(project_id))
+            if kind == "operator-snapshot":
+                return self._summarize_operator_snapshot(project_id, self.get_operator_snapshot(project_id))
+            if kind == "instincts":
+                return self._summarize_instincts_preview(project_id, self.get_instincts_preview(project_id))
+            if kind == "verification-brief":
+                return self._summarize_verification_brief(project_id, self.get_verification_brief(project_id))
         raise RuntimeError("Unsupported Mission Control resource URI.")

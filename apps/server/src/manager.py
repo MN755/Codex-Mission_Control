@@ -69,6 +69,7 @@ from models import (
     Project,
     ProjectConfidence,
     ProjectEvent,
+    OrchestrationSession,
     ProjectSnapshot,
     ProjectSettings,
     ProjectTimelineEvent,
@@ -10173,6 +10174,328 @@ class MissionControlService:
 
     def get_project_handoff_summary(self, db: Session, project: Project) -> dict[str, Any]:
         return self._serialize_handoff_record(db, project, self._latest_evidence_handoff(db, project.id))
+
+    @staticmethod
+    def _dedupe_strings(values: list[str]) -> list[str]:
+        seen: set[str] = set()
+        ordered: list[str] = []
+        for value in values:
+            text = str(value or "").strip()
+            if not text:
+                continue
+            if text in seen:
+                continue
+            seen.add(text)
+            ordered.append(text)
+        return ordered
+
+    def _latest_project_orchestration(self, db: Session, project: Project) -> OrchestrationSession | None:
+        return db.scalar(
+            select(OrchestrationSession)
+            .where(OrchestrationSession.project_id == project.id)
+            .order_by(OrchestrationSession.updated_at.desc(), OrchestrationSession.id.desc())
+        )
+
+    def build_operator_snapshot(self, db: Session, project: Project) -> dict[str, Any]:
+        tasks = list(db.scalars(select(Task).where(Task.project_id == project.id).order_by(Task.priority.asc(), Task.id.asc())))
+        current_action = self._derive_current_action_preview(db, project, [])
+        health = self.get_project_health_preview(db, project)
+        handoff = self.get_project_handoff_summary(db, project)
+        pending_approvals = self.list_pending_approvals(db, project)
+        pending_questions = self.list_pending_questions(db, project, mutate=False)
+        coverage = validation_coverage_service.coverage_summary(db, project)
+        latest_report = next(iter(self.recent_diagnostic_reports()), None)
+        latest_orchestration = self._latest_project_orchestration(db, project)
+        active_agents = [
+            {
+                "id": int(agent["id"]),
+                "name": str(agent["name"]),
+                "role": str(agent.get("role") or "worker"),
+                "display_status": str(agent.get("display_status") or "unknown"),
+                "current_action": agent.get("current_action"),
+            }
+            for agent in self._sorted_workspace_agents(db, project.id)
+            if str(agent.get("display_status") or "") in {"working", "blocked", "waiting", "error"}
+        ]
+        timeline = self.list_timeline_events(db, project)[:6]
+        swarm_plan = self.get_swarm_plan(db, project)
+        current_focus = self._dedupe_strings(
+            [
+                *(f"{agent['name']}: {agent.get('current_action') or agent['display_status']}" for agent in active_agents[:4]),
+                str(current_action.get("title") or ""),
+                str(current_action.get("message") or ""),
+            ]
+        )[:6]
+        top_risks = self._dedupe_strings(
+            [*list(health.get("top_risks") or []), *list(health.get("reasons") or [])]
+        )[:6]
+        recent_events = self._dedupe_strings(
+            [f"{event.title}: {event.summary}" for event in timeline]
+        )[:6]
+        diagnostics_summary = str(latest_report.get("summary") or "").strip() if isinstance(latest_report, dict) else None
+        diagnostics_bundle_path = str(latest_report.get("bundle_path") or "").strip() or None if isinstance(latest_report, dict) else None
+        performance_profile = latest_report.get("performance_profile") if isinstance(latest_report, dict) else {}
+        performance_note = None
+        if isinstance(performance_profile, dict) and performance_profile:
+            lag_risk = str(performance_profile.get("lag_risk") or "unknown")
+            max_agents = performance_profile.get("recommended_swarm_max_agents")
+            performance_note = f"Device lag risk is {lag_risk}; recommended swarm max agents: {max_agents}."
+        snapshot_markdown = "\n".join(
+            [
+                "## Mission Control Operator Snapshot",
+                "",
+                f"- Project: **{project.name}**",
+                f"- Project status: `{project.status}`",
+                f"- Overall health: `{health.get('state')}`",
+                f"- Handoff status: `{handoff.get('status') or 'not_ready'}`",
+                f"- Pending approvals: `{len(pending_approvals)}`",
+                f"- Pending questions: `{len(pending_questions)}`",
+                f"- Validation gap count: `{len(list(coverage.get('gaps') or []))}`",
+                f"- Recommended next action: {health.get('next_action') or current_action.get('title') or 'Review the latest project state.'}",
+                "",
+                "### Current focus",
+                self._markdown_list(current_focus or ["No active focus items are recorded right now."]),
+                "",
+                "### Top risks",
+                self._markdown_list(top_risks or ["No major risk signals are recorded right now."]),
+                "",
+                "### Recent events",
+                self._markdown_list(recent_events or ["No recent timeline events are recorded yet."]),
+            ]
+        )
+        return {
+            "project_id": project.id,
+            "project_name": project.name,
+            "project_status": project.status,
+            "overall_status": str(health.get("state") or "unknown"),
+            "orchestration_status": latest_orchestration.status if latest_orchestration is not None else None,
+            "handoff_status": str(handoff.get("status") or "not_ready"),
+            "current_action": str(current_action.get("title") or current_action.get("message") or "Monitoring project state."),
+            "pending_approvals_count": len(pending_approvals),
+            "pending_questions_count": len(pending_questions),
+            "active_agent_count": len(active_agents),
+            "active_agents": active_agents[:6],
+            "current_focus": current_focus,
+            "top_risks": top_risks,
+            "recent_events": recent_events,
+            "validation_gap_count": len(list(coverage.get("gaps") or [])),
+            "swarm_mode": str(swarm_plan.get("mode") or "") if isinstance(swarm_plan, dict) and swarm_plan.get("mode") else None,
+            "recommended_next_action": str(health.get("next_action") or current_action.get("title") or "Review the latest project state."),
+            "diagnostics_summary": diagnostics_summary,
+            "diagnostics_bundle_path": diagnostics_bundle_path,
+            "performance_note": performance_note,
+            "snapshot_markdown": snapshot_markdown,
+            "generated_at": utc_now(),
+        }
+
+    def preview_operational_instincts(self, db: Session, project: Project) -> dict[str, Any]:
+        snapshot = self.build_operator_snapshot(db, project)
+        handoff = self.get_project_handoff_summary(db, project)
+        coverage = validation_coverage_service.coverage_summary(db, project)
+        persisted_locks = list(project.path_locks or [])
+        preview_locks = persisted_locks or self._preview_path_locks(db, project)
+        recent_decisions = list(project.decision_records or []) or self._preview_decision_records(db, project)
+        latest_report = next(iter(self.recent_diagnostic_reports()), None)
+        performance_profile = latest_report.get("performance_profile") if isinstance(latest_report, dict) else {}
+        instincts: list[dict[str, Any]] = []
+
+        if snapshot["active_agent_count"] > 1 or preview_locks:
+            instincts.append(
+                {
+                    "key": "path-lock-before-parallel-edit",
+                    "title": "Lock paths before parallel edits",
+                    "trigger": "Multiple active agents or live path ownership signals exist.",
+                    "rule": "Treat parallel work as a path-ownership problem first, not a staffing problem.",
+                    "rationale": "ECC leans hard on parallelism discipline. Mission Control already has path locks and conflict tracking, so the useful move is to surface that instinct explicitly.",
+                    "evidence": self._dedupe_strings(
+                        [
+                            f"Active agent count: {snapshot['active_agent_count']}",
+                            f"Tracked path locks: {len(preview_locks)}",
+                            *(snapshot["current_focus"][:2]),
+                        ]
+                    ),
+                    "confidence": "high",
+                    "tags": ["parallelism", "coordination", "path-locks"],
+                }
+            )
+        if str(handoff.get("status") or "") in {"ready", "needs_review"} or str(handoff.get("evidence_status") or "") != "missing":
+            instincts.append(
+                {
+                    "key": "ship-with-evidence",
+                    "title": "Ship with evidence, not vibes",
+                    "trigger": "A handoff exists or validation evidence is already in play.",
+                    "rule": "Close work with explicit evidence, known limitations, and runnable next steps.",
+                    "rationale": "ECC is obsessive about operational closure. Mission Control already tracks evidence-backed handoffs, so this turns that behavior into a reusable operator instinct.",
+                    "evidence": self._dedupe_strings(
+                        [
+                            f"Handoff status: {handoff.get('status') or 'not_ready'}",
+                            f"Evidence status: {handoff.get('evidence_status') or 'missing'}",
+                            *list(handoff.get("known_limitations") or [])[:2],
+                        ]
+                    ),
+                    "confidence": "high",
+                    "tags": ["handoff", "evidence", "release"],
+                }
+            )
+        if list(coverage.get("gaps") or []):
+            instincts.append(
+                {
+                    "key": "turn-gaps-into-checks",
+                    "title": "Turn validation gaps into named checks",
+                    "trigger": "Coverage gaps are still open.",
+                    "rule": "Translate missing coverage into explicit checks before calling the task done.",
+                    "rationale": "This mirrors ECC's verification-loop bias without pretending every repo wants the same ceremony forever.",
+                    "evidence": self._dedupe_strings(
+                        [f"Validation gap: {gap}" for gap in list(coverage.get("gaps") or [])[:4]]
+                    ),
+                    "confidence": "high",
+                    "tags": ["verification", "coverage", "quality"],
+                }
+            )
+        if recent_decisions:
+            instincts.append(
+                {
+                    "key": "write-the-decision-down",
+                    "title": "Write the decision down when it changes execution",
+                    "trigger": "Recent decision records exist.",
+                    "rule": "If scope, model, tool, or recovery strategy changes, persist the decision so the next agent does not rediscover it expensively.",
+                    "rationale": "ECC treats memory and operator state as first-class. Mission Control already has a decision ledger, so this is the useful non-hand-wavy version.",
+                    "evidence": self._dedupe_strings(
+                        [f"{entry.title}: {entry.decision}" for entry in recent_decisions[:3]]
+                    ),
+                    "confidence": "medium",
+                    "tags": ["memory", "decisions", "handoff"],
+                }
+            )
+        if isinstance(performance_profile, dict) and performance_profile:
+            instincts.append(
+                {
+                    "key": "respect-device-budget",
+                    "title": "Respect the device budget",
+                    "trigger": "Diagnostic reports include a performance profile.",
+                    "rule": "Scale swarm intensity to the host's lag risk instead of assuming every machine wants maximum concurrency.",
+                    "rationale": "ECC talks a lot about harness performance. Mission Control should operationalize that as a guardrail, not a slogan.",
+                    "evidence": self._dedupe_strings(
+                        [
+                            f"Lag risk: {performance_profile.get('lag_risk')}",
+                            f"Recommended swarm max agents: {performance_profile.get('recommended_swarm_max_agents')}",
+                            str(snapshot.get('performance_note') or ""),
+                        ]
+                    ),
+                    "confidence": "medium",
+                    "tags": ["performance", "swarm", "local-first"],
+                }
+            )
+        instincts = instincts[:5]
+        return {
+            "project_id": project.id,
+            "instinct_count": len(instincts),
+            "instincts": instincts,
+            "generated_at": utc_now(),
+        }
+
+    def build_verification_brief(self, db: Session, project: Project) -> dict[str, Any]:
+        tasks = list(db.scalars(select(Task).where(Task.project_id == project.id).order_by(Task.priority.asc(), Task.id.asc())))
+        overview = self._project_overview(db, project, tasks, self._derive_current_action_preview(db, project, []))
+        preferences = project.swarm_preferences or self._swarm_preferences(project)
+        conflicts = self._preview_conflicts(db, project)
+        review_gates = list(project.review_gates or []) or self._preview_review_gates(
+            db,
+            project,
+            tasks=tasks,
+            overview=overview,
+            testing_depth=preferences.testing_depth,
+            conflicts=conflicts,
+        )
+        recipe = next(iter(project.validation_recipes or []), None) or self._preview_validation_recipe(db, project)
+        coverage = validation_coverage_service.coverage_summary(db, project)
+        handoff = self.get_project_handoff_summary(db, project)
+        pending_approvals = self.list_pending_approvals(db, project)
+        required_checks = self._dedupe_strings(
+            [
+                *[
+                    str(step.get("command") or step.get("title") or "").strip()
+                    for step in list(recipe.steps_json or [])
+                ],
+                *[
+                    f"{gate.title}: {', '.join(str(item) for item in list(gate.required_checks_json or []))}".rstrip(": ")
+                    for gate in review_gates
+                    if gate.required
+                ],
+            ]
+        )
+        recommended_checks = self._dedupe_strings(
+            [
+                *[
+                    str(step.get("title") or step.get("command") or "").strip()
+                    for step in list(recipe.steps_json or [])
+                ],
+                "Review the latest handoff and known limitations before release.",
+                "Confirm pending approvals are resolved before promoting the result.",
+            ]
+        )
+        release_blockers = self._dedupe_strings(
+            [
+                *[f"Required review gate not passed: {gate.title} [{gate.status}]" for gate in review_gates if gate.required and gate.status != "passed"],
+                *[f"Pending approval: {item['title']}" for item in pending_approvals[:4]],
+            ]
+        )
+        handoff_warnings = self._dedupe_strings(
+            [
+                f"Handoff status is {handoff.get('status') or 'not_ready'}." if str(handoff.get("status") or "") != "ready" else "",
+                "Handoff evidence is still missing." if str(handoff.get("evidence_status") or "") == "missing" else "",
+                *list(handoff.get("known_limitations") or [])[:3],
+            ]
+        )
+        evidence_gaps = self._dedupe_strings(
+            [
+                *[f"Validation gap: {gap}" for gap in list(coverage.get("gaps") or [])],
+                *["No validated handoff evidence has been recorded yet." if str(handoff.get("evidence_status") or "") == "missing" else ""],
+            ]
+        )
+        if release_blockers:
+            readiness = "blocked"
+        elif evidence_gaps or handoff_warnings:
+            readiness = "needs_review"
+        else:
+            readiness = "ready"
+        loop_strategy = [
+            "Run the required automated checks first and capture the results as evidence.",
+            "If a required gate fails, record the blocker explicitly instead of claiming soft success.",
+            "Review docs, handoff notes, and known limitations before calling the work release-ready.",
+            "After fixes, rerun the smallest meaningful validation loop before widening scope again.",
+        ]
+        brief_markdown = "\n".join(
+            [
+                "## Mission Control Verification Brief",
+                "",
+                f"- Readiness: `{readiness}`",
+                f"- Required checks: `{len(required_checks)}`",
+                f"- Evidence gaps: `{len(evidence_gaps)}`",
+                f"- Release blockers: `{len(release_blockers)}`",
+                "",
+                "### Required checks",
+                self._markdown_list(required_checks or ["No explicit required checks are recorded yet."]),
+                "",
+                "### Evidence gaps",
+                self._markdown_list(evidence_gaps or ["No obvious evidence gaps are recorded right now."]),
+                "",
+                "### Loop strategy",
+                self._markdown_list(loop_strategy),
+            ]
+        )
+        return {
+            "project_id": project.id,
+            "readiness": readiness,
+            "required_checks": required_checks,
+            "recommended_checks": recommended_checks[:8],
+            "evidence_gaps": evidence_gaps[:8],
+            "release_blockers": release_blockers[:8],
+            "handoff_warnings": handoff_warnings[:8],
+            "loop_strategy": loop_strategy,
+            "brief_markdown": brief_markdown,
+            "generated_at": utc_now(),
+        }
 
     def get_tool_catalog(self, db: Session) -> list[dict[str, Any]]:
         profile = self._app_profile_preview(db)

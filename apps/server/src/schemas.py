@@ -1419,6 +1419,70 @@ class DecisionRecordRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class OperatorSnapshotAgentRead(BaseModel):
+    id: int
+    name: str
+    role: str
+    display_status: str
+    current_action: str | None = None
+
+
+class OperatorSnapshotRead(BaseModel):
+    project_id: int
+    project_name: str
+    project_status: str
+    overall_status: str
+    orchestration_status: str | None = None
+    handoff_status: str = "not_ready"
+    current_action: str
+    pending_approvals_count: int = 0
+    pending_questions_count: int = 0
+    active_agent_count: int = 0
+    active_agents: list[OperatorSnapshotAgentRead] = Field(default_factory=list)
+    current_focus: list[str] = Field(default_factory=list)
+    top_risks: list[str] = Field(default_factory=list)
+    recent_events: list[str] = Field(default_factory=list)
+    validation_gap_count: int = 0
+    swarm_mode: str | None = None
+    recommended_next_action: str
+    diagnostics_summary: str | None = None
+    diagnostics_bundle_path: str | None = None
+    performance_note: str | None = None
+    snapshot_markdown: str
+    generated_at: datetime
+
+
+class OperationalInstinctRead(BaseModel):
+    key: str
+    title: str
+    trigger: str
+    rule: str
+    rationale: str
+    evidence: list[str] = Field(default_factory=list)
+    confidence: str
+    tags: list[str] = Field(default_factory=list)
+
+
+class OperationalInstinctPreviewRead(BaseModel):
+    project_id: int
+    instinct_count: int = 0
+    instincts: list[OperationalInstinctRead] = Field(default_factory=list)
+    generated_at: datetime
+
+
+class VerificationBriefRead(BaseModel):
+    project_id: int
+    readiness: str
+    required_checks: list[str] = Field(default_factory=list)
+    recommended_checks: list[str] = Field(default_factory=list)
+    evidence_gaps: list[str] = Field(default_factory=list)
+    release_blockers: list[str] = Field(default_factory=list)
+    handoff_warnings: list[str] = Field(default_factory=list)
+    loop_strategy: list[str] = Field(default_factory=list)
+    brief_markdown: str
+    generated_at: datetime
+
+
 class ProjectConfidenceRead(BaseModel):
     id: int
     project_id: int

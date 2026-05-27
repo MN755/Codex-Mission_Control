@@ -124,7 +124,10 @@
     "mission-control://projects/{project_id}/agent-contracts",
     "mission-control://projects/{project_id}/validation-summary",
     "mission-control://projects/{project_id}/decision-ledger",
-    "mission-control://projects/{project_id}/path-locks"
+    "mission-control://projects/{project_id}/path-locks",
+    "mission-control://projects/{project_id}/operator-snapshot",
+    "mission-control://projects/{project_id}/instincts",
+    "mission-control://projects/{project_id}/verification-brief"
   ],
   "mcp": {
     "example_config": "./mcp/mission-control-mcp.example.json",
@@ -147,6 +150,7 @@
       "mission-control-claude-md",
       "mission-control-mcp-dev",
       "mission-control-plugin-health",
+      "mission-control-operator-snapshot",
       "mission-control-pr-review",
       "mission-control-commit-ready",
       "mission-control-frontend-design",
@@ -155,7 +159,9 @@
       "mission-control-evals",
       "mission-control-webapp-testing",
       "mission-control-doc-workflow",
-      "mission-control-skill-builder"
+      "mission-control-skill-builder",
+      "mission-control-verification-brief",
+      "mission-control-instincts"
     ],
     "worker_archetypes": [
       "code-explorer",

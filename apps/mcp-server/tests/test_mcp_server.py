@@ -22,6 +22,9 @@ EXPECTED_RESOURCES = {
     "mission-control://projects/{project_id}/validation-summary",
     "mission-control://projects/{project_id}/decision-ledger",
     "mission-control://projects/{project_id}/path-locks",
+    "mission-control://projects/{project_id}/operator-snapshot",
+    "mission-control://projects/{project_id}/instincts",
+    "mission-control://projects/{project_id}/verification-brief",
 }
 
 EXPECTED_PROMPTS = {
@@ -287,6 +290,79 @@ def test_resources_return_safe_summary_payloads() -> None:
     result = server.read_resource("mission-control://projects/7/status")
     assert result["contents"][0]["mimeType"] == "application/json"
     assert '"safe": true' in result["contents"][0]["text"]
+
+
+def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch) -> None:
+    client = MissionControlDaemonClient(base_url="http://127.0.0.1:8010", timeout=0.1)
+    monkeypatch.setattr(
+        client,
+        "get_operator_snapshot",
+        lambda project_id: {
+            "project_id": project_id,
+            "project_name": "Demo",
+            "project_status": "active",
+            "overall_status": "needs_review",
+            "orchestration_status": "running",
+            "handoff_status": "needs_review",
+            "current_action": "Run the named pytest lane.",
+            "pending_approvals_count": 1,
+            "pending_questions_count": 0,
+            "active_agent_count": 2,
+            "current_focus": ["Blocked Worker: Run validation."],
+            "top_risks": ["Validation evidence is missing."],
+            "recent_events": ["Validation blocked: worker is waiting."],
+            "validation_gap_count": 1,
+            "swarm_mode": "balanced",
+            "recommended_next_action": "Run the named pytest lane.",
+            "performance_note": "Device lag risk is low.",
+            "generated_at": "2026-05-26T00:00:00Z",
+        },
+    )
+    monkeypatch.setattr(
+        client,
+        "get_instincts_preview",
+        lambda project_id: {
+            "project_id": project_id,
+            "instinct_count": 1,
+            "instincts": [
+                {
+                    "key": "ship-with-evidence",
+                    "title": "Ship with evidence, not vibes",
+                    "trigger": "A handoff exists.",
+                    "rule": "Capture proof before closing work.",
+                    "confidence": "high",
+                    "tags": ["handoff", "evidence"],
+                    "evidence": ["Handoff status: needs_review"],
+                }
+            ],
+            "generated_at": "2026-05-26T00:00:00Z",
+        },
+    )
+    monkeypatch.setattr(
+        client,
+        "get_verification_brief",
+        lambda project_id: {
+            "project_id": project_id,
+            "readiness": "blocked",
+            "required_checks": ["python -m pytest apps/server/tests/test_operator_surfaces.py -q"],
+            "recommended_checks": ["Review the handoff evidence."],
+            "evidence_gaps": ["No validated handoff evidence has been recorded yet."],
+            "release_blockers": ["Required review gate not passed: Backend verification gate [pending]"],
+            "handoff_warnings": ["Handoff status is needs_review."],
+            "loop_strategy": ["Run the required checks first."],
+            "generated_at": "2026-05-26T00:00:00Z",
+        },
+    )
+
+    snapshot = client.read_resource("mission-control://projects/7/operator-snapshot")
+    instincts = client.read_resource("mission-control://projects/7/instincts")
+    verification = client.read_resource("mission-control://projects/7/verification-brief")
+
+    assert snapshot["project_name"] == "Demo"
+    assert snapshot["recommended_next_action"] == "Run the named pytest lane."
+    assert instincts["instincts"][0]["key"] == "ship-with-evidence"
+    assert verification["readiness"] == "blocked"
+    assert verification["required_checks"] == ["python -m pytest apps/server/tests/test_operator_surfaces.py -q"]
 
 
 def test_daemon_client_auto_start_launches_when_health_fails(monkeypatch, tmp_path: Path) -> None:

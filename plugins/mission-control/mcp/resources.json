@@ -404,6 +404,95 @@
         ],
         "notes": "Expose coordination-safe lock summaries only."
       }
+    },
+    {
+      "uri_template": "mission-control://projects/{project_id}/operator-snapshot",
+      "title": "Operator snapshot",
+      "summary": "Compact operator-facing snapshot of project health, focus, risks, and next action.",
+      "support_status": "implemented",
+      "source_hint": {
+        "rest_endpoints": [
+          "/api/projects/{project_id}/operator-snapshot"
+        ]
+      },
+      "default_fields": [
+        "project_id",
+        "project_name",
+        "project_status",
+        "overall_status",
+        "orchestration_status",
+        "handoff_status",
+        "current_action",
+        "pending_approvals_count",
+        "pending_questions_count",
+        "active_agent_count",
+        "current_focus",
+        "top_risks",
+        "recommended_next_action"
+      ],
+      "redaction": {
+        "omit_fields": [
+          "raw_log",
+          "secret_paths",
+          "internal_reasoning",
+          "full_transcript"
+        ],
+        "notes": "Expose the operator-facing state snapshot only, not raw execution details."
+      }
+    },
+    {
+      "uri_template": "mission-control://projects/{project_id}/instincts",
+      "title": "Operational instincts",
+      "summary": "Derived operational instincts that turn current project state into reusable execution rules.",
+      "support_status": "implemented",
+      "source_hint": {
+        "rest_endpoints": [
+          "/api/projects/{project_id}/instincts/preview"
+        ]
+      },
+      "default_fields": [
+        "project_id",
+        "instinct_count",
+        "instincts"
+      ],
+      "redaction": {
+        "omit_fields": [
+          "internal_reasoning",
+          "secret_paths",
+          "raw_prompt"
+        ],
+        "notes": "Expose concise operational rules and evidence without raw prompt or hidden chain-of-thought."
+      }
+    },
+    {
+      "uri_template": "mission-control://projects/{project_id}/verification-brief",
+      "title": "Verification brief",
+      "summary": "Release- and review-oriented verification brief with checks, blockers, and evidence gaps.",
+      "support_status": "implemented",
+      "source_hint": {
+        "rest_endpoints": [
+          "/api/projects/{project_id}/verification-brief"
+        ]
+      },
+      "default_fields": [
+        "project_id",
+        "readiness",
+        "required_checks",
+        "recommended_checks",
+        "evidence_gaps",
+        "release_blockers",
+        "handoff_warnings",
+        "loop_strategy"
+      ],
+      "redaction": {
+        "omit_fields": [
+          "raw_log",
+          "internal_reasoning",
+          "secret_paths",
+          "full_artifact_bodies"
+        ],
+        "notes": "Expose the verification plan and blockers, not raw evidence artifacts."
+      }
     }
   ]
 }
