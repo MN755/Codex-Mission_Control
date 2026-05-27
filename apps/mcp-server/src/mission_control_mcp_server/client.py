@@ -254,10 +254,10 @@ class MissionControlDaemonClient:
         cached = self._orchestration_project_ids.get(int(orchestration_id))
         if cached is not None:
             return cached
-        session = self.get_orchestration(orchestration_id)
-        resolved_project_id = int(session["project_id"])
-        self._remember_orchestration_project(orchestration_id, resolved_project_id)
-        return resolved_project_id
+        raise RuntimeError(
+            "Mission Control requires a project_id for uncached orchestration lookups. "
+            "Start or fetch the orchestration through a project-scoped flow first."
+        )
 
     def daemon_status(self) -> dict[str, Any]:
         return self._request("GET", "/api/daemon/status", requires_token=False)
@@ -307,8 +307,9 @@ class MissionControlDaemonClient:
     def get_project(self, project_id: int) -> dict[str, Any]:
         return self._request("GET", f"/api/projects/{project_id}")
 
-    def get_orchestration(self, orchestration_id: int) -> dict[str, Any]:
-        payload = self._request("GET", f"/api/orchestrations/{orchestration_id}")
+    def get_orchestration(self, orchestration_id: int, *, project_id: int | None = None) -> dict[str, Any]:
+        resolved_project_id = self._project_id_for_orchestration(orchestration_id, project_id)
+        payload = self._request("GET", f"/api/orchestrations/{orchestration_id}", params={"project_id": resolved_project_id})
         if isinstance(payload, dict):
             self._remember_orchestration_project(payload.get("id"), payload.get("project_id"))
         return payload
@@ -558,7 +559,7 @@ class MissionControlDaemonClient:
         latest_report = reports[0] if reports else None
         resolved_project_id = project_id
         if resolved_project_id is None and orchestration_id is not None:
-            session = self.get_orchestration(orchestration_id)
+            session = self.get_orchestration(orchestration_id, project_id=project_id)
             resolved_project_id = int(session["project_id"])
         status = None
         if resolved_project_id is not None:
@@ -611,7 +612,7 @@ class MissionControlDaemonClient:
     ) -> dict[str, Any]:
         resolved_project_id = project_id
         if resolved_project_id is None and orchestration_id is not None:
-            session = self.get_orchestration(orchestration_id)
+            session = self.get_orchestration(orchestration_id, project_id=project_id)
             resolved_project_id = int(session["project_id"])
         if resolved_project_id is None:
             raise RuntimeError("Recovery options require a project_id or orchestration_id.")
@@ -639,7 +640,7 @@ class MissionControlDaemonClient:
     ) -> dict[str, Any]:
         resolved_project_id = project_id
         if resolved_project_id is None and orchestration_id is not None:
-            session = self.get_orchestration(orchestration_id)
+            session = self.get_orchestration(orchestration_id, project_id=project_id)
             resolved_project_id = int(session["project_id"])
         if resolved_project_id is None:
             raise RuntimeError("Recovery plan requests require a project_id or orchestration_id.")

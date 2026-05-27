@@ -2,9 +2,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 from sqlalchemy import func, select
 
 from conftest import sample_workspace
+from context_packs import context_pack_service
 from db import SessionLocal, init_db
 from models import (
     Agent,
@@ -618,12 +620,26 @@ def test_global_id_routes_require_matching_project_scope(client, bridge_headers)
     assert orchestration.status_code == 200, orchestration.text
     orchestration_id = orchestration.json()["id"]
 
+    wrong_orchestration = client.get(
+        f"/api/orchestrations/{orchestration_id}",
+        headers=bridge_headers,
+        params={"project_id": project_two["id"]},
+    )
+    assert wrong_orchestration.status_code == 404
+
     wrong_status = client.get(
         f"/api/orchestrations/{orchestration_id}/status",
         headers=bridge_headers,
         params={"project_id": project_two["id"]},
     )
     assert wrong_status.status_code == 404
+
+    wrong_pause = client.post(
+        f"/api/orchestrations/{orchestration_id}/pause",
+        headers=bridge_headers,
+        params={"project_id": project_two["id"]},
+    )
+    assert wrong_pause.status_code == 404
 
     opened = client.post(f"/api/projects/{project_one['id']}/open")
     assert opened.status_code == 200, opened.text
@@ -633,6 +649,20 @@ def test_global_id_routes_require_matching_project_scope(client, bridge_headers)
         params={"project_id": project_two["id"]},
     )
     assert wrong_auto_decide.status_code == 404
+
+    paused = client.post(
+        f"/api/orchestrations/{orchestration_id}/pause",
+        headers=bridge_headers,
+        params={"project_id": project_one["id"]},
+    )
+    assert paused.status_code == 200, paused.text
+
+    wrong_resume = client.post(
+        f"/api/orchestrations/{orchestration_id}/resume",
+        headers=bridge_headers,
+        params={"project_id": project_two["id"]},
+    )
+    assert wrong_resume.status_code == 404
 
     db = SessionLocal()
     try:
@@ -743,7 +773,44 @@ def test_agent_and_task_global_id_routes_require_matching_project_scope(client, 
 
 def test_project_routes_reject_invalid_related_resource_ids(client) -> None:
     project = _create_project(client, "Reference Validation", "reference-validation")
+    foreign_project = _create_project(client, "Foreign Reference Validation", "reference-validation-foreign")
     project_id = project["id"]
+
+    db = SessionLocal()
+    try:
+        foreign_agent = Agent(
+            project_id=foreign_project["id"],
+            name="Foreign Context Agent",
+            role="Implementation",
+            kind="worker",
+            status="idle",
+            workspace_path=foreign_project["workspace_path"],
+        )
+        db.add(foreign_agent)
+        db.flush()
+        foreign_task = Task(
+            project_id=foreign_project["id"],
+            assigned_agent_id=foreign_agent.id,
+            title="Foreign context task",
+            goal="Stay scoped to the foreign project.",
+            scope="Foreign scope only.",
+            agent_role="Implementation",
+            milestone="MVP",
+            allowed_paths_json=["src"],
+            forbidden_paths_json=[],
+            validation_steps_json=["pytest -q"],
+            success_criteria_json=["Stay foreign"],
+            estimated_complexity="small",
+            dependencies_json=[],
+            status="todo",
+            priority=30,
+        )
+        db.add(foreign_task)
+        db.commit()
+        foreign_agent_id = foreign_agent.id
+        foreign_task_id = foreign_task.id
+    finally:
+        db.close()
 
     invalid_context_agent = client.post(
         f"/api/projects/{project_id}/context-packs/build",
@@ -756,6 +823,18 @@ def test_project_routes_reject_invalid_related_resource_ids(client) -> None:
         json={"title": "Bad task", "goal": "Validate refs", "task_id": 999999},
     )
     assert invalid_context_task.status_code == 404
+
+    foreign_context_agent = client.post(
+        f"/api/projects/{project_id}/context-packs/build",
+        json={"title": "Foreign agent", "goal": "Validate refs", "agent_id": foreign_agent_id},
+    )
+    assert foreign_context_agent.status_code == 404
+
+    foreign_context_task = client.post(
+        f"/api/projects/{project_id}/context-packs/build",
+        json={"title": "Foreign task", "goal": "Validate refs", "task_id": foreign_task_id},
+    )
+    assert foreign_context_task.status_code == 404
 
     invalid_risk_owner = client.post(
         f"/api/projects/{project_id}/risks",
@@ -834,6 +913,142 @@ def test_project_routes_reject_invalid_related_resource_ids(client) -> None:
         },
     )
     assert invalid_recovery_agent.status_code == 404
+
+
+def test_context_pack_service_rejects_invalid_or_cross_project_refs(client) -> None:
+    project = _create_project(client, "Context Pack Service Scope", "context-pack-service-scope")
+    foreign_project = _create_project(client, "Context Pack Service Foreign", "context-pack-service-foreign")
+
+    db = SessionLocal()
+    try:
+        scoped_project = db.get(Project, project["id"])
+        assert scoped_project is not None
+
+        foreign_agent = Agent(
+            project_id=foreign_project["id"],
+            name="Foreign Service Agent",
+            role="Implementation",
+            kind="worker",
+            status="idle",
+            workspace_path=foreign_project["workspace_path"],
+        )
+        db.add(foreign_agent)
+        db.flush()
+        foreign_task = Task(
+            project_id=foreign_project["id"],
+            assigned_agent_id=foreign_agent.id,
+            title="Foreign service task",
+            goal="Reject cross-project task refs.",
+            scope="Foreign project only.",
+            agent_role="Implementation",
+            milestone="MVP",
+            allowed_paths_json=["src"],
+            forbidden_paths_json=[],
+            validation_steps_json=["pytest -q"],
+            success_criteria_json=["Rejected correctly"],
+            estimated_complexity="small",
+            dependencies_json=[],
+            status="todo",
+            priority=40,
+        )
+        db.add(foreign_task)
+        db.commit()
+
+        with pytest.raises(ValueError, match="Agent not found"):
+            context_pack_service.build_context_pack(db, scoped_project, agent_id=999999)
+        with pytest.raises(ValueError, match="Agent not found in this project"):
+            context_pack_service.build_context_pack(db, scoped_project, agent_id=foreign_agent.id)
+        with pytest.raises(ValueError, match="Task not found"):
+            context_pack_service.build_context_pack(db, scoped_project, task_id=999999)
+        with pytest.raises(ValueError, match="Task not found in this project"):
+            context_pack_service.build_context_pack(db, scoped_project, task_id=foreign_task.id)
+    finally:
+        db.close()
+
+
+def test_run_report_requires_matching_project_scope(client, bridge_headers) -> None:
+    project_one = _create_project(client, "Run Scope One", "run-scope-one")
+    project_two = _create_project(client, "Run Scope Two", "run-scope-two")
+
+    db = SessionLocal()
+    try:
+        worker = Agent(
+            project_id=project_one["id"],
+            name="Scoped Run Worker",
+            role="Implementation",
+            kind="worker",
+            status="working",
+            workspace_path=project_one["workspace_path"],
+        )
+        db.add(worker)
+        db.flush()
+        task = Task(
+            project_id=project_one["id"],
+            assigned_agent_id=worker.id,
+            title="Scoped run task",
+            goal="Keep run reports project-scoped.",
+            scope="Protect foreign runs.",
+            agent_role="Implementation",
+            milestone="MVP",
+            allowed_paths_json=["README.md"],
+            forbidden_paths_json=[],
+            validation_steps_json=["pytest -q"],
+            success_criteria_json=["Run stays scoped"],
+            estimated_complexity="small",
+            dependencies_json=[],
+            status="working",
+            priority=25,
+        )
+        db.add(task)
+        db.flush()
+        run = AgentRun(
+            agent_id=worker.id,
+            task_id=task.id,
+            runner_type="dry_run",
+            process_ref="scoped-run-report",
+            status="running",
+        )
+        db.add(run)
+        db.commit()
+        run_id = run.id
+        task_id = task.id
+        agent_id = worker.id
+    finally:
+        db.close()
+
+    response = client.post(
+        f"/api/runs/{run_id}/report",
+        headers=bridge_headers,
+        params={"project_id": project_two["id"]},
+        json={
+            "agent": "Attacker",
+            "task_id": "999",
+            "status": "done",
+            "summary": "attacker completed foreign work",
+            "files_changed": ["secret.txt"],
+            "tests_run": ["pytest"],
+            "blockers": [],
+            "risks": ["foreign"],
+            "recommended_next_task": "none",
+        },
+    )
+    assert response.status_code == 404
+
+    db = SessionLocal()
+    try:
+        persisted_run = db.get(AgentRun, run_id)
+        persisted_task = db.get(Task, task_id)
+        persisted_agent = db.get(Agent, agent_id)
+        assert persisted_run is not None
+        assert persisted_task is not None
+        assert persisted_agent is not None
+        assert persisted_run.status == "running"
+        assert persisted_run.finished_at is None
+        assert persisted_run.report_json in (None, {})
+        assert persisted_task.status == "working"
+        assert persisted_agent.status == "working"
+    finally:
+        db.close()
 
 
 def test_handoff_evidence_get_is_read_only_and_preview_derives_without_persisting(client, bridge_headers) -> None:

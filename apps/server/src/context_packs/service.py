@@ -22,6 +22,26 @@ from models import (
 
 
 class ContextPackService:
+    def _resolve_project_agent(self, db: Session, project: Project, agent_id: int | None) -> Agent | None:
+        if agent_id is None:
+            return None
+        agent = db.get(Agent, agent_id)
+        if agent is None:
+            raise ValueError("Agent not found")
+        if agent.project_id != project.id:
+            raise ValueError("Agent not found in this project")
+        return agent
+
+    def _resolve_project_task(self, db: Session, project: Project, task_id: int | None) -> Task | None:
+        if task_id is None:
+            return None
+        task = db.get(Task, task_id)
+        if task is None:
+            raise ValueError("Task not found")
+        if task.project_id != project.id:
+            raise ValueError("Task not found in this project")
+        return task
+
     def _existing_doc_candidates(self, project: Project) -> list[str]:
         docs: list[str] = []
         if project.docs_path:
@@ -96,8 +116,8 @@ class ContextPackService:
         goal: str | None = None,
         token_budget_hint: int | None = None,
     ) -> dict[str, Any]:
-        agent = db.get(Agent, agent_id) if agent_id is not None else None
-        task = db.get(Task, task_id) if task_id is not None else None
+        agent = self._resolve_project_agent(db, project, agent_id)
+        task = self._resolve_project_task(db, project, task_id)
         included_files = list(task.allowed_paths_json or []) if task is not None else ["apps/server/src", "apps/dashboard/src"]
         excluded_files = list(task.forbidden_paths_json or []) if task is not None else []
         decisions = list(

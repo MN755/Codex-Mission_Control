@@ -319,6 +319,13 @@ def _get_task_or_404(db: Session, task_id: int) -> Task:
     return task
 
 
+def _get_run_or_404(db: Session, run_id: int) -> AgentRun:
+    run = db.get(AgentRun, run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail="Run not found")
+    return run
+
+
 def _get_plan_or_404(db: Session, plan_id: int) -> Plan:
     plan = db.get(Plan, plan_id)
     if not plan:
@@ -383,6 +390,15 @@ def _require_project_task(db: Session, project: Project, task_id: int, *, resour
     task = _get_task_or_404(db, task_id)
     _require_project_scope(resource_name, task.project_id, project.id)
     return task
+
+
+def _require_project_run(db: Session, project: Project, run_id: int, *, resource_name: str = "Run") -> AgentRun:
+    run = _get_run_or_404(db, run_id)
+    task = db.get(Task, run.task_id) if run.task_id is not None else None
+    agent = db.get(Agent, run.agent_id)
+    actual_project_id = task.project_id if task is not None else (agent.project_id if agent is not None else None)
+    _require_project_scope(resource_name, actual_project_id, project.id)
+    return run
 
 
 def _require_project_message(db: Session, project: Project, message_id: int, *, resource_name: str = "Manager message") -> ManagerMessage:
@@ -1679,13 +1695,12 @@ async def run_headless_happy_path_demo(
 def get_orchestration(
     orchestration_id: int,
     request: Request,
-    project_id: int | None = Query(default=None),
+    project_id: int = Query(...),
     db: Session = Depends(get_db),
     _: None = Depends(_require_bridge_token),
 ) -> OrchestrationSessionRead:
     session = _get_orchestration_or_404(db, orchestration_id)
-    if project_id is not None:
-        _require_project_scope("Orchestration session", session.project_id, project_id)
+    _require_project_scope("Orchestration session", session.project_id, project_id)
     return OrchestrationSessionRead(**coordinator._serialize_session(session))
 
 
@@ -3330,12 +3345,12 @@ async def complete_task(
 async def submit_run_report(
     run_id: int,
     payload: RunReportRequest,
+    project_id: int = Query(...),
     db: Session = Depends(get_db),
     _: None = Depends(_require_bridge_token),
 ) -> ManagerWorkerDecision:
-    run = db.get(AgentRun, run_id)
-    if not run:
-        raise HTTPException(status_code=404, detail="Run not found")
+    project = _get_project_or_404(db, project_id)
+    run = _require_project_run(db, project, run_id)
     try:
         return await service.ingest_worker_report(db, run, payload)
     except ValueError as exc:
