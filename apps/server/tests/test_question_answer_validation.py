@@ -62,6 +62,19 @@ def test_direct_question_answer_rejects_invalid_option(client) -> None:
     assert "option id is not valid" in response.json()["detail"].lower()
 
 
+def test_direct_question_answer_requires_project_id(client) -> None:
+    project = _create_project(client, "Direct Question Scope", "direct-question-scope")
+    question_id = _seed_manager_question(project["id"])
+
+    response = client.post(
+        f"/api/questions/{question_id}/answer",
+        json={"option_id": "safe", "selected_text": "Safe path"},
+    )
+
+    assert response.status_code == 400
+    assert "project_id is required" in response.json()["detail"].lower()
+
+
 def test_direct_question_answer_canonicalizes_selected_text(client) -> None:
     project = _create_project(client, "Direct Question Canonical", "direct-question-canonical")
     question_id = _seed_manager_question(project["id"])
