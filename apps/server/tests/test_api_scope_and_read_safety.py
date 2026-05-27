@@ -642,6 +642,105 @@ def test_global_id_routes_require_matching_project_scope(client, bridge_headers)
         db.close()
 
 
+def test_agent_and_task_global_id_routes_require_matching_project_scope(client, bridge_headers) -> None:
+    project_one = _create_project(client, "Action Scope One", "action-scope-one")
+    project_two = _create_project(client, "Action Scope Two", "action-scope-two")
+
+    log_path = Path(project_one["workspace_path"]) / "worker.log"
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    log_path.write_text("worker output\n", encoding="utf-8")
+
+    db = SessionLocal()
+    try:
+        scoped_agent = Agent(
+            project_id=project_one["id"],
+            name="Scoped Worker",
+            role="Implementation",
+            kind="worker",
+            status="idle",
+            workspace_path=project_one["workspace_path"],
+        )
+        db.add(scoped_agent)
+        db.flush()
+
+        scoped_task = Task(
+            project_id=project_one["id"],
+            assigned_agent_id=scoped_agent.id,
+            title="Scoped task",
+            goal="Keep task ownership scoped.",
+            scope="Do not leak across projects.",
+            agent_role="Implementation",
+            milestone="MVP",
+            allowed_paths_json=["README.md"],
+            forbidden_paths_json=[],
+            validation_steps_json=["pytest -q"],
+            success_criteria_json=["Scope preserved"],
+            estimated_complexity="small",
+            dependencies_json=[],
+            status="todo",
+            priority=10,
+        )
+        db.add(scoped_task)
+        db.flush()
+        db.add(
+            AgentRun(
+                agent_id=scoped_agent.id,
+                task_id=scoped_task.id,
+                runner_type="dry_run",
+                process_ref="scoped-log-run",
+                status="done",
+                logs_path=log_path.as_posix(),
+            )
+        )
+        db.commit()
+        agent_id = scoped_agent.id
+        task_id = scoped_task.id
+    finally:
+        db.close()
+
+    wrong_agent_start = client.post(
+        f"/api/agents/{agent_id}/start",
+        headers=bridge_headers,
+        params={"project_id": project_two["id"]},
+    )
+    assert wrong_agent_start.status_code == 404
+
+    wrong_agent_stop = client.post(
+        f"/api/agents/{agent_id}/stop",
+        headers=bridge_headers,
+        params={"project_id": project_two["id"]},
+    )
+    assert wrong_agent_stop.status_code == 404
+
+    wrong_agent_pause = client.post(
+        f"/api/agents/{agent_id}/pause",
+        headers=bridge_headers,
+        params={"project_id": project_two["id"]},
+    )
+    assert wrong_agent_pause.status_code == 404
+
+    wrong_agent_logs = client.get(
+        f"/api/agents/{agent_id}/logs",
+        headers=bridge_headers,
+        params={"project_id": project_two["id"]},
+    )
+    assert wrong_agent_logs.status_code == 404
+
+    wrong_task_start = client.post(
+        f"/api/tasks/{task_id}/start",
+        headers=bridge_headers,
+        params={"project_id": project_two["id"]},
+    )
+    assert wrong_task_start.status_code == 404
+
+    wrong_task_complete = client.post(
+        f"/api/tasks/{task_id}/complete",
+        headers=bridge_headers,
+        params={"project_id": project_two["id"]},
+    )
+    assert wrong_task_complete.status_code == 404
+
+
 def test_project_routes_reject_invalid_related_resource_ids(client) -> None:
     project = _create_project(client, "Reference Validation", "reference-validation")
     project_id = project["id"]

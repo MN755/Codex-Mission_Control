@@ -340,7 +340,7 @@ def test_start_task_bootstraps_worker_roster_for_existing_codebase(client) -> No
     workers_before = client.get(f"/api/projects/{project['id']}/agents").json()
     assert [item for item in workers_before if item["kind"] == "worker"] == []
 
-    started = client.post(f"/api/tasks/{tasks[0]['id']}/start")
+    started = client.post(f"/api/tasks/{tasks[0]['id']}/start", params={"project_id": project["id"]})
     assert started.status_code == 200, started.text
     assert started.json()["ok"] is True
     assert started.json()["run_id"] is not None

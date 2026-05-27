@@ -127,6 +127,8 @@ from schemas import (
     ManagerQueueRead,
     AgentInstructionsStatusRead,
     AgentsMdProposalRead,
+    OperationalInstinctPreviewRead,
+    OperatorSnapshotRead,
     OpenPathResponse,
     OrchestrationAttachRead,
     OrchestrationAttachRequest,
@@ -214,6 +216,7 @@ from schemas import (
     UserPreferenceRead,
     UserPreferenceUpsert,
     ValidationCoverageAreaRead,
+    VerificationBriefRead,
     RiskRecordCreate,
     RiskRecordRead,
     RiskRecordUpdate,
@@ -2149,6 +2152,36 @@ def get_project_path_locks(
     return [PathLockRead.model_validate(lock) for lock in locks]
 
 
+@app.get("/api/projects/{project_id}/operator-snapshot", response_model=OperatorSnapshotRead)
+def get_project_operator_snapshot(
+    project_id: int,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> OperatorSnapshotRead:
+    project = _get_project_or_404(db, project_id)
+    return OperatorSnapshotRead(**service.build_operator_snapshot(db, project))
+
+
+@app.get("/api/projects/{project_id}/instincts/preview", response_model=OperationalInstinctPreviewRead)
+def get_project_operational_instincts_preview(
+    project_id: int,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> OperationalInstinctPreviewRead:
+    project = _get_project_or_404(db, project_id)
+    return OperationalInstinctPreviewRead(**service.preview_operational_instincts(db, project))
+
+
+@app.get("/api/projects/{project_id}/verification-brief", response_model=VerificationBriefRead)
+def get_project_verification_brief(
+    project_id: int,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> VerificationBriefRead:
+    project = _get_project_or_404(db, project_id)
+    return VerificationBriefRead(**service.build_verification_brief(db, project))
+
+
 @app.get("/api/projects/{project_id}/snapshots", response_model=list[ProjectSnapshotRead])
 def get_project_snapshots(
     project_id: int,
@@ -3162,11 +3195,12 @@ async def start_project_agents(
 @app.post("/api/agents/{agent_id}/start", response_model=AgentActionResponse)
 async def start_agent(
     agent_id: int,
+    project_id: int = Query(...),
     db: Session = Depends(get_db),
     _: None = Depends(_require_bridge_token),
 ) -> AgentActionResponse:
-    agent = _get_agent_or_404(db, agent_id)
-    project = _get_project_or_404(db, agent.project_id)
+    project = _get_project_or_404(db, project_id)
+    agent = _require_project_agent(db, project, agent_id)
     task = service._find_next_safe_task(db, project, agent)
     if task:
         run = await service.start_agent_task(db, project, agent, task)
@@ -3185,10 +3219,12 @@ async def start_agent(
 @app.post("/api/agents/{agent_id}/stop", response_model=AgentActionResponse)
 async def stop_agent(
     agent_id: int,
+    project_id: int = Query(...),
     db: Session = Depends(get_db),
     _: None = Depends(_require_bridge_token),
 ) -> AgentActionResponse:
-    agent = _get_agent_or_404(db, agent_id)
+    project = _get_project_or_404(db, project_id)
+    agent = _require_project_agent(db, project, agent_id)
     await service.stop_agent(db, agent)
     return AgentActionResponse(ok=True, message="Agent stop requested.")
 
@@ -3196,10 +3232,12 @@ async def stop_agent(
 @app.post("/api/agents/{agent_id}/pause", response_model=AgentActionResponse)
 async def pause_agent(
     agent_id: int,
+    project_id: int = Query(...),
     db: Session = Depends(get_db),
     _: None = Depends(_require_bridge_token),
 ) -> AgentActionResponse:
-    agent = _get_agent_or_404(db, agent_id)
+    project = _get_project_or_404(db, project_id)
+    agent = _require_project_agent(db, project, agent_id)
     await service.pause_agent(db, agent)
     return AgentActionResponse(ok=True, message="Agent paused.")
 
@@ -3207,10 +3245,12 @@ async def pause_agent(
 @app.get("/api/agents/{agent_id}/logs", response_model=LogRead)
 def get_agent_logs(
     agent_id: int,
+    project_id: int = Query(...),
     db: Session = Depends(get_db),
     _: None = Depends(_require_bridge_token),
 ) -> LogRead:
-    agent = _get_agent_or_404(db, agent_id)
+    project = _get_project_or_404(db, project_id)
+    agent = _require_project_agent(db, project, agent_id)
     path, content = service.read_logs(db, agent)
     return LogRead(agent_id=agent_id, logs_path=path, content=content)
 
@@ -3239,11 +3279,12 @@ async def generate_tasks(
 @app.post("/api/tasks/{task_id}/start", response_model=AgentActionResponse)
 async def start_task(
     task_id: int,
+    project_id: int = Query(...),
     db: Session = Depends(get_db),
     _: None = Depends(_require_bridge_token),
 ) -> AgentActionResponse:
-    task = _get_task_or_404(db, task_id)
-    project = _get_project_or_404(db, task.project_id)
+    project = _get_project_or_404(db, project_id)
+    task = _require_project_task(db, project, task_id)
     workers = list(db.scalars(select(Agent).where(Agent.project_id == project.id, Agent.kind == "worker")))
     if not workers:
         workers = service.initialize_build_roster(db, project)
@@ -3275,10 +3316,12 @@ async def start_task(
 @app.post("/api/tasks/{task_id}/complete", response_model=AgentActionResponse)
 async def complete_task(
     task_id: int,
+    project_id: int = Query(...),
     db: Session = Depends(get_db),
     _: None = Depends(_require_bridge_token),
 ) -> AgentActionResponse:
-    task = _get_task_or_404(db, task_id)
+    project = _get_project_or_404(db, project_id)
+    task = _require_project_task(db, project, task_id)
     await service.complete_task_by_user(db, task)
     return AgentActionResponse(ok=True, message="Task marked done.")
 
