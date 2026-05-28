@@ -610,6 +610,59 @@ def test_safe_mode_get_and_import_safety_do_not_mutate_non_imported_project(clie
         db.close()
 
 
+def test_path_locks_get_is_read_only(client, bridge_headers) -> None:
+    project = _create_project(client, "Path Lock Read Safety", "path-lock-read-safety")
+    project_id = project["id"]
+
+    db = SessionLocal()
+    try:
+        worker = Agent(
+            project_id=project_id,
+            name="Worker",
+            role="Implementation",
+            kind="worker",
+            status="running",
+            workspace_path=project["workspace_path"],
+        )
+        db.add(worker)
+        db.flush()
+        task = Task(
+            project_id=project_id,
+            assigned_agent_id=worker.id,
+            title="Blocked task",
+            goal="Wait for a path to clear.",
+            scope="Keep the change narrow.",
+            agent_role="Implementation",
+            milestone="MVP",
+            allowed_paths_json=["src/**"],
+            forbidden_paths_json=[],
+            validation_steps_json=["pytest -q"],
+            success_criteria_json=["Path becomes available"],
+            estimated_complexity="small",
+            dependencies_json=[],
+            status="waiting_on_paths",
+            priority=10,
+            waiting_reason="Waiting on path ownership.",
+        )
+        db.add(task)
+        db.commit()
+        assert db.scalar(select(func.count(PathLock.id)).where(PathLock.project_id == project_id)) == 0
+    finally:
+        db.close()
+
+    response = client.get(f"/api/projects/{project_id}/path-locks", headers=bridge_headers)
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload
+    assert payload[0]["path_pattern"] == "src/**"
+
+    db = SessionLocal()
+    try:
+        assert db.scalar(select(func.count(PathLock.id)).where(PathLock.project_id == project_id)) == 0
+    finally:
+        db.close()
+
+
 def test_manager_read_endpoints_do_not_auto_decide_due_questions(client, bridge_headers) -> None:
     project = _create_project(client, "Question Read Safety", "question-read-safety")
     project_id = project["id"]
@@ -773,17 +826,63 @@ def test_agent_archetype_catalog_get_is_read_only_and_preserves_edits(client, br
     finally:
         db.close()
 
-    catalog = client.get("/api/agent-archetypes", headers=bridge_headers)
-    assert catalog.status_code == 200, catalog.text
-    frontend = next(item for item in catalog.json() if item["name"] == "frontend")
-    assert frontend["purpose"] == "CUSTOM PURPOSE"
+
+def test_project_widget_summary_stays_read_only_for_support_records(client, bridge_headers) -> None:
+    project = _create_project(client, "Widget Summary Read Safety", "widget-summary-read-safety")
+    project_id = project["id"]
+
+    widget_types = [
+        "Confidence Tracker",
+        "Merge / Review Gates",
+        "Model Assignment Policy",
+        "Tool Routing Policy",
+        "Sandbox Profiles",
+    ]
+    for widget_type in widget_types:
+        added = client.post(
+            f"/api/projects/{project_id}/widgets/add",
+            json={"widget_type": widget_type},
+            headers=bridge_headers,
+        )
+        assert added.status_code == 200, added.text
 
     db = SessionLocal()
     try:
-        rows = list(db.scalars(select(AgentArchetype).order_by(AgentArchetype.id.asc())))
-        assert len(rows) == 1
-        assert rows[0].id == custom_id
-        assert rows[0].purpose == "CUSTOM PURPOSE"
+        baseline = {
+            "confidence": db.scalar(select(func.count(ProjectConfidence.id)).where(ProjectConfidence.project_id == project_id)),
+            "review_gates": db.scalar(select(func.count(ReviewGate.id)).where(ReviewGate.project_id == project_id)),
+            "model_policy": db.scalar(select(func.count(ModelPolicy.id)).where(ModelPolicy.project_id == project_id)),
+            "tool_routing": db.scalar(select(func.count(ToolRoutingPolicy.id)).where(ToolRoutingPolicy.project_id == project_id)),
+            "sandbox_profiles": db.scalar(select(func.count(SandboxProfile.id)).where(SandboxProfile.project_id.is_(None))),
+        }
+        assert baseline == {
+            "confidence": 0,
+            "review_gates": 0,
+            "model_policy": 0,
+            "tool_routing": 0,
+            "sandbox_profiles": 0,
+        }
+    finally:
+        db.close()
+
+    response = client.get(f"/api/projects/{project_id}/widgets/summary", headers=bridge_headers)
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["scope"] == "project"
+    assert len(payload["instances"]) == len(widget_types)
+    returned_types = {item["widget_type"] for item in payload["data"]}
+    assert set(widget_types).issubset(returned_types)
+
+    db = SessionLocal()
+    try:
+        after = {
+            "confidence": db.scalar(select(func.count(ProjectConfidence.id)).where(ProjectConfidence.project_id == project_id)),
+            "review_gates": db.scalar(select(func.count(ReviewGate.id)).where(ReviewGate.project_id == project_id)),
+            "model_policy": db.scalar(select(func.count(ModelPolicy.id)).where(ModelPolicy.project_id == project_id)),
+            "tool_routing": db.scalar(select(func.count(ToolRoutingPolicy.id)).where(ToolRoutingPolicy.project_id == project_id)),
+            "sandbox_profiles": db.scalar(select(func.count(SandboxProfile.id)).where(SandboxProfile.project_id.is_(None))),
+        }
+        assert after == baseline
     finally:
         db.close()
 

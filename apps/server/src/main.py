@@ -2170,8 +2170,23 @@ def get_project_path_locks(
     _: None = Depends(_require_bridge_token),
 ) -> list[PathLockRead]:
     project = _get_project_or_404(db, project_id)
-    locks = service._sync_path_locks(db, project)
-    return [PathLockRead.model_validate(lock) for lock in locks]
+    locks = service._preview_path_locks(db, project)
+    return [
+        PathLockRead.model_validate(
+            {
+                "id": lock.id if lock.id is not None else -(index + 1),
+                "project_id": lock.project_id,
+                "path_pattern": lock.path_pattern,
+                "owner_agent_id": lock.owner_agent_id,
+                "owner_task_id": lock.owner_task_id,
+                "reason": lock.reason,
+                "status": lock.status,
+                "created_at": lock.created_at,
+                "released_at": lock.released_at,
+            }
+        )
+        for index, lock in enumerate(locks)
+    ]
 
 
 @app.get("/api/projects/{project_id}/operator-snapshot", response_model=OperatorSnapshotRead)
