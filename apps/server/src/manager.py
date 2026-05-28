@@ -7526,6 +7526,21 @@ class MissionControlService:
     def update_swarm_preferences(self, db: Session, project: Project, payload: SwarmPreferencesUpdate) -> dict[str, Any]:
         preferences = self._ensure_swarm_preferences(db, project)
         fields_set = set(getattr(payload, "model_fields_set", set()))
+        if not fields_set:
+            fields_set = {
+                field
+                for field in [
+                    "optimization_mode",
+                    "swarm_aggressiveness",
+                    "max_agents",
+                    "require_approval_above_agent_count",
+                    "allow_dynamic_spawning",
+                    "allow_dynamic_retirement",
+                    "docs_depth",
+                    "testing_depth",
+                ]
+                if hasattr(payload, field)
+            }
         if "optimization_mode" in fields_set and payload.optimization_mode is not None:
             preferences.optimization_mode = payload.optimization_mode
         if "swarm_aggressiveness" in fields_set and payload.swarm_aggressiveness is not None:
