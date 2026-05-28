@@ -2042,7 +2042,7 @@ def get_subagent_policy(
     db: Session = Depends(get_db),
     _: None = Depends(_require_bridge_token),
 ) -> SubagentPolicyRead:
-    return SubagentPolicyRead(**subagent_planner_service._serialize_policy(subagent_planner_service.ensure_policy(db)))
+    return SubagentPolicyRead(**subagent_planner_service._serialize_policy(subagent_planner_service.ensure_policy(db, create_if_missing=False)))
 
 
 @app.put("/api/subagent-policy", response_model=SubagentPolicyRead)
@@ -2576,7 +2576,7 @@ def get_codebase_map(
     _: None = Depends(_require_bridge_token),
 ) -> CodebaseMapRead:
     project = _get_project_or_404(db, project_id)
-    return CodebaseMapRead.model_validate(import_service.get_codebase_map(db, project))
+    return CodebaseMapRead.model_validate(import_service.get_codebase_map(db, project, create_if_missing=False))
 
 
 @app.get("/api/projects/{project_id}/codebase-understanding", response_model=CodebaseUnderstandingRead)
@@ -2586,7 +2586,7 @@ def get_codebase_understanding(
     _: None = Depends(_require_bridge_token),
 ) -> CodebaseUnderstandingRead:
     project = _get_project_or_404(db, project_id)
-    return CodebaseUnderstandingRead.model_validate(import_service.get_codebase_understanding(db, project))
+    return CodebaseUnderstandingRead.model_validate(import_service.get_codebase_understanding(db, project, create_if_missing=False))
 
 
 @app.post("/api/projects/{project_id}/import/interview-choice", response_model=ImportInterviewChoiceResponse)
@@ -2676,7 +2676,7 @@ def get_agents_md_status(
     _: None = Depends(_require_bridge_token),
 ) -> AgentInstructionsStatusRead:
     project = _get_project_or_404(db, project_id)
-    return AgentInstructionsStatusRead.model_validate(import_service.get_agents_status(db, project))
+    return AgentInstructionsStatusRead.model_validate(import_service.get_agents_status(db, project, create_if_missing=False))
 
 
 @app.post("/api/projects/{project_id}/agents-md/propose", response_model=AgentsMdProposalRead)

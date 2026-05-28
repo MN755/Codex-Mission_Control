@@ -9,6 +9,7 @@ from sqlalchemy import func, select
 from conftest import sample_workspace
 from context_packs import context_pack_service
 from db import SessionLocal, init_db
+from imported_codebase import import_service
 from models import (
     Agent,
     AgentArchetype,
@@ -47,6 +48,7 @@ from models import (
     ReviewGate,
     SandboxProfile,
     SecurityPolicy,
+    SubagentPolicy,
     SwarmBudget,
     SwarmPreferences,
     Task,
@@ -607,6 +609,114 @@ def test_safe_mode_get_and_import_safety_do_not_mutate_non_imported_project(clie
         assert project_policy_count == 0
         assert swarm_pref_count == 0
         assert import_safety_count == 0
+    finally:
+        db.close()
+
+
+def test_subagent_policy_get_is_read_only(client, bridge_headers) -> None:
+    init_db()
+    db = SessionLocal()
+    try:
+        assert db.scalar(select(func.count(SubagentPolicy.id))) == 0
+    finally:
+        db.close()
+
+    response = client.get("/api/subagent-policy", headers=bridge_headers)
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["default_mode"] == "read_only"
+    assert payload["allow_file_edits"] is False
+    assert payload["allow_commands"] is False
+
+    db = SessionLocal()
+    try:
+        assert db.scalar(select(func.count(SubagentPolicy.id))) == 0
+    finally:
+        db.close()
+
+
+def test_imported_codebase_read_routes_are_read_only(client, bridge_headers) -> None:
+    workspace = Path(sample_workspace("import-read-only-routes"))
+    workspace.mkdir(parents=True, exist_ok=True)
+    project_id = _create_legacy_project("Imported Read Safety", "import-read-only-routes")
+
+    db = SessionLocal()
+    try:
+        project = db.get(Project, project_id)
+        assert project is not None
+        project.source_type = "existing_folder"
+        project.source_path = workspace.as_posix()
+        project.write_permission_status = "read_only"
+        db.commit()
+    finally:
+        db.close()
+
+    map_response = client.get(f"/api/projects/{project_id}/codebase-map", headers=bridge_headers)
+    assert map_response.status_code == 200, map_response.text
+    assert map_response.json()["project_id"] == project_id
+    assert map_response.json()["languages_json"] == []
+
+    understanding_response = client.get(f"/api/projects/{project_id}/codebase-understanding", headers=bridge_headers)
+    assert understanding_response.status_code == 200, understanding_response.text
+    assert understanding_response.json()["project_id"] == project_id
+    assert understanding_response.json()["summary"] == ""
+
+    agents_response = client.get(f"/api/projects/{project_id}/agents-md/status", headers=bridge_headers)
+    assert agents_response.status_code == 200, agents_response.text
+    assert agents_response.json()["project_id"] == project_id
+    assert agents_response.json()["has_agents_md"] is False
+
+    import_safety = client.get(f"/api/projects/{project_id}/import-safety", headers=bridge_headers)
+    assert import_safety.status_code == 404, import_safety.text
+
+    db = SessionLocal()
+    try:
+        assert db.scalar(select(func.count(CodebaseMap.project_id)).where(CodebaseMap.project_id == project_id)) == 0
+        assert db.scalar(select(func.count(CodebaseUnderstanding.project_id)).where(CodebaseUnderstanding.project_id == project_id)) == 0
+        assert db.scalar(select(func.count(AgentInstructionsStatus.project_id)).where(AgentInstructionsStatus.project_id == project_id)) == 0
+        assert db.scalar(select(func.count(ImportedCodebaseSafety.project_id)).where(ImportedCodebaseSafety.project_id == project_id)) == 0
+    finally:
+        db.close()
+
+
+def test_import_safety_routes_and_service_reject_non_imported_projects(client, bridge_headers) -> None:
+    project = _create_project(client, "Import Safety Guard", "import-safety-guard")
+    project_id = project["id"]
+
+    get_response = client.get(f"/api/projects/{project_id}/import-safety", headers=bridge_headers)
+    assert get_response.status_code == 400
+    assert "imported codebases" in get_response.json()["detail"].lower()
+
+    patch_response = client.patch(
+        f"/api/projects/{project_id}/import-safety",
+        json={"write_permission_status": "write_allowed"},
+        headers=bridge_headers,
+    )
+    assert patch_response.status_code == 400
+    assert "imported codebases" in patch_response.json()["detail"].lower()
+
+    write_response = client.post(
+        f"/api/projects/{project_id}/write-permission",
+        json={"write_permission_status": "write_allowed"},
+        headers=bridge_headers,
+    )
+    assert write_response.status_code == 400
+    assert "imported codebases" in write_response.json()["detail"].lower()
+
+    db = SessionLocal()
+    try:
+        record = db.get(Project, project_id)
+        assert record is not None
+        before_status = record.status
+        before_permission = record.write_permission_status
+        with pytest.raises(ValueError, match="imported codebases"):
+            import_service.update_safety(db, record, {"write_permission_status": "write_allowed"})
+        db.rollback()
+        refreshed = db.get(Project, project_id)
+        assert refreshed is not None
+        assert refreshed.status == before_status
+        assert refreshed.write_permission_status == before_permission
+        assert db.scalar(select(func.count(ImportedCodebaseSafety.project_id)).where(ImportedCodebaseSafety.project_id == project_id)) == 0
     finally:
         db.close()
 

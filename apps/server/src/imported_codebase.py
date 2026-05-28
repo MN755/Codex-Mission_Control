@@ -135,6 +135,11 @@ PROJECT_IMPORT_WIDGETS = [
 
 
 class ImportedCodebaseService:
+    @staticmethod
+    def _require_imported_project(project: Project) -> None:
+        if project.source_type != "existing_folder":
+            raise ValueError("Import safety is only available for imported codebases.")
+
     def _project_root(self, project: Project) -> Path:
         raw_path = project.source_path or project.workspace_path
         try:
@@ -168,6 +173,7 @@ class ImportedCodebaseService:
         if safety is None:
             if not create_if_missing:
                 return None
+            self._require_imported_project(project)
             safety = ImportedCodebaseSafety(project_id=project.id)
             db.add(safety)
             db.flush()
@@ -528,6 +534,7 @@ class ImportedCodebaseService:
         record = project.codebase_map
         if record is not None:
             return record
+        now = utc_now()
         return CodebaseMap(
             project_id=project.id,
             source_path=project.source_path or project.workspace_path,
@@ -552,6 +559,8 @@ class ImportedCodebaseService:
             recommended_scan_strategy="standard",
             indexed_areas_json=[],
             unindexed_areas_json=[],
+            created_at=now,
+            updated_at=now,
         )
 
     def get_codebase_understanding(self, db: Session, project: Project, *, create_if_missing: bool = True) -> CodebaseUnderstanding:
@@ -560,6 +569,7 @@ class ImportedCodebaseService:
         record = project.codebase_understanding
         if record is not None:
             return record
+        now = utc_now()
         return CodebaseUnderstanding(
             project_id=project.id,
             summary="",
@@ -573,6 +583,8 @@ class ImportedCodebaseService:
             recommended_interview_mode="quick",
             confidence_by_area_json={},
             generation_mode="deterministic_scanner",
+            created_at=now,
+            updated_at=now,
         )
 
     def get_agents_status(self, db: Session, project: Project, *, create_if_missing: bool = True) -> AgentInstructionsStatus:
@@ -581,12 +593,15 @@ class ImportedCodebaseService:
         record = project.agents_md_status
         if record is not None:
             return record
+        now = utc_now()
         return AgentInstructionsStatus(
             project_id=project.id,
             has_agents_md=False,
             agents_md_path=None,
             summary="",
             recommended_action="none",
+            created_at=now,
+            updated_at=now,
         )
 
     def choose_interview_mode(self, db: Session, project: Project, *, choice: str) -> tuple[str, list[InterviewQuestion], str]:
@@ -867,6 +882,7 @@ class ImportedCodebaseService:
         return candidates[:4]
 
     def update_safety(self, db: Session, project: Project, payload: dict[str, Any]) -> ImportedCodebaseSafety:
+        self._require_imported_project(project)
         safety = self.ensure_safety(db, project)
         for field, value in payload.items():
             if value is None or not hasattr(safety, field):

@@ -141,21 +141,29 @@ class SubagentPlannerService:
             raise ValueError("Workspace path must be a directory.")
         return workspace_root
 
-    def ensure_policy(self, db: Session) -> SubagentPolicy:
+    def _default_policy(self) -> SubagentPolicy:
+        now = utc_now()
+        return SubagentPolicy(
+            id=1,
+            enabled=True,
+            default_mode="read_only",
+            max_subagents_per_burst=6,
+            max_runtime_seconds=600,
+            allow_file_edits=False,
+            allow_commands=False,
+            require_user_approval_above_count=3,
+            allowed_task_types_json=list(DEFAULT_ALLOWED_TASK_TYPES),
+            default_spawn_method="codex_chat_bridge",
+            created_at=now,
+            updated_at=now,
+        )
+
+    def ensure_policy(self, db: Session, *, create_if_missing: bool = True) -> SubagentPolicy:
         policy = db.get(SubagentPolicy, 1)
         if policy is None:
-            policy = SubagentPolicy(
-                id=1,
-                enabled=True,
-                default_mode="read_only",
-                max_subagents_per_burst=6,
-                max_runtime_seconds=600,
-                allow_file_edits=False,
-                allow_commands=False,
-                require_user_approval_above_count=3,
-                allowed_task_types_json=list(DEFAULT_ALLOWED_TASK_TYPES),
-                default_spawn_method="codex_chat_bridge",
-            )
+            if not create_if_missing:
+                return self._default_policy()
+            policy = self._default_policy()
             db.add(policy)
             db.flush()
         return policy
