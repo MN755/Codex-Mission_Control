@@ -3,7 +3,9 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+from capabilities import CAPABILITY_CATEGORIES
 
 
 ProviderId = Literal["codex", "ollama", "openai_api", "anthropic_api", "xai_api", "claude_code", "custom"]
@@ -2105,6 +2107,15 @@ class CapabilityBenchmarkCreate(BaseModel):
     sample_size: int = Field(default=1, ge=0)
     notes: str | None = None
     last_run_at: datetime | None = None
+
+    @field_validator("category")
+    @classmethod
+    def validate_capability_category(cls, value: str) -> str:
+        normalized = value.strip()
+        if normalized not in CAPABILITY_CATEGORIES:
+            allowed = ", ".join(CAPABILITY_CATEGORIES)
+            raise ValueError(f"Category must be one of: {allowed}")
+        return normalized
 
 
 class CapabilityBenchmarkRead(BaseModel):

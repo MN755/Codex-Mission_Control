@@ -133,3 +133,76 @@ def test_risk_update_rejects_nonexistent_related_refs(client) -> None:
     )
     assert task_response.status_code == 404
     assert "related task" in task_response.json()["detail"].lower()
+
+
+def test_risk_create_dedupe_updates_mutable_fields(client) -> None:
+    project = _create_project(client, "Risk Dedupe Update", "risk-dedupe-update")
+    db = SessionLocal()
+    try:
+        owner = Agent(
+            project_id=project["id"],
+            name="Risk Owner",
+            role="Implementation",
+            kind="worker",
+            status="idle",
+            workspace_path=project["workspace_path"],
+        )
+        task = Task(
+            project_id=project["id"],
+            title="Risk Task",
+            goal="Validate risk dedupe state",
+            scope="Keep risk refs scoped.",
+            agent_role="Implementation",
+            milestone="Validation",
+            allowed_paths_json=[],
+            forbidden_paths_json=[],
+            validation_steps_json=[],
+            success_criteria_json=["State stays current"],
+            estimated_complexity="small",
+            dependencies_json=[],
+            status="backlog",
+            priority=10,
+        )
+        db.add(owner)
+        db.add(task)
+        db.commit()
+        owner_id = owner.id
+        task_id = task.id
+    finally:
+        db.close()
+
+    created = client.post(
+        f"/api/projects/{project['id']}/risks",
+        json={
+            "title": "same risk",
+            "description": "first",
+            "severity": "low",
+            "likelihood": "low",
+            "mitigation": "m1",
+        },
+    )
+    assert created.status_code == 200, created.text
+
+    updated = client.post(
+        f"/api/projects/{project['id']}/risks",
+        json={
+            "title": "same risk",
+            "description": "second",
+            "severity": "high",
+            "likelihood": "high",
+            "mitigation": "m2",
+            "status": "accepted",
+            "owner_agent_id": owner_id,
+            "related_task_id": task_id,
+        },
+    )
+    assert updated.status_code == 200, updated.text
+    payload = updated.json()
+    assert payload["id"] == created.json()["id"]
+    assert payload["description"] == "second"
+    assert payload["severity"] == "high"
+    assert payload["likelihood"] == "high"
+    assert payload["mitigation"] == "m2"
+    assert payload["status"] == "accepted"
+    assert payload["owner_agent_id"] == owner_id
+    assert payload["related_task_id"] == task_id

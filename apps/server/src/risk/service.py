@@ -41,7 +41,12 @@ class RiskService:
         )
         if existing is not None:
             existing.description = str(payload.get("description") or existing.description)
+            existing.severity = str(payload.get("severity") or existing.severity)
+            existing.likelihood = str(payload.get("likelihood") or existing.likelihood)
+            existing.owner_agent_id = payload.get("owner_agent_id", existing.owner_agent_id)
             existing.mitigation = payload.get("mitigation") or existing.mitigation
+            existing.status = str(payload.get("status") or existing.status)
+            existing.related_task_id = payload.get("related_task_id", existing.related_task_id)
             existing.updated_at = utc_now()
             db.flush()
             return existing
