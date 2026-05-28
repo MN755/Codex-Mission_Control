@@ -1485,6 +1485,29 @@ class VerificationBriefRead(BaseModel):
     generated_at: datetime
 
 
+class WebwrightStatusRead(BaseModel):
+    project_id: int
+    project_name: str
+    workspace_path: str | None = None
+    available: bool = False
+    install_status: Literal["ready", "partial", "missing"]
+    cli_detected: bool = False
+    cli_path: str | None = None
+    python_package_detected: bool = False
+    playwright_package_detected: bool = False
+    playwright_cli_detected: bool = False
+    version: str | None = None
+    launch_command: str | None = None
+    workspace_signals: list[str] = Field(default_factory=list)
+    summary: str
+    recommended_fix: str | None = None
+    recommended_install_commands: list[str] = Field(default_factory=list)
+    use_cases: list[str] = Field(default_factory=list)
+    notes: list[str] = Field(default_factory=list)
+    bridge_markdown: str
+    details: dict[str, Any] = Field(default_factory=dict)
+
+
 class ProjectConfidenceRead(BaseModel):
     id: int
     project_id: int

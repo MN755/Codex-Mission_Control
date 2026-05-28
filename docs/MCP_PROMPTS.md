@@ -13,6 +13,7 @@ Mission Control MCP prompts are reusable Codex-chat workflows. They describe how
 - `answer_pending_approval`
 - `review_latest_handoff`
 - `debug_failed_orchestration`
+- `use_webwright_for_browser_task`
 - `pause_orchestration`
 - `resume_orchestration`
 - `explain_current_swarm`

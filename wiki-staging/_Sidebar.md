@@ -21,6 +21,7 @@
 ## Runners
 - [Runner Configuration](Runner-Configuration)
 - [Provider Autowiring](Provider-Autowiring)
+- [Webwright and Browser Automation](Webwright-and-Browser-Automation)
 - [Troubleshooting CLI Runners](Troubleshooting-CLI-Runners)
 - [Dry Run Mode](Dry-Run-Mode)
 

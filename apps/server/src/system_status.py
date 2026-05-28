@@ -16,6 +16,7 @@ from config import LAUNCHER_ROOT, REPO_ROOT, RUNTIME_ROOT, get_codex_home, load_
 from daemon_state import daemon_identity_snapshot, resolve_backend_binding
 from provider_adapter_recipes import resolve_adapter_recipe
 from provider_support import normalize_provider, provider_label, provider_uses_adapter, provider_uses_endpoint, supports_app_server
+from webwright_support import detect_webwright_status
 
 try:
     import tomllib
@@ -623,6 +624,7 @@ def detect_system_status(
     launcher_config = load_launcher_config()
     backend_binding = resolve_backend_binding()
     daemon_identity = daemon_identity_snapshot()
+    webwright = detect_webwright_status()
     provider_statuses = _safe_detect_provider_statuses(
         selected_provider=normalized_provider,
         adapter_command=adapter_command,
@@ -683,5 +685,6 @@ def detect_system_status(
             f"Backend binding source: {backend_binding['source']}.",
             f"Active repo root: {daemon_identity['repo_root']}.",
             f"Launcher root: {daemon_identity['launcher_root']}.",
+            f"Webwright status: {webwright.get('summary')}",
         ],
     }

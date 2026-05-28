@@ -12,13 +12,13 @@ The core runtime path is:
 
 ```text
 Codex chat
-  ↓
+  ->
 Mission Control plugin / MCP bridge
-  ↓
+  ->
 Mission Control daemon
-  ↓
+  ->
 Manager AI
-  ↓
+  ->
 Worker agents / runners
 ```
 
@@ -28,8 +28,9 @@ Mission Control daemon owns orchestration, Manager AI decisions, background work
 
 Current repo direction is headless Codex-native orchestration.
 
-- Implemented/current: daemon scripts, MCP resource catalog, prompt workflows, plugin packaging, skill library, approval relay, diagnostics surfaces, handoff summaries
+- Implemented/current: daemon scripts, MCP resource catalog, prompt workflows, plugin packaging, skill library, approval relay, diagnostics surfaces, operator snapshot and verification surfaces, handoff summaries
 - Partial/experimental: plugin health hardening, runner registry depth, existing-codebase safety features, richer event summaries
+- Optional companion lane: Webwright readiness and browser-task routing when the local browser-agent runtime is installed
 - Planned/future: optional dashboard observability, richer visual monitoring, packaging polish, deeper conflict handling
 
 Read first:
@@ -70,6 +71,7 @@ Runners and providers:
 
 - [Runner Configuration](Runner-Configuration)
 - [Provider Autowiring](Provider-Autowiring)
+- [Webwright and Browser Automation](Webwright-and-Browser-Automation)
 - [Troubleshooting CLI Runners](Troubleshooting-CLI-Runners)
 - [Dry Run Mode](Dry-Run-Mode)
 - [Runtime Configuration Reference](Runtime-Configuration-Reference)
@@ -126,8 +128,11 @@ Example prompts inside Codex chat:
 Use Mission Control for this repo.
 Use Mission Control to understand this folder and fix the failing tests.
 Show Mission Control status.
+Show Mission Control operator snapshot.
+Show Mission Control verification brief.
 Show pending Mission Control approvals.
 Get the latest Mission Control handoff.
+Use Mission Control for a browser task with Webwright when available.
 ```
 
 ## Related pages

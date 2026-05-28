@@ -32,6 +32,18 @@ Check status:
 Show Mission Control status.
 ```
 
+Ask for the compact operator view:
+
+```text
+Show Mission Control operator snapshot.
+```
+
+Ask for release readiness:
+
+```text
+Show Mission Control verification brief.
+```
+
 Review pending decisions:
 
 ```text
@@ -42,6 +54,12 @@ Get the handoff:
 
 ```text
 Get the latest Mission Control handoff.
+```
+
+Route a browser task through the optional Webwright lane:
+
+```text
+Use Mission Control for a browser task with Webwright when available.
 ```
 
 ## Typical happy path
@@ -58,4 +76,6 @@ Get the latest Mission Control handoff.
 - [Background Install](HEADLESS_INSTALL.md)
 - [Codex Chat Mode](CODEX_CHAT_MODE.md)
 - [Background Health](HEADLESS_HEALTH.md)
+- [MCP Resources](MCP_RESOURCES.md)
+- [Webwright](WEBWRIGHT.md)
 - [Troubleshooting](TROUBLESHOOTING.md)

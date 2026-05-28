@@ -327,6 +327,7 @@ Check:
 - Ollama is running locally
 - Claude CLI is available and authenticated
 - API-backed providers are configured outside chat
+- Webwright is installed when the task depends on browser-agent automation rather than plain app verification
 
 Related codes:
 
@@ -335,6 +336,25 @@ Related codes:
 - `MC-OLLAMA-SERVER-OFFLINE-001`
 - `MC-CLAUDE-CLI-MISSING-001`
 - `MC-API-KEY-MISSING-001`
+
+## Webwright not ready
+
+Check:
+
+- project-scoped Webwright readiness through `/api/projects/{project_id}/webwright`
+- whether `webwright` is installed in the same Python environment as Mission Control
+- whether Playwright is installed and a Chromium runtime was provisioned
+
+Upstream install path:
+
+```bash
+git clone https://github.com/microsoft/Webwright
+cd Webwright
+python -m pip install -e .
+playwright install chromium
+```
+
+Use this lane when the user wants reusable browser scripts or screenshot-backed browser automation, not when they just need a quick manual smoke test.
 
 ## Pending decision appears stuck
 
@@ -364,4 +384,5 @@ Related codes:
 - [Background Health](HEADLESS_HEALTH.md)
 - [Plugin Health Doctor](PLUGIN_HEALTH_DOCTOR.md)
 - [Runners](RUNNERS.md)
+- [Webwright](WEBWRIGHT.md)
 - [Handoffs](HANDOFFS.md)

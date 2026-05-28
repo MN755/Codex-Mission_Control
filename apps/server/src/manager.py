@@ -141,6 +141,7 @@ from simulation import simulation_service
 from task_board import build_initial_tasks, can_assign_task, conflicting_agents, paths_conflict
 from tool_catalog import TOOL_CATALOG, catalog_with_permissions
 from validation_coverage import validation_coverage_service
+from webwright_support import detect_webwright_status
 from widget_catalog import (
     DASHBOARD_WIDGET_DEFAULTS,
     DASHBOARD_WIDGET_TYPES,
@@ -10648,6 +10649,12 @@ class MissionControlService:
             "loop_strategy": loop_strategy,
             "brief_markdown": brief_markdown,
             "generated_at": utc_now(),
+        }
+
+    def build_webwright_status(self, project: Project) -> dict[str, Any]:
+        return {
+            "project_id": project.id,
+            **detect_webwright_status(workspace_path=project.workspace_path, project_name=project.name),
         }
 
     def get_tool_catalog(self, db: Session) -> list[dict[str, Any]]:

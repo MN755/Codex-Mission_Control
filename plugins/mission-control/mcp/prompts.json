@@ -111,6 +111,18 @@
       "prompt_text": "Debug the failed or stuck Mission Control orchestration by collecting status, diagnostics, pending decisions, and a safe event digest. Include platform-aware diagnostics, performance guardrails, safe debug commands, and the latest support-bundle path when available. If needed, create a recovery plan request and summarize the safest next moves."
     },
     {
+      "name": "use_webwright_for_browser_task",
+      "aliases": ["use-webwright-for-browser-task"],
+      "title": "Use Webwright for browser task",
+      "description": "Check Webwright readiness for the attached project and route a browser task through Mission Control with explicit setup guidance if the runtime is missing.",
+      "required_arguments": ["PROJECT_ID", "USER_REQUEST"],
+      "tool_sequence": ["mission_control_get_webwright_status", "mission_control_start_task", "mission_control_get_status"],
+      "resource_sequence": ["mission-control://projects/{project_id}/webwright", "mission-control://projects/{project_id}/status"],
+      "expected_chat_output": "Webwright readiness, install/setup blockers if any, and compact orchestration status for the browser task.",
+      "safety_notes": "Prefer Webwright for multi-step browser work when it is actually installed. If it is missing, say so plainly and do not fake browser coverage.",
+      "prompt_text": "Use Mission Control for a browser task with Webwright when available. First load the project-scoped Webwright readiness summary. If Webwright is not ready, explain the exact missing runtime pieces and the safe install steps. If it is ready, start the requested browser task through Mission Control and summarize the current status without pretending Codex chat is the browser agent itself."
+    },
+    {
       "name": "pause_orchestration",
       "aliases": ["pause-orchestration"],
       "title": "Pause orchestration",

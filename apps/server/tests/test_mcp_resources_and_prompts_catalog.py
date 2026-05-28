@@ -25,6 +25,7 @@ EXPECTED_RESOURCES = [
     "mission-control://projects/{project_id}/handoff",
     "mission-control://projects/{project_id}/codebase-map",
     "mission-control://projects/{project_id}/diagnostics",
+    "mission-control://projects/{project_id}/webwright",
     "mission-control://projects/{project_id}/swarm-plan",
     "mission-control://projects/{project_id}/risk-register",
     "mission-control://projects/{project_id}/agent-contracts",
@@ -46,6 +47,7 @@ EXPECTED_PROMPTS = [
     "answer_pending_approval",
     "review_latest_handoff",
     "debug_failed_orchestration",
+    "use_webwright_for_browser_task",
     "pause_orchestration",
     "resume_orchestration",
     "explain_current_swarm",
@@ -114,5 +116,7 @@ def test_docs_explain_resources_prompts_and_headless_boundary() -> None:
     assert "mission_control_attach_workspace" in tools_content
     assert "mission-control://projects/{project_id}/decision-ledger" in resources_content
     assert "mission-control://projects/{project_id}/operator-snapshot" in resources_content
+    assert "mission-control://projects/{project_id}/webwright" in resources_content
     assert "attach_current_workspace" in prompts_content
+    assert "use_webwright_for_browser_task" in prompts_content
     assert "Invalid answers are rejected" in pending_content

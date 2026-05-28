@@ -251,6 +251,37 @@
       }
     },
     {
+      "uri_template": "mission-control://projects/{project_id}/webwright",
+      "title": "Webwright readiness",
+      "summary": "Project-scoped Webwright readiness summary for browser-agent work, install posture, and recommended next steps.",
+      "support_status": "implemented",
+      "source_hint": {
+        "rest_endpoints": [
+          "/api/projects/{project_id}/webwright"
+        ]
+      },
+      "default_fields": [
+        "project_id",
+        "project_name",
+        "available",
+        "install_status",
+        "summary",
+        "launch_command",
+        "workspace_signals",
+        "recommended_fix",
+        "recommended_install_commands",
+        "use_cases"
+      ],
+      "redaction": {
+        "omit_fields": [
+          "raw_log",
+          "secret_env",
+          "private_browser_state"
+        ],
+        "notes": "Expose install posture and safe usage guidance only. Do not expose browser cookies, auth state, or raw workspace artifacts."
+      }
+    },
+    {
       "uri_template": "mission-control://projects/{project_id}/swarm-plan",
       "title": "Swarm plan",
       "summary": "Current or proposed swarm plan, risk posture, dynamic spawning state, and approval requirements.",

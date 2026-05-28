@@ -426,6 +426,9 @@ class MissionControlDaemonClient:
     def get_verification_brief(self, project_id: int) -> dict[str, Any]:
         return self._request("GET", f"/api/projects/{project_id}/verification-brief")
 
+    def get_webwright_status(self, project_id: int) -> dict[str, Any]:
+        return self._request("GET", f"/api/projects/{project_id}/webwright")
+
     def get_codebase_map(self, project_id: int) -> dict[str, Any]:
         return self._request("GET", f"/api/projects/{project_id}/codebase-map", requires_token=False)
 
@@ -869,6 +872,22 @@ class MissionControlDaemonClient:
             "generated_at": brief.get("generated_at"),
         }
 
+    def _summarize_webwright_status(self, project_id: int, payload: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "project_id": project_id,
+            "project_name": payload.get("project_name"),
+            "available": bool(payload.get("available")),
+            "install_status": payload.get("install_status"),
+            "summary": payload.get("summary"),
+            "launch_command": payload.get("launch_command"),
+            "workspace_signals": list(payload.get("workspace_signals") or [])[:8],
+            "recommended_fix": payload.get("recommended_fix"),
+            "recommended_install_commands": list(payload.get("recommended_install_commands") or [])[:6],
+            "use_cases": list(payload.get("use_cases") or [])[:6],
+            "notes": list(payload.get("notes") or [])[:6],
+            "version": payload.get("version"),
+        }
+
     def _summarize_handoff(self, project_id: int, payload: dict[str, Any]) -> dict[str, Any]:
         handoff = payload.get("handoff") if "handoff" in payload else payload
         return {
@@ -1097,4 +1116,6 @@ class MissionControlDaemonClient:
                 return self._summarize_instincts_preview(project_id, self.get_instincts_preview(project_id))
             if kind == "verification-brief":
                 return self._summarize_verification_brief(project_id, self.get_verification_brief(project_id))
+            if kind == "webwright":
+                return self._summarize_webwright_status(project_id, self.get_webwright_status(project_id))
         raise RuntimeError("Unsupported Mission Control resource URI.")

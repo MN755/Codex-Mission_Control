@@ -147,6 +147,29 @@ Fix:
 - install or configure Claude CLI
 - keep current runner policy until it is verified
 
+## Webwright not ready
+
+Symptoms:
+
+- browser-task workflow reports setup blockers
+- Mission Control refuses to fake browser-agent execution
+
+Likely cause:
+
+- `webwright` is not installed in the same Python environment as Mission Control
+- Playwright or Chromium runtime is missing
+
+Checks:
+
+- inspect the project-scoped Webwright readiness surface
+- verify the local Python environment
+
+Fix:
+
+- install the upstream Webwright runtime
+- install the Chromium browser runtime through Playwright
+- rerun the readiness check before claiming browser coverage
+
 ## API provider not configured
 
 Symptoms:

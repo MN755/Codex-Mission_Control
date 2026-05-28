@@ -12,9 +12,13 @@ This page lists the main repo docs that feed the wiki so contributors know where
 - docs/HEADLESS_ARCHITECTURE.md
 - docs/CODEX_PLUGIN_INSTALL.md
 - docs/CODEX_PLUGIN_MODE.md
+- docs/MCP_TOOLS.md
+- docs/MCP_RESOURCES.md
+- docs/MCP_PROMPTS.md
 - docs/PENDING_DECISIONS.md
 - docs/PLUGIN_HEALTH_DOCTOR.md
 - docs/SECURITY_MODEL.md
+- docs/WEBWRIGHT.md
 - plugins/mission-control/*
 
 ## Example

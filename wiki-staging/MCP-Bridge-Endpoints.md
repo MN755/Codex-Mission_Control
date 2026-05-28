@@ -14,6 +14,10 @@ This page lists the main backend endpoints that support bridge mode and what eac
 - `/api/decisions/{id}/answer`
 - `/api/orchestrations/{id}/handoff`
 - `/api/plugin/health`
+- `/api/projects/{project_id}/webwright`
+- `/api/projects/{project_id}/operator-snapshot`
+- `/api/projects/{project_id}/instincts/preview`
+- `/api/projects/{project_id}/verification-brief`
 
 ## Example
 

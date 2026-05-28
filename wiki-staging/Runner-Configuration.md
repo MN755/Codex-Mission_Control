@@ -27,6 +27,7 @@ Detection guidance:
 - `claude_cli`: detect installed CLI and configuration
 - `*_api`: use the built-in `scripts/api_provider_adapter.py` recipe but still require secure provider credentials
 - `custom`: only available when explicitly configured
+- `Webwright`: not a runner type; it is an optional browser-agent companion that should be checked separately when the task is about real browser automation
 
 ## Billing and security notes
 
@@ -48,4 +49,4 @@ If the preferred runner is unavailable, Mission Control should:
 
 ## Related pages
 
-Read [Provider Autowiring](Provider-Autowiring), [Troubleshooting CLI Runners](Troubleshooting-CLI-Runners), [Dry Run Mode](Dry-Run-Mode), and [Diagnostics and Health Checks](Diagnostics-and-Health-Checks).
+Read [Provider Autowiring](Provider-Autowiring), [Webwright and Browser Automation](Webwright-and-Browser-Automation), [Troubleshooting CLI Runners](Troubleshooting-CLI-Runners), [Dry Run Mode](Dry-Run-Mode), and [Diagnostics and Health Checks](Diagnostics-and-Health-Checks).

@@ -3,6 +3,8 @@ from __future__ import annotations
 import platform
 from typing import Any
 
+from webwright_support import detect_webwright_status
+
 
 TOOL_CATALOG: list[dict[str, Any]] = [
     {"id": "file-search", "name": "File Search", "category": "Core tools", "summary": "Search the local workspace quickly.", "risk_level": "low"},
@@ -14,6 +16,7 @@ TOOL_CATALOG: list[dict[str, Any]] = [
     {"id": "goal-reminder", "name": "Goal Reminder", "category": "Core tools", "summary": "Keep the current build goal visible to the manager and workers.", "risk_level": "low"},
     {"id": "security-review", "name": "Security Review", "category": "Testing tools", "summary": "Run a local security review checklist or specialist model.", "risk_level": "medium"},
     {"id": "test-in-chromium", "name": "Test in Chromium", "category": "Testing tools", "summary": "Run browser checks in Chromium when available.", "risk_level": "low"},
+    {"id": "browser-automation-with-webwright", "name": "Browser Automation with Webwright", "category": "Testing tools", "summary": "Use the local Webwright browser-agent harness for multi-step browser work when it is installed.", "risk_level": "medium"},
     {"id": "deploy-with-vercel", "name": "Deploy with Vercel", "category": "Deployment tools", "summary": "Deploy through a configured Vercel account.", "risk_level": "high"},
     {"id": "web-search-with-approval", "name": "Web Search with Approval", "category": "Search/research tools", "summary": "Use live web search with explicit approval.", "risk_level": "medium"},
     {"id": "extra-sandbox", "name": "Extra Sandbox", "category": "Experimental environments", "summary": "Use a broader or alternate local sandbox when configured.", "risk_level": "high"},
@@ -54,6 +57,14 @@ def _availability(tool_id: str, *, provider: str, connected_accounts: dict[str, 
     if tool_id == "test-in-chromium":
         notes.append("Browser availability depends on local Chromium or browser tooling.")
         return "available", notes
+    if tool_id == "browser-automation-with-webwright":
+        status = detect_webwright_status()
+        notes.append(str(status.get("summary") or "Webwright runtime status is unknown."))
+        if status.get("workspace_signals"):
+            notes.append("Project-specific Webwright readiness is available through the dedicated Mission Control Webwright status surface.")
+        if status.get("available"):
+            return "available", notes
+        return ("needs_setup" if status.get("install_status") in {"missing", "partial"} else "coming_soon"), notes
     if tool_id in {"github-wiki-creator", "github-deployment-creator"}:
         github_status = connected_accounts.get("github", {})
         return ("available" if github_status.get("status") == "connected" else "needs_setup"), notes

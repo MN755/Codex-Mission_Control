@@ -51,6 +51,7 @@ class MissionControlMcpServer:
             "mission_control_get_codebase_understanding": self._call_get_codebase_understanding,
             "mission_control_set_import_interview_choice": self._call_set_import_interview_choice,
             "mission_control_get_diagnostics": self._call_get_diagnostics,
+            "mission_control_get_webwright_status": self._call_get_webwright_status,
             "mission_control_get_swarm_plan": self._call_get_swarm_plan,
             "mission_control_update_swarm_preferences": self._call_update_swarm_preferences,
             "mission_control_generate_swarm_plan": self._call_generate_swarm_plan,
@@ -272,6 +273,12 @@ class MissionControlMcpServer:
                 "name": "mission_control_get_diagnostics",
                 "description": "Fetch bridge-safe diagnostics and plugin-health context for a Mission Control project or orchestration.",
                 "inputSchema": common_target,
+                "outputSchema": GENERIC_OUTPUT_SCHEMA,
+            },
+            {
+                "name": "mission_control_get_webwright_status",
+                "description": "Fetch the project-scoped Webwright readiness summary for browser-agent work.",
+                "inputSchema": _object_schema({"project_id": {"type": "integer", "minimum": 1}}, required=["project_id"]),
                 "outputSchema": GENERIC_OUTPUT_SCHEMA,
             },
             {
@@ -597,6 +604,9 @@ class MissionControlMcpServer:
     def _call_get_diagnostics(self, args: dict[str, Any]) -> Any:
         orchestration_id, project_id = self._require_target(args)
         return self.client.get_diagnostics(orchestration_id=orchestration_id, project_id=project_id)
+
+    def _call_get_webwright_status(self, args: dict[str, Any]) -> Any:
+        return self.client.get_webwright_status(self._require_int(args, "project_id"))
 
     def _call_get_swarm_plan(self, args: dict[str, Any]) -> Any:
         return self.client.get_swarm_plan(self._require_int(args, "project_id"))

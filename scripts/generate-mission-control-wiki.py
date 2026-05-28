@@ -86,9 +86,10 @@ supplemental_pages = [
     "Manager-Questions.md",
     "Health-Doctor-Example-Output.md",
     "Known-Limitations-and-Non-Goals.md",
+    "Webwright-and-Browser-Automation.md",
 ]
 
-assert len(core_pages) + len(supplemental_pages) == 50
+assert len(core_pages) + len(supplemental_pages) == 51
 
 all_page_links = [page.replace(".md", "") for page in core_pages + supplemental_pages]
 
@@ -120,13 +121,13 @@ add(
 
             ```text
             Codex chat
-              ↓
+              ->
             Mission Control plugin / MCP bridge
-              ↓
+              ->
             Mission Control daemon
-              ↓
+              ->
             Manager AI
-              ↓
+              ->
             Worker agents / runners
             ```
 
@@ -138,8 +139,9 @@ add(
             f"""
             Current repo direction is headless Codex-native orchestration.
 
-            - Implemented/current: daemon scripts, MCP resource catalog, prompt workflows, plugin packaging, skill library, approval relay, diagnostics surfaces, handoff summaries
+            - Implemented/current: daemon scripts, MCP resource catalog, prompt workflows, plugin packaging, skill library, approval relay, diagnostics surfaces, operator snapshot and verification surfaces, handoff summaries
             - Partial/experimental: plugin health hardening, runner registry depth, existing-codebase safety features, richer event summaries
+            - Optional companion lane: Webwright readiness and browser-task routing when the local browser-agent runtime is installed
             - Planned/future: optional dashboard observability, richer visual monitoring, packaging polish, deeper conflict handling
 
             Read first:
@@ -182,6 +184,7 @@ add(
 
             - {md_link('Runner-Configuration.md')}
             - {md_link('Provider-Autowiring.md')}
+            - {md_link('Webwright-and-Browser-Automation.md')}
             - {md_link('Troubleshooting-CLI-Runners.md')}
             - {md_link('Dry-Run-Mode.md')}
             - {md_link('Runtime-Configuration-Reference.md')}
@@ -240,8 +243,11 @@ add(
             Use Mission Control for this repo.
             Use Mission Control to understand this folder and fix the failing tests.
             Show Mission Control status.
+            Show Mission Control operator snapshot.
+            Show Mission Control verification brief.
             Show pending Mission Control approvals.
             Get the latest Mission Control handoff.
+            Use Mission Control for a browser task with Webwright when available.
             ```
             """,
         ),
@@ -341,16 +347,28 @@ add(
             Show Mission Control status.
             ```
 
-            D. Approve pending decision
+            D. Ask for the operator snapshot
+
+            ```text
+            Show Mission Control operator snapshot.
+            ```
+
+            E. Approve pending decision
 
             ```text
             Show pending Mission Control approvals.
             ```
 
-            E. Get handoff
+            F. Get handoff
 
             ```text
             Get the latest Mission Control handoff.
+            ```
+
+            G. Route a browser task through Webwright when ready
+
+            ```text
+            Use Mission Control for a browser task with Webwright when available.
             ```
             """,
         ),
@@ -373,15 +391,18 @@ add(
             Use Mission Control for this repo.
             Use Mission Control to understand this folder and fix the failing tests.
             Show Mission Control status.
+            Show Mission Control operator snapshot.
+            Show Mission Control verification brief.
             Show pending Mission Control approvals.
             Get the latest Mission Control handoff.
+            Use Mission Control for a browser task with Webwright when available.
             ```
             """,
         ),
         (
             "Next reads",
             f"""
-            For installation details read {md_link('Install-From-Codex.md')}. For status, approvals, and handoffs read {md_link('Codex-Chat-Workflow.md')} and {md_link('Pending-Decisions-and-Approvals.md')}.
+            For installation details read {md_link('Install-From-Codex.md')}. For status, approvals, and handoffs read {md_link('Codex-Chat-Workflow.md')} and {md_link('Pending-Decisions-and-Approvals.md')}. For browser-task automation and operator-ready summaries read {md_link('Webwright-and-Browser-Automation.md')} and {md_link('MCP-Resources-Catalog.md')}.
             """,
         ),
     ],
@@ -864,6 +885,7 @@ add(
             - `claude_cli`: detect installed CLI and configuration
             - `*_api`: use the built-in `scripts/api_provider_adapter.py` recipe but still require secure provider credentials
             - `custom`: only available when explicitly configured
+            - `Webwright`: not a runner type; it is an optional browser-agent companion that should be checked separately when the task is about real browser automation
             """,
         ),
         (
@@ -891,7 +913,7 @@ add(
         (
             "Related pages",
             f"""
-            Read {md_link('Provider-Autowiring.md')}, {md_link('Troubleshooting-CLI-Runners.md')}, {md_link('Dry-Run-Mode.md')}, and {md_link('Diagnostics-and-Health-Checks.md')}.
+            Read {md_link('Provider-Autowiring.md')}, {md_link('Webwright-and-Browser-Automation.md')}, {md_link('Troubleshooting-CLI-Runners.md')}, {md_link('Dry-Run-Mode.md')}, and {md_link('Diagnostics-and-Health-Checks.md')}.
             """,
         ),
     ],
@@ -1333,6 +1355,7 @@ add(
             - Codex CLI login
             - Ollama status
             - Claude CLI status
+            - Webwright readiness when browser-agent automation is part of the task
             - startup freshness and last completed check time
             - degraded vs broken classification
             """,
@@ -1364,6 +1387,7 @@ add(
             - MCP bridge: ready
             - Codex CLI: missing login
             - Ollama: not running
+            - Webwright: optional and not installed
             - Runtime folder: writable
             - Recommended next step: log into Codex CLI or use dry_run
             ```
@@ -1537,6 +1561,31 @@ add(
 
             - install or configure Claude CLI
             - keep current runner policy until it is verified
+            """,
+        ),
+        (
+            "Webwright not ready",
+            """
+            Symptoms:
+
+            - browser-task workflow reports setup blockers
+            - Mission Control refuses to fake browser-agent execution
+
+            Likely cause:
+
+            - `webwright` is not installed in the same Python environment as Mission Control
+            - Playwright or Chromium runtime is missing
+
+            Checks:
+
+            - inspect the project-scoped Webwright readiness surface
+            - verify the local Python environment
+
+            Fix:
+
+            - install the upstream Webwright runtime
+            - install the Chromium browser runtime through Playwright
+            - rerun the readiness check before claiming browser coverage
             """,
         ),
         (
@@ -2204,10 +2253,16 @@ add_reference_page(
         "`mission-control://projects/{project_id}/handoff`",
         "`mission-control://projects/{project_id}/codebase-map`",
         "`mission-control://projects/{project_id}/diagnostics`",
+        "`mission-control://projects/{project_id}/webwright`",
         "`mission-control://projects/{project_id}/swarm-plan`",
         "`mission-control://projects/{project_id}/risk-register`",
         "`mission-control://projects/{project_id}/agent-contracts`",
         "`mission-control://projects/{project_id}/validation-summary`",
+        "`mission-control://projects/{project_id}/decision-ledger`",
+        "`mission-control://projects/{project_id}/path-locks`",
+        "`mission-control://projects/{project_id}/operator-snapshot`",
+        "`mission-control://projects/{project_id}/instincts`",
+        "`mission-control://projects/{project_id}/verification-brief`",
     ],
     ["MCP-Plugin-Architecture.md", "MCP-Prompts-Catalog.md", "Mission-Control-Daemon.md"],
 )
@@ -2226,6 +2281,7 @@ add_reference_page(
         "answer pending approval",
         "review latest handoff",
         "debug failed orchestration",
+        "use Webwright for browser task",
         "enable safe mode",
     ],
     ["MCP-Plugin-Architecture.md", "Skills-and-Prompts.md", "Quick-Start.md"],
@@ -2467,9 +2523,13 @@ add_reference_page(
         "docs/HEADLESS_ARCHITECTURE.md",
         "docs/CODEX_PLUGIN_INSTALL.md",
         "docs/CODEX_PLUGIN_MODE.md",
+        "docs/MCP_TOOLS.md",
+        "docs/MCP_RESOURCES.md",
+        "docs/MCP_PROMPTS.md",
         "docs/PENDING_DECISIONS.md",
         "docs/PLUGIN_HEALTH_DOCTOR.md",
         "docs/SECURITY_MODEL.md",
+        "docs/WEBWRIGHT.md",
         "plugins/mission-control/*",
     ],
     ["Development-Guide.md", "Home.md", "Mission-Control-Daemon.md"],
@@ -2488,6 +2548,10 @@ add_reference_page(
         "`/api/decisions/{id}/answer`",
         "`/api/orchestrations/{id}/handoff`",
         "`/api/plugin/health`",
+        "`/api/projects/{project_id}/webwright`",
+        "`/api/projects/{project_id}/operator-snapshot`",
+        "`/api/projects/{project_id}/instincts/preview`",
+        "`/api/projects/{project_id}/verification-brief`",
     ],
     ["MCP-Plugin-Architecture.md", "Mission-Control-Daemon.md", "Diagnostics-and-Health-Checks.md"],
 )
@@ -2549,6 +2613,73 @@ add_reference_page(
     ["Roadmap.md", "Headless-First-Direction.md", "Troubleshooting-CLI-Runners.md"],
 )
 
+add(
+    "Webwright-and-Browser-Automation.md",
+    "Webwright and Browser Automation",
+    "This page explains how Mission Control integrates the upstream Webwright runtime as an optional browser-agent companion instead of pretending browser automation is a normal model runner.",
+    "Current",
+    [
+        (
+            "What this integration means",
+            """
+            Mission Control does not vendor the whole Webwright repository and it does not treat Webwright like a provider.
+
+            Instead, Mission Control exposes:
+
+            - a project-scoped readiness check
+            - explicit setup guidance when the runtime is missing
+            - browser-task routing guidance when the runtime is ready
+            - bridge-safe summaries for Codex or Claude chat
+            """,
+        ),
+        (
+            "When to use it",
+            """
+            Prefer Webwright when the task needs:
+
+            - real multi-step browser automation
+            - screenshot-backed verification
+            - rerunnable browser scripts instead of one-off chat claims
+
+            Do not treat it as mandatory for ordinary app smoke checks or non-browser coding work.
+            """,
+        ),
+        (
+            "Mission Control surfaces",
+            """
+            Current surfaces:
+
+            - REST: `/api/projects/{project_id}/webwright`
+            - MCP resource: `mission-control://projects/{project_id}/webwright`
+            - MCP tool: `mission_control_get_webwright_status`
+            - MCP prompt: `use_webwright_for_browser_task`
+            - Skill lane: `mission-control-webapp-testing`
+            """,
+        ),
+        (
+            "Upstream install path",
+            """
+            The upstream runtime setup is:
+
+            ```bash
+            git clone https://github.com/microsoft/Webwright
+            cd Webwright
+            python -m pip install -e .
+            playwright install chromium
+            ```
+
+            Mission Control already provides the orchestration bridge. This install is only about getting the local Webwright runtime ready.
+            """,
+        ),
+        (
+            "Related pages",
+            f"""
+            Continue with {md_link('Runner-Configuration.md')}, {md_link('MCP-Resources-Catalog.md')}, {md_link('MCP-Prompts-Catalog.md')}, and {md_link('Debugging-Common-Issues.md')}.
+            """,
+        ),
+    ],
+)
+
 # Sidebar and footer
 PAGES["_Sidebar.md"] = dedent(
     f"""
@@ -2575,6 +2706,7 @@ PAGES["_Sidebar.md"] = dedent(
     ## Runners
     - {md_link('Runner-Configuration.md')}
     - {md_link('Provider-Autowiring.md')}
+    - {md_link('Webwright-and-Browser-Automation.md')}
     - {md_link('Troubleshooting-CLI-Runners.md')}
     - {md_link('Dry-Run-Mode.md')}
 

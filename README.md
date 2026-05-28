@@ -18,10 +18,12 @@ Large coding tasks usually fail for boring reasons: unclear scope, conflicting e
 - Manager AI orchestration behind a local daemon
 - Adaptive worker swarms with coordination guardrails
 - Runner autowiring for local CLI and API-backed providers
+- Operator-ready project surfaces such as status, operator snapshot, instincts, and verification brief
 - Existing codebase import with read-only intake
 - Pending decisions and approval relay through Codex chat
 - Safe local-first defaults and secret redaction
 - Chat-native handoffs with validation and evidence summaries
+- Optional Webwright browser-agent readiness and browser-task routing
 - Diagnostics and health checks for daemon, bridge, and runners
 
 ## Quick start
@@ -42,8 +44,11 @@ Useful follow-up prompts:
 
 ```text
 Show Mission Control status.
+Show Mission Control operator snapshot.
+Show Mission Control verification brief.
 Show pending Mission Control approvals.
 Get the latest Mission Control handoff.
+Use Mission Control for a browser task with Webwright when available.
 ```
 
 ## Example Codex chat workflow
@@ -93,7 +98,11 @@ Core boundaries:
 - [Codex Chat UX Spec](docs/CODEX_CHAT_UX_SPEC.md)
 - [Background Architecture](docs/HEADLESS_ARCHITECTURE.md)
 - [MCP Plugin Bridge](docs/MCP_PLUGIN_BRIDGE.md)
+- [MCP Tools](docs/MCP_TOOLS.md)
+- [MCP Resources](docs/MCP_RESOURCES.md)
+- [MCP Prompts](docs/MCP_PROMPTS.md)
 - [Runners](docs/RUNNERS.md)
+- [Webwright Companion](docs/WEBWRIGHT.md)
 - [Autowire Providers](docs/AUTOWIRE_PROVIDERS.md)
 - [Background Health](docs/HEADLESS_HEALTH.md)
 - [Security](docs/SECURITY.md)

@@ -19,6 +19,7 @@ Mission Control resources are read-only context surfaces for Codex chat.
 - `mission-control://projects/{project_id}/handoff`
 - `mission-control://projects/{project_id}/codebase-map`
 - `mission-control://projects/{project_id}/diagnostics`
+- `mission-control://projects/{project_id}/webwright`
 - `mission-control://projects/{project_id}/swarm-plan`
 - `mission-control://projects/{project_id}/risk-register`
 - `mission-control://projects/{project_id}/agent-contracts`
@@ -36,4 +37,5 @@ Mission Control resources are read-only context surfaces for Codex chat.
 - handoff supports final bridge summaries
 - codebase map supports imported repo understanding
 - diagnostics, risk register, decision ledger, and path locks support stuck-run debugging without exposing raw internals
+- the Webwright resource tells the bridge whether the local browser-agent runtime is actually ready or whether the user still has setup work to do
 - operator snapshot, instincts, and verification brief give Codex or Claude chat a higher-signal operator surface for current state, execution rules, and release readiness

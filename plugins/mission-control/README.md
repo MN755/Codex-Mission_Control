@@ -40,5 +40,6 @@ Built-in capability packs:
 - Code understanding: graph-style codebase maps, grounded Q&A, diff impact, domain maps, onboarding tours, and docs knowledge maps.
 - Agent engineering: runnable-chain design, retrieval/RAG design, tool registries, evals/observability, memory/state policy, and graph workflows.
 - Practical work surfaces: MCP building, webapp testing, document workflows, brand communications, and creative web artifacts.
+- Browser-agent companion support: project-scoped Webwright readiness, safe install guidance, and browser-task routing through Mission Control instead of random chat improvisation.
 
 See [docs/CODEX_PLUGIN_INSTALL.md](../../docs/CODEX_PLUGIN_INSTALL.md) for setup, [docs/CODEX_PLUGIN_MODE.md](../../docs/CODEX_PLUGIN_MODE.md) for bridge behavior, and [docs/MCP_SECURITY.md](../../docs/MCP_SECURITY.md) for localhost token and redaction rules.

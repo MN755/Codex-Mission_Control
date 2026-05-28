@@ -17,6 +17,7 @@ from device_profile import detect_device_profile, detect_performance_profile, pl
 from errors import MissionControlError, derive_health_status, format_health_check_item
 from manager import service
 from system_status import detect_codex_status
+from webwright_support import detect_webwright_status
 
 
 PLUGIN_ROOT = REPO_ROOT / "plugins" / "mission-control"
@@ -539,6 +540,26 @@ async def mission_control_plugin_health() -> dict[str, Any]:
                 error=runner_error,
             )
         )
+
+    webwright_status = detect_webwright_status()
+    webwright_check_status = "ready" if webwright_status.get("available") else ("degraded" if webwright_status.get("install_status") == "partial" else "unknown")
+    checks.append(
+        _check(
+            check_id="webwright_browser_automation",
+            label="Webwright browser automation",
+            status=webwright_check_status,
+            summary=str(webwright_status.get("summary") or "Webwright runtime status is unknown."),
+            critical=False,
+            fix=webwright_status.get("recommended_fix"),
+            commands=list(webwright_status.get("recommended_install_commands") or []),
+            details={
+                "install_status": webwright_status.get("install_status"),
+                "launch_command": webwright_status.get("launch_command"),
+                "workspace_signals": webwright_status.get("workspace_signals"),
+                "version": webwright_status.get("version"),
+            },
+        )
+    )
 
     runtime_root = RUNTIME_ROOT
     runtime_root.mkdir(parents=True, exist_ok=True)

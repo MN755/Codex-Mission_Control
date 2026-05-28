@@ -217,6 +217,7 @@ from schemas import (
     UserPreferenceUpsert,
     ValidationCoverageAreaRead,
     VerificationBriefRead,
+    WebwrightStatusRead,
     RiskRecordCreate,
     RiskRecordRead,
     RiskRecordUpdate,
@@ -2267,6 +2268,16 @@ def get_project_verification_brief(
 ) -> VerificationBriefRead:
     project = _get_project_or_404(db, project_id)
     return VerificationBriefRead(**service.build_verification_brief(db, project))
+
+
+@app.get("/api/projects/{project_id}/webwright", response_model=WebwrightStatusRead)
+def get_project_webwright_status(
+    project_id: int,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> WebwrightStatusRead:
+    project = _get_project_or_404(db, project_id)
+    return WebwrightStatusRead(**service.build_webwright_status(project))
 
 
 @app.get("/api/projects/{project_id}/snapshots", response_model=list[ProjectSnapshotRead])

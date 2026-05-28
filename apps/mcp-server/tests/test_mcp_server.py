@@ -16,6 +16,7 @@ EXPECTED_RESOURCES = {
     "mission-control://projects/{project_id}/handoff",
     "mission-control://projects/{project_id}/codebase-map",
     "mission-control://projects/{project_id}/diagnostics",
+    "mission-control://projects/{project_id}/webwright",
     "mission-control://projects/{project_id}/swarm-plan",
     "mission-control://projects/{project_id}/risk-register",
     "mission-control://projects/{project_id}/agent-contracts",
@@ -37,6 +38,7 @@ EXPECTED_PROMPTS = {
     "answer_pending_approval",
     "review_latest_handoff",
     "debug_failed_orchestration",
+    "use_webwright_for_browser_task",
     "pause_orchestration",
     "resume_orchestration",
     "explain_current_swarm",
@@ -145,6 +147,23 @@ class FakeClient:
     def get_diagnostics(self, **kwargs):
         self.calls.append(("get_diagnostics", kwargs))
         return {"plugin_health": "healthy", "recent_reports": []}
+
+    def get_webwright_status(self, project_id: int):
+        self.calls.append(("get_webwright_status", {"project_id": project_id}))
+        return {
+            "project_id": project_id,
+            "project_name": "Demo",
+            "available": True,
+            "install_status": "ready",
+            "summary": "Webwright is ready.",
+            "launch_command": "webwright",
+            "workspace_signals": ["Playwright config detected."],
+            "recommended_fix": None,
+            "recommended_install_commands": ["git clone https://github.com/microsoft/Webwright"],
+            "use_cases": ["Browser automation"],
+            "notes": ["Optional companion runtime."],
+            "version": "0.1.0",
+        }
 
     def get_swarm_plan(self, project_id: int):
         self.calls.append(("get_swarm_plan", {"project_id": project_id}))
@@ -262,6 +281,7 @@ def test_new_runtime_tools_dispatch_to_client() -> None:
     server.call_tool("mission_control_plugin_health", {})
     server.call_tool("mission_control_enable_safe_mode", {"project_id": 7})
     server.call_tool("mission_control_get_event_digest", {"project_id": 7, "window": "last_15_minutes"})
+    server.call_tool("mission_control_get_webwright_status", {"project_id": 7})
     server.call_tool("mission_control_request_snapshot", {"project_id": 7, "label": "Before edits", "description": "Checkpoint"})
     server.call_tool("mission_control_request_recovery_plan", {"project_id": 7, "trigger_summary": "Workers are stuck."})
 
@@ -269,6 +289,7 @@ def test_new_runtime_tools_dispatch_to_client() -> None:
     assert "plugin_health_summary" in called
     assert "enable_safe_mode" in called
     assert "get_event_digest" in called
+    assert "get_webwright_status" in called
     assert "create_snapshot" in called
     assert "request_recovery_plan" in called
 
@@ -353,16 +374,37 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
             "generated_at": "2026-05-26T00:00:00Z",
         },
     )
+    monkeypatch.setattr(
+        client,
+        "get_webwright_status",
+        lambda project_id: {
+            "project_id": project_id,
+            "project_name": "Demo",
+            "available": True,
+            "install_status": "ready",
+            "summary": "Webwright runtime and Playwright package are both detectable.",
+            "launch_command": "webwright",
+            "workspace_signals": ["package.json already references Playwright."],
+            "recommended_fix": None,
+            "recommended_install_commands": ["git clone https://github.com/microsoft/Webwright"],
+            "use_cases": ["Reusable browser scripts."],
+            "notes": ["Optional browser-agent companion."],
+            "version": "0.1.0",
+        },
+    )
 
     snapshot = client.read_resource("mission-control://projects/7/operator-snapshot")
     instincts = client.read_resource("mission-control://projects/7/instincts")
     verification = client.read_resource("mission-control://projects/7/verification-brief")
+    webwright = client.read_resource("mission-control://projects/7/webwright")
 
     assert snapshot["project_name"] == "Demo"
     assert snapshot["recommended_next_action"] == "Run the named pytest lane."
     assert instincts["instincts"][0]["key"] == "ship-with-evidence"
     assert verification["readiness"] == "blocked"
     assert verification["required_checks"] == ["python -m pytest apps/server/tests/test_operator_surfaces.py -q"]
+    assert webwright["available"] is True
+    assert webwright["launch_command"] == "webwright"
 
 
 def test_daemon_client_auto_start_launches_when_health_fails(monkeypatch, tmp_path: Path) -> None:

@@ -21,6 +21,7 @@ Mission Control uses runners to execute background work. Runner availability dep
 - `ollama` uses the built-in `scripts/ollama_adapter.py` recipe and still requires a reachable local endpoint
 - `claude_cli` depends on a working local CLI environment
 - API-backed runners use the built-in `scripts/api_provider_adapter.py` recipe, still require secure external API keys, and may incur billing
+- Webwright is not a runner type; it is an optional browser-agent companion that Mission Control can detect and route browser tasks toward when the local runtime is ready
 
 ## Built-in adapter recipes
 
@@ -40,4 +41,5 @@ Mission Control uses runners to execute background work. Runner availability dep
 
 - [Autowire Providers](AUTOWIRE_PROVIDERS.md)
 - [Background Health](HEADLESS_HEALTH.md)
+- [Webwright](WEBWRIGHT.md)
 - [Troubleshooting](TROUBLESHOOTING.md)

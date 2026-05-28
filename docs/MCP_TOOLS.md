@@ -28,6 +28,7 @@ Mission Control MCP tools are action endpoints for the Codex bridge. They do not
 - `mission_control_get_codebase_understanding`
 - `mission_control_set_import_interview_choice`
 - `mission_control_get_diagnostics`
+- `mission_control_get_webwright_status`
 - `mission_control_get_swarm_plan`
 - `mission_control_update_swarm_preferences`
 - `mission_control_generate_swarm_plan`
@@ -49,3 +50,4 @@ Mission Control MCP tools are action endpoints for the Codex bridge. They do not
 - Secrets are not returned.
 - High-risk changes must stay approval-gated.
 - Tools never bypass Mission Control safety policy.
+- Operator snapshot, instincts, and verification brief stay resource-first on purpose; they are read-only operator surfaces, not imperative tools.

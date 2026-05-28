@@ -16,6 +16,8 @@ Mission Control keeps the user-facing conversation in Codex chat while moving pr
 - coordinates background worker agents and runner selection
 - raises pending decisions for risky or ambiguous actions
 - returns status, diagnostics, event digests, and handoffs in chat-safe summaries
+- exposes operator snapshot, instincts, and verification brief surfaces for higher-signal chat guidance
+- reports Webwright readiness when a task depends on browser-agent automation
 
 ## What it does not require
 
@@ -30,3 +32,5 @@ Mission Control keeps the user-facing conversation in Codex chat while moving pr
 - [Background Install](HEADLESS_INSTALL.md)
 - [Codex Chat Mode](CODEX_CHAT_MODE.md)
 - [Background Architecture](HEADLESS_ARCHITECTURE.md)
+- [MCP Resources](MCP_RESOURCES.md)
+- [Webwright](WEBWRIGHT.md)

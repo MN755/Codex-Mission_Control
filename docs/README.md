@@ -16,14 +16,25 @@ GitHub's repository navigation is controlled by GitHub. Project-specific documen
 - [Background Architecture](HEADLESS_ARCHITECTURE.md)
 - [Architecture Summary](ARCHITECTURE.md)
 - [MCP Plugin Bridge](MCP_PLUGIN_BRIDGE.md)
+- [MCP Tools](MCP_TOOLS.md)
+- [MCP Resources](MCP_RESOURCES.md)
+- [MCP Prompts](MCP_PROMPTS.md)
 - [Runner System](RUNNERS.md)
 - [Pending Decisions](PENDING_DECISIONS.md)
 - [Handoffs](HANDOFFS.md)
+
+## Operator surfaces
+
+- [MCP Resources](MCP_RESOURCES.md)
+- [MCP Prompts](MCP_PROMPTS.md)
+- [Chat Native UX](CHAT_NATIVE_UX.md)
+- [Chat Native Handoffs](CHAT_NATIVE_HANDOFFS.md)
 
 ## Operations
 
 - [Autowire Providers](AUTOWIRE_PROVIDERS.md)
 - [Background Health](HEADLESS_HEALTH.md)
+- [Webwright](WEBWRIGHT.md)
 - [Mission Control Errors](ERRORS.md)
 - [Error Registry](ERROR_REGISTRY.md)
 - [Debug Breakpoints](DEBUG_BREAKPOINTS.md)

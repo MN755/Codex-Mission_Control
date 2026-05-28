@@ -15,6 +15,7 @@ This page summarizes the prompt workflows packaged for Mission Control bridge mo
 - answer pending approval
 - review latest handoff
 - debug failed orchestration
+- use Webwright for browser task
 - enable safe mode
 
 ## Example

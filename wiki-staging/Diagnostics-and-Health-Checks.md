@@ -16,6 +16,7 @@ Health checks should cover:
 - Codex CLI login
 - Ollama status
 - Claude CLI status
+- Webwright readiness when browser-agent automation is part of the task
 - startup freshness and last completed check time
 - degraded vs broken classification
 
@@ -43,6 +44,7 @@ Mission Control health
 - MCP bridge: ready
 - Codex CLI: missing login
 - Ollama: not running
+- Webwright: optional and not installed
 - Runtime folder: writable
 - Recommended next step: log into Codex CLI or use dry_run
 ```
