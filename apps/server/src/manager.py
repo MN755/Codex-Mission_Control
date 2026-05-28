@@ -1923,8 +1923,18 @@ class MissionControlService:
         summary: str,
         source_path: str | None,
         command: str | None,
-    ) -> tuple[str, str, str, str | None, str | None]:
-        return (evidence_type, claim, summary, source_path, command)
+        status: str | None = None,
+        metadata_json: dict[str, Any] | None = None,
+    ) -> tuple[str, str, str, str | None, str | None, str | None, str]:
+        return (
+            evidence_type,
+            claim,
+            summary,
+            source_path,
+            command,
+            status,
+            json.dumps(metadata_json or {}, sort_keys=True, separators=(",", ":")),
+        )
 
     def _handoff_evidence_or_create(
         self,
@@ -1953,9 +1963,12 @@ class MissionControlService:
                 HandoffEvidence.summary == summary,
                 HandoffEvidence.source_path == source_path,
                 HandoffEvidence.command == command,
+                HandoffEvidence.status == status,
             )
             .order_by(HandoffEvidence.id.desc())
         )
+        if existing is not None and dict(existing.metadata_json or {}) != dict(metadata_json):
+            existing = None
         if existing is None:
             existing = HandoffEvidence(
                 project_id=project.id,
@@ -2178,7 +2191,7 @@ class MissionControlService:
         agent_ids = [agent.id for agent in db.scalars(select(Agent).where(Agent.project_id == project.id))]
         runs = list(db.scalars(select(AgentRun).where(AgentRun.agent_id.in_(agent_ids)).order_by(AgentRun.id.asc()))) if agent_ids else []
         preview_rows: list[dict[str, Any]] = []
-        seen_keys: set[tuple[str, str, str, str | None, str | None]] = set()
+        seen_keys: set[tuple[str, str, str, str | None, str | None, str | None, str]] = set()
         for run in runs:
             raw_report = run.report_json or {}
             tests_run = [str(item) for item in raw_report.get("tests_run", []) if str(item).strip()]
@@ -2233,6 +2246,8 @@ class MissionControlService:
                     summary=str(candidate["summary"]),
                     source_path=candidate.get("source_path"),
                     command=candidate.get("command"),
+                    status=str(candidate.get("status") or ""),
+                    metadata_json=dict(candidate.get("metadata_json") or {}),
                 )
                 if key in seen_keys:
                     continue
@@ -2643,6 +2658,8 @@ class MissionControlService:
                 summary=item.summary,
                 source_path=item.source_path,
                 command=item.command,
+                status=item.status,
+                metadata_json=dict(item.metadata_json or {}),
             )
             for item in persisted
         }
@@ -2655,6 +2672,8 @@ class MissionControlService:
                 summary=str(item["summary"]),
                 source_path=item.get("source_path"),
                 command=item.get("command"),
+                status=str(item.get("status") or ""),
+                metadata_json=dict(item.get("metadata_json") or {}),
             )
             not in persisted_keys
         ]

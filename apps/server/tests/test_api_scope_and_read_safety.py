@@ -1664,6 +1664,49 @@ def test_handoff_evidence_get_is_read_only_and_preview_derives_without_persistin
         db.close()
 
 
+def test_handoff_evidence_preserves_distinct_status_history(client, bridge_headers) -> None:
+    project = _create_project(client, "Handoff Evidence History", "handoff-evidence-history")
+    project_id = project["id"]
+
+    first = client.post(
+        f"/api/projects/{project_id}/handoff/evidence",
+        headers=bridge_headers,
+        json={
+            "evidence_type": "test_result",
+            "claim": "pytest suite",
+            "summary": "pytest run",
+            "command": "pytest",
+            "status": "passed",
+            "metadata_json": {"run": 1},
+        },
+    )
+    assert first.status_code == 200, first.text
+
+    second = client.post(
+        f"/api/projects/{project_id}/handoff/evidence",
+        headers=bridge_headers,
+        json={
+            "evidence_type": "test_result",
+            "claim": "pytest suite",
+            "summary": "pytest run",
+            "command": "pytest",
+            "status": "failed",
+            "metadata_json": {"run": 2},
+        },
+    )
+    assert second.status_code == 200, second.text
+    assert first.json()["id"] != second.json()["id"]
+
+    evidence = client.get(f"/api/projects/{project_id}/handoff/evidence", headers=bridge_headers)
+    assert evidence.status_code == 200, evidence.text
+    payload = evidence.json()
+    assert len(payload) == 2
+    statuses = {item["status"] for item in payload}
+    runs = {item["metadata_json"]["run"] for item in payload}
+    assert statuses == {"passed", "failed"}
+    assert runs == {1, 2}
+
+
 def test_recovery_plans_get_is_read_only_and_preview_stays_non_persistent(client, bridge_headers) -> None:
     init_db()
     db = SessionLocal()

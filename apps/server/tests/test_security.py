@@ -6,7 +6,7 @@ from conftest import sample_workspace
 from db import SessionLocal
 from diagnostics import open_folder
 from manager import service
-from models import ApprovalRequest, Project
+from models import ApprovalRequest, Project, SecurityPolicy
 from runtime_paths import diagnostics_root
 from security import redact_text, redact_value, risk_classifier, security_service
 from security.path_validation import PathValidationError, resolve_local_path, resolve_relative_to_root
@@ -173,6 +173,69 @@ def test_security_policy_defaults_and_project_override(client) -> None:
     assert updated.json()["auto_approve_low_risk"] is True
 
 
+def test_security_policy_get_routes_are_read_only(client) -> None:
+    project = create_project(client, "Security Read Only", "security-read-only")
+
+    db = SessionLocal()
+    try:
+        before_count = db.query(SecurityPolicy).count()
+    finally:
+        db.close()
+
+    global_policy = client.get("/api/security/policy")
+    assert global_policy.status_code == 200
+    assert global_policy.json()["scope"] == "global"
+
+    project_policy = client.get(f"/api/projects/{project['id']}/security/policy")
+    assert project_policy.status_code == 200
+    assert project_policy.json()["scope"] == "project"
+    assert project_policy.json()["project_id"] == project["id"]
+
+    db = SessionLocal()
+    try:
+        assert db.query(SecurityPolicy).count() == before_count
+    finally:
+        db.close()
+
+
+def test_partial_security_policy_update_preserves_omitted_fields(client) -> None:
+    project = create_project(client, "Security Partial Update", "security-partial-update")
+
+    seed = client.put(
+        f"/api/projects/{project['id']}/security/policy",
+        json={
+            "default_command_policy": "allow_low_risk",
+            "default_tool_policy": "deny",
+            "network_access_policy": "allow",
+            "write_access_policy": "limited_paths",
+            "external_account_policy": "deny",
+            "deployment_policy": "ask",
+            "destructive_action_policy": "deny",
+            "auto_approve_low_risk": True,
+            "auto_approve_medium_risk": True,
+            "high_risk_requires_user": False,
+        },
+    )
+    assert seed.status_code == 200, seed.text
+
+    partial = client.put(
+        f"/api/projects/{project['id']}/security/policy",
+        json={"network_access_policy": "deny"},
+    )
+    assert partial.status_code == 200, partial.text
+    payload = partial.json()
+    assert payload["network_access_policy"] == "deny"
+    assert payload["default_command_policy"] == "allow_low_risk"
+    assert payload["default_tool_policy"] == "deny"
+    assert payload["write_access_policy"] == "limited_paths"
+    assert payload["external_account_policy"] == "deny"
+    assert payload["deployment_policy"] == "ask"
+    assert payload["destructive_action_policy"] == "deny"
+    assert payload["auto_approve_low_risk"] is True
+    assert payload["auto_approve_medium_risk"] is True
+    assert payload["high_risk_requires_user"] is False
+
+
 def test_security_risk_assess_endpoint_persists_redacted_record(client) -> None:
     project = create_project(client, "Risk Assess", "risk-assess")
     response = client.post(
@@ -329,5 +392,38 @@ def test_high_risk_cannot_auto_approve_or_allow_for_project(client) -> None:
         assert stored is not None
         assert stored.project_id == project["id"]
         assert stored.status == "pending"
+    finally:
+        db.close()
+
+
+def test_write_access_policy_read_only_blocks_workspace_writes(client) -> None:
+    project = create_project(client, "Write Access Policy", "write-access-policy")
+
+    db = SessionLocal()
+    try:
+        record = db.get(Project, project["id"])
+        assert record is not None
+        security_service.update_policy(
+            db,
+            {
+                "write_access_policy": "read_only",
+            },
+            project=record,
+        )
+        evaluation = security_service.evaluate_action(
+            db,
+            {
+                "action_type": "command",
+                "title": "Edit app",
+                "summary": "Update src/app.py",
+                "command": "python scripts/edit.py",
+                "modifies_files": True,
+                "affected_paths_json": ["src/app.py"],
+            },
+            project=record,
+        )
+        assert evaluation["policy"]["write_access_policy"] == "read_only"
+        assert evaluation["decision"] == "blocked"
+        assert "read-only write policy" in evaluation["reason"].lower()
     finally:
         db.close()

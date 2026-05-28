@@ -26,6 +26,19 @@ DEFAULT_SECURITY_POLICY = {
 
 
 class SecurityService:
+    def _preview_policy(self, *, project: Project | None = None) -> SecurityPolicy:
+        scope = "project" if project is not None else "global"
+        timestamp = utc_now()
+        preview_id = -(project.id or 1) if project is not None else 0
+        return SecurityPolicy(
+            id=preview_id,
+            scope=scope,
+            project_id=project.id if project is not None else None,
+            created_at=timestamp,
+            updated_at=timestamp,
+            **DEFAULT_SECURITY_POLICY,
+        )
+
     def get_policy(self, db: Session, *, project: Project | None = None, create_if_missing: bool = True) -> SecurityPolicy:
         scope = "project" if project is not None else "global"
         query = select(SecurityPolicy).where(SecurityPolicy.scope == scope)
@@ -36,7 +49,7 @@ class SecurityService:
         record = db.scalar(query.order_by(SecurityPolicy.id.asc()))
         if record is None:
             if not create_if_missing:
-                return SecurityPolicy(scope=scope, project_id=project.id if project is not None else None, **DEFAULT_SECURITY_POLICY)
+                return self._preview_policy(project=project)
             record = SecurityPolicy(scope=scope, project_id=project.id if project is not None else None, **DEFAULT_SECURITY_POLICY)
             db.add(record)
             db.flush()
@@ -71,15 +84,23 @@ class SecurityService:
     def evaluate_action(self, db: Session, payload: dict[str, Any], *, project: Project | None = None) -> dict[str, Any]:
         policy = self.get_policy(db, project=project)
         assessment = self.assess_risk(db, payload, project=project)
+        derived_flags = dict(risk_classifier.classify(payload).get("derived_flags") or {})
         risk_level = assessment.risk_level
         action_type = assessment.action_type
         external_access = dict(assessment.external_access_json or {})
+        modifies_files = bool(derived_flags.get("modifies_files") or payload.get("modifies_files"))
         decision = "pending"
         reason = "User approval is required by default."
 
         if external_access.get("writes_outside_workspace"):
             decision = "blocked"
             reason = "Policy blocks writes outside the project workspace."
+        elif modifies_files and policy.write_access_policy == "read_only":
+            decision = "blocked"
+            reason = "Workspace file writes are blocked by the current read-only write policy."
+        elif modifies_files and policy.write_access_policy == "limited_paths":
+            decision = "pending"
+            reason = "Workspace file writes require path-specific approval under the limited-path write policy."
         elif external_access.get("accesses_credentials"):
             decision = "blocked"
             reason = "Policy blocks direct credential or secret access."

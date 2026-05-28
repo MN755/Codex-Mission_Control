@@ -780,16 +780,16 @@ class SecurityPolicyRead(BaseModel):
 
 
 class SecurityPolicyUpdate(BaseModel):
-    default_command_policy: DefaultExecutionPolicy = "ask"
-    default_tool_policy: DefaultExecutionPolicy = "ask"
-    network_access_policy: NetworkAccessPolicy = "ask"
-    write_access_policy: WriteAccessPolicy = "workspace_write"
-    external_account_policy: ExternalAccountPolicy = "ask"
-    deployment_policy: DeploymentPolicy = "deny"
-    destructive_action_policy: DestructiveActionPolicy = "critical_approval"
-    auto_approve_low_risk: bool = False
-    auto_approve_medium_risk: bool = False
-    high_risk_requires_user: bool = True
+    default_command_policy: DefaultExecutionPolicy | None = None
+    default_tool_policy: DefaultExecutionPolicy | None = None
+    network_access_policy: NetworkAccessPolicy | None = None
+    write_access_policy: WriteAccessPolicy | None = None
+    external_account_policy: ExternalAccountPolicy | None = None
+    deployment_policy: DeploymentPolicy | None = None
+    destructive_action_policy: DestructiveActionPolicy | None = None
+    auto_approve_low_risk: bool | None = None
+    auto_approve_medium_risk: bool | None = None
+    high_risk_requires_user: bool | None = None
 
 
 class RiskAssessRequest(BaseModel):
