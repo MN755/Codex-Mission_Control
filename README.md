@@ -29,7 +29,7 @@
   You stay in one conversation. Mission Control handles the coordination mess behind the scenes.
 </p>
 
-## Why people want this
+## The Problem
 
 Most multi-agent coding setups look impressive right up until they start doing real work. Then the usual nonsense shows up:
 
@@ -38,23 +38,24 @@ Most multi-agent coding setups look impressive right up until they start doing r
 - test evidence gets lost
 - approvals become hand-wavy
 - context dies between iterations
-- the "manager" is just a chat model improvising in public
+- the "coding" just a chat model improvising
 
-Mission Control fixes that by moving orchestration into a local daemon with a real state model. Codex chat stays clean. The Manager AI stays inside Mission Control. Worker runners stay behind policy, approvals, and evidence requirements.
+Mission Control fixes that by moving orchestration into a local daemon with a real state model. Codex chat stays clean. A Manager AI stays inside Mission Control and focuses on whats important. Worker runners stay behind policy, approvals, and evidence requirements.
 
-This is the pitch in one sentence:
+
 
 > Mission Control gives you the feeling of a coordinated engineering team without the usual AI-agent chaos tax.
+
 
 ## What makes Mission Control different
 
 - **Headless-first, chat-native**: the product center is the chat workflow, not a dashboard dependency.
 - **A real orchestration runtime**: project state, approvals, handoffs, diagnostics, and recovery are daemon-owned.
-- **Manager AI with guardrails**: one manager plans the work; workers do not freelance into anarchy.
+- **A Manager AI with guardrails**: one manager agent plans the work; workers do not freelance into anarchy.
 - **Evidence over vibes**: validation summaries, handoff evidence, and verification briefs exist so "it should work" stops counting as engineering.
 - **Works with existing repos**: attach a real codebase, intake it safely, and start from there instead of from fantasy greenfield demos.
-- **Local-first by default**: Codex CLI, Claude CLI, Ollama, and API-backed runners can all fit, but the system does not pretend billing, auth, or runtime limits do not exist.
-- **Browser automation lane included**: Webwright support gives Mission Control a serious browser-task path when the runtime is actually installed.
+- **Local-first by default**: Codex CLI, Claude CLI, Ollama, and API-backed runners can all fit, while respecting your billing, auth, or runtime limits.
+- **Browser automation lane**: Webwright support gives Mission Control a serious browser-task path when the runtime is actually installed.
 
 ## What you get
 
@@ -225,7 +226,6 @@ Mission Control is designed first for background running through Codex chat.
 
 - **Current**: daemon-oriented orchestration, plugin and MCP bridge packaging, skill library, pending decision relay, diagnostics, operator surfaces, chat-native handoffs, Webwright readiness lane
 - **Partial / experimental**: deeper runner coverage, more orchestration hardening, broader provider polish
-- **Optional / future**: standalone dashboard observability
 
 ## Contributing
 
