@@ -58,6 +58,13 @@ def _path_exists(path_text: str | None) -> bool:
     return bool(path_text and Path(path_text).exists())
 
 
+def _command_exists(command: str | None) -> bool:
+    normalized = str(command or "").strip()
+    if not normalized:
+        return False
+    return shutil.which(normalized) is not None
+
+
 def auth_mode_from_login_output(login_output: str) -> str | None:
     lowered = login_output.lower()
     if "chatgpt" in lowered:
@@ -372,7 +379,7 @@ def detect_env_api_status(provider: str, *, env_key: str, label: str) -> dict[st
 def detect_custom_status(adapter_command: str | None = None, adapter_args: list[str] | None = None) -> dict[str, Any]:
     recipe = resolve_adapter_recipe("custom", adapter_command, adapter_args)
     command = (recipe.command if recipe else adapter_command or "").strip()
-    detected = bool(command and (Path(command).exists() or shutil.which(command)))
+    detected = _command_exists(command)
     notes = [
         "Mission Control does not manage authentication for custom providers.",
         "Custom providers run through local adapter commands rather than direct built-in integrations.",

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from system_status import _parse_configured_mcp_servers, _strip_codex_cli_noise, detect_codex_status
+from system_status import _parse_configured_mcp_servers, _strip_codex_cli_noise, detect_codex_status, detect_custom_status
 
 
 def test_strip_codex_cli_noise_removes_arg0_warnings() -> None:
@@ -108,3 +108,31 @@ status = "enabled"
             "status": "enabled",
         }
     ]
+
+
+def test_detect_custom_status_uses_path_lookup_without_direct_path_probe(monkeypatch) -> None:
+    monkeypatch.setattr("system_status.resolve_adapter_recipe", lambda provider, command, args: None)
+    monkeypatch.setattr("system_status.Path", lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("Path should not be used here")))
+    monkeypatch.setattr("system_status.shutil.which", lambda command: "/safe/bin/custom-adapter" if command == "custom-adapter" else None)
+
+    payload = detect_custom_status("custom-adapter", ["--project", "demo"])
+
+    assert payload["cli_detected"] is True
+    assert payload["cli_path"] == "custom-adapter"
+    assert payload["cli_path_exists"] is True
+    assert payload["cli_execution_available"] is True
+    assert payload["cli_version"] == "custom-adapter --project demo"
+
+
+def test_detect_custom_status_rejects_missing_custom_path_probe(monkeypatch) -> None:
+    monkeypatch.setattr("system_status.resolve_adapter_recipe", lambda provider, command, args: None)
+    monkeypatch.setattr("system_status.Path", lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("Path should not be used here")))
+    monkeypatch.setattr("system_status.shutil.which", lambda _command: None)
+
+    payload = detect_custom_status("../../tmp/definitely-not-an-adapter", ["--project", "demo"])
+
+    assert payload["cli_detected"] is False
+    assert payload["cli_path"] == "../../tmp/definitely-not-an-adapter"
+    assert payload["cli_path_exists"] is False
+    assert payload["cli_execution_available"] is False
+    assert payload["cli_version"] is None
