@@ -65,6 +65,17 @@ def _command_exists(command: str | None) -> bool:
     return shutil.which(normalized) is not None
 
 
+def _adapter_runtime_blockers(*, adapter_required: bool, adapter_configured: bool, adapter_ready: bool) -> list[str]:
+    blockers: list[str] = []
+    if not adapter_required:
+        return blockers
+    if not adapter_configured:
+        blockers.append("adapter_command_missing")
+    elif not adapter_ready:
+        blockers.append("adapter_command_unavailable")
+    return blockers
+
+
 def auth_mode_from_login_output(login_output: str) -> str | None:
     lowered = login_output.lower()
     if "chatgpt" in lowered:
@@ -422,10 +433,22 @@ def _runtime_details(
     adapter_required = provider_uses_adapter(normalized)
     adapter_configured = bool(effective_command) if adapter_required else False
     adapter_ready = bool(adapter_status and adapter_status.get("cli_detected"))
+    runtime_blockers = _adapter_runtime_blockers(
+        adapter_required=adapter_required,
+        adapter_configured=adapter_configured,
+        adapter_ready=adapter_ready,
+    )
 
     if normalized == "codex":
-        ready = bool(detect_codex_status().get("authenticated"))
+        codex = detect_codex_status()
+        ready = bool(codex.get("authenticated"))
         summary = "Codex runtime is ready." if ready else "Codex runtime is not authenticated yet."
+        if not codex.get("cli_detected"):
+            runtime_blockers.append("codex_cli_missing")
+        elif not codex.get("cli_execution_available"):
+            runtime_blockers.append("codex_cli_execution_unavailable")
+        elif not ready:
+            runtime_blockers.append("codex_not_authenticated")
     elif normalized == "claude_code":
         claude = detect_claude_code_status()
         ready = bool(claude.get("cli_execution_available")) and bool(claude.get("auth_status_detectable"))
@@ -434,6 +457,12 @@ def _runtime_details(
             if claude.get("cli_execution_available")
             else str(claude.get("login_status") or "Claude CLI is not executable from this runtime.")
         )
+        if not claude.get("cli_detected"):
+            runtime_blockers.append("claude_cli_missing")
+        elif not claude.get("cli_execution_available"):
+            runtime_blockers.append("claude_cli_execution_unavailable")
+        elif not ready:
+            runtime_blockers.append("claude_auth_state_unverified")
     elif normalized == "ollama":
         ollama = detect_ollama_status(provider_endpoint)
         reachable = bool(ollama.get("reachable"))
@@ -446,6 +475,8 @@ def _runtime_details(
             summary = "Adapter runtime is available, but the Ollama endpoint is not reachable."
         else:
             summary = "Ollama needs both a reachable endpoint and a working local adapter command."
+        if not reachable:
+            runtime_blockers.append("ollama_endpoint_unreachable")
     elif normalized in {"openai_api", "anthropic_api", "xai_api"}:
         env_key = {
             "openai_api": "OPENAI_API_KEY",
@@ -462,13 +493,17 @@ def _runtime_details(
             summary = f"The local adapter runtime is ready, but {env_key} is not configured."
         else:
             summary = f"{normalized.replace('_', ' ')} needs both an external API key and a working local adapter command."
+        if not key_present:
+            runtime_blockers.append("api_key_missing")
     else:
         ready = adapter_ready
         summary = "Custom adapter runtime is ready." if ready else "Custom provider needs a working adapter command."
 
     return {
         "runtime_ready": ready,
+        "runtime_status": "ready" if ready else "blocked",
         "runtime_summary": summary,
+        "runtime_blockers": runtime_blockers,
         "requires_adapter_command": adapter_required,
         "adapter_command_configured": adapter_configured,
         "adapter_command_detected": adapter_ready,
@@ -658,7 +693,9 @@ def detect_system_status(
         "auth_mode": selected["auth_mode"],
         "authenticated": selected["authenticated"],
         "runtime_ready": bool(selected.get("runtime_ready")),
+        "runtime_status": str(selected.get("runtime_status") or ("ready" if selected.get("runtime_ready") else "blocked")),
         "runtime_summary": str(selected.get("runtime_summary") or selected["login_status"]),
+        "runtime_blockers": list(selected.get("runtime_blockers", [])),
         "app_server_supported": bool(supports_app_server(normalized_provider)),
         "app_server_handshake_status": "unsupported" if normalized_provider != "codex" else "not_checked",
         "app_server_transport": "stdio_jsonrpc" if normalized_provider == "codex" else "unsupported",

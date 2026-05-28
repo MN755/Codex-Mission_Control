@@ -136,3 +136,91 @@ def test_detect_custom_status_rejects_missing_custom_path_probe(monkeypatch) -> 
     assert payload["cli_path_exists"] is False
     assert payload["cli_execution_available"] is False
     assert payload["cli_version"] is None
+
+
+def test_detect_custom_status_reports_missing_adapter_blocker(monkeypatch) -> None:
+    monkeypatch.setattr("system_status.resolve_adapter_recipe", lambda provider, command, args: None)
+    monkeypatch.setattr("system_status.shutil.which", lambda _command: None)
+
+    payload = detect_custom_status("missing-adapter", [])
+
+    assert payload["cli_detected"] is False
+
+
+def test_detect_system_status_reports_runtime_blockers_for_selected_provider(monkeypatch) -> None:
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setattr("system_status.detect_codex_status", lambda: {
+        "provider": "codex",
+        "label": "Codex",
+        "cli_detected": True,
+        "cli_path": "codex",
+        "cli_path_exists": True,
+        "cli_execution_available": True,
+        "cli_version": "codex 1.0.0",
+        "login_status": "Logged in using ChatGPT",
+        "auth_mode": "chatgpt",
+        "authenticated": True,
+        "app_server_supported": True,
+        "configured_plugins": [],
+        "configured_mcp_servers": [],
+        "local_skills": [],
+        "mcp_servers": [],
+        "mcp_state": {},
+        "notes": [],
+    })
+    monkeypatch.setattr("system_status.detect_claude_code_status", lambda: {
+        "provider": "claude_code",
+        "label": "Claude Code",
+        "cli_detected": False,
+        "cli_path": None,
+        "cli_path_exists": False,
+        "cli_execution_available": False,
+        "cli_version": None,
+        "login_status": "Claude CLI was not detected.",
+        "auth_mode": None,
+        "authenticated": False,
+        "auth_status_detectable": False,
+        "supports_model_override": True,
+        "supports_reasoning_effort": False,
+        "supports_app_server": False,
+        "supports_builtin_auth": False,
+        "available_models": [],
+        "notes": [],
+    })
+    monkeypatch.setattr("system_status.detect_ollama_status", lambda endpoint=None: {
+        "provider": "ollama",
+        "label": "Ollama",
+        "cli_detected": False,
+        "cli_path": None,
+        "cli_path_exists": False,
+        "cli_execution_available": False,
+        "cli_version": None,
+        "login_status": "Ollama endpoint not reachable.",
+        "auth_mode": "local",
+        "authenticated": False,
+        "auth_status_detectable": True,
+        "supports_model_override": True,
+        "supports_reasoning_effort": True,
+        "supports_app_server": False,
+        "supports_builtin_auth": False,
+        "available_models": [],
+        "notes": [],
+        "reachable": False,
+        "summary": "Ollama endpoint not reachable.",
+    })
+    monkeypatch.setattr("system_status.detect_webwright_status", lambda: {"summary": "not installed"})
+    monkeypatch.setattr("system_status.shutil.which", lambda _command: None)
+
+    from system_status import detect_system_status
+
+    payload = detect_system_status(
+        selected_provider="openai_api",
+        adapter_command="missing-adapter",
+        adapter_args=["--project", "demo"],
+    )
+
+    assert payload["selected_provider"] == "openai_api"
+    assert payload["runtime_ready"] is False
+    assert payload["runtime_status"] == "blocked"
+    assert "api_key_missing" in payload["runtime_blockers"]
+    assert "adapter_command_unavailable" in payload["runtime_blockers"]

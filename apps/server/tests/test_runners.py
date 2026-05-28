@@ -62,6 +62,31 @@ def test_runner_registry_selects_claude_cli(monkeypatch) -> None:
     assert runner.runner_type == "claude_code_cli"
 
 
+def test_runner_registry_selects_external_adapter_when_configured(monkeypatch) -> None:
+    registry = RunnerRegistry()
+
+    async def fake_handshake(settings=None) -> bool:
+        return bool(settings and settings.adapter_command == "custom-adapter")
+
+    monkeypatch.setattr(registry.runners["external_adapter"], "handshake", fake_handshake)
+    resolved = ResolvedRunSettings(
+        provider="custom",
+        provider_label="Custom provider",
+        provider_endpoint=None,
+        runner_mode="auto",
+        sandbox_mode="workspace-write",
+        approval_policy="on-request",
+        model="custom-model",
+        reasoning_effort="high",
+        adapter_command="custom-adapter",
+        adapter_args=["--project", "demo"],
+        effective_model_label="custom-model",
+        effective_reasoning_label="high",
+    )
+    runner = asyncio.run(registry.get_runner_for_settings(resolved))
+    assert runner.runner_type == "external_adapter"
+
+
 def test_runner_registry_retries_negative_codex_cli_cache(monkeypatch) -> None:
     registry = RunnerRegistry()
     attempts = {"count": 0}
@@ -344,6 +369,29 @@ def test_system_status_includes_provider_matrix() -> None:
     assert status["selected_provider"] == "claude_code"
     assert any(provider["provider"] == "codex" for provider in status["provider_statuses"])
     assert any(provider["provider"] == "claude_code" for provider in status["provider_statuses"])
+
+
+def test_external_adapter_runner_handshake_uses_path_lookup_without_direct_path_probe(monkeypatch) -> None:
+    runner = ExternalAdapterRunner()
+    monkeypatch.setattr(
+        "codex_runner.external_adapter_runner.Path",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("Path should not be used during adapter handshake")),
+    )
+    monkeypatch.setattr("codex_runner.external_adapter_runner.shutil.which", lambda command: "/safe/bin/custom-adapter" if command == "custom-adapter" else None)
+
+    available = asyncio.run(
+        runner.handshake(
+            RunnerSettings(
+                provider="custom",
+                sandbox_mode="workspace-write",
+                approval_policy="on-request",
+                adapter_command="custom-adapter",
+                adapter_args=["--project", "demo"],
+            )
+        )
+    )
+
+    assert available is True
 
 
 def test_assess_model_advisories_flags_weak_ollama_model() -> None:

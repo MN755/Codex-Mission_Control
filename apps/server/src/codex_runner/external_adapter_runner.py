@@ -53,11 +53,17 @@ class ExternalAdapterRunner(BaseCodexRunner):
     def __init__(self) -> None:
         self.runs: dict[str, ExternalAdapterRunState] = {}
 
+    @staticmethod
+    def _command_available(command: str | None) -> bool:
+        normalized = str(command or "").strip()
+        if not normalized:
+            return False
+        return shutil.which(normalized) is not None
+
     async def handshake(self, settings: RunnerSettings | None = None) -> bool:
         if settings is None or not settings.adapter_command:
             return False
-        command = settings.adapter_command.strip()
-        return bool(command and (Path(command).exists() or shutil.which(command)))
+        return self._command_available(settings.adapter_command)
 
     async def start_task(self, context: RunnerContext) -> RunnerHandle:
         prompt = self._build_adapter_prompt(context)

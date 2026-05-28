@@ -1160,13 +1160,29 @@ class OrchestrationCoordinator:
         db = SessionLocal()
         try:
             session = db.get(OrchestrationSession, orchestration_id)
-            if session is None or session.status in {"completed", "failed"}:
+            if session is None or session.status in {"completed", "failed", "paused"}:
                 return
             project = db.get(Project, session.project_id)
             if project is None:
                 self._update_session_status(db, session, status="failed", manager_status="Project could not be loaded for orchestration.")
                 self._record_event(db, session, "orchestration_failed", {"reason": "project_missing"})
                 db.commit()
+                return
+            if project.status == "paused":
+                if session.status != "paused":
+                    self._update_session_status(
+                        db,
+                        session,
+                        status="paused",
+                        manager_status="Project is paused. Mission Control will not run background turns until you resume it.",
+                    )
+                    self._record_event(
+                        db,
+                        session,
+                        "background_turn_skipped",
+                        {"reason": "project_paused"},
+                    )
+                    db.commit()
                 return
             self._update_session_status(db, session, status="planning", manager_status="Mission Control Manager is reviewing the workspace.")
             self._record_event(db, session, "background_turn_started", {"reason": reason})

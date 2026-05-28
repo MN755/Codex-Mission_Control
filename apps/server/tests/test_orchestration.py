@@ -67,6 +67,62 @@ def test_background_retries_are_tracked_and_shutdown_cancels() -> None:
     asyncio.run(run_test())
 
 
+def test_background_turn_does_not_resume_paused_project(client, monkeypatch) -> None:
+    from db import SessionLocal
+    from models import OrchestrationSession, Project
+    from orchestration import coordinator
+
+    workspace = _fresh_workspace("paused-background-retry")
+    called = {"manager": 0}
+
+    async def fake_manager_ask_next(db, project):
+        called["manager"] += 1
+        return {"message": {"content_markdown": "should not run"}}
+
+    monkeypatch.setattr("orchestration.service.manager_ask_next", fake_manager_ask_next)
+
+    db = SessionLocal()
+    try:
+        project = Project(
+            name="Paused Runtime",
+            idea="Retry should not resume a paused project.",
+            workspace_path=workspace.as_posix(),
+            status="paused",
+            runner_mode="dry_run",
+            manager_mode="auto",
+        )
+        db.add(project)
+        db.flush()
+        session = OrchestrationSession(
+            project_id=project.id,
+            workspace_path=workspace.as_posix(),
+            source="test",
+            user_request="Retry after error.",
+            status="planning",
+            manager_status="Retry queued.",
+            metadata_json={"background_failure_count": 1, "last_background_error": "boom"},
+        )
+        db.add(session)
+        db.commit()
+        orchestration_id = session.id
+    finally:
+        db.close()
+
+    asyncio.run(coordinator._run_background_turn(orchestration_id, "retry_after_error"))
+
+    db = SessionLocal()
+    try:
+        refreshed = coordinator.get_session(db, orchestration_id)
+        assert refreshed is not None
+        assert refreshed.status == "paused"
+        assert "will not run background turns" in refreshed.manager_status
+        assert called["manager"] == 0
+        events = coordinator.list_events(db, refreshed)
+        assert any(event["event_type"] == "background_turn_skipped" for event in events)
+    finally:
+        db.close()
+
+
 def test_attach_workspace_creates_new_project_for_empty_folder(client) -> None:
     workspace = _fresh_workspace("attach-empty")
     response = client.post(
