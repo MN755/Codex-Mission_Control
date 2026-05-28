@@ -2146,8 +2146,31 @@ def get_project_agent_contracts(
     _: None = Depends(_require_bridge_token),
 ) -> list[AgentContractRead]:
     project = _get_project_or_404(db, project_id)
-    contracts = service._sync_agent_contracts(db, project)
-    return [AgentContractRead.model_validate(contract) for contract in contracts]
+    contracts = service._preview_agent_contracts(db, project)
+    return [
+        AgentContractRead.model_validate(
+            {
+                "id": contract.id if contract.id is not None else -(index + 1),
+                "project_id": contract.project_id,
+                "agent_id": contract.agent_id,
+                "agent_name": contract.agent_name,
+                "archetype": contract.archetype,
+                "mission": contract.mission,
+                "allowed_paths_json": list(contract.allowed_paths_json or []),
+                "forbidden_paths_json": list(contract.forbidden_paths_json or []),
+                "allowed_tools_json": list(contract.allowed_tools_json or []),
+                "expected_output": contract.expected_output,
+                "validation_required_json": list(contract.validation_required_json or []),
+                "stop_conditions_json": list(contract.stop_conditions_json or []),
+                "escalation_conditions_json": list(contract.escalation_conditions_json or []),
+                "completion_report_schema_json": dict(contract.completion_report_schema_json or {}),
+                "status": contract.status,
+                "created_at": contract.created_at,
+                "updated_at": contract.updated_at,
+            }
+        )
+        for index, contract in enumerate(contracts)
+    ]
 
 
 @app.get("/api/projects/{project_id}/decision-ledger", response_model=list[DecisionRecordRead])
@@ -2158,8 +2181,27 @@ def get_project_decision_ledger(
     _: None = Depends(_require_bridge_token),
 ) -> list[DecisionRecordRead]:
     project = _get_project_or_404(db, project_id)
-    decisions = service._sync_decision_records(db, project)
-    return [DecisionRecordRead.model_validate(entry) for entry in decisions]
+    decisions = service._preview_decision_records(db, project)
+    return [
+        DecisionRecordRead.model_validate(
+            {
+                "id": entry.id if entry.id is not None else -(index + 1),
+                "project_id": entry.project_id,
+                "decision_type": entry.decision_type,
+                "title": entry.title,
+                "decision": entry.decision,
+                "reason": entry.reason,
+                "made_by": entry.made_by,
+                "impact_area_json": list(entry.impact_area_json or []),
+                "related_task_id": entry.related_task_id,
+                "related_agent_id": entry.related_agent_id,
+                "created_at": entry.created_at,
+                "reversible": entry.reversible,
+                "superseded_by": entry.superseded_by,
+            }
+        )
+        for index, entry in enumerate(decisions)
+    ]
 
 
 @app.get("/api/projects/{project_id}/path-locks", response_model=list[PathLockRead])

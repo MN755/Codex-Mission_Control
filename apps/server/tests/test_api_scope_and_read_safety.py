@@ -24,6 +24,7 @@ from models import (
     CodebaseUnderstanding,
     ConflictRecord,
     DecisionRecord,
+    HandoffQualityPreference,
     HandoffEvidence,
     ImportedCodebaseSafety,
     InterviewQuestion,
@@ -659,6 +660,78 @@ def test_path_locks_get_is_read_only(client, bridge_headers) -> None:
     db = SessionLocal()
     try:
         assert db.scalar(select(func.count(PathLock.id)).where(PathLock.project_id == project_id)) == 0
+    finally:
+        db.close()
+
+
+def test_agent_contracts_get_is_read_only(client, bridge_headers) -> None:
+    project = _create_project(client, "Agent Contract Read Safety", "agent-contract-read-safety")
+    project_id = project["id"]
+
+    db = SessionLocal()
+    try:
+        db.add(
+            Agent(
+                project_id=project_id,
+                name="Builder",
+                role="Implementation",
+                kind="worker",
+                status="working",
+                workspace_path=project["workspace_path"],
+                current_action="Implement the next small change.",
+            )
+        )
+        db.commit()
+        assert db.scalar(select(func.count(AgentContract.id)).where(AgentContract.project_id == project_id)) == 0
+    finally:
+        db.close()
+
+    response = client.get(f"/api/projects/{project_id}/agent-contracts", headers=bridge_headers)
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload
+    assert payload[0]["agent_name"] == "Builder"
+
+    db = SessionLocal()
+    try:
+        assert db.scalar(select(func.count(AgentContract.id)).where(AgentContract.project_id == project_id)) == 0
+    finally:
+        db.close()
+
+
+def test_decision_ledger_get_is_read_only(client, bridge_headers) -> None:
+    project = _create_project(client, "Decision Ledger Read Safety", "decision-ledger-read-safety")
+    project_id = project["id"]
+
+    db = SessionLocal()
+    try:
+        db.add(
+            ManagerQuestion(
+                project_id=project_id,
+                question="Should Mission Control preserve the current API shape?",
+                options_json=[{"id": "preserve", "label": "Preserve it"}],
+                impact="medium",
+                status="answered",
+                selected_option_id="preserve",
+                selected_text="Preserve it",
+                manager_recommendation="Preserve it",
+            )
+        )
+        db.commit()
+        assert db.scalar(select(func.count(DecisionRecord.id)).where(DecisionRecord.project_id == project_id)) == 0
+    finally:
+        db.close()
+
+    response = client.get(f"/api/projects/{project_id}/decision-ledger", headers=bridge_headers)
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload
+    assert payload[0]["decision_type"] == "manager_question"
+    assert payload[0]["decision"] == "Preserve it"
+
+    db = SessionLocal()
+    try:
+        assert db.scalar(select(func.count(DecisionRecord.id)).where(DecisionRecord.project_id == project_id)) == 0
     finally:
         db.close()
 
@@ -1865,6 +1938,7 @@ def test_project_widget_data_route_stays_read_only_for_preview_widgets(client, b
         project_id = project.id
     finally:
         db.close()
+
     widget_types = [
         "Manager Assumptions",
         "Agent Black Box",
@@ -1956,5 +2030,41 @@ def test_project_widget_data_route_stays_read_only_for_preview_widgets(client, b
         assert repo_summary_count == 0
         assert trace_count == 0
         assert load_snapshot_count == 0
+    finally:
+        db.close()
+
+
+def test_project_widget_summary_keeps_validation_and_handoff_support_read_only(client, bridge_headers) -> None:
+    project = _create_project(client, "Widget Summary Support Read Safety", "widget-summary-support-read-safety")
+    project_id = project["id"]
+
+    for widget_type in ["Validation Recipe", "Handoff Quality"]:
+        added = client.post(
+            f"/api/projects/{project_id}/widgets/add",
+            json={"widget_type": widget_type},
+            headers=bridge_headers,
+        )
+        assert added.status_code == 200, added.text
+
+    db = SessionLocal()
+    try:
+        assert db.scalar(select(func.count(ValidationRecipe.id)).where(ValidationRecipe.project_id == project_id)) == 0
+        assert db.scalar(
+            select(func.count(HandoffQualityPreference.project_id)).where(HandoffQualityPreference.project_id == project_id)
+        ) == 0
+    finally:
+        db.close()
+
+    response = client.get(f"/api/projects/{project_id}/widgets/summary", headers=bridge_headers)
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert {item["widget_type"] for item in payload["data"]} >= {"Validation Recipe", "Handoff Quality"}
+
+    db = SessionLocal()
+    try:
+        assert db.scalar(select(func.count(ValidationRecipe.id)).where(ValidationRecipe.project_id == project_id)) == 0
+        assert db.scalar(
+            select(func.count(HandoffQualityPreference.project_id)).where(HandoffQualityPreference.project_id == project_id)
+        ) == 0
     finally:
         db.close()
