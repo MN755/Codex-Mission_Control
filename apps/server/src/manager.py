@@ -3692,7 +3692,7 @@ class MissionControlService:
         settings = self._project_settings_preview(db, project)
         _ = settings
         degraded: list[str] = []
-        current_action = self._derive_current_action(db, project, degraded)
+        current_action = self._derive_current_action_preview(db, project, degraded)
         overview = self._project_overview(db, project, tasks, current_action)
         support = self._preview_widget_support_records(
             db,
@@ -6721,7 +6721,7 @@ class MissionControlService:
         settings = self._project_settings_preview(db, project)
         tasks = list(db.scalars(select(Task).where(Task.project_id == project.id).order_by(Task.priority.asc(), Task.id.asc())))
         degraded_notices = await self._workspace_degraded_notices(project, settings)
-        current_action = self._derive_current_action(db, project, degraded_notices)
+        current_action = self._derive_current_action_preview(db, project, degraded_notices)
         overview = self._project_overview(db, project, tasks, current_action)
         return await self._project_widget_data_for_instance(
             db,
@@ -6771,7 +6771,7 @@ class MissionControlService:
         instances = [item for item in self._project_widget_instances(db, project, settings, create_if_missing=False) if item.enabled]
         tasks = list(db.scalars(select(Task).where(Task.project_id == project.id).order_by(Task.priority.asc(), Task.id.asc())))
         degraded_notices = await self._workspace_degraded_notices(project, settings)
-        current_action = self._derive_current_action(db, project, degraded_notices)
+        current_action = self._derive_current_action_preview(db, project, degraded_notices)
         overview = self._project_overview(db, project, tasks, current_action)
         data = [
             await self._project_widget_data_for_instance(
@@ -7975,8 +7975,16 @@ class MissionControlService:
             notices.append(f"Runner degraded: {provider_label(settings.provider)} is not currently available in {settings.runner_mode} mode.")
         return notices
 
-    def _derive_current_action(self, db: Session, project: Project, degraded_notices: list[str]) -> dict[str, Any]:
-        self._auto_decide_due_questions(db, project)
+    def _derive_current_action(
+        self,
+        db: Session,
+        project: Project,
+        degraded_notices: list[str],
+        *,
+        mutate: bool = True,
+    ) -> dict[str, Any]:
+        if mutate:
+            self._auto_decide_due_questions(db, project)
         pending_approval = db.scalar(
             select(ApprovalRequest)
             .where(ApprovalRequest.project_id == project.id, ApprovalRequest.status == "pending")
@@ -10809,15 +10817,15 @@ class MissionControlService:
             self._auto_decide_due_questions(db, project)
         return self._manager_queue(db, project)
 
-    async def get_project_action(self, db: Session, project: Project) -> dict[str, Any]:
+    async def get_project_action(self, db: Session, project: Project, *, mutate: bool = True) -> dict[str, Any]:
         settings = self._project_settings_preview(db, project)
         degraded_notices = await self._workspace_degraded_notices(project, settings)
-        return self._derive_current_action(db, project, degraded_notices)
+        return self._derive_current_action(db, project, degraded_notices, mutate=mutate)
 
-    async def list_project_actions(self, db: Session, project: Project) -> list[dict[str, Any]]:
+    async def list_project_actions(self, db: Session, project: Project, *, mutate: bool = True) -> list[dict[str, Any]]:
         settings = self._project_settings_preview(db, project)
         degraded_notices = await self._workspace_degraded_notices(project, settings)
-        current = self._derive_current_action(db, project, degraded_notices)
+        current = self._derive_current_action(db, project, degraded_notices, mutate=mutate)
         history = self._derive_action_history(db, project)
         return [current, *history]
 
@@ -10903,7 +10911,7 @@ class MissionControlService:
         swarm_preferences = self._swarm_preferences(project)
         tasks = list(db.scalars(select(Task).where(Task.project_id == project.id).order_by(Task.priority.asc(), Task.id.asc())))
         degraded_notices = await self._workspace_degraded_notices(project, settings)
-        current_action = self._derive_current_action(db, project, degraded_notices)
+        current_action = self._derive_current_action(db, project, degraded_notices, mutate=False)
         queue = self.get_manager_queue(db, project, mutate=False)
         reservations = self.list_reservations(db, project.id)
         swarm_plan = self._current_swarm_plan_record(db, project.id)

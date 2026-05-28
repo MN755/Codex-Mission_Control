@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import timedelta
 from pathlib import Path
 
 import pytest
@@ -25,7 +26,10 @@ from models import (
     DecisionRecord,
     HandoffEvidence,
     ImportedCodebaseSafety,
+    InterviewQuestion,
+    InterviewSession,
     ManagerMessage,
+    ManagerQuestion,
     ManagerAssumption,
     ModelPolicy,
     PathLock,
@@ -50,6 +54,7 @@ from models import (
     ValidationRecipe,
     WidgetDefinition,
     WidgetInstance,
+    utc_now,
 )
 
 
@@ -601,6 +606,184 @@ def test_safe_mode_get_and_import_safety_do_not_mutate_non_imported_project(clie
         assert project_policy_count == 0
         assert swarm_pref_count == 0
         assert import_safety_count == 0
+    finally:
+        db.close()
+
+
+def test_manager_read_endpoints_do_not_auto_decide_due_questions(client, bridge_headers) -> None:
+    project = _create_project(client, "Question Read Safety", "question-read-safety")
+    project_id = project["id"]
+
+    db = SessionLocal()
+    try:
+        question = ManagerQuestion(
+            project_id=project_id,
+            question="Ship it?",
+            options_json=[{"id": "yes", "label": "Yes"}, {"id": "no", "label": "No"}],
+            impact="medium",
+            status="pending",
+            auto_decide_at=utc_now() - timedelta(minutes=1),
+            manager_recommendation="yes",
+        )
+        db.add(question)
+        db.commit()
+        question_id = question.id
+    finally:
+        db.close()
+
+    def assert_question_still_pending() -> None:
+        db = SessionLocal()
+        try:
+            stored = db.get(ManagerQuestion, question_id)
+            assert stored is not None
+            assert stored.status == "pending"
+            assert stored.selected_option_id is None
+            assert stored.resolved_at is None
+        finally:
+            db.close()
+
+    pending = client.get(f"/api/projects/{project_id}/questions/pending", headers=bridge_headers)
+    assert pending.status_code == 200, pending.text
+    assert pending.json()[0]["id"] == question_id
+    assert_question_still_pending()
+
+    queue = client.get(f"/api/projects/{project_id}/manager/queue", headers=bridge_headers)
+    assert queue.status_code == 200, queue.text
+    assert_question_still_pending()
+
+    action = client.get(f"/api/projects/{project_id}/action", headers=bridge_headers)
+    assert action.status_code == 200, action.text
+    assert action.json()["question_id"] == question_id
+    assert_question_still_pending()
+
+    actions = client.get(f"/api/projects/{project_id}/actions", headers=bridge_headers)
+    assert actions.status_code == 200, actions.text
+    assert actions.json()[0]["question_id"] == question_id
+    assert_question_still_pending()
+
+    workspace = client.get(f"/api/projects/{project_id}/workspace", headers=bridge_headers)
+    assert workspace.status_code == 200, workspace.text
+    assert_question_still_pending()
+
+
+def test_pending_questions_read_does_not_create_interview_question_mirror(client, bridge_headers) -> None:
+    project_id = _create_legacy_project("Interview Mirror Read Safety", "interview-mirror-read-safety")
+
+    db = SessionLocal()
+    try:
+        session = InterviewSession(
+            project_id=project_id,
+            question_count=1,
+            question_budget=5,
+            questions_asked=0,
+            current_index=0,
+            status="in_progress",
+            manager_mode="auto",
+        )
+        db.add(session)
+        db.flush()
+        db.add(
+            InterviewQuestion(
+                session_id=session.id,
+                project_id=project_id,
+                index=0,
+                question="What stack?",
+                category="architecture",
+                impact="medium",
+                options_json=[{"id": "react", "label": "React"}, {"id": "vue", "label": "Vue"}],
+                status="pending",
+                question_source="fallback_generated",
+            )
+        )
+        db.commit()
+    finally:
+        db.close()
+
+    response = client.get(f"/api/projects/{project_id}/questions/pending", headers=bridge_headers)
+    assert response.status_code == 200, response.text
+    assert response.json() == []
+
+    db = SessionLocal()
+    try:
+        assert db.scalar(select(func.count(ManagerQuestion.id)).where(ManagerQuestion.project_id == project_id)) == 0
+    finally:
+        db.close()
+
+
+def test_swarm_preferences_get_is_read_only(client, bridge_headers) -> None:
+    project_id = _create_legacy_project("Swarm Preferences Read Safety", "swarm-preferences-read-safety")
+
+    db = SessionLocal()
+    try:
+        assert db.scalar(select(func.count(SwarmPreferences.project_id)).where(SwarmPreferences.project_id == project_id)) == 0
+    finally:
+        db.close()
+
+    response = client.get(f"/api/projects/{project_id}/swarm/preferences", headers=bridge_headers)
+    assert response.status_code == 200, response.text
+    assert response.json()["project_id"] == project_id
+
+    db = SessionLocal()
+    try:
+        assert db.scalar(select(func.count(SwarmPreferences.project_id)).where(SwarmPreferences.project_id == project_id)) == 0
+    finally:
+        db.close()
+
+
+def test_validation_coverage_get_is_read_only(client, bridge_headers) -> None:
+    project_id = _create_legacy_project("Validation Coverage Read Safety", "validation-coverage-read-safety")
+
+    db = SessionLocal()
+    try:
+        assert db.scalar(select(func.count(ValidationCoverageArea.id)).where(ValidationCoverageArea.project_id == project_id)) == 0
+    finally:
+        db.close()
+
+    response = client.get(f"/api/projects/{project_id}/validation-coverage", headers=bridge_headers)
+    assert response.status_code == 200, response.text
+    assert response.json()
+
+    db = SessionLocal()
+    try:
+        assert db.scalar(select(func.count(ValidationCoverageArea.id)).where(ValidationCoverageArea.project_id == project_id)) == 0
+    finally:
+        db.close()
+
+
+def test_agent_archetype_catalog_get_is_read_only_and_preserves_edits(client, bridge_headers) -> None:
+    empty_catalog = client.get("/api/agent-archetypes", headers=bridge_headers)
+    assert empty_catalog.status_code == 200, empty_catalog.text
+
+    db = SessionLocal()
+    try:
+        assert db.scalar(select(func.count(AgentArchetype.id))) == 0
+        custom = AgentArchetype(
+            name="frontend",
+            purpose="CUSTOM PURPOSE",
+            default_guidelines="Custom guidelines",
+            default_tools_json=["edit"],
+            default_permissions_json={"writes": "workspace"},
+            spawn_triggers_json=["custom"],
+            retirement_triggers_json=["done"],
+            risk_profile="medium",
+        )
+        db.add(custom)
+        db.commit()
+        custom_id = custom.id
+    finally:
+        db.close()
+
+    catalog = client.get("/api/agent-archetypes", headers=bridge_headers)
+    assert catalog.status_code == 200, catalog.text
+    frontend = next(item for item in catalog.json() if item["name"] == "frontend")
+    assert frontend["purpose"] == "CUSTOM PURPOSE"
+
+    db = SessionLocal()
+    try:
+        rows = list(db.scalars(select(AgentArchetype).order_by(AgentArchetype.id.asc())))
+        assert len(rows) == 1
+        assert rows[0].id == custom_id
+        assert rows[0].purpose == "CUSTOM PURPOSE"
     finally:
         db.close()
 

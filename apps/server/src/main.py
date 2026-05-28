@@ -2744,7 +2744,7 @@ async def get_project_action(
     _: None = Depends(_require_bridge_token),
 ) -> ProjectActionRead:
     project = _get_project_or_404(db, project_id)
-    return ProjectActionRead(**(await service.get_project_action(db, project)))
+    return ProjectActionRead(**(await service.get_project_action(db, project, mutate=False)))
 
 
 @app.get("/api/projects/{project_id}/actions", response_model=list[ProjectActionRead])
@@ -2754,7 +2754,7 @@ async def get_project_actions(
     _: None = Depends(_require_bridge_token),
 ) -> list[ProjectActionRead]:
     project = _get_project_or_404(db, project_id)
-    return [ProjectActionRead(**item) for item in await service.list_project_actions(db, project)]
+    return [ProjectActionRead(**item) for item in await service.list_project_actions(db, project, mutate=False)]
 
 
 @app.post("/api/projects/{project_id}/actions/{action_id}/resolve")
