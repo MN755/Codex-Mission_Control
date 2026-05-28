@@ -3275,7 +3275,11 @@ async def start_project_agents(
     _: None = Depends(_require_bridge_token),
 ) -> AgentActionResponse:
     project = _get_project_or_404(db, project_id)
-    await service.start_idle_agents(db, project)
+    started = await service.start_idle_agents(db, project)
+    if project.status == "paused":
+        return AgentActionResponse(ok=False, message="Project is paused. Resume it before starting agents.")
+    if started <= 0:
+        return AgentActionResponse(ok=False, message="No idle agents had runnable work.")
     return AgentActionResponse(ok=True, message="Started idle agents where work was available.")
 
 
@@ -3288,14 +3292,15 @@ async def start_agent(
 ) -> AgentActionResponse:
     project = _get_project_or_404(db, project_id)
     agent = _require_project_agent(db, project, agent_id)
+    if project.status == "paused":
+        return AgentActionResponse(ok=False, message="Project is paused. Resume it before starting agents.")
+    if agent.kind != "worker":
+        return AgentActionResponse(ok=False, message="Only worker agents can be started manually.")
+    if service._agent_has_unfinished_run(db, agent.id):
+        return AgentActionResponse(ok=False, message="Agent already has an active unfinished run.")
     task = service._find_next_safe_task(db, project, agent)
     if task:
         run = await service.start_agent_task(db, project, agent, task)
-        return AgentActionResponse(ok=True, message="Agent started.", run_id=run.id)
-    await service.start_idle_agents(db, project)
-    refreshed_task = service._find_next_safe_task(db, project, agent)
-    if refreshed_task:
-        run = await service.start_agent_task(db, project, agent, refreshed_task)
         return AgentActionResponse(ok=True, message="Agent started.", run_id=run.id)
     blocked_task = db.scalar(select(Task).where(Task.project_id == project.id, Task.status == "waiting_on_paths").order_by(Task.priority.asc()))
     if blocked_task:

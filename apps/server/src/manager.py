@@ -10274,7 +10274,12 @@ class MissionControlService:
             return project
         project.status = "paused"
         for agent in db.scalars(select(Agent).where(Agent.project_id == project.id, Agent.kind == "worker")):
-            if agent.status in {"idle", "waiting", "done", "stopped"}:
+            if self._agent_has_unfinished_run(db, agent.id) or agent.status in {"working", "starting"}:
+                try:
+                    asyncio.run(self.stop_agent(db, agent))
+                except RuntimeError:
+                    self._reconcile_stopped_agent_state(db, agent, self._unfinished_runs_for_agent(db, agent.id))
+            else:
                 agent.current_action = "Paused by user."
         self._record_manager_message(
             db,
@@ -11902,24 +11907,40 @@ class MissionControlService:
             )
         return changed
 
-    async def start_idle_agents(self, db: Session, project: Project) -> None:
+    def _unfinished_runs_for_agent(self, db: Session, agent_id: int) -> list[AgentRun]:
+        return list(
+            db.scalars(
+                select(AgentRun)
+                .where(AgentRun.agent_id == agent_id, AgentRun.finished_at.is_(None))
+                .order_by(AgentRun.id.desc())
+            )
+        )
+
+    def _agent_has_unfinished_run(self, db: Session, agent_id: int) -> bool:
+        return bool(self._unfinished_runs_for_agent(db, agent_id))
+
+    async def start_idle_agents(self, db: Session, project: Project) -> int:
         if project.status == "paused":
-            return
+            return 0
         workers = list(db.scalars(select(Agent).where(Agent.project_id == project.id, Agent.kind == "worker").order_by(Agent.id.asc())))
         tasks = list(db.scalars(select(Task).where(Task.project_id == project.id).order_by(Task.priority.asc(), Task.id.asc())))
         is_git_workspace = self._is_git_workspace(project)
         self._activate_ready_deferred_specs(db, project)
+        started_count = 0
         for task in tasks:
             if task.status in TASK_STARTABLE_STATUSES and not self._dependencies_met(db, task):
                 if task.assigned_agent_id is None:
                     task.status = "backlog"
                 task.waiting_reason = "Waiting for task dependencies to finish."
         for agent in workers:
+            if self._agent_has_unfinished_run(db, agent.id):
+                continue
             if agent.status not in {"idle", "waiting", "done", "stopped"}:
                 continue
             candidate = self._find_next_safe_task(db, project, agent)
             if candidate is not None:
                 await self.start_agent_task(db, project, agent, candidate)
+                started_count += 1
                 continue
             for task in tasks:
                 if task.status in TASK_STARTABLE_STATUSES and self._agent_matches_task(agent, task) and self._dependencies_met(db, task) and not can_assign_task(agent, task, workers, is_git_workspace):
@@ -11927,8 +11948,13 @@ class MissionControlService:
                     agent.status = "waiting"
                     agent.current_action = "Waiting for another worker to release overlapping path ownership."
                     break
+        return started_count
 
     async def start_agent_task(self, db: Session, project: Project, agent: Agent, task: Task) -> AgentRun:
+        if agent.kind != "worker":
+            raise ValueError("Only worker agents can be started manually.")
+        if self._agent_has_unfinished_run(db, agent.id):
+            raise ValueError("Agent already has an active unfinished run.")
         settings_record = self._project_settings(db, project)
         resolved_settings = resolve_worker_settings(project, settings_record, agent)
         latest_plan = self._latest_plan(db, project.id)
@@ -12062,6 +12088,15 @@ class MissionControlService:
         if not project:
             raise ValueError("Project not found")
         task = db.get(Task, run.task_id) if run.task_id else None
+        if report.agent.strip() != agent.name:
+            raise ValueError("Worker report agent does not match the run agent.")
+        if task is not None:
+            try:
+                reported_task_id = int(str(report.task_id).strip())
+            except ValueError as exc:
+                raise ValueError("Worker report task_id does not match the run task.") from exc
+            if reported_task_id != task.id:
+                raise ValueError("Worker report task_id does not match the run task.")
         run.report_json = _dump_model(report)
         run.status = report.status
         run.finished_at = run.finished_at or utc_now()
@@ -12256,37 +12291,40 @@ class MissionControlService:
         }
         self.events.publish(db, project.id, "project.handoff_ready", {"project_id": project.id})
 
-    async def stop_agent(self, db: Session, agent: Agent) -> None:
-        run = db.scalar(
-            select(AgentRun)
-            .where(AgentRun.agent_id == agent.id, AgentRun.finished_at.is_(None))
-            .order_by(AgentRun.id.desc())
-        )
-        if not run:
-            agent.status = "stopped"
-            task = db.get(Task, agent.current_task_id) if agent.current_task_id else None
+    def _reconcile_stopped_agent_state(self, db: Session, agent: Agent, runs: list[AgentRun]) -> None:
+        for run in runs:
+            task = db.get(Task, run.task_id) if run.task_id else None
+            run.status = "stopped"
+            run.finished_at = run.finished_at or utc_now()
             if task is not None and task.status == "working":
                 task.status = "assigned"
                 task.assigned_agent_id = None
                 task.waiting_reason = "Agent was stopped before completing the task."
-            agent.current_task_id = None
-            agent.current_action = None
-            self._release_reservations(db, agent.project_id, agent_id=agent.id)
-            return
-        runner = await self.runners.get_runner(run.runner_type)
-        await runner.stop_run(run.process_ref or "")
-        task = db.get(Task, run.task_id) if run.task_id else None
+            self._release_reservations(db, agent.project_id, task_id=run.task_id, agent_id=agent.id)
+        task = db.get(Task, agent.current_task_id) if agent.current_task_id else None
         agent.status = "stopped"
         agent.current_task_id = None
         agent.current_action = None
-        run.status = "stopped"
-        run.finished_at = utc_now()
         if task is not None and task.status == "working":
             task.status = "assigned"
             task.assigned_agent_id = None
             task.waiting_reason = "Agent was stopped before completing the task."
-        self._release_reservations(db, agent.project_id, task_id=run.task_id, agent_id=agent.id)
+        self._release_reservations(db, agent.project_id, agent_id=agent.id)
         self.events.publish(db, agent.project_id, "agent.stopped", {"agent_id": agent.id})
+
+    async def stop_agent(self, db: Session, agent: Agent) -> None:
+        runs = self._unfinished_runs_for_agent(db, agent.id)
+        if not runs:
+            self._reconcile_stopped_agent_state(db, agent, [])
+            return
+        runners: dict[str, Any] = {}
+        for run in runs:
+            runner = runners.get(run.runner_type)
+            if runner is None:
+                runner = await self.runners.get_runner(run.runner_type)
+                runners[run.runner_type] = runner
+            await runner.stop_run(run.process_ref or "")
+        self._reconcile_stopped_agent_state(db, agent, runs)
 
     async def complete_task_by_user(self, db: Session, task: Task) -> None:
         project = db.get(Project, task.project_id)

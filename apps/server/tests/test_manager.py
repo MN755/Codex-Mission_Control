@@ -4,6 +4,7 @@ import asyncio
 import json
 
 from conftest import sample_workspace
+from db import SessionLocal
 from main import service as app_service
 from manager import MissionControlService
 from models import Agent, AgentRun, Project, Task
@@ -256,6 +257,351 @@ def test_start_idle_agents_keeps_dependency_blocked_unowned_task_unassigned() ->
         assert blocked.status == "backlog"
         assert blocked.assigned_agent_id is None
         assert blocked.waiting_reason == "Waiting for task dependencies to finish."
+    finally:
+        db.close()
+
+
+def test_manual_start_route_rejects_manager_and_active_worker_without_side_effects(client) -> None:
+    project = client.post(
+        "/api/projects",
+        json={
+            "name": "Manual Start Guard",
+            "idea": "Do not start the wrong thing.",
+            "workspace_path": sample_workspace("manual-start-guard"),
+            "runner_mode": "dry_run",
+            "manager_mode": "auto",
+        },
+    ).json()
+
+    db = SessionLocal()
+    try:
+        manager_agent = db.query(Agent).filter(Agent.project_id == project["id"], Agent.kind == "manager").one()
+        worker = Agent(
+            project_id=project["id"],
+            name="Builder Agent A",
+            role="Primary implementation",
+            kind="worker",
+            status="waiting",
+            workspace_path=project["workspace_path"],
+        )
+        task_one = Task(
+            project_id=project["id"],
+            title="Task One",
+            goal="Keep the first run active.",
+            scope="Narrow scope.",
+            agent_role="Primary implementation",
+            milestone="Milestone 1",
+            allowed_paths_json=[],
+            forbidden_paths_json=[],
+            validation_steps_json=[],
+            success_criteria_json=["Remain scoped"],
+            estimated_complexity="small",
+            dependencies_json=[],
+            status="working",
+            priority=10,
+        )
+        task_two = Task(
+            project_id=project["id"],
+            title="Task Two",
+            goal="Would be the illegal second run.",
+            scope="Narrow scope.",
+            agent_role="Primary implementation",
+            milestone="Milestone 2",
+            allowed_paths_json=[],
+            forbidden_paths_json=[],
+            validation_steps_json=[],
+            success_criteria_json=["Remain scoped"],
+            estimated_complexity="small",
+            dependencies_json=[],
+            status="backlog",
+            priority=20,
+        )
+        db.add_all([worker, task_one, task_two])
+        db.flush()
+        worker.current_task_id = task_one.id
+        task_one.assigned_agent_id = worker.id
+        db.add(
+            AgentRun(
+                agent_id=worker.id,
+                task_id=task_one.id,
+                runner_type="dry_run",
+                process_ref="existing-run",
+                status="working",
+            )
+        )
+        db.commit()
+
+        manager_response = client.post(f"/api/agents/{manager_agent.id}/start", params={"project_id": project["id"]})
+        assert manager_response.status_code == 200
+        assert manager_response.json()["ok"] is False
+        assert "Only worker agents" in manager_response.json()["message"]
+
+        worker_response = client.post(f"/api/agents/{worker.id}/start", params={"project_id": project["id"]})
+        assert worker_response.status_code == 200
+        assert worker_response.json()["ok"] is False
+        assert "active unfinished run" in worker_response.json()["message"]
+
+        runs = db.query(AgentRun).filter(AgentRun.agent_id == worker.id, AgentRun.finished_at.is_(None)).all()
+        assert len(runs) == 1
+        assert runs[0].task_id == task_one.id
+        db.refresh(task_two)
+        assert task_two.status == "backlog"
+    finally:
+        db.close()
+
+
+def test_start_project_agents_route_reports_paused_project(client) -> None:
+    project = client.post(
+        "/api/projects",
+        json={
+            "name": "Paused Project Start",
+            "idea": "Do not claim success on paused projects.",
+            "workspace_path": sample_workspace("paused-project-start"),
+            "runner_mode": "dry_run",
+            "manager_mode": "auto",
+        },
+    ).json()
+
+    paused = client.post(f"/api/projects/{project['id']}/pause")
+    assert paused.status_code == 200
+
+    response = client.post(f"/api/projects/{project['id']}/agents/start")
+    assert response.status_code == 200
+    assert response.json()["ok"] is False
+    assert "Project is paused" in response.json()["message"]
+
+
+def test_ingest_worker_report_rejects_mismatched_agent_and_task_identifiers() -> None:
+    service = MissionControlService()
+    from db import SessionLocal, init_db
+
+    init_db()
+    db = SessionLocal()
+    try:
+        project = Project(
+            name="Mismatch Report",
+            idea="Do not trust decorative ids.",
+            workspace_path=sample_workspace("mismatch-report"),
+            status="building",
+            runner_mode="dry_run",
+            manager_mode="deterministic",
+        )
+        db.add(project)
+        db.flush()
+        manager_agent = Agent(project_id=project.id, name="Manager AI", role="Project orchestration", kind="manager", status="idle", workspace_path=project.workspace_path)
+        worker = Agent(project_id=project.id, name="Builder Agent A", role="Primary implementation", kind="worker", status="working", workspace_path=project.workspace_path)
+        task = Task(
+            project_id=project.id,
+            assigned_agent_id=worker.id,
+            title="Vertical slice",
+            goal="Build",
+            scope="Scope",
+            agent_role="Primary implementation",
+            milestone="Milestone 1",
+            allowed_paths_json=["src"],
+            forbidden_paths_json=[],
+            validation_steps_json=["run"],
+            success_criteria_json=["done"],
+            estimated_complexity="small",
+            dependencies_json=[],
+            status="working",
+            priority=10,
+        )
+        db.add_all([manager_agent, worker, task])
+        db.flush()
+        run = AgentRun(agent_id=worker.id, task_id=task.id, runner_type="dry_run", process_ref="dry-test", status="working")
+        db.add(run)
+        db.flush()
+
+        bad_agent_report = WorkerReport(
+            agent="Not the real agent",
+            task_id=str(task.id),
+            status="done",
+            summary="Completed",
+            files_changed=[],
+            tests_run=[],
+            blockers=[],
+            risks=[],
+            recommended_next_task="None",
+        )
+        try:
+            asyncio.run(service.ingest_worker_report(db, run, bad_agent_report))
+            assert False, "Expected mismatched agent name rejection"
+        except ValueError as exc:
+            assert "run agent" in str(exc)
+
+        bad_task_report = WorkerReport(
+            agent=worker.name,
+            task_id="999",
+            status="done",
+            summary="Completed",
+            files_changed=[],
+            tests_run=[],
+            blockers=[],
+            risks=[],
+            recommended_next_task="None",
+        )
+        try:
+            asyncio.run(service.ingest_worker_report(db, run, bad_task_report))
+            assert False, "Expected mismatched task id rejection"
+        except ValueError as exc:
+            assert "run task" in str(exc)
+    finally:
+        db.close()
+
+
+def test_stop_agent_reconciles_all_unfinished_runs() -> None:
+    service = MissionControlService()
+    from db import SessionLocal, init_db
+
+    init_db()
+    db = SessionLocal()
+    try:
+        project = Project(
+            name="Stop All Runs",
+            idea="One stop should clean up all active runs.",
+            workspace_path=sample_workspace("stop-all-runs"),
+            status="building",
+            runner_mode="dry_run",
+            manager_mode="deterministic",
+        )
+        db.add(project)
+        db.flush()
+        worker = Agent(
+            project_id=project.id,
+            name="Builder Agent A",
+            role="Primary implementation",
+            kind="worker",
+            status="working",
+            workspace_path=project.workspace_path,
+        )
+        task_one = Task(
+            project_id=project.id,
+            assigned_agent_id=None,
+            title="Task One",
+            goal="Stop the first run.",
+            scope="Narrow scope.",
+            agent_role="Primary implementation",
+            milestone="Milestone 1",
+            allowed_paths_json=[],
+            forbidden_paths_json=[],
+            validation_steps_json=[],
+            success_criteria_json=["Remain scoped"],
+            estimated_complexity="small",
+            dependencies_json=[],
+            status="working",
+            priority=10,
+        )
+        task_two = Task(
+            project_id=project.id,
+            assigned_agent_id=None,
+            title="Task Two",
+            goal="Stop the second run.",
+            scope="Narrow scope.",
+            agent_role="Primary implementation",
+            milestone="Milestone 2",
+            allowed_paths_json=[],
+            forbidden_paths_json=[],
+            validation_steps_json=[],
+            success_criteria_json=["Remain scoped"],
+            estimated_complexity="small",
+            dependencies_json=[],
+            status="working",
+            priority=20,
+        )
+        db.add_all([worker, task_one, task_two])
+        db.flush()
+        worker.current_task_id = task_two.id
+        task_one.assigned_agent_id = worker.id
+        task_two.assigned_agent_id = worker.id
+        run_one = AgentRun(agent_id=worker.id, task_id=task_one.id, runner_type="dry_run", process_ref="run-one", status="working")
+        run_two = AgentRun(agent_id=worker.id, task_id=task_two.id, runner_type="dry_run", process_ref="run-two", status="working")
+        db.add_all([run_one, run_two])
+        db.commit()
+
+        asyncio.run(service.stop_agent(db, worker))
+
+        db.refresh(run_one)
+        db.refresh(run_two)
+        db.refresh(task_one)
+        db.refresh(task_two)
+        db.refresh(worker)
+        assert run_one.finished_at is not None
+        assert run_two.finished_at is not None
+        assert run_one.status == "stopped"
+        assert run_two.status == "stopped"
+        assert task_one.assigned_agent_id is None
+        assert task_two.assigned_agent_id is None
+        assert task_one.status == "assigned"
+        assert task_two.status == "assigned"
+        assert worker.status == "stopped"
+        assert worker.current_task_id is None
+    finally:
+        db.close()
+
+
+def test_pause_project_stops_active_worker_execution() -> None:
+    service = MissionControlService()
+    from db import SessionLocal, init_db
+
+    init_db()
+    db = SessionLocal()
+    try:
+        project = Project(
+            name="Pause Project Runtime",
+            idea="Pause should stop live execution.",
+            workspace_path=sample_workspace("pause-project-runtime"),
+            status="building",
+            runner_mode="dry_run",
+            manager_mode="deterministic",
+        )
+        db.add(project)
+        db.flush()
+        worker = Agent(
+            project_id=project.id,
+            name="Builder Agent A",
+            role="Primary implementation",
+            kind="worker",
+            status="working",
+            workspace_path=project.workspace_path,
+        )
+        task = Task(
+            project_id=project.id,
+            assigned_agent_id=None,
+            title="Task One",
+            goal="Stop the active run.",
+            scope="Narrow scope.",
+            agent_role="Primary implementation",
+            milestone="Milestone 1",
+            allowed_paths_json=[],
+            forbidden_paths_json=[],
+            validation_steps_json=[],
+            success_criteria_json=["Remain scoped"],
+            estimated_complexity="small",
+            dependencies_json=[],
+            status="working",
+            priority=10,
+        )
+        db.add_all([worker, task])
+        db.flush()
+        worker.current_task_id = task.id
+        task.assigned_agent_id = worker.id
+        run = AgentRun(agent_id=worker.id, task_id=task.id, runner_type="dry_run", process_ref="pause-run", status="working")
+        db.add(run)
+        db.commit()
+
+        paused = service.pause_project(db, project)
+
+        db.refresh(run)
+        db.refresh(task)
+        db.refresh(worker)
+        assert paused.status == "paused"
+        assert run.finished_at is not None
+        assert run.status == "stopped"
+        assert worker.status == "stopped"
+        assert worker.current_task_id is None
+        assert task.assigned_agent_id is None
+        assert task.status == "assigned"
     finally:
         db.close()
 
