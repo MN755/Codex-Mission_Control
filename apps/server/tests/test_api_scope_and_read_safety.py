@@ -1442,6 +1442,59 @@ def test_context_pack_service_rejects_invalid_or_cross_project_refs(client) -> N
         db.close()
 
 
+def test_scope_creep_routes_reject_cross_project_refs_and_resolution(client) -> None:
+    project = _create_project(client, "Scope Safety Primary", "scope-safety-primary")
+    foreign_project = _create_project(client, "Scope Safety Foreign", "scope-safety-foreign")
+
+    db = SessionLocal()
+    try:
+        foreign_task = Task(
+            project_id=foreign_project["id"],
+            title="Foreign task",
+            goal="Should stay foreign.",
+            scope="Foreign scope only.",
+        )
+        foreign_message = ManagerMessage(
+            project_id=foreign_project["id"],
+            role="manager",
+            message_type="status",
+            content_markdown="Foreign scope signal context.",
+        )
+        db.add(foreign_task)
+        db.add(foreign_message)
+        db.commit()
+        foreign_task_id = foreign_task.id
+        foreign_message_id = foreign_message.id
+    finally:
+        db.close()
+
+    cross_task = client.post(
+        f"/api/projects/{project['id']}/scope-creep/analyze",
+        json={"summary": "Try to borrow another project's task.", "related_task_id": foreign_task_id},
+    )
+    assert cross_task.status_code == 404
+
+    cross_message = client.post(
+        f"/api/projects/{project['id']}/scope-creep/analyze",
+        json={"summary": "Try to borrow another project's message.", "related_message_id": foreign_message_id},
+    )
+    assert cross_message.status_code == 404
+
+    foreign_signal = client.post(
+        f"/api/projects/{foreign_project['id']}/scope-creep/analyze",
+        json={"summary": "Foreign rewrite auth request."},
+    )
+    assert foreign_signal.status_code == 200, foreign_signal.text
+    signal_id = foreign_signal.json()[0]["id"]
+
+    wrong_project_resolution = client.post(
+        f"/api/scope-creep/{signal_id}/resolve",
+        params={"project_id": project["id"]},
+        json={"status": "dismissed"},
+    )
+    assert wrong_project_resolution.status_code == 404
+
+
 def test_run_report_requires_matching_project_scope(client, bridge_headers) -> None:
     project_one = _create_project(client, "Run Scope One", "run-scope-one")
     project_two = _create_project(client, "Run Scope Two", "run-scope-two")

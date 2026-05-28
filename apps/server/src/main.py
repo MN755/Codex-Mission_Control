@@ -1332,7 +1332,11 @@ def analyze_scope_creep(
         _require_project_task(db, project, payload.related_task_id, resource_name="Scope change related task")
     if payload.related_message_id is not None:
         _require_project_message(db, project, payload.related_message_id, resource_name="Scope change related message")
-    return [ScopeChangeSignalRead.model_validate(item) for item in scope_creep_service.analyze(db, project, payload.model_dump())]
+    try:
+        signals = scope_creep_service.analyze(db, project, payload.model_dump())
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return [ScopeChangeSignalRead.model_validate(item) for item in signals]
 
 
 @app.post("/api/scope-creep/{signal_id}/resolve", response_model=ScopeChangeSignalRead)

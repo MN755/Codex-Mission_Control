@@ -243,6 +243,97 @@ def test_result_ingestion_completes_batch(client) -> None:
     assert all(spec["status"] == "completed" for spec in payload["specs"])
 
 
+def test_result_ingestion_rejects_unapproved_proposed_batch(client) -> None:
+    project = _create_project(client, "Proposed Results Demo", "proposed-results-demo")
+    response = client.post(
+        f"/api/projects/{project['id']}/subagent-bursts/recommend",
+        headers=_bridge_headers(),
+        json={
+            "purpose": "Review package",
+            "task_type": "review",
+            "codebase_size": "large",
+            "task_complexity": "large",
+            "expected_parallelism": 5,
+        },
+    )
+    assert response.status_code == 200, response.text
+    batch = response.json()["batch"]
+    assert batch["status"] == "proposed"
+
+    results = client.post(
+        f"/api/subagents/batches/{batch['id']}/results",
+        headers=_bridge_headers(),
+        params={"project_id": project["id"]},
+        json={
+            "results": [
+                {"subagent_name": batch["specs"][0]["name"], "summary": "late report", "evidence": ["file.py"], "risks_found": [], "recommendations": ["keep"], "confidence": "medium"}
+            ]
+        },
+    )
+    assert results.status_code == 400, results.text
+    assert "not accepting results" in results.json()["detail"]
+
+    refreshed = client.get(
+        f"/api/subagents/batches/{batch['id']}",
+        headers=_bridge_headers(),
+        params={"project_id": project["id"]},
+    )
+    assert refreshed.status_code == 200, refreshed.text
+    payload = refreshed.json()
+    assert payload["status"] == "proposed"
+    assert all(spec["status"] == "proposed" for spec in payload["specs"])
+
+
+def test_result_ingestion_rejects_cancelled_batch(client) -> None:
+    project = _create_project(client, "Cancelled Results Demo", "cancelled-results-demo")
+    response = client.post(
+        f"/api/projects/{project['id']}/subagent-bursts/recommend",
+        headers=_bridge_headers(),
+        json={
+            "purpose": "Review package",
+            "task_type": "review",
+            "codebase_size": "large",
+            "task_complexity": "large",
+            "expected_parallelism": 5,
+        },
+    )
+    assert response.status_code == 200, response.text
+    batch = response.json()["batch"]
+    decisions = client.get(f"/api/projects/{project['id']}/pending-decisions", headers=_bridge_headers()).json()
+    decision = next(item for item in decisions if item["decision_type"] == "subagent_burst_approval")
+
+    answer = client.post(
+        f"/api/decisions/{decision['id']}/answer",
+        headers=_bridge_headers(),
+        params={"project_id": project["id"]},
+        json={"option_id": "skip_burst", "selected_text": "Skip burst"},
+    )
+    assert answer.status_code == 200, answer.text
+
+    results = client.post(
+        f"/api/subagents/batches/{batch['id']}/results",
+        headers=_bridge_headers(),
+        params={"project_id": project["id"]},
+        json={
+            "results": [
+                {"subagent_name": batch["specs"][0]["name"], "summary": "late report", "evidence": ["file.py"], "risks_found": [], "recommendations": ["keep"], "confidence": "medium"}
+            ]
+        },
+    )
+    assert results.status_code == 400, results.text
+    assert "not accepting results" in results.json()["detail"]
+
+    refreshed = client.get(
+        f"/api/subagents/batches/{batch['id']}",
+        headers=_bridge_headers(),
+        params={"project_id": project["id"]},
+    )
+    assert refreshed.status_code == 200, refreshed.text
+    payload = refreshed.json()
+    assert payload["status"] == "cancelled"
+    assert all(spec["status"] == "cancelled" for spec in payload["specs"])
+
+
 def test_burst_policy_honors_command_and_file_edit_allowances(client) -> None:
     policy = client.put(
         "/api/subagent-policy",

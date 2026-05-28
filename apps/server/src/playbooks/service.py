@@ -140,6 +140,14 @@ DEFAULT_PLAYBOOKS: list[dict[str, Any]] = [
 
 
 class PlaybookService:
+    @staticmethod
+    def _playbook_recipe_name(playbook: ProjectPlaybook) -> str:
+        return f"{playbook.name} validation recipe"
+
+    @staticmethod
+    def _known_playbook_recipe_names() -> set[str]:
+        return {f"{str(payload['name'])} validation recipe" for payload in DEFAULT_PLAYBOOKS}
+
     def _playbook_snapshot(
         self,
         payload: dict[str, Any],
@@ -259,14 +267,21 @@ class PlaybookService:
         if playbook is None:
             raise ValueError("Playbook not found")
         selection = self._selection(db, project.id)
+        previous_playbook_key = selection.playbook_key if selection is not None else None
+        previous_status = selection.status if selection is not None else None
         if selection is None:
             selection = ProjectPlaybookSelection(project_id=project.id)
             db.add(selection)
+        same_playbook = previous_playbook_key == playbook.key
+        same_active_playbook = same_playbook and previous_status == "applied"
         selection.playbook_key = playbook.key
         selection.status = "applied"
-        selection.suggestion_reason = selection.suggestion_reason or f"Applied {playbook.name}."
+        if same_playbook and selection.suggestion_reason:
+            selection.suggestion_reason = selection.suggestion_reason
+        else:
+            selection.suggestion_reason = f"Applied {playbook.name}."
 
-        recipe_name = f"{playbook.name} validation recipe"
+        recipe_name = self._playbook_recipe_name(playbook)
         recipe = db.scalar(
             select(ValidationRecipe)
             .where(ValidationRecipe.project_id == project.id, ValidationRecipe.name == recipe_name)
@@ -277,18 +292,32 @@ class PlaybookService:
             db.add(recipe)
         recipe.steps_json = list(playbook.suggested_validation_recipe_json or [])
         recipe.status = "draft"
-
-        decision = DecisionRecord(
-            project_id=project.id,
-            decision_type="playbook",
-            title=f"Apply playbook: {playbook.name}",
-            decision=f"Mission Control will use the {playbook.name} playbook as the planning baseline.",
-            reason=selection.suggestion_reason or playbook.description,
-            made_by="manager",
-            impact_area_json=["planning", "validation", "swarm"],
-            reversible=True,
+        known_playbook_recipe_names = self._known_playbook_recipe_names()
+        sibling_recipes = list(
+            db.scalars(
+                select(ValidationRecipe)
+                .where(ValidationRecipe.project_id == project.id)
+                .order_by(ValidationRecipe.id.asc())
+            )
         )
-        db.add(decision)
+        for existing in sibling_recipes:
+            if existing is recipe:
+                continue
+            if existing.name in known_playbook_recipe_names:
+                existing.status = "superseded"
+
+        if not same_active_playbook:
+            decision = DecisionRecord(
+                project_id=project.id,
+                decision_type="playbook",
+                title=f"Apply playbook: {playbook.name}",
+                decision=f"Mission Control will use the {playbook.name} playbook as the planning baseline.",
+                reason=selection.suggestion_reason or playbook.description,
+                made_by="manager",
+                impact_area_json=["planning", "validation", "swarm"],
+                reversible=True,
+            )
+            db.add(decision)
         project.updated_at = utc_now()
         db.flush()
         return {

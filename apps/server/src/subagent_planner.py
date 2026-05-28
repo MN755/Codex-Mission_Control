@@ -615,6 +615,8 @@ class SubagentPlannerService:
         results = list(payload.get("results") or [])
         if not results:
             raise ValueError("At least one subagent result is required.")
+        if batch.status not in {"approved", "running"}:
+            raise ValueError(f"Subagent batch is not accepting results while status is `{batch.status}`.")
         spec_lookup = {
             spec.name: spec
             for spec in batch.specs
@@ -632,6 +634,10 @@ class SubagentPlannerService:
             spec = spec_lookup.get(key)
             if spec is None:
                 raise ValueError(f"Unknown subagent result target: {key}")
+            if spec.status == "cancelled":
+                raise ValueError(f"Subagent result target is cancelled: {key}")
+            if spec.status in {"completed", "failed"}:
+                raise ValueError(f"Subagent result target is not accepting more results: {key}")
             spec.result_summary = str(result.get("summary") or "").strip()
             spec.evidence_json = [str(item) for item in list(result.get("evidence") or []) if str(item).strip()]
             spec.risks_found_json = [str(item) for item in list(result.get("risks_found") or []) if str(item).strip()]

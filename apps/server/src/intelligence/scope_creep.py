@@ -6,10 +6,20 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from models import ChangeRequest, Project, ScopeChangeSignal, utc_now
+from models import ChangeRequest, ManagerMessage, Project, ScopeChangeSignal, Task, utc_now
 
 
 class ScopeCreepService:
+    def _require_project_task(self, db: Session, project: Project, task_id: int) -> None:
+        task = db.get(Task, task_id)
+        if task is None or task.project_id != project.id:
+            raise ValueError("Scope change related task not found in this project")
+
+    def _require_project_message(self, db: Session, project: Project, message_id: int) -> None:
+        message = db.get(ManagerMessage, message_id)
+        if message is None or message.project_id != project.id:
+            raise ValueError("Scope change related message not found in this project")
+
     def recent_signals(self, db: Session, limit: int = 10) -> list[ScopeChangeSignal]:
         return list(
             db.scalars(
@@ -44,12 +54,18 @@ class ScopeCreepService:
         summaries: list[tuple[str, str, int | None, int | None]] = []
         explicit_summary = str(payload.get("summary") or "").strip()
         if explicit_summary:
+            related_task_id = payload.get("related_task_id")
+            related_message_id = payload.get("related_message_id")
+            if related_task_id is not None:
+                self._require_project_task(db, project, int(related_task_id))
+            if related_message_id is not None:
+                self._require_project_message(db, project, int(related_message_id))
             summaries.append(
                 (
                     str(payload.get("source") or "manager"),
                     explicit_summary,
-                    payload.get("related_task_id"),
-                    payload.get("related_message_id"),
+                    related_task_id,
+                    related_message_id,
                 )
             )
         else:
@@ -91,11 +107,11 @@ class ScopeCreepService:
             created.append(signal)
         return created
 
-    def resolve(self, db: Session, signal_id: int, status: str, *, project_id: int | None = None) -> ScopeChangeSignal:
+    def resolve(self, db: Session, signal_id: int, status: str, *, project_id: int) -> ScopeChangeSignal:
         signal = db.get(ScopeChangeSignal, signal_id)
         if signal is None:
             raise ValueError("Scope creep signal not found")
-        if project_id is not None and signal.project_id != project_id:
+        if signal.project_id != project_id:
             raise ValueError("Scope creep signal not found in this project")
         signal.status = status
         signal.resolved_at = utc_now()
