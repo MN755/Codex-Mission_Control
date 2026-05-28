@@ -1663,27 +1663,36 @@ class MissionControlService:
     def _mirror_project_widget_legacy(self, settings: ProjectSettings, instances: list[WidgetInstance]) -> None:
         settings.workspace_widgets_json = [instance.widget_type for instance in instances if instance.enabled]
 
-    def _dashboard_widget_instances(self, db: Session, profile: AppProfile) -> list[WidgetInstance]:
+    def _dashboard_widget_instances(self, db: Session, profile: AppProfile, *, create_if_missing: bool = True) -> list[WidgetInstance]:
         instances = self._widget_instances_query(db, scope="dashboard", project_id=None)
-        if not instances:
+        if not instances and create_if_missing:
             configured = [item for item in (profile.dashboard_widgets_json or []) if item in DASHBOARD_WIDGET_TYPES]
             preferences = dict(profile.dashboard_widget_preferences_json or {})
             seed_types = configured or ([] if preferences.get("initialized") else list(DASHBOARD_WIDGET_DEFAULTS))
             instances = self._seed_widget_instances(db, scope="dashboard", project_id=None, widget_types=seed_types)
-        self._normalize_widget_order(db, scope="dashboard", project_id=None)
-        instances = self._widget_instances_query(db, scope="dashboard", project_id=None)
-        self._mirror_dashboard_widget_legacy(profile, instances)
+        if create_if_missing:
+            self._normalize_widget_order(db, scope="dashboard", project_id=None)
+            instances = self._widget_instances_query(db, scope="dashboard", project_id=None)
+            self._mirror_dashboard_widget_legacy(profile, instances)
         return instances
 
-    def _project_widget_instances(self, db: Session, project: Project, settings: ProjectSettings) -> list[WidgetInstance]:
+    def _project_widget_instances(
+        self,
+        db: Session,
+        project: Project,
+        settings: ProjectSettings,
+        *,
+        create_if_missing: bool = True,
+    ) -> list[WidgetInstance]:
         instances = self._widget_instances_query(db, scope="project", project_id=project.id)
-        if not instances:
+        if not instances and create_if_missing:
             configured = [item for item in (settings.workspace_widgets_json or []) if item in PROJECT_WIDGET_TYPES]
             seed_types = configured or list(PROJECT_WIDGET_DEFAULTS)
             instances = self._seed_widget_instances(db, scope="project", project_id=project.id, widget_types=seed_types)
-        self._normalize_widget_order(db, scope="project", project_id=project.id)
-        instances = self._widget_instances_query(db, scope="project", project_id=project.id)
-        self._mirror_project_widget_legacy(settings, instances)
+        if create_if_missing:
+            self._normalize_widget_order(db, scope="project", project_id=project.id)
+            instances = self._widget_instances_query(db, scope="project", project_id=project.id)
+            self._mirror_project_widget_legacy(settings, instances)
         return instances
 
     def _workspace_widgets(self, db: Session, project: Project, settings: ProjectSettings) -> list[str]:
@@ -5195,16 +5204,29 @@ class MissionControlService:
 
     def list_dashboard_widget_instances(self, db: Session) -> list[dict[str, Any]]:
         profile = self._app_profile(db)
-        return [self._serialize_widget_instance(item) for item in self._dashboard_widget_instances(db, profile)]
+        return [
+            self._serialize_widget_instance(item)
+            for item in self._dashboard_widget_instances(db, profile, create_if_missing=False)
+        ]
 
     def list_project_widget_instances(self, db: Session, project: Project) -> list[dict[str, Any]]:
         settings = self._project_settings(db, project)
-        return [self._serialize_widget_instance(item) for item in self._project_widget_instances(db, project, settings)]
+        return [
+            self._serialize_widget_instance(item)
+            for item in self._project_widget_instances(db, project, settings, create_if_missing=False)
+        ]
 
-    def _widget_instance_or_error(self, db: Session, instance_id: int) -> WidgetInstance:
+    def _widget_instance_or_error(self, db: Session, instance_id: int, *, project: Project | None = None) -> WidgetInstance:
         instance = db.get(WidgetInstance, instance_id)
         if instance is None:
             raise ValueError("Widget instance not found")
+        if instance.scope == "project":
+            if project is None:
+                raise ValueError("Project widget operations require project_id")
+            if instance.project_id != project.id:
+                raise ValueError("Widget instance not found in this project")
+        elif project is not None:
+            raise ValueError("Dashboard widgets do not accept project_id")
         return instance
 
     def _widget_definition_or_error(self, db: Session, widget_type: str) -> WidgetDefinition:
@@ -5236,6 +5258,8 @@ class MissionControlService:
         definition = self._widget_definition_or_error(db, widget_type)
         if definition.scope != scope:
             raise ValueError("Widget scope does not match the requested placement.")
+        if scope == "dashboard" and project is not None:
+            raise ValueError("Dashboard widgets do not accept project_id.")
         if scope == "project" and project is None:
             raise ValueError("Project widgets require a project context.")
         project_id = project.id if project is not None else None
@@ -5288,8 +5312,15 @@ class MissionControlService:
         )
         return self._serialize_widget_instance(instance)
 
-    def update_widget_instance(self, db: Session, instance_id: int, payload: dict[str, Any]) -> dict[str, Any]:
-        instance = self._widget_instance_or_error(db, instance_id)
+    def update_widget_instance(
+        self,
+        db: Session,
+        instance_id: int,
+        payload: dict[str, Any],
+        *,
+        project: Project | None = None,
+    ) -> dict[str, Any]:
+        instance = self._widget_instance_or_error(db, instance_id, project=project)
         original_area = instance.area
         if payload.get("area"):
             instance.area = str(payload["area"])
@@ -5326,8 +5357,8 @@ class MissionControlService:
         )
         return self._serialize_widget_instance(instance)
 
-    def delete_widget_instance(self, db: Session, instance_id: int) -> None:
-        instance = self._widget_instance_or_error(db, instance_id)
+    def delete_widget_instance(self, db: Session, instance_id: int, *, project: Project | None = None) -> None:
+        instance = self._widget_instance_or_error(db, instance_id, project=project)
         scope = instance.scope
         project_id = instance.project_id
         widget_type = instance.widget_type
@@ -6659,8 +6690,8 @@ class MissionControlService:
             return self._serialize_widget_data(instance, status="coming_soon", empty_state="Live Project Map is still experimental and not ready to pretend otherwise.")
         return self._serialize_widget_data(instance, status="empty", empty_state=WIDGET_EMPTY_STATE)
 
-    async def get_widget_instance_data(self, db: Session, instance_id: int) -> dict[str, Any]:
-        instance = self._widget_instance_or_error(db, instance_id)
+    async def get_widget_instance_data(self, db: Session, instance_id: int, *, project: Project | None = None) -> dict[str, Any]:
+        instance = self._widget_instance_or_error(db, instance_id, project=project)
         if instance.scope == "dashboard":
             profile = self._app_profile_preview(db)
             projects = self._ordered_projects(db, include_archived=False)
@@ -6704,7 +6735,7 @@ class MissionControlService:
 
     async def get_dashboard_widget_summary(self, db: Session) -> dict[str, Any]:
         profile = self._app_profile_preview(db)
-        instances = [item for item in self._dashboard_widget_instances(db, profile) if item.enabled]
+        instances = [item for item in self._dashboard_widget_instances(db, profile, create_if_missing=False) if item.enabled]
         projects = self._ordered_projects(db, include_archived=False)
         active_builds = await self._dashboard_active_builds(db, projects)
         attention_items = await self._dashboard_attention_items(db, projects)
@@ -6737,7 +6768,7 @@ class MissionControlService:
 
     async def get_project_widget_summary(self, db: Session, project: Project) -> dict[str, Any]:
         settings = self._project_settings_preview(db, project)
-        instances = [item for item in self._project_widget_instances(db, project, settings) if item.enabled]
+        instances = [item for item in self._project_widget_instances(db, project, settings, create_if_missing=False) if item.enabled]
         tasks = list(db.scalars(select(Task).where(Task.project_id == project.id).order_by(Task.priority.asc(), Task.id.asc())))
         degraded_notices = await self._workspace_degraded_notices(project, settings)
         current_action = self._derive_current_action(db, project, degraded_notices)

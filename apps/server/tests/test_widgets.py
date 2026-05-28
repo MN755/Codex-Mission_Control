@@ -3,11 +3,11 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from conftest import sample_workspace
 from db import SessionLocal
-from models import AppEvent, AppProfile, DecisionRecord, PathLock, ProjectEvent, ProjectSettings
+from models import AppEvent, AppProfile, DecisionRecord, PathLock, ProjectEvent, ProjectSettings, WidgetDefinition, WidgetInstance
 
 
 def create_project(client, name: str, workspace_name: str, workspace_path: str | None = None) -> dict:
@@ -26,7 +26,7 @@ def create_project(client, name: str, workspace_name: str, workspace_path: str |
     return response.json()
 
 
-def test_widget_catalog_and_default_dashboard_instances_seed(client) -> None:
+def test_widget_catalog_reads_are_read_only_and_dashboard_instances_stay_empty(client) -> None:
     catalog = client.get("/api/widgets/catalog").json()
     assert any(item["widget_type"] == "Needs Attention" and item["scope"] == "dashboard" for item in catalog)
     assert any(item["widget_type"] == "Swarm Budget" and item["scope"] == "project" for item in catalog)
@@ -36,26 +36,54 @@ def test_widget_catalog_and_default_dashboard_instances_seed(client) -> None:
     assert all(item["scope"] == "project" for item in project_catalog)
 
     instances = client.get("/api/widgets/instances", params={"scope": "dashboard"}).json()
-    enabled_types = {item["widget_type"] for item in instances if item["enabled"]}
-    assert {
-        "Needs Attention",
-        "Active Builds",
-        "Recent Handoffs",
-        "Runner & Provider Status",
-        "Swarm Budget Overview",
-        "Project Health Overview",
-    }.issubset(enabled_types)
+    assert instances == []
 
     db = SessionLocal()
     try:
+        assert db.scalar(select(func.count(WidgetDefinition.id))) == 0
+        assert db.scalar(select(func.count(WidgetInstance.id))) == 0
         profile = db.get(AppProfile, 1)
         assert profile is not None
-        assert set(profile.dashboard_widgets_json or []).issuperset(enabled_types)
+        assert profile.dashboard_widgets_json == []
     finally:
         db.close()
 
 
-def test_dashboard_widget_instances_seed_from_legacy_profile_preferences(client, bridge_headers) -> None:
+def test_widget_catalog_read_preserves_existing_definition_edits(client) -> None:
+    db = SessionLocal()
+    try:
+        definition = WidgetDefinition(
+            widget_type="Connected Accounts",
+            title="CUSTOM TITLE",
+            description="Custom dashboard widget description.",
+            scope="dashboard",
+            default_area="dashboard_main",
+            default_size="small",
+            category="diagnostics",
+            requires_project=False,
+            requires_tool=None,
+            coming_soon=False,
+            risk_level="low",
+        )
+        db.add(definition)
+        db.commit()
+    finally:
+        db.close()
+
+    catalog = client.get("/api/widgets/catalog").json()
+    customized = next(item for item in catalog if item["widget_type"] == "Connected Accounts")
+    assert customized["title"] == "CUSTOM TITLE"
+
+    db = SessionLocal()
+    try:
+        stored = db.scalar(select(WidgetDefinition).where(WidgetDefinition.widget_type == "Connected Accounts"))
+        assert stored is not None
+        assert stored.title == "CUSTOM TITLE"
+    finally:
+        db.close()
+
+
+def test_dashboard_widget_instances_read_does_not_seed_from_legacy_profile_preferences(client, bridge_headers) -> None:
     response = client.put(
         "/api/profile",
         json={
@@ -66,10 +94,10 @@ def test_dashboard_widget_instances_seed_from_legacy_profile_preferences(client,
     assert response.status_code == 200
 
     instances = client.get("/api/widgets/instances", params={"scope": "dashboard"}).json()
-    assert [item["widget_type"] for item in instances if item["enabled"]] == ["Connected Accounts", "Diagnostics Summary"]
+    assert instances == []
 
 
-def test_project_widget_instances_seed_from_legacy_workspace_preferences(client) -> None:
+def test_project_widget_instances_read_does_not_seed_from_legacy_workspace_preferences(client) -> None:
     project = create_project(client, "Legacy Widget Project", "legacy-widget-project")
     project_id = project["id"]
 
@@ -82,7 +110,7 @@ def test_project_widget_instances_seed_from_legacy_workspace_preferences(client)
         db.close()
 
     instances = client.get(f"/api/projects/{project_id}/widgets/instances").json()
-    assert [item["widget_type"] for item in instances if item["enabled"]] == ["Repo Intelligence", "Validation Recipe"]
+    assert instances == []
 
 
 def test_dashboard_widget_instance_crud_publishes_app_events(client) -> None:
@@ -164,7 +192,7 @@ def test_repo_intelligence_widget_scans_workspace_safely(client) -> None:
         json={"widget_type": "Repo Intelligence"},
     ).json()
 
-    data = client.get(f"/api/widgets/instances/{instance['id']}/data").json()
+    data = client.get(f"/api/widgets/instances/{instance['id']}/data", params={"project_id": project["id"]}).json()
     assert data["status"] == "ready"
     assert "TypeScript" in data["data_json"]["languages"]
     assert "React" in data["data_json"]["frameworks"]
@@ -217,8 +245,14 @@ def test_project_widget_data_is_project_scoped_and_emits_project_events(client) 
     finally:
         db.close()
 
-    first_data = client.get(f"/api/widgets/instances/{first_instance['id']}/data").json()
-    second_data = client.get(f"/api/widgets/instances/{second_instance['id']}/data").json()
+    first_data = client.get(
+        f"/api/widgets/instances/{first_instance['id']}/data",
+        params={"project_id": project_one["id"]},
+    ).json()
+    second_data = client.get(
+        f"/api/widgets/instances/{second_instance['id']}/data",
+        params={"project_id": project_two["id"]},
+    ).json()
     assert first_data["status"] == "ready"
     assert first_data["data_json"]["items"][0]["title"] == "Use local widget grid"
     assert second_data["status"] == "empty"
@@ -253,6 +287,59 @@ def test_project_widget_data_is_project_scoped_and_emits_project_events(client) 
         assert any(event.payload_json.get("project_id") == project_one["id"] for event in mirrored_app_events)
     finally:
         db.close()
+
+
+def test_project_widget_instance_routes_require_matching_project_context(client) -> None:
+    project_one = create_project(client, "Scoped Widgets One", "scoped-widgets-one")
+    project_two = create_project(client, "Scoped Widgets Two", "scoped-widgets-two")
+
+    instance = client.post(
+        f"/api/projects/{project_one['id']}/widgets/add",
+        json={"widget_type": "Decision Ledger"},
+    ).json()
+
+    missing_project = client.patch(
+        f"/api/widgets/instances/{instance['id']}",
+        json={"collapsed": True},
+    )
+    assert missing_project.status_code == 400
+    assert "require project_id" in missing_project.json()["detail"].lower()
+
+    wrong_project = client.get(
+        f"/api/widgets/instances/{instance['id']}/data",
+        params={"project_id": project_two["id"]},
+    )
+    assert wrong_project.status_code == 404
+
+    updated = client.patch(
+        f"/api/widgets/instances/{instance['id']}",
+        params={"project_id": project_one["id"]},
+        json={"collapsed": True},
+    )
+    assert updated.status_code == 200
+    assert updated.json()["collapsed"] is True
+
+    deleted = client.delete(
+        f"/api/widgets/instances/{instance['id']}",
+        params={"project_id": project_one["id"]},
+    )
+    assert deleted.status_code == 204
+
+
+def test_dashboard_widget_creation_rejects_project_id(client) -> None:
+    project = create_project(client, "Dashboard Scope Guard", "dashboard-scope-guard")
+    response = client.post(
+        "/api/widgets/instances",
+        json={
+            "scope": "dashboard",
+            "project_id": project["id"],
+            "widget_type": "Connected Accounts",
+            "area": "dashboard_bottom",
+            "size": "small",
+        },
+    )
+    assert response.status_code == 400
+    assert "do not accept project_id" in response.json()["detail"].lower()
 
 
 def test_profile_rejects_unknown_and_wrong_scope_dashboard_widgets(client, bridge_headers) -> None:

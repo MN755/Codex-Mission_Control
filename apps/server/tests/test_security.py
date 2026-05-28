@@ -201,7 +201,10 @@ def test_security_widgets_render_policy_and_empty_states(client) -> None:
         json={"widget_type": "Security Policy"},
     )
     assert policy_widget.status_code == 200
-    policy_data = client.get(f"/api/widgets/instances/{policy_widget.json()['id']}/data")
+    policy_data = client.get(
+        f"/api/widgets/instances/{policy_widget.json()['id']}/data",
+        params={"project_id": project["id"]},
+    )
     assert policy_data.status_code == 200
     assert policy_data.json()["status"] == "ready"
     assert any(row["label"] == "Command policy" for row in policy_data.json()["data_json"]["rows"])
@@ -211,7 +214,10 @@ def test_security_widgets_render_policy_and_empty_states(client) -> None:
         json={"widget_type": "Approval Audit Log"},
     )
     assert audit_widget.status_code == 200
-    audit_data = client.get(f"/api/widgets/instances/{audit_widget.json()['id']}/data")
+    audit_data = client.get(
+        f"/api/widgets/instances/{audit_widget.json()['id']}/data",
+        params={"project_id": project["id"]},
+    )
     assert audit_data.status_code == 200
     assert audit_data.json()["status"] == "empty"
 

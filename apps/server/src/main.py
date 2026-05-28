@@ -1018,12 +1018,14 @@ def create_widget_instance(
 def patch_widget_instance(
     instance_id: int,
     payload: WidgetInstanceUpdate,
+    project_id: int | None = Query(default=None),
     db: Session = Depends(get_db),
     _: None = Depends(_require_bridge_token),
 ) -> WidgetInstanceRead:
+    project = _get_project_or_404(db, project_id) if project_id is not None else None
     try:
         data = payload.model_dump(exclude_unset=True) if hasattr(payload, "model_dump") else payload.dict(exclude_unset=True)
-        return WidgetInstanceRead(**service.update_widget_instance(db, instance_id, data))
+        return WidgetInstanceRead(**service.update_widget_instance(db, instance_id, data, project=project))
     except ValueError as exc:
         status_code = 404 if "not found" in str(exc).lower() else 400
         raise HTTPException(status_code=status_code, detail=str(exc)) from exc
@@ -1032,23 +1034,28 @@ def patch_widget_instance(
 @app.delete("/api/widgets/instances/{instance_id}", status_code=204)
 def delete_widget_instance(
     instance_id: int,
+    project_id: int | None = Query(default=None),
     db: Session = Depends(get_db),
     _: None = Depends(_require_bridge_token),
 ) -> None:
+    project = _get_project_or_404(db, project_id) if project_id is not None else None
     try:
-        service.delete_widget_instance(db, instance_id)
+        service.delete_widget_instance(db, instance_id, project=project)
     except ValueError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+        status_code = 404 if "not found" in str(exc).lower() else 400
+        raise HTTPException(status_code=status_code, detail=str(exc)) from exc
 
 
 @app.get("/api/widgets/instances/{instance_id}/data", response_model=WidgetDataResponseRead)
 async def get_widget_instance_data(
     instance_id: int,
+    project_id: int | None = Query(default=None),
     db: Session = Depends(get_db),
     _: None = Depends(_require_bridge_token),
 ) -> WidgetDataResponseRead:
+    project = _get_project_or_404(db, project_id) if project_id is not None else None
     try:
-        return WidgetDataResponseRead(**(await service.get_widget_instance_data(db, instance_id)))
+        return WidgetDataResponseRead(**(await service.get_widget_instance_data(db, instance_id, project=project)))
     except ValueError as exc:
         status_code = 404 if "not found" in str(exc).lower() else 400
         raise HTTPException(status_code=status_code, detail=str(exc)) from exc

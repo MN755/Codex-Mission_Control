@@ -143,7 +143,11 @@ def test_project_widget_data_route_keeps_import_and_security_widgets_read_only(c
         instance_ids.append(added.json()["id"])
 
     for instance_id in instance_ids:
-        response = client.get(f"/api/widgets/instances/{instance_id}/data", headers=bridge_headers)
+        response = client.get(
+            f"/api/widgets/instances/{instance_id}/data",
+            params={"project_id": project_id},
+            headers=bridge_headers,
+        )
         assert response.status_code == 200, response.text
         assert response.json()["status"] in {"ready", "warning", "empty"}
 
@@ -261,7 +265,11 @@ def test_parallelism_safety_meter_data_is_read_only(client, bridge_headers) -> N
     finally:
         db.close()
 
-    response = client.get(f"/api/widgets/instances/{instance_id}/data", headers=bridge_headers)
+    response = client.get(
+        f"/api/widgets/instances/{instance_id}/data",
+        params={"project_id": project_id},
+        headers=bridge_headers,
+    )
     assert response.status_code == 200, response.text
     payload = response.json()
     assert payload["status"] in {"ready", "warning"}
@@ -521,7 +529,10 @@ def test_dashboard_support_widget_data_stays_read_only(client, bridge_headers) -
         db.close()
 
     for instance_id in instance_ids:
-        response = client.get(f"/api/widgets/instances/{instance_id}/data", headers=bridge_headers)
+        response = client.get(
+            f"/api/widgets/instances/{instance_id}/data",
+            headers=bridge_headers,
+        )
         assert response.status_code == 200, response.text
         assert response.json()["status"] in {"ready", "warning", "empty"}
 
@@ -1601,7 +1612,11 @@ def test_project_widget_data_route_stays_read_only_for_preview_widgets(client, b
         instance_ids.append(added.json()["id"])
 
     for instance_id in instance_ids:
-        response = client.get(f"/api/widgets/instances/{instance_id}/data", headers=bridge_headers)
+        response = client.get(
+            f"/api/widgets/instances/{instance_id}/data",
+            params={"project_id": project_id},
+            headers=bridge_headers,
+        )
         assert response.status_code == 200, response.text
         payload = response.json()
         assert payload["status"] in {"ready", "warning", "empty"}
