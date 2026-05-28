@@ -2867,6 +2867,14 @@ class MissionControlService:
         created_before_task_id: int | None = None,
         created_before_agent_id: int | None = None,
     ) -> ProjectSnapshot:
+        self._validate_project_related_refs(
+            db,
+            project,
+            related_agent_id=created_before_agent_id,
+            related_task_id=created_before_task_id,
+            agent_label="Snapshot agent",
+            task_label="Snapshot task",
+        )
         workspace = Path(project.workspace_path)
         metadata: dict[str, Any] = {"workspace_path": str(workspace)}
         snapshot_type = "filesystem_marker"
@@ -3017,24 +3025,58 @@ class MissionControlService:
         project = db.get(Project, plan.project_id)
         if project is None:
             raise ValueError("Project not found")
-        plan.selected_action = action
+        normalized_action = self._normalize_recovery_action(action)
+        if normalized_action is None:
+            raise ValueError("Recovery action is not recognized")
+        suggested_actions = {
+            normalized
+            for normalized in (
+                self._normalize_recovery_action(item) for item in (plan.suggested_actions_json or [])
+            )
+            if normalized is not None
+        }
+        if suggested_actions and normalized_action not in suggested_actions:
+            raise ValueError("Recovery action was not proposed for this plan")
+        plan.selected_action = normalized_action
         plan.status = "accepted"
-        plan.resolved_at = utc_now() if action in {"pause_project", "ask_user"} else plan.resolved_at
+        plan.resolved_at = utc_now() if normalized_action in {"pause_project", "ask_user"} else plan.resolved_at
         self._record_decision(
             db,
             project,
             decision_type="recovery_plan",
             title=f"Recovery: {plan.trigger_type}",
-            decision=action,
+            decision=normalized_action,
             reason=plan.trigger_summary,
             made_by="manager",
             impact_areas=["reliability", "recovery"],
             related_task_id=plan.related_task_id,
             related_agent_id=plan.related_agent_id,
-            reversible=action not in {"simplify_scope"},
+            reversible=normalized_action not in {"simplify_scope"},
         )
-        self.events.publish(db, project.id, "recovery_action_selected", {"project_id": project.id, "plan_id": plan.id, "action": action})
+        self.events.publish(db, project.id, "recovery_action_selected", {"project_id": project.id, "plan_id": plan.id, "action": normalized_action})
         return plan
+
+    def _normalize_recovery_action(self, action: str | None) -> str | None:
+        normalized = " ".join(str(action or "").strip().lower().split())
+        if not normalized:
+            return None
+        aliases = {
+            "pause_project": "pause_project",
+            "pause project": "pause_project",
+            "ask_user": "ask_user",
+            "ask user": "ask_user",
+            "ask manager": "ask_user",
+            "ask user / ask manager": "ask_user",
+            "retry_same_agent": "retry_same_agent",
+            "retry same agent": "retry_same_agent",
+            "split_task": "split_task",
+            "split task": "split_task",
+            "simplify_scope": "simplify_scope",
+            "simplify scope": "simplify_scope",
+            "spawn_debug_agent": "spawn_debug_agent",
+            "spawn debug agent": "spawn_debug_agent",
+        }
+        return aliases.get(normalized)
 
     def get_agent_load(self, db: Session, project: Project) -> list[AgentLoadSnapshot]:
         return self._sync_agent_load_snapshots(db, project)
@@ -11869,7 +11911,8 @@ class MissionControlService:
         self._activate_ready_deferred_specs(db, project)
         for task in tasks:
             if task.status in TASK_STARTABLE_STATUSES and not self._dependencies_met(db, task):
-                task.status = "assigned"
+                if task.assigned_agent_id is None:
+                    task.status = "backlog"
                 task.waiting_reason = "Waiting for task dependencies to finish."
         for agent in workers:
             if agent.status not in {"idle", "waiting", "done", "stopped"}:

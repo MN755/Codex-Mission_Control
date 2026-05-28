@@ -4,8 +4,10 @@ import pytest
 
 from conftest import sample_workspace
 from db import SessionLocal, init_db
+from intelligence.reputation import reputation_service
 from manager import service
-from models import Agent, ChangeRequest, EvidenceBasedHandoff, HandoffEvidence, Project, ProjectTimelineEvent, RecoveryPlan, ReviewGate, Task
+from models import Agent, ChangeRequest, EvidenceBasedHandoff, HandoffEvidence, Project, ProjectSnapshot, ProjectTimelineEvent, RecoveryPlan, ReviewGate, Task
+from risk.service import risk_service
 
 
 def _seed_project_pair() -> tuple[int, int, int, int, int, int]:
@@ -142,6 +144,58 @@ def test_create_question_rejects_foreign_agent_and_missing_task() -> None:
                 options_json=[{"id": "yes", "label": "Yes"}],
                 impact="medium",
                 related_task_id=999_999,
+            )
+    finally:
+        db.close()
+
+
+def test_create_risk_rejects_foreign_and_missing_related_refs() -> None:
+    project_one_id, _, _, foreign_agent_id, _, foreign_task_id = _seed_project_pair()
+
+    db = SessionLocal()
+    try:
+        scoped_project = db.get(Project, project_one_id)
+        assert scoped_project is not None
+
+        with pytest.raises(ValueError, match="Risk owner agent"):
+            risk_service.create_risk(
+                db,
+                scoped_project,
+                {
+                    "title": "Foreign owner",
+                    "description": "Reject cross-project owner refs.",
+                    "owner_agent_id": foreign_agent_id,
+                },
+            )
+        with pytest.raises(ValueError, match="Risk related task"):
+            risk_service.create_risk(
+                db,
+                scoped_project,
+                {
+                    "title": "Foreign task",
+                    "description": "Reject cross-project task refs.",
+                    "related_task_id": foreign_task_id,
+                },
+            )
+        with pytest.raises(ValueError, match="Risk owner agent"):
+            risk_service.create_risk(
+                db,
+                scoped_project,
+                {
+                    "title": "Missing owner",
+                    "description": "Reject fake owner refs.",
+                    "owner_agent_id": 999_999,
+                },
+            )
+        with pytest.raises(ValueError, match="Risk related task"):
+            risk_service.create_risk(
+                db,
+                scoped_project,
+                {
+                    "title": "Missing task",
+                    "description": "Reject fake task refs.",
+                    "related_task_id": 999_999,
+                },
             )
     finally:
         db.close()
@@ -356,6 +410,51 @@ def test_create_recovery_plan_rejects_foreign_and_missing_related_refs_before_pe
         db.close()
 
 
+def test_create_project_snapshot_rejects_foreign_and_missing_related_refs() -> None:
+    project_one_id, _, _, foreign_agent_id, _, foreign_task_id = _seed_project_pair()
+
+    db = SessionLocal()
+    try:
+        scoped_project = db.get(Project, project_one_id)
+        assert scoped_project is not None
+
+        with pytest.raises(ValueError, match="Snapshot task"):
+            service.create_project_snapshot(
+                db,
+                scoped_project,
+                label="Foreign task snapshot",
+                description="Should reject foreign tasks.",
+                created_before_task_id=foreign_task_id,
+            )
+        with pytest.raises(ValueError, match="Snapshot agent"):
+            service.create_project_snapshot(
+                db,
+                scoped_project,
+                label="Foreign agent snapshot",
+                description="Should reject foreign agents.",
+                created_before_agent_id=foreign_agent_id,
+            )
+        with pytest.raises(ValueError, match="Snapshot task"):
+            service.create_project_snapshot(
+                db,
+                scoped_project,
+                label="Missing task snapshot",
+                description="Should reject missing tasks.",
+                created_before_task_id=999_999,
+            )
+        with pytest.raises(ValueError, match="Snapshot agent"):
+            service.create_project_snapshot(
+                db,
+                scoped_project,
+                label="Missing agent snapshot",
+                description="Should reject missing agents.",
+                created_before_agent_id=999_999,
+            )
+        assert db.query(ProjectSnapshot).filter(ProjectSnapshot.project_id == scoped_project.id).count() == 0
+    finally:
+        db.close()
+
+
 def test_create_timeline_event_rejects_foreign_and_missing_related_refs() -> None:
     project_one_id, project_two_id, agent_one_id, foreign_agent_id, task_one_id, foreign_task_id = _seed_project_pair()
 
@@ -451,6 +550,49 @@ def test_create_timeline_event_rejects_foreign_and_missing_related_refs() -> Non
         db.close()
 
 
+def test_select_recovery_action_rejects_unrecognized_or_unproposed_values() -> None:
+    project_one_id, _, agent_one_id, _, task_one_id, _ = _seed_project_pair()
+
+    db = SessionLocal()
+    try:
+        scoped_project = db.get(Project, project_one_id)
+        assert scoped_project is not None
+        plan = RecoveryPlan(
+            project_id=scoped_project.id,
+            trigger_type="blocked_task",
+            trigger_summary="Blocked task needs intervention.",
+            related_agent_id=agent_one_id,
+            related_task_id=task_one_id,
+            suggested_actions_json=["pause_project", "Ask user / ask Manager"],
+            status="proposed",
+        )
+        db.add(plan)
+        db.flush()
+
+        accepted = service.select_recovery_action(db, plan.id, "Ask user / ask Manager")
+        assert accepted.selected_action == "ask_user"
+        assert accepted.status == "accepted"
+
+        plan_two = RecoveryPlan(
+            project_id=scoped_project.id,
+            trigger_type="blocked_task",
+            trigger_summary="Second plan for failure cases.",
+            related_agent_id=agent_one_id,
+            related_task_id=task_one_id,
+            suggested_actions_json=["pause_project"],
+            status="proposed",
+        )
+        db.add(plan_two)
+        db.flush()
+
+        with pytest.raises(ValueError, match="not recognized"):
+            service.select_recovery_action(db, plan_two.id, "launch_the_nukes")
+        with pytest.raises(ValueError, match="not proposed"):
+            service.select_recovery_action(db, plan_two.id, "ask_user")
+    finally:
+        db.close()
+
+
 def test_update_change_request_rejects_foreign_and_missing_related_refs() -> None:
     project_one_id, project_two_id, _, _, task_one_id, foreign_task_id = _seed_project_pair()
 
@@ -516,5 +658,65 @@ def test_update_change_request_rejects_foreign_and_missing_related_refs() -> Non
             service.update_change_request(db, request.id, {"related_tasks_json": [999_999]})
         with pytest.raises(ValueError, match="Change request related handoff"):
             service.update_change_request(db, request.id, {"related_handoff_id": 999_999})
+    finally:
+        db.close()
+
+
+def test_record_agent_performance_rejects_nonexistent_or_mismatched_refs() -> None:
+    project_one_id, _, _, _, task_one_id, foreign_task_id = _seed_project_pair()
+
+    db = SessionLocal()
+    try:
+        recorded = reputation_service.record(
+            db,
+            {
+                "project_id": project_one_id,
+                "agent_archetype": "generalist",
+                "task_category": "validation",
+                "task_id": task_one_id,
+                "outcome": "success",
+            },
+        )
+        assert recorded.project_id == project_one_id
+        assert recorded.task_id == task_one_id
+
+        with pytest.raises(ValueError, match="Project not found"):
+            reputation_service.record(
+                db,
+                {
+                    "project_id": 999_999,
+                    "agent_archetype": "generalist",
+                    "task_category": "validation",
+                },
+            )
+        with pytest.raises(ValueError, match="Task not found$"):
+            reputation_service.record(
+                db,
+                {
+                    "project_id": project_one_id,
+                    "agent_archetype": "generalist",
+                    "task_category": "validation",
+                    "task_id": 999_999,
+                },
+            )
+        with pytest.raises(ValueError, match="require a project_id"):
+            reputation_service.record(
+                db,
+                {
+                    "agent_archetype": "generalist",
+                    "task_category": "validation",
+                    "task_id": task_one_id,
+                },
+            )
+        with pytest.raises(ValueError, match="Task not found in this project"):
+            reputation_service.record(
+                db,
+                {
+                    "project_id": project_one_id,
+                    "agent_archetype": "generalist",
+                    "task_category": "validation",
+                    "task_id": foreign_task_id,
+                },
+            )
     finally:
         db.close()

@@ -189,6 +189,77 @@ def test_worker_report_ingestion_routes_next_task() -> None:
         db.close()
 
 
+def test_start_idle_agents_keeps_dependency_blocked_unowned_task_unassigned() -> None:
+    service = MissionControlService()
+    from db import SessionLocal, init_db
+
+    init_db()
+    db = SessionLocal()
+    try:
+        project = Project(
+            name="Dependency Wait Demo",
+            idea="Do not fake assignment state.",
+            workspace_path=sample_workspace("dependency-wait-demo"),
+            status="building",
+            runner_mode="dry_run",
+            manager_mode="deterministic",
+        )
+        db.add(project)
+        db.flush()
+        worker = Agent(
+            project_id=project.id,
+            name="Builder Agent A",
+            role="Primary implementation",
+            kind="worker",
+            status="idle",
+            workspace_path=project.workspace_path,
+        )
+        dependency = Task(
+            project_id=project.id,
+            title="Finish dependency",
+            goal="Complete the prerequisite task.",
+            scope="Narrow dependency work.",
+            agent_role="Primary implementation",
+            milestone="Milestone 1",
+            allowed_paths_json=["src/dependency.ts"],
+            forbidden_paths_json=[],
+            validation_steps_json=["pytest -q"],
+            success_criteria_json=["Dependency done"],
+            estimated_complexity="small",
+            dependencies_json=[],
+            status="working",
+            priority=10,
+        )
+        blocked = Task(
+            project_id=project.id,
+            title="Blocked follow-up",
+            goal="Wait until dependency finishes.",
+            scope="Should not claim ownership yet.",
+            agent_role="Primary implementation",
+            milestone="Milestone 2",
+            allowed_paths_json=["src/follow-up.ts"],
+            forbidden_paths_json=[],
+            validation_steps_json=["pytest -q"],
+            success_criteria_json=["Follow-up ready"],
+            estimated_complexity="small",
+            dependencies_json=[],
+            status="backlog",
+            priority=20,
+        )
+        db.add_all([worker, dependency, blocked])
+        db.flush()
+        blocked.dependencies_json = [dependency.id]
+        db.flush()
+
+        asyncio.run(service.start_idle_agents(db, project))
+
+        assert blocked.status == "backlog"
+        assert blocked.assigned_agent_id is None
+        assert blocked.waiting_reason == "Waiting for task dependencies to finish."
+    finally:
+        db.close()
+
+
 def test_project_settings_resolution_prefers_role_overrides() -> None:
     from db import SessionLocal, init_db
 

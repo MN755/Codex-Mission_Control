@@ -7,7 +7,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from models import AgentPerformanceRecord, Project
+from models import AgentPerformanceRecord, Project, Task
 
 
 class ReputationService:
@@ -18,15 +18,28 @@ class ReputationService:
         return list(db.scalars(query.order_by(AgentPerformanceRecord.created_at.desc(), AgentPerformanceRecord.id.desc())))
 
     def record(self, db: Session, payload: dict[str, Any]) -> AgentPerformanceRecord:
+        project_id = payload.get("project_id")
+        task_id = payload.get("task_id")
+        project = db.get(Project, project_id) if project_id is not None else None
+        if project_id is not None and project is None:
+            raise ValueError("Project not found")
+        if task_id is not None:
+            task = db.get(Task, task_id)
+            if task is None:
+                raise ValueError("Task not found")
+            if project is None:
+                raise ValueError("Task performance records require a project_id")
+            if task.project_id != project.id:
+                raise ValueError("Task not found in this project")
         record = AgentPerformanceRecord(
-            project_id=payload.get("project_id"),
+            project_id=project_id,
             agent_archetype=str(payload.get("agent_archetype") or "generalist"),
             agent_name=payload.get("agent_name"),
             provider=payload.get("provider"),
             model=payload.get("model"),
             runner_mode=str(payload.get("runner_mode") or "auto"),
             task_category=str(payload.get("task_category") or "general"),
-            task_id=payload.get("task_id"),
+            task_id=task_id,
             outcome=str(payload.get("outcome") or "unknown"),
             duration_seconds=payload.get("duration_seconds"),
             review_passed=payload.get("review_passed"),

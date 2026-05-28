@@ -1161,7 +1161,11 @@ def create_agent_performance_record(
     db: Session = Depends(get_db),
     _: None = Depends(_require_bridge_token),
 ) -> AgentPerformanceRecordRead:
-    record = reputation_service.record(db, payload.model_dump())
+    try:
+        record = reputation_service.record(db, payload.model_dump())
+    except ValueError as exc:
+        status_code = 404 if "not found" in str(exc).lower() else 400
+        raise HTTPException(status_code=status_code, detail=str(exc)) from exc
     return AgentPerformanceRecordRead.model_validate(record)
 
 
