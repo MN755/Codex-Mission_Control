@@ -206,6 +206,49 @@ def test_attach_known_folder_reuses_existing_project(client) -> None:
     assert payload["reused_existing_project"] is True
 
 
+def test_attach_workspace_uses_project_name_hint_when_workspace_has_duplicates(client) -> None:
+    workspace = _fresh_workspace("attach-duplicate-hint")
+    alpha = _create_project(client, "Alpha", workspace.as_posix(), runner_mode="dry_run")
+    _create_project(client, "Beta", workspace.as_posix(), runner_mode="dry_run")
+
+    response = client.post(
+        "/api/orchestrations/attach-workspace",
+        headers=_bridge_headers(),
+        json={
+            "workspace_path": workspace.as_posix(),
+            "project_name": "Alpha",
+            "mode": "existing_codebase",
+            "read_only_first": True,
+            "attach_policy": "reuse_existing",
+        },
+    )
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["attach_outcome"] == "reused_existing_project"
+    assert payload["project_id"] == alpha["id"]
+    assert payload["project_name"] == "Alpha"
+
+
+def test_attach_workspace_rejects_unknown_project_name_hint_for_duplicate_workspace(client) -> None:
+    workspace = _fresh_workspace("attach-duplicate-miss")
+    _create_project(client, "Alpha", workspace.as_posix(), runner_mode="dry_run")
+    _create_project(client, "Beta", workspace.as_posix(), runner_mode="dry_run")
+
+    response = client.post(
+        "/api/orchestrations/attach-workspace",
+        headers=_bridge_headers(),
+        json={
+            "workspace_path": workspace.as_posix(),
+            "project_name": "Gamma",
+            "mode": "existing_codebase",
+            "read_only_first": True,
+            "attach_policy": "reuse_existing",
+        },
+    )
+    assert response.status_code == 400
+    assert "did not match exactly one existing project" in response.json()["detail"].lower()
+
+
 def test_one_active_orchestration_per_workspace_is_enforced(client) -> None:
     workspace = _fresh_workspace("attach-active")
     attach = client.post(

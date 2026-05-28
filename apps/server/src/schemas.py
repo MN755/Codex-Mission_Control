@@ -545,21 +545,21 @@ class ProjectSettingsRead(BaseModel):
 
 
 class ProjectSettingsUpdate(BaseModel):
-    provider: ProviderId = "codex"
+    provider: ProviderId | None = None
     manager_model: str | None = None
     default_worker_model: str | None = None
     manager_reasoning_effort: ReasoningEffort | None = None
     default_worker_reasoning_effort: ReasoningEffort | None = None
-    per_role_model_overrides_json: dict[str, str] = Field(default_factory=dict)
-    per_role_reasoning_overrides_json: dict[str, str] = Field(default_factory=dict)
+    per_role_model_overrides_json: dict[str, str] | None = None
+    per_role_reasoning_overrides_json: dict[str, str] | None = None
     provider_endpoint: str | None = None
     adapter_command: str | None = None
-    adapter_args_json: list[str] = Field(default_factory=list)
-    runner_mode: RunnerMode = "auto"
-    sandbox_mode: SandboxMode = "workspace-write"
-    approval_policy: ApprovalPolicy = "on-request"
-    workspace_widgets_json: list[str] = Field(default_factory=list)
-    approval_overrides_json: dict[str, Any] = Field(default_factory=dict)
+    adapter_args_json: list[str] | None = None
+    runner_mode: RunnerMode | None = None
+    sandbox_mode: SandboxMode | None = None
+    approval_policy: ApprovalPolicy | None = None
+    workspace_widgets_json: list[str] | None = None
+    approval_overrides_json: dict[str, Any] | None = None
 
 
 class SwarmPreferencesRead(BaseModel):
@@ -579,14 +579,14 @@ class SwarmPreferencesRead(BaseModel):
 
 
 class SwarmPreferencesUpdate(BaseModel):
-    optimization_mode: SwarmOptimizationMode = "balanced"
-    swarm_aggressiveness: SwarmAggressiveness = "medium"
-    max_agents: int = Field(default=8, ge=1, le=50)
-    require_approval_above_agent_count: int = Field(default=10, ge=1, le=50)
-    allow_dynamic_spawning: bool = True
-    allow_dynamic_retirement: bool = True
-    docs_depth: DocsDepth = "standard"
-    testing_depth: TestingDepth = "standard"
+    optimization_mode: SwarmOptimizationMode | None = None
+    swarm_aggressiveness: SwarmAggressiveness | None = None
+    max_agents: int | None = Field(default=None, ge=1, le=50)
+    require_approval_above_agent_count: int | None = Field(default=None, ge=1, le=50)
+    allow_dynamic_spawning: bool | None = None
+    allow_dynamic_retirement: bool | None = None
+    docs_depth: DocsDepth | None = None
+    testing_depth: TestingDepth | None = None
 
 
 class AgentArchetypeRead(BaseModel):

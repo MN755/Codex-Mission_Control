@@ -347,6 +347,22 @@ class OrchestrationCoordinator:
 
         if matches and attach_policy != "create_new":
             if len(matches) > 1:
+                exact_name_matches = [project for project in matches if project.name.strip() == preferred_name]
+                if project_name and len(exact_name_matches) == 1:
+                    project = exact_name_matches[0]
+                    return self._build_attach_response(
+                        db,
+                        project=project,
+                        orchestration=None,
+                        attach_outcome="reused_existing_project",
+                        reused_existing_project=True,
+                        reused_existing_orchestration=False,
+                        user_action_required=False,
+                        pending_decision_id=None,
+                        message="Mission Control reused the existing project selected by the provided project_name hint.",
+                    )
+                if project_name and len(exact_name_matches) != 1:
+                    raise ValueError("Multiple projects use this workspace and project_name did not match exactly one existing project.")
                 chosen = matches[0]
                 session = OrchestrationSession(
                     project_id=chosen.id,

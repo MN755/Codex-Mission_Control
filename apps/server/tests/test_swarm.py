@@ -75,6 +75,38 @@ def test_default_swarm_preferences_created(client) -> None:
     assert payload["max_agents"] == 8
 
 
+def test_partial_swarm_preferences_update_preserves_omitted_fields(client) -> None:
+    project = create_project(client, "Partial Swarm", "partial-swarm")
+    seeded = update_swarm_preferences(
+        client,
+        project["id"],
+        optimization_mode="high_quality",
+        swarm_aggressiveness="large",
+        max_agents=12,
+        require_approval_above_agent_count=4,
+        allow_dynamic_spawning=False,
+        allow_dynamic_retirement=False,
+        docs_depth="publishable",
+        testing_depth="release_grade",
+    )
+    assert seeded["optimization_mode"] == "high_quality"
+
+    response = client.put(
+        f"/api/projects/{project['id']}/swarm/preferences",
+        json={"optimization_mode": "balanced"},
+    )
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["optimization_mode"] == "balanced"
+    assert payload["swarm_aggressiveness"] == "large"
+    assert payload["max_agents"] == 12
+    assert payload["require_approval_above_agent_count"] == 4
+    assert payload["allow_dynamic_spawning"] is False
+    assert payload["allow_dynamic_retirement"] is False
+    assert payload["docs_depth"] == "publishable"
+    assert payload["testing_depth"] == "release_grade"
+
+
 def test_fastest_build_prefers_multiple_implementation_agents(client) -> None:
     project = create_project(client, "Fastest Build", "swarm-fastest")
     update_swarm_preferences(client, project["id"], optimization_mode="fastest_build", swarm_aggressiveness="large", max_agents=8)

@@ -191,6 +191,10 @@ OVERVIEW_SECTIONS = [
     ("testing", "Testing"),
     ("documentation", "Documentation"),
 ]
+WIDGET_AREAS_BY_SCOPE = {
+    "dashboard": {"dashboard_main", "dashboard_right", "dashboard_bottom", "dashboard_custom"},
+    "project": {"project_right_sidebar", "project_bottom", "project_overview", "project_custom"},
+}
 SWARM_DEFAULT_PREFERENCES = {
     "optimization_mode": "balanced",
     "swarm_aggressiveness": "medium",
@@ -5235,6 +5239,15 @@ class MissionControlService:
             raise ValueError("Unknown widget type")
         return definition
 
+    def _validate_widget_area_for_scope(self, scope: str, area: str | None) -> str | None:
+        if area is None:
+            return None
+        normalized = str(area)
+        allowed = WIDGET_AREAS_BY_SCOPE.get(scope, set())
+        if normalized not in allowed:
+            raise ValueError(f"Widget area {normalized!r} is not valid for {scope} widgets.")
+        return normalized
+
     def _publish_widget_instance_change(self, db: Session, *, project_id: int | None, event_type: str, payload: dict[str, Any]) -> None:
         if project_id is None:
             self.events.publish_app(db, event_type, payload)
@@ -5263,6 +5276,7 @@ class MissionControlService:
         if scope == "project" and project is None:
             raise ValueError("Project widgets require a project context.")
         project_id = project.id if project is not None else None
+        target_area = self._validate_widget_area_for_scope(scope, area) or definition.default_area
         existing = db.scalar(
             select(WidgetInstance).where(
                 WidgetInstance.scope == scope,
@@ -5273,8 +5287,19 @@ class MissionControlService:
         if existing is not None:
             if not existing.enabled:
                 existing.enabled = True
-                existing.collapsed = False
+                existing.area = target_area
+                existing.size = size or definition.default_size
+                existing.collapsed = collapsed
+                existing.config_json = dict(config_json or {})
+                if order_index is not None:
+                    existing.order_index = int(order_index)
                 existing.updated_at = utc_now()
+                db.flush()
+                self._normalize_widget_order(db, scope=scope, project_id=project_id)
+                if scope == "dashboard":
+                    self._mirror_dashboard_widget_legacy(self._app_profile(db), self._widget_instances_query(db, scope="dashboard", project_id=None))
+                elif project is not None:
+                    self._mirror_project_widget_legacy(self._ensure_project_settings(db, project), self._widget_instances_query(db, scope="project", project_id=project.id))
                 self._publish_widget_instance_change(
                     db,
                     project_id=project_id,
@@ -5282,7 +5307,6 @@ class MissionControlService:
                     payload={"scope": scope, "project_id": project_id, "widget_instance_id": existing.id, "widget_type": widget_type, "action": "enabled"},
                 )
             return self._serialize_widget_instance(existing)
-        target_area = area or definition.default_area
         if order_index is None:
             siblings = [item for item in self._widget_instances_query(db, scope=scope, project_id=project_id) if item.area == target_area]
             order_index = len(siblings)
@@ -5323,7 +5347,7 @@ class MissionControlService:
         instance = self._widget_instance_or_error(db, instance_id, project=project)
         original_area = instance.area
         if payload.get("area"):
-            instance.area = str(payload["area"])
+            instance.area = self._validate_widget_area_for_scope(instance.scope, payload["area"]) or instance.area
         if payload.get("size"):
             instance.size = str(payload["size"])
         if "order_index" in payload and payload["order_index"] is not None:
@@ -7501,14 +7525,23 @@ class MissionControlService:
 
     def update_swarm_preferences(self, db: Session, project: Project, payload: SwarmPreferencesUpdate) -> dict[str, Any]:
         preferences = self._ensure_swarm_preferences(db, project)
-        preferences.optimization_mode = payload.optimization_mode
-        preferences.swarm_aggressiveness = payload.swarm_aggressiveness
-        preferences.max_agents = max(1, int(payload.max_agents))
-        preferences.require_approval_above_agent_count = max(1, int(payload.require_approval_above_agent_count))
-        preferences.allow_dynamic_spawning = payload.allow_dynamic_spawning
-        preferences.allow_dynamic_retirement = payload.allow_dynamic_retirement
-        preferences.docs_depth = payload.docs_depth
-        preferences.testing_depth = payload.testing_depth
+        fields_set = set(getattr(payload, "model_fields_set", set()))
+        if "optimization_mode" in fields_set and payload.optimization_mode is not None:
+            preferences.optimization_mode = payload.optimization_mode
+        if "swarm_aggressiveness" in fields_set and payload.swarm_aggressiveness is not None:
+            preferences.swarm_aggressiveness = payload.swarm_aggressiveness
+        if "max_agents" in fields_set and payload.max_agents is not None:
+            preferences.max_agents = max(1, int(payload.max_agents))
+        if "require_approval_above_agent_count" in fields_set and payload.require_approval_above_agent_count is not None:
+            preferences.require_approval_above_agent_count = max(1, int(payload.require_approval_above_agent_count))
+        if "allow_dynamic_spawning" in fields_set and payload.allow_dynamic_spawning is not None:
+            preferences.allow_dynamic_spawning = payload.allow_dynamic_spawning
+        if "allow_dynamic_retirement" in fields_set and payload.allow_dynamic_retirement is not None:
+            preferences.allow_dynamic_retirement = payload.allow_dynamic_retirement
+        if "docs_depth" in fields_set and payload.docs_depth is not None:
+            preferences.docs_depth = payload.docs_depth
+        if "testing_depth" in fields_set and payload.testing_depth is not None:
+            preferences.testing_depth = payload.testing_depth
         db.flush()
         serialized = self._serialize_swarm_preferences(preferences)
         self.events.publish(
@@ -9964,7 +9997,7 @@ class MissionControlService:
         }
 
     def get_app_profile(self, db: Session) -> AppProfile:
-        return self._app_profile(db)
+        return self._app_profile_preview(db)
 
     def update_app_profile(self, db: Session, payload: AppProfileUpdate) -> AppProfile:
         return update_app_profile(db, payload)
@@ -10694,37 +10727,58 @@ class MissionControlService:
 
     def update_settings(self, db: Session, project: Project, payload: ProjectSettingsUpdate) -> ProjectSettings:
         settings = self._ensure_project_settings(db, project)
-        settings.provider = normalize_provider(payload.provider)
-        settings.manager_model = payload.manager_model.strip() if payload.manager_model and payload.manager_model.strip() else None
-        settings.default_worker_model = payload.default_worker_model.strip() if payload.default_worker_model and payload.default_worker_model.strip() else None
-        settings.manager_reasoning_effort = payload.manager_reasoning_effort
-        settings.default_worker_reasoning_effort = payload.default_worker_reasoning_effort
-        settings.per_role_model_overrides_json = {
-            key: value.strip()
-            for key, value in payload.per_role_model_overrides_json.items()
-            if key.strip() and value.strip()
-        }
-        settings.per_role_reasoning_overrides_json = {
-            key: value
-            for key, value in payload.per_role_reasoning_overrides_json.items()
-            if key.strip() and value
-        }
-        settings.provider_endpoint = normalize_provider_endpoint(settings.provider, payload.provider_endpoint)
-        settings.adapter_command, settings.adapter_args_json = normalize_provider_adapter_settings(
-            settings.provider,
-            payload.adapter_command,
-            payload.adapter_args_json,
-        )
-        settings.runner_mode = payload.runner_mode
-        settings.sandbox_mode = payload.sandbox_mode
-        settings.approval_policy = payload.approval_policy
-        settings.workspace_widgets_json = validate_widget_types(
-            payload.workspace_widgets_json,
-            scope="project",
-            field_name="workspace widgets",
-        )
-        settings.approval_overrides_json = dict(payload.approval_overrides_json or {})
-        project.runner_mode = payload.runner_mode
+        updates = payload.model_dump(exclude_unset=True)
+        fields_set = set(getattr(payload, "model_fields_set", set(updates.keys())))
+
+        provider_changed = "provider" in fields_set and payload.provider is not None
+        if provider_changed:
+            settings.provider = normalize_provider(payload.provider)
+        if "manager_model" in fields_set:
+            settings.manager_model = payload.manager_model.strip() if payload.manager_model and payload.manager_model.strip() else None
+        if "default_worker_model" in fields_set:
+            settings.default_worker_model = payload.default_worker_model.strip() if payload.default_worker_model and payload.default_worker_model.strip() else None
+        if "manager_reasoning_effort" in fields_set:
+            settings.manager_reasoning_effort = payload.manager_reasoning_effort
+        if "default_worker_reasoning_effort" in fields_set:
+            settings.default_worker_reasoning_effort = payload.default_worker_reasoning_effort
+        if "per_role_model_overrides_json" in fields_set and payload.per_role_model_overrides_json is not None:
+            settings.per_role_model_overrides_json = {
+                key: value.strip()
+                for key, value in payload.per_role_model_overrides_json.items()
+                if key.strip() and value.strip()
+            }
+        if "per_role_reasoning_overrides_json" in fields_set and payload.per_role_reasoning_overrides_json is not None:
+            settings.per_role_reasoning_overrides_json = {
+                key: value
+                for key, value in payload.per_role_reasoning_overrides_json.items()
+                if key.strip() and value
+            }
+        if provider_changed or "provider_endpoint" in fields_set:
+            endpoint_source = payload.provider_endpoint if "provider_endpoint" in fields_set else settings.provider_endpoint
+            settings.provider_endpoint = normalize_provider_endpoint(settings.provider, endpoint_source)
+        if provider_changed or "adapter_command" in fields_set or "adapter_args_json" in fields_set:
+            command_source = payload.adapter_command if "adapter_command" in fields_set else settings.adapter_command
+            args_source = payload.adapter_args_json if "adapter_args_json" in fields_set else list(settings.adapter_args_json or [])
+            settings.adapter_command, settings.adapter_args_json = normalize_provider_adapter_settings(
+                settings.provider,
+                command_source,
+                args_source,
+            )
+        if "runner_mode" in fields_set and payload.runner_mode is not None:
+            settings.runner_mode = payload.runner_mode
+            project.runner_mode = payload.runner_mode
+        if "sandbox_mode" in fields_set and payload.sandbox_mode is not None:
+            settings.sandbox_mode = payload.sandbox_mode
+        if "approval_policy" in fields_set and payload.approval_policy is not None:
+            settings.approval_policy = payload.approval_policy
+        if "workspace_widgets_json" in fields_set and payload.workspace_widgets_json is not None:
+            settings.workspace_widgets_json = validate_widget_types(
+                payload.workspace_widgets_json,
+                scope="project",
+                field_name="workspace widgets",
+            )
+        if "approval_overrides_json" in fields_set and payload.approval_overrides_json is not None:
+            settings.approval_overrides_json = dict(payload.approval_overrides_json or {})
         self.events.publish(
             db,
             project.id,

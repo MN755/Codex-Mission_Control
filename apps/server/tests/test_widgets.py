@@ -97,6 +97,26 @@ def test_dashboard_widget_instances_read_does_not_seed_from_legacy_profile_prefe
     assert instances == []
 
 
+def test_profile_get_is_read_only(client, bridge_headers) -> None:
+    db = SessionLocal()
+    try:
+        assert db.scalar(select(func.count(AppProfile.id))) == 0
+    finally:
+        db.close()
+
+    response = client.get("/api/profile", headers=bridge_headers)
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["selected_provider"] == "codex"
+    assert payload["dashboard_widgets_json"] == []
+
+    db = SessionLocal()
+    try:
+        assert db.scalar(select(func.count(AppProfile.id))) == 0
+    finally:
+        db.close()
+
+
 def test_project_widget_instances_read_does_not_seed_from_legacy_workspace_preferences(client) -> None:
     project = create_project(client, "Legacy Widget Project", "legacy-widget-project")
     project_id = project["id"]
@@ -326,6 +346,69 @@ def test_project_widget_instance_routes_require_matching_project_context(client)
     assert deleted.status_code == 204
 
 
+def test_readding_disabled_widget_applies_new_layout_and_config(client) -> None:
+    project = create_project(client, "Widget Reenable", "widget-reenable")
+    created = client.post(
+        f"/api/projects/{project['id']}/widgets/add",
+        json={"widget_type": "Decision Ledger"},
+    )
+    assert created.status_code == 200, created.text
+    instance = created.json()
+
+    disabled = client.patch(
+        f"/api/widgets/instances/{instance['id']}",
+        params={"project_id": project["id"]},
+        json={"enabled": False},
+    )
+    assert disabled.status_code == 200, disabled.text
+    assert disabled.json()["enabled"] is False
+
+    readded = client.post(
+        "/api/widgets/instances",
+        json={
+            "scope": "project",
+            "project_id": project["id"],
+            "widget_type": "Decision Ledger",
+            "area": "project_right_sidebar",
+            "size": "large",
+            "order_index": 5,
+            "collapsed": True,
+            "enabled": True,
+            "config_json": {"b": 2},
+        },
+    )
+    assert readded.status_code == 200, readded.text
+    payload = readded.json()
+    assert payload["id"] == instance["id"]
+    assert payload["enabled"] is True
+    assert payload["area"] == "project_right_sidebar"
+    assert payload["size"] == "large"
+    assert payload["order_index"] == 0
+    assert payload["collapsed"] is True
+    assert payload["config_json"] == {"b": 2}
+
+
+def test_widget_update_rejects_scope_incompatible_area_assignment(client) -> None:
+    created = client.post(
+        "/api/widgets/instances",
+        json={
+            "scope": "dashboard",
+            "widget_type": "Connected Accounts",
+            "area": "dashboard_main",
+            "size": "small",
+        },
+    )
+    assert created.status_code == 200, created.text
+    instance = created.json()
+
+    moved = client.patch(
+        f"/api/widgets/instances/{instance['id']}",
+        json={"area": "project_right_sidebar"},
+    )
+    assert moved.status_code == 400
+    assert "not valid for dashboard widgets" in moved.json()["detail"].lower()
+
+
 def test_dashboard_widget_creation_rejects_project_id(client) -> None:
     project = create_project(client, "Dashboard Scope Guard", "dashboard-scope-guard")
     response = client.post(
@@ -405,6 +488,43 @@ def test_settings_reject_unknown_and_wrong_scope_project_widgets(client, bridge_
     settings = client.get("/api/settings", params={"project_id": project["id"]}, headers=bridge_headers)
     assert settings.status_code == 200, settings.text
     assert settings.json()["workspace_widgets_json"] == ["Validation Recipe", "Manager Assumptions"]
+
+
+def test_partial_project_settings_update_preserves_omitted_fields(client, bridge_headers) -> None:
+    project = create_project(client, "Partial Settings", "partial-settings")
+    seeded = client.put(
+        "/api/settings",
+        params={"project_id": project["id"]},
+        json={
+            "provider": "ollama",
+            "manager_model": "manager-x",
+            "default_worker_model": "worker-y",
+            "runner_mode": "dry_run",
+            "sandbox_mode": "read-only",
+            "approval_policy": "never",
+            "workspace_widgets_json": ["Validation Recipe"],
+            "approval_overrides_json": {"cmd:test": {"status": "approved_once"}},
+        },
+        headers=bridge_headers,
+    )
+    assert seeded.status_code == 200, seeded.text
+
+    updated = client.put(
+        "/api/settings",
+        params={"project_id": project["id"]},
+        json={"provider": "codex"},
+        headers=bridge_headers,
+    )
+    assert updated.status_code == 200, updated.text
+    payload = updated.json()
+    assert payload["provider"] == "codex"
+    assert payload["manager_model"] == "manager-x"
+    assert payload["default_worker_model"] == "worker-y"
+    assert payload["runner_mode"] == "dry_run"
+    assert payload["sandbox_mode"] == "read-only"
+    assert payload["approval_policy"] == "never"
+    assert payload["workspace_widgets_json"] == ["Validation Recipe"]
+    assert payload["approval_overrides_json"] == {"cmd:test": {"status": "approved_once"}}
 
 
 def test_project_widget_update_rejects_invalid_names_without_clearing_existing_widgets(client, bridge_headers) -> None:

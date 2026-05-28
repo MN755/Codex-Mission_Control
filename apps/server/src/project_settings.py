@@ -84,37 +84,59 @@ def get_or_create_project_settings(db: Session, project: Project) -> ProjectSett
 
 def update_project_settings(db: Session, project: Project, payload: ProjectSettingsUpdate) -> ProjectSettings:
     settings = get_or_create_project_settings(db, project)
-    settings.provider = normalize_provider(payload.provider)
-    settings.manager_model = normalize_optional_text(payload.manager_model)
-    settings.default_worker_model = normalize_optional_text(payload.default_worker_model)
-    settings.manager_reasoning_effort = payload.manager_reasoning_effort
-    settings.default_worker_reasoning_effort = payload.default_worker_reasoning_effort
-    settings.per_role_model_overrides_json = {
-        key: value.strip()
-        for key, value in payload.per_role_model_overrides_json.items()
-        if key.strip() and value.strip()
-    }
-    settings.per_role_reasoning_overrides_json = {
-        key: value
-        for key, value in payload.per_role_reasoning_overrides_json.items()
-        if key.strip() and value
-    }
-    settings.provider_endpoint = normalize_provider_endpoint(settings.provider, payload.provider_endpoint)
-    settings.adapter_command, settings.adapter_args_json = normalize_provider_adapter_settings(
-        settings.provider,
-        payload.adapter_command,
-        payload.adapter_args_json,
-    )
-    settings.runner_mode = payload.runner_mode
-    settings.sandbox_mode = payload.sandbox_mode
-    settings.approval_policy = payload.approval_policy
-    settings.workspace_widgets_json = validate_widget_types(
-        payload.workspace_widgets_json,
-        scope="project",
-        field_name="workspace widgets",
-    )
-    settings.approval_overrides_json = dict(payload.approval_overrides_json or {})
-    project.runner_mode = payload.runner_mode
+    updates = payload.model_dump(exclude_unset=True)
+    fields_set = set(getattr(payload, "model_fields_set", set(updates.keys())))
+
+    provider_changed = "provider" in fields_set and payload.provider is not None
+    if provider_changed:
+        settings.provider = normalize_provider(payload.provider)
+    if "manager_model" in fields_set:
+        settings.manager_model = normalize_optional_text(payload.manager_model)
+    if "default_worker_model" in fields_set:
+        settings.default_worker_model = normalize_optional_text(payload.default_worker_model)
+    if "manager_reasoning_effort" in fields_set:
+        settings.manager_reasoning_effort = payload.manager_reasoning_effort
+    if "default_worker_reasoning_effort" in fields_set:
+        settings.default_worker_reasoning_effort = payload.default_worker_reasoning_effort
+    if "per_role_model_overrides_json" in fields_set and payload.per_role_model_overrides_json is not None:
+        settings.per_role_model_overrides_json = {
+            key: value.strip()
+            for key, value in payload.per_role_model_overrides_json.items()
+            if key.strip() and value.strip()
+        }
+    if "per_role_reasoning_overrides_json" in fields_set and payload.per_role_reasoning_overrides_json is not None:
+        settings.per_role_reasoning_overrides_json = {
+            key: value
+            for key, value in payload.per_role_reasoning_overrides_json.items()
+            if key.strip() and value
+        }
+
+    if provider_changed or "provider_endpoint" in fields_set:
+        endpoint_source = payload.provider_endpoint if "provider_endpoint" in fields_set else settings.provider_endpoint
+        settings.provider_endpoint = normalize_provider_endpoint(settings.provider, endpoint_source)
+    if provider_changed or "adapter_command" in fields_set or "adapter_args_json" in fields_set:
+        command_source = payload.adapter_command if "adapter_command" in fields_set else settings.adapter_command
+        args_source = payload.adapter_args_json if "adapter_args_json" in fields_set else list(settings.adapter_args_json or [])
+        settings.adapter_command, settings.adapter_args_json = normalize_provider_adapter_settings(
+            settings.provider,
+            command_source,
+            args_source,
+        )
+    if "runner_mode" in fields_set and payload.runner_mode is not None:
+        settings.runner_mode = payload.runner_mode
+        project.runner_mode = payload.runner_mode
+    if "sandbox_mode" in fields_set and payload.sandbox_mode is not None:
+        settings.sandbox_mode = payload.sandbox_mode
+    if "approval_policy" in fields_set and payload.approval_policy is not None:
+        settings.approval_policy = payload.approval_policy
+    if "workspace_widgets_json" in fields_set and payload.workspace_widgets_json is not None:
+        settings.workspace_widgets_json = validate_widget_types(
+            payload.workspace_widgets_json,
+            scope="project",
+            field_name="workspace widgets",
+        )
+    if "approval_overrides_json" in fields_set and payload.approval_overrides_json is not None:
+        settings.approval_overrides_json = dict(payload.approval_overrides_json or {})
     db.flush()
     return settings
 
