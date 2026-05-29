@@ -40,7 +40,16 @@ FRONTEND_DIST = (
 if SERVER_SRC is not None and str(SERVER_SRC) not in sys.path:
     sys.path.insert(0, str(SERVER_SRC))
 
-os.environ.setdefault("MISSION_CONTROL_FRONTEND_DIST", str(FRONTEND_DIST))
+
+def _default_frontend_dist_override() -> Path | None:
+    if SOURCE_REPO_ROOT is not None or FRONTEND_DIST.exists():
+        return FRONTEND_DIST
+    return None
+
+
+_frontend_override = _default_frontend_dist_override()
+if _frontend_override is not None:
+    os.environ.setdefault("MISSION_CONTROL_FRONTEND_DIST", str(_frontend_override))
 if SOURCE_REPO_ROOT is not None:
     os.environ.setdefault("MISSION_CONTROL_REPO_ROOT", str(SOURCE_REPO_ROOT))
 
@@ -172,4 +181,4 @@ def main() -> None:
             _shutdown()
 
 
-__all__ = ["main", "_discover_source_repo_root", "_load_backend_runtime"]
+__all__ = ["main", "_default_frontend_dist_override", "_discover_source_repo_root", "_load_backend_runtime"]

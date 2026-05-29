@@ -16,7 +16,7 @@ from bootstrap.runner_autowire import autowire_headless, get_headless_config, ge
 from bootstrap.runner_probe import summarize_runner_status
 from capabilities import capability_service
 from codex_auth import auth_service
-from config import DEFAULT_FRONTEND_PORT, RUNNING_FROM_SOURCE, frontend_dist_root, load_launcher_config
+from config import DEFAULT_FRONTEND_PORT, RUNNING_FROM_SOURCE, default_frontend_dist_root, frontend_dist_root, load_launcher_config
 from context_packs import context_pack_service
 from db import get_db, init_db
 from diagnostics import open_folder
@@ -545,8 +545,13 @@ def _serialize_understanding(project: Project) -> ProjectUnderstandingRead:
 def _frontend_dist_dir() -> Path | None:
     candidates: list[Path] = []
     if os.environ.get("MISSION_CONTROL_FRONTEND_DIST"):
-        candidates.append(Path(os.environ["MISSION_CONTROL_FRONTEND_DIST"]))
-    candidates.append(frontend_dist_root())
+        candidates.append(Path(os.environ["MISSION_CONTROL_FRONTEND_DIST"]).expanduser().resolve())
+    default_candidate = default_frontend_dist_root()
+    if not any(candidate == default_candidate for candidate in candidates):
+        candidates.append(default_candidate)
+    configured_candidate = frontend_dist_root()
+    if not any(candidate == configured_candidate for candidate in candidates):
+        candidates.append(configured_candidate)
     for candidate in candidates:
         if candidate.exists() and candidate.is_dir():
             return candidate

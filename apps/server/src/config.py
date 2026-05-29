@@ -46,10 +46,16 @@ RUNTIME_ROOT = Path(
 ).resolve()
 RUNTIME_LOGS_ROOT = RUNTIME_ROOT / "logs"
 WORKTREE_ROOT = RUNTIME_ROOT / "worktrees"
-LAUNCHER_ROOT = Path(
-    os.environ.get("MISSION_CONTROL_LAUNCHER_DIR")
-    or ((SOURCE_REPO_ROOT / ".runtime" / "launcher") if SOURCE_REPO_ROOT else (APP_SUPPORT_ROOT / "launcher"))
-).resolve()
+DEFAULT_BACKEND_HOST = "127.0.0.1"
+DEFAULT_BACKEND_PORT = 8010
+DEFAULT_FRONTEND_PORT = 5173
+DEFAULT_LAUNCHER_CONFIG = {
+    "host": DEFAULT_BACKEND_HOST,
+    "backendPort": DEFAULT_BACKEND_PORT,
+    "frontendPort": DEFAULT_FRONTEND_PORT,
+    "autoOpenBrowser": True,
+    "launcherLogDir": ".runtime/launcher",
+}
 _bundled_launcher_config = SCRIPTS_ROOT / "mission-control.config.json"
 LAUNCHER_CONFIG_PATH = Path(
     os.environ.get("MISSION_CONTROL_LAUNCHER_CONFIG")
@@ -60,48 +66,15 @@ LAUNCHER_CONFIG_PATH = Path(
     )
 ).resolve()
 DB_PATH = RUNTIME_ROOT / "mission_control.sqlite3"
-DAEMON_METADATA_PATH = LAUNCHER_ROOT / "daemon.json"
-DAEMON_TOKEN_PATH = RUNTIME_ROOT / "daemon.token"
-DEFAULT_DB_URL = f"sqlite:///{DB_PATH.as_posix()}"
-DEFAULT_RUNNER_MODE = "auto"
-DEFAULT_MANAGER_MODE = "auto"
-DEFAULT_SANDBOX = "workspace-write"
-DEFAULT_APPROVAL_POLICY = "on-request"
-DEFAULT_CLI_MODEL = "gpt-5.4"
-DEFAULT_REASONING_EFFORT = "medium"
-DEFAULT_BACKEND_HOST = "127.0.0.1"
-DEFAULT_BACKEND_PORT = 8010
-DEFAULT_FRONTEND_PORT = 5173
 
 
-def frontend_dist_root() -> Path:
-    explicit = os.environ.get("MISSION_CONTROL_FRONTEND_DIST")
-    if explicit:
-        return Path(explicit).expanduser().resolve()
-    if SOURCE_REPO_ROOT is not None:
-        return (SOURCE_REPO_ROOT / "apps" / "dashboard" / "dist").resolve()
-    return (BUNDLE_ROOT / "frontend_dist").resolve()
-
-
-DEFAULT_LAUNCHER_CONFIG = {
-    "host": DEFAULT_BACKEND_HOST,
-    "backendPort": DEFAULT_BACKEND_PORT,
-    "frontendPort": DEFAULT_FRONTEND_PORT,
-    "autoOpenBrowser": True,
-    "launcherLogDir": ".runtime/launcher",
-}
-
-
-def ensure_runtime_dirs() -> None:
-    paths = [WORKSPACE_ROOT, RUNTIME_ROOT, RUNTIME_LOGS_ROOT, WORKTREE_ROOT, LAUNCHER_ROOT]
-    if not RUNNING_FROM_SOURCE:
-        paths.insert(0, APP_SUPPORT_ROOT)
-    for path in paths:
-        path.mkdir(parents=True, exist_ok=True)
-
-
-def get_codex_home() -> Path:
-    return Path(os.environ.get("CODEX_HOME") or (Path.home() / ".codex"))
+def _resolve_relative_to_runtime_root(path_text: str) -> Path:
+    candidate = Path(path_text).expanduser()
+    if candidate.is_absolute():
+        return candidate.resolve()
+    if RUNNING_FROM_SOURCE and SOURCE_REPO_ROOT is not None:
+        return (SOURCE_REPO_ROOT / candidate).resolve()
+    return (APP_SUPPORT_ROOT / candidate).resolve()
 
 
 def load_launcher_config() -> dict:
@@ -114,3 +87,50 @@ def load_launcher_config() -> dict:
         except json.JSONDecodeError:
             pass
     return config
+
+
+def resolve_launcher_root(config: dict | None = None) -> Path:
+    explicit = os.environ.get("MISSION_CONTROL_LAUNCHER_DIR")
+    if explicit:
+        return Path(explicit).expanduser().resolve()
+    launcher_config = config or load_launcher_config()
+    return _resolve_relative_to_runtime_root(
+        str(launcher_config.get("launcherLogDir", DEFAULT_LAUNCHER_CONFIG["launcherLogDir"]))
+    )
+
+
+LAUNCHER_ROOT = resolve_launcher_root()
+DAEMON_METADATA_PATH = LAUNCHER_ROOT / "daemon.json"
+DAEMON_TOKEN_PATH = RUNTIME_ROOT / "daemon.token"
+DEFAULT_DB_URL = f"sqlite:///{DB_PATH.as_posix()}"
+DEFAULT_RUNNER_MODE = "auto"
+DEFAULT_MANAGER_MODE = "auto"
+DEFAULT_SANDBOX = "workspace-write"
+DEFAULT_APPROVAL_POLICY = "on-request"
+DEFAULT_CLI_MODEL = "gpt-5.4"
+DEFAULT_REASONING_EFFORT = "medium"
+
+
+def default_frontend_dist_root() -> Path:
+    if SOURCE_REPO_ROOT is not None:
+        return (SOURCE_REPO_ROOT / "apps" / "dashboard" / "dist").resolve()
+    return (BUNDLE_ROOT / "frontend_dist").resolve()
+
+
+def frontend_dist_root() -> Path:
+    explicit = os.environ.get("MISSION_CONTROL_FRONTEND_DIST")
+    if explicit:
+        return Path(explicit).expanduser().resolve()
+    return default_frontend_dist_root()
+
+
+def ensure_runtime_dirs() -> None:
+    paths = [WORKSPACE_ROOT, RUNTIME_ROOT, RUNTIME_LOGS_ROOT, WORKTREE_ROOT, LAUNCHER_ROOT]
+    if not RUNNING_FROM_SOURCE:
+        paths.insert(0, APP_SUPPORT_ROOT)
+    for path in paths:
+        path.mkdir(parents=True, exist_ok=True)
+
+
+def get_codex_home() -> Path:
+    return Path(os.environ.get("CODEX_HOME") or (Path.home() / ".codex"))

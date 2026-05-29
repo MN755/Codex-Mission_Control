@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import sys
 from fastapi.testclient import TestClient
 from pathlib import Path
@@ -21,6 +22,17 @@ def _load_desktop_app_module():
     root = Path(__file__).resolve().parents[3]
     module_path = root / "apps" / "desktop" / "src" / "mission_control_desktop" / "app.py"
     spec = importlib.util.spec_from_file_location("mission_control_desktop_app_test", module_path)
+    assert spec is not None
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+    return module
+
+
+def _load_server_config_module():
+    root = Path(__file__).resolve().parents[3]
+    module_path = root / "apps" / "server" / "src" / "config.py"
+    spec = importlib.util.spec_from_file_location("mission_control_server_config_test", module_path)
     assert spec is not None
     module = importlib.util.module_from_spec(spec)
     assert spec.loader is not None
@@ -201,6 +213,50 @@ def test_desktop_app_loads_backend_from_installed_modules(monkeypatch, tmp_path)
     assert loaded_root == app_support_root
     assert loaded_app is fake_app
     assert ensure_calls == ["called"]
+
+
+def test_desktop_app_skips_missing_packaged_frontend_override(monkeypatch, tmp_path) -> None:
+    monkeypatch.delenv("MISSION_CONTROL_FRONTEND_DIST", raising=False)
+    module = _load_desktop_app_module()
+    monkeypatch.setattr(module, "SOURCE_REPO_ROOT", None)
+    monkeypatch.setattr(module, "FRONTEND_DIST", tmp_path / "missing-frontend-dist")
+
+    assert module._default_frontend_dist_override() is None
+
+
+def test_packaged_server_falls_back_to_default_bundle_when_frontend_env_is_stale(monkeypatch, tmp_path) -> None:
+    if "main" not in sys.modules:
+        import main  # noqa: F401
+    import main
+
+    dist = tmp_path / "frontend_dist"
+    dist.mkdir()
+    (dist / "index.html").write_text("<html><body>SERVER BUNDLE</body></html>", encoding="utf-8")
+    monkeypatch.setenv("MISSION_CONTROL_FRONTEND_DIST", str(tmp_path / "missing-frontend-dist"))
+    monkeypatch.setattr(main, "RUNNING_FROM_SOURCE", False)
+    monkeypatch.setattr(main, "default_frontend_dist_root", lambda: dist)
+
+    client = TestClient(main.app)
+    response = client.get("/")
+
+    assert response.status_code == 200
+    assert "SERVER BUNDLE" in response.text
+
+
+def test_server_config_uses_launcher_log_dir_for_launcher_root(monkeypatch, tmp_path) -> None:
+    config_path = tmp_path / "mission-control.config.json"
+    config_path.write_text(json.dumps({"launcherLogDir": "custom-launcher"}), encoding="utf-8")
+    monkeypatch.delenv("MISSION_CONTROL_LAUNCHER_DIR", raising=False)
+    monkeypatch.setenv("MISSION_CONTROL_APP_HOME", str(tmp_path / "app-home"))
+    monkeypatch.setenv("MISSION_CONTROL_LAUNCHER_CONFIG", str(config_path))
+
+    module = _load_server_config_module()
+    monkeypatch.setattr(module, "SOURCE_REPO_ROOT", None)
+    monkeypatch.setattr(module, "RUNNING_FROM_SOURCE", False)
+    monkeypatch.setattr(module, "APP_SUPPORT_ROOT", (tmp_path / "app-home").resolve())
+
+    assert module.load_launcher_config()["launcherLogDir"] == "custom-launcher"
+    assert module.resolve_launcher_root() == (tmp_path / "app-home" / "custom-launcher").resolve()
 
 
 def test_packaged_server_serves_embedded_frontend_when_bundle_is_missing(monkeypatch) -> None:
