@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib.util
 import subprocess
 from pathlib import Path
 
@@ -64,6 +65,16 @@ def test_daemon_client_rejects_non_local_spawn(monkeypatch) -> None:
         assert "localhost" in str(exc).lower()
     else:
         raise AssertionError("Expected non-local daemon binding to be rejected.")
+
+
+def test_daemon_client_can_construct_without_repo_root(monkeypatch) -> None:
+    monkeypatch.delenv("MISSION_CONTROL_REPO_ROOT", raising=False)
+    monkeypatch.setattr(MissionControlDaemonClient, "_discover_repo_root", lambda self: None)
+    client = MissionControlDaemonClient(base_url="http://127.0.0.1:8010", timeout=0.1)
+
+    assert client.repo_root is None
+    assert client.config["host"] == "127.0.0.1"
+    assert client.config["backendPort"] == 8010
 
 
 class FakeClient:
@@ -431,3 +442,30 @@ def test_daemon_client_auto_start_launches_when_health_fails(monkeypatch, tmp_pa
 
     assert launches
     assert any("mission_control_daemon.py" in segment for segment in launches[0])
+
+
+def test_daemon_client_auto_start_uses_installed_daemon_module_when_repo_script_missing(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("MISSION_CONTROL_RUNTIME_ROOT", str(tmp_path / "runtime"))
+    monkeypatch.setenv("MISSION_CONTROL_LAUNCHER_DIR", str(tmp_path / "launcher"))
+    monkeypatch.setattr(MissionControlDaemonClient, "_discover_repo_root", lambda self: None)
+    client = MissionControlDaemonClient(base_url="http://127.0.0.1:8123", timeout=0.2)
+    attempts = {"count": 0}
+
+    def fake_healthcheck() -> bool:
+        attempts["count"] += 1
+        return attempts["count"] > 1
+
+    launches: list[list[str]] = []
+
+    def fake_popen(args, **kwargs):
+        launches.append(list(args))
+        return object()
+
+    monkeypatch.setattr(client, "_healthcheck", fake_healthcheck)
+    monkeypatch.setattr(client, "_port_in_use", lambda: False)
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(importlib.util, "find_spec", lambda name: object() if name == "mission_control_daemon" else None)
+
+    client.ensure_daemon_running()
+
+    assert launches == [[client._server_command[0], "-m", "mission_control_daemon"]]
