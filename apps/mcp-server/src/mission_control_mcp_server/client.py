@@ -357,7 +357,10 @@ class MissionControlDaemonClient:
         return payload
 
     def active_project_orchestration(self, project_id: int) -> dict[str, Any] | None:
-        return self._request("GET", f"/api/projects/{project_id}/orchestrations/active")
+        payload = self._request("GET", f"/api/projects/{project_id}/orchestrations/active")
+        if isinstance(payload, dict):
+            self._remember_orchestration_project(payload.get("id"), project_id)
+        return payload
 
     def get_status(self, *, orchestration_id: int | None = None, project_id: int | None = None) -> dict[str, Any]:
         resolved_id = self._maybe_orchestration_id(orchestration_id=orchestration_id, project_id=project_id)
@@ -1260,7 +1263,7 @@ class MissionControlDaemonClient:
             if kind == "status":
                 project = self.get_project(project_id)
                 orchestration_id = self._maybe_orchestration_id(project_id=project_id)
-                status = self.get_status(orchestration_id=orchestration_id) if orchestration_id is not None else None
+                status = self.get_status(orchestration_id=orchestration_id, project_id=project_id) if orchestration_id is not None else None
                 return self._summarize_project_status(project, status)
             if kind == "agents":
                 return self._summarize_agents(project_id, self.get_agents(project_id))
