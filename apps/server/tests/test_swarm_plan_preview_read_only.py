@@ -6,7 +6,7 @@ from sqlalchemy import delete, func, select
 
 from conftest import sample_workspace
 from db import SessionLocal
-from models import SwarmLaunchSimulation
+from models import OrchestrationSession, SwarmLaunchSimulation
 
 
 def _create_project(client, name: str, workspace_name: str) -> dict:
@@ -92,6 +92,51 @@ def test_instincts_preview_stays_read_only(client, bridge_headers) -> None:
     _clear_simulations(project["id"])
 
     response = client.get(f"/api/projects/{project['id']}/instincts/preview", headers=bridge_headers)
+
+    assert response.status_code == 200, response.text
+    assert _simulation_count(project["id"]) == 0
+
+
+def test_project_status_summary_stays_read_only(client, bridge_headers) -> None:
+    project = _create_project(client, "Project Status Summary Read Safety", "project-status-summary-read-safety")
+    _seed_swarm_plan(client, project["id"])
+    _clear_simulations(project["id"])
+
+    response = client.get(f"/api/projects/{project['id']}/status-summary", headers=bridge_headers)
+
+    assert response.status_code == 200, response.text
+    assert _simulation_count(project["id"]) == 0
+
+
+def test_orchestration_status_summary_stays_read_only(client, bridge_headers) -> None:
+    project = _create_project(client, "Orchestration Status Summary Read Safety", "orchestration-status-summary-read-safety")
+    _seed_swarm_plan(client, project["id"])
+
+    db = SessionLocal()
+    try:
+        session = OrchestrationSession(
+            project_id=project["id"],
+            workspace_path=project["workspace_path"],
+            source="codex_plugin",
+            user_request="Check status without seeding simulations.",
+            status="running",
+            manager_status="Reviewing the current swarm plan safely.",
+            mode="existing_codebase",
+            metadata_json={},
+        )
+        db.add(session)
+        db.commit()
+        orchestration_id = session.id
+    finally:
+        db.close()
+
+    _clear_simulations(project["id"])
+
+    response = client.get(
+        f"/api/orchestrations/{orchestration_id}/status-summary",
+        headers=bridge_headers,
+        params={"project_id": project["id"]},
+    )
 
     assert response.status_code == 200, response.text
     assert _simulation_count(project["id"]) == 0

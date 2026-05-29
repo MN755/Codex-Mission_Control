@@ -818,7 +818,7 @@ class BridgeRuntimeService:
             for item in list(system_status.get("model_advisories") or [])
             if str(item.get("summary") or "").strip()
         ]
-        swarm_plan = service.get_swarm_plan(db, project)
+        swarm_plan = service.get_swarm_plan(db, project, persist_launch_readiness=False)
         swarm_summary = "Not planned"
         if swarm_plan:
             swarm_summary = f"{swarm_plan.get('mode', 'unknown')} / {swarm_plan.get('status', 'unknown')}"
