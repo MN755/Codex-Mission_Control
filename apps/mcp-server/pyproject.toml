@@ -22,6 +22,9 @@ mission-control-mcp = "mission_control_mcp_server.__main__:main"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+mission_control_mcp_server = ["assets/*.json"]
+
 [tool.pytest.ini_options]
 pythonpath = ["src"]
 testpaths = ["tests"]
