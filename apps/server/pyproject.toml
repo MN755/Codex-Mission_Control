@@ -30,9 +30,9 @@ py-modules = [
   "bridge_messages",
   "chat_markdown",
   "claude_cli_path",
+  "config",
   "codex_auth",
   "codex_cli_path",
-  "config",
   "daemon_state",
   "db",
   "device_profile",
@@ -40,7 +40,6 @@ py-modules = [
   "diagnostics",
   "event_digest_formatter",
   "events",
-  "gpu_support",
   "handoff_formatter",
   "imported_codebase",
   "interview",
@@ -48,7 +47,6 @@ py-modules = [
   "manager",
   "mission_control_daemon",
   "models",
-  "nvidia_support",
   "orchestration",
   "planner",
   "plugin_health",
@@ -66,7 +64,6 @@ py-modules = [
   "tool_catalog",
   "webwright_support",
   "widget_catalog",
-  "workspace_tooling",
 ]
 
 [tool.setuptools.packages.find]
