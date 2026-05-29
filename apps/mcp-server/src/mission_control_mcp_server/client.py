@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import json
+import importlib.util
 import os
 import socket
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 from typing import Any
@@ -41,7 +43,7 @@ class MissionControlDaemonClient:
         self.timeout = timeout
         self._orchestration_project_ids: dict[int, int] = {}
 
-    def _discover_repo_root(self) -> Path:
+    def _discover_repo_root(self) -> Path | None:
         explicit = os.environ.get("MISSION_CONTROL_REPO_ROOT")
         if explicit:
             return Path(explicit).expanduser().resolve()
@@ -49,9 +51,11 @@ class MissionControlDaemonClient:
         for parent in current.parents:
             if (parent / "apps" / "server" / "src" / "main.py").exists() and (parent / "README.md").exists():
                 return parent
-        raise RuntimeError("Could not discover the Codex Mission Control repository root.")
+        return None
 
     def _load_launcher_config(self) -> dict[str, Any]:
+        if self.repo_root is None:
+            return {"host": DEFAULT_BACKEND_HOST, "backendPort": DEFAULT_BACKEND_PORT}
         server_src = self.repo_root / "apps" / "server" / "src"
         if server_src.exists() and str(server_src) not in sys.path:
             sys.path.insert(0, str(server_src))
@@ -82,6 +86,8 @@ class MissionControlDaemonClient:
         explicit = os.environ.get("MISSION_CONTROL_RUNTIME_ROOT")
         if explicit:
             return Path(explicit).expanduser().resolve()
+        if self.repo_root is None:
+            return (Path(tempfile.gettempdir()) / "mission-control-runtime").resolve()
         return (self.repo_root / "apps" / "server" / ".runtime").resolve()
 
     @property
@@ -90,6 +96,11 @@ class MissionControlDaemonClient:
         if explicit:
             return Path(explicit).expanduser().resolve()
         launcher_dir = str(self.config.get("launcherLogDir", ".runtime/launcher"))
+        launcher_path = Path(launcher_dir).expanduser()
+        if launcher_path.is_absolute():
+            return launcher_path.resolve()
+        if self.repo_root is None:
+            return (self._runtime_root / "launcher").resolve()
         return (self.repo_root / launcher_dir).resolve()
 
     @property
@@ -98,7 +109,21 @@ class MissionControlDaemonClient:
 
     @property
     def _server_script(self) -> Path:
+        if self.repo_root is None:
+            return Path("mission_control_daemon.py")
         return (self.repo_root / "apps" / "server" / "src" / "mission_control_daemon.py").resolve()
+
+    @property
+    def _server_command(self) -> list[str]:
+        if self.repo_root is not None and self._server_script.exists():
+            return [sys.executable, str(self._server_script)]
+        if importlib.util.find_spec("mission_control_daemon") is not None:
+            return [sys.executable, "-m", "mission_control_daemon"]
+        raise RuntimeError(
+            "Mission Control daemon startup requires either a source checkout or an installed "
+            "`codex-mission-control-server` package. Install the backend or set MISSION_CONTROL_REPO_ROOT "
+            "to a valid repository checkout."
+        )
 
     def _read_daemon_token(self) -> str | None:
         if not self._daemon_token_path.exists():
@@ -147,11 +172,11 @@ class MissionControlDaemonClient:
         identity = self._daemon_identity()
         if not identity:
             return
-        expected_repo = str(self.repo_root)
+        expected_repo = str(self.repo_root) if self.repo_root is not None else ""
         actual_repo = str(identity.get("repo_root") or "")
         actual_port = int(identity.get("port") or 0)
         actual_mode = str(identity.get("mode") or "unknown")
-        if actual_repo and actual_repo != expected_repo:
+        if expected_repo and actual_repo and actual_repo != expected_repo:
             raise RuntimeError(
                 "Mission Control daemon is healthy, but the current port belongs to a different repository checkout. "
                 f"expected_repo_root={expected_repo} actual_repo_root={actual_repo} configured_base_url={self.base_url}."
@@ -179,7 +204,7 @@ class MissionControlDaemonClient:
             raise RuntimeError(
                 "Mission Control daemon port is already in use but the health check failed. "
                 f"configured_base_url={self.base_url} configured_host={effective_host} configured_port={effective_port}. "
-                f"expected_repo_root={self.repo_root}. "
+                f"expected_repo_root={self.repo_root or 'unknown'}. "
                 "Likely causes: stale launcher config, another localhost service on the same port, or a dead Mission Control process with stale metadata."
             )
         self._launcher_root.mkdir(parents=True, exist_ok=True)
@@ -187,10 +212,13 @@ class MissionControlDaemonClient:
         env.setdefault("MISSION_CONTROL_SERVER_MODE", "daemon")
         env.setdefault("MISSION_CONTROL_BACKEND_HOST", urlparse(self.base_url).hostname or self._configured_host)
         env.setdefault("MISSION_CONTROL_BACKEND_PORT", str(urlparse(self.base_url).port or self._configured_port))
-        env.setdefault("MISSION_CONTROL_REPO_ROOT", str(self.repo_root))
+        if self.repo_root is not None:
+            env.setdefault("MISSION_CONTROL_REPO_ROOT", str(self.repo_root))
         stdout_handle = open(self._launcher_root / "daemon.stdout.log", "a", encoding="utf-8")
         stderr_handle = open(self._launcher_root / "daemon.stderr.log", "a", encoding="utf-8")
-        kwargs: dict[str, Any] = {"cwd": str(self.repo_root), "env": env, "stdout": stdout_handle, "stderr": stderr_handle}
+        kwargs: dict[str, Any] = {"env": env, "stdout": stdout_handle, "stderr": stderr_handle}
+        if self.repo_root is not None:
+            kwargs["cwd"] = str(self.repo_root)
         if os.name == "nt":
             kwargs["creationflags"] = (
                 getattr(subprocess, "DETACHED_PROCESS", 0)
@@ -200,7 +228,7 @@ class MissionControlDaemonClient:
             )
         else:
             kwargs["start_new_session"] = True
-        subprocess.Popen([sys.executable, str(self._server_script)], **kwargs)
+        subprocess.Popen(self._server_command, **kwargs)
         deadline = time.time() + self.timeout
         while time.time() < deadline:
             if self._healthcheck():
