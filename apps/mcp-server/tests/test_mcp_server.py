@@ -649,6 +649,76 @@ def test_daemon_client_constructs_without_repo_checkout(monkeypatch, tmp_path: P
     assert client._launcher_root == (tmp_path / "app-home" / ".runtime" / "launcher").resolve()
 
 
+def test_daemon_identity_includes_bridge_token(monkeypatch, tmp_path: Path) -> None:
+    runtime_root = tmp_path / "runtime"
+    runtime_root.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("MISSION_CONTROL_RUNTIME_ROOT", str(runtime_root))
+    monkeypatch.setenv("MISSION_CONTROL_APP_HOME", str(tmp_path / "app-home"))
+    (runtime_root / "daemon.token").write_text("secret-token", encoding="utf-8")
+
+    client = MissionControlDaemonClient(base_url="http://127.0.0.1:8010", timeout=0.1)
+    captured: dict[str, str] = {}
+
+    class FakeResponse:
+        status_code = 200
+
+        @staticmethod
+        def json() -> dict[str, object]:
+            return {"repo_root": "C:/repo", "port": 8010, "mode": "daemon"}
+
+    class FakeHttpClient:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb) -> bool:
+            return False
+
+        def get(self, url: str, headers: dict[str, str] | None = None, timeout: float | None = None) -> FakeResponse:
+            captured["url"] = url
+            captured["token"] = (headers or {}).get("X-Mission-Control-Token", "")
+            return FakeResponse()
+
+    monkeypatch.setattr("mission_control_mcp_server.client.httpx.Client", FakeHttpClient)
+
+    payload = client._daemon_identity()
+
+    assert payload == {"repo_root": "C:/repo", "port": 8010, "mode": "daemon"}
+    assert captured["url"].endswith("/api/diagnostics/identity")
+    assert captured["token"] == "secret-token"
+
+
+def test_protected_read_methods_require_bridge_token(monkeypatch, tmp_path: Path) -> None:
+    runtime_root = tmp_path / "runtime"
+    runtime_root.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("MISSION_CONTROL_RUNTIME_ROOT", str(runtime_root))
+    monkeypatch.setenv("MISSION_CONTROL_APP_HOME", str(tmp_path / "app-home"))
+    (runtime_root / "daemon.token").write_text("secret-token", encoding="utf-8")
+
+    client = MissionControlDaemonClient(base_url="http://127.0.0.1:8010", timeout=0.1)
+    calls: list[tuple[str, bool]] = []
+
+    def fake_request(method: str, path: str, **kwargs):
+        calls.append((path, bool(kwargs.get("requires_token", True))))
+        return {}
+
+    monkeypatch.setattr(client, "_request", fake_request)
+
+    client.daemon_status()
+    client.get_project_handoff(7)
+    client.get_codebase_map(7)
+    client.get_codebase_understanding(7)
+
+    assert calls == [
+        ("/api/daemon/status", True),
+        ("/api/projects/7/handoff", True),
+        ("/api/projects/7/codebase-map", True),
+        ("/api/projects/7/codebase-understanding", True),
+    ]
+
+
 def test_catalog_uses_bundled_assets_when_repo_is_unavailable(monkeypatch) -> None:
     catalog.load_plugin_manifest.cache_clear()
     catalog.load_resource_catalog.cache_clear()

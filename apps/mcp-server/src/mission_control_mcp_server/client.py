@@ -174,7 +174,10 @@ class MissionControlDaemonClient:
     def _daemon_identity(self) -> dict[str, Any] | None:
         try:
             with httpx.Client(timeout=2.0) as client:
-                response = client.get(f"{self.base_url}/api/diagnostics/identity")
+                response = client.get(
+                    f"{self.base_url}/api/diagnostics/identity",
+                    headers=self._headers(requires_token=True),
+                )
             if response.status_code >= 400:
                 return None
             payload = response.json()
@@ -302,7 +305,7 @@ class MissionControlDaemonClient:
         )
 
     def daemon_status(self) -> dict[str, Any]:
-        return self._request("GET", "/api/daemon/status", requires_token=False)
+        return self._request("GET", "/api/daemon/status")
 
     def plugin_health(self) -> dict[str, Any]:
         return self._request("GET", "/api/orchestrations/plugin-health", requires_token=True)
@@ -451,7 +454,7 @@ class MissionControlDaemonClient:
         return self._request("GET", f"/api/projects/{project_id}/approvals/pending")
 
     def get_project_handoff(self, project_id: int) -> dict[str, Any]:
-        return self._request("GET", f"/api/projects/{project_id}/handoff", requires_token=False)
+        return self._request("GET", f"/api/projects/{project_id}/handoff")
 
     def get_decision_ledger(self, project_id: int) -> list[dict[str, Any]]:
         return self._request("GET", f"/api/projects/{project_id}/decision-ledger")
@@ -522,10 +525,10 @@ class MissionControlDaemonClient:
         return self._request("GET", f"/api/projects/{project_id}/nvidia/gpu-diagnostics")
 
     def get_codebase_map(self, project_id: int) -> dict[str, Any]:
-        return self._request("GET", f"/api/projects/{project_id}/codebase-map", requires_token=False)
+        return self._request("GET", f"/api/projects/{project_id}/codebase-map")
 
     def get_codebase_understanding(self, project_id: int) -> dict[str, Any]:
-        return self._request("GET", f"/api/projects/{project_id}/codebase-understanding", requires_token=False)
+        return self._request("GET", f"/api/projects/{project_id}/codebase-understanding")
 
     def set_import_interview_choice(self, project_id: int, choice: str) -> dict[str, Any]:
         return self._request("POST", f"/api/projects/{project_id}/import/interview-choice", json_body={"choice": choice})
