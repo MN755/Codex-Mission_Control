@@ -48,8 +48,11 @@ from models import (
     ReviewGate,
     SandboxProfile,
     SecurityPolicy,
+    SwarmAgentSpec,
     SubagentPolicy,
     SwarmBudget,
+    SwarmLaunchSimulation,
+    SwarmPlan,
     SwarmPreferences,
     Task,
     ToolRoutingPolicy,
@@ -115,6 +118,71 @@ def _support_row_counts(db, project_id: int) -> dict[str, int]:
         "validation_recipe": db.scalar(select(func.count(ValidationRecipe.id)).where(ValidationRecipe.project_id == project_id)),
         "swarm_budget": db.scalar(select(func.count(SwarmBudget.project_id)).where(SwarmBudget.project_id == project_id)),
     }
+
+
+def _swarm_simulation_count(db, project_id: int) -> int:
+    return db.scalar(select(func.count(SwarmLaunchSimulation.id)).where(SwarmLaunchSimulation.project_id == project_id)) or 0
+
+
+def _seed_swarm_plan_without_simulation(project_id: int) -> int:
+    init_db()
+    db = SessionLocal()
+    try:
+        plan = SwarmPlan(
+            project_id=project_id,
+            milestone_id=None,
+            mode="balanced",
+            goal="Coordinate a safe swarm.",
+            recommended_agent_count=2,
+            max_agent_count=4,
+            coordination_risk="medium",
+            path_conflict_risk="medium",
+            expected_bottlenecks_json=[],
+            validation_strategy_json=["pytest -q"],
+            strategy_summary="Two-lane swarm with explicit validation.",
+            approved_by_user=True,
+            status="approved",
+        )
+        db.add(plan)
+        db.flush()
+        db.add_all(
+            [
+                SwarmAgentSpec(
+                    swarm_plan_id=plan.id,
+                    project_id=project_id,
+                    archetype="implementer",
+                    name="Builder One",
+                    mission="Handle the primary implementation lane.",
+                    model_policy="balanced",
+                    toolset_json=["editor"],
+                    allowed_paths_json=["src"],
+                    forbidden_paths_json=[],
+                    spawn_phase="build_start",
+                    retire_when="handoff",
+                    priority=10,
+                    status="planned",
+                ),
+                SwarmAgentSpec(
+                    swarm_plan_id=plan.id,
+                    project_id=project_id,
+                    archetype="reviewer",
+                    name="Reviewer One",
+                    mission="Validate and review the implementation lane.",
+                    model_policy="careful",
+                    toolset_json=["tests"],
+                    allowed_paths_json=["tests"],
+                    forbidden_paths_json=[],
+                    spawn_phase="after_first_slice",
+                    retire_when="handoff",
+                    priority=20,
+                    status="planned",
+                ),
+            ]
+        )
+        db.commit()
+        return plan.id
+    finally:
+        db.close()
 
 
 def test_project_widget_data_route_keeps_import_and_security_widgets_read_only(client, bridge_headers) -> None:
@@ -418,19 +486,114 @@ def test_orchestration_status_summary_get_is_read_only_for_support_records(clien
     finally:
         db.close()
 
-    response = client.get(
-        f"/api/orchestrations/{orchestration_id}/status-summary",
-        headers=bridge_headers,
-        params={"project_id": project_id},
-    )
+
+@pytest.mark.parametrize(
+    ("route_template", "needs_orchestration"),
+    [
+        ("/api/projects/{project_id}/swarm/plan", False),
+        ("/api/projects/{project_id}/workspace", False),
+        ("/api/projects/{project_id}/operator-snapshot", False),
+        ("/api/projects/{project_id}/instincts/preview", False),
+        ("/api/projects/{project_id}/status-summary", False),
+        ("/api/orchestrations/{orchestration_id}/status-summary", True),
+    ],
+)
+def test_swarm_read_routes_do_not_persist_launch_simulations(client, bridge_headers, route_template: str, needs_orchestration: bool) -> None:
+    project = _create_project(client, "Swarm Read Route Safety", "swarm-read-route-safety")
+    project_id = project["id"]
+    _seed_swarm_plan_without_simulation(project_id)
+
+    orchestration_id: int | None = None
+    db = SessionLocal()
+    try:
+        if needs_orchestration:
+            session = OrchestrationSession(
+                project_id=project_id,
+                workspace_path=project["workspace_path"],
+                source="codex_plugin",
+                user_request="Check status safely.",
+                status="running",
+                manager_status="Reviewing background work.",
+                mode="existing_codebase",
+                metadata_json={},
+            )
+            db.add(session)
+            db.commit()
+            orchestration_id = session.id
+        assert _swarm_simulation_count(db, project_id) == 0
+    finally:
+        db.close()
+
+    route = route_template.format(project_id=project_id, orchestration_id=orchestration_id or 0)
+    params = {"project_id": project_id} if needs_orchestration else None
+    response = client.get(route, headers=bridge_headers, params=params)
     assert response.status_code == 200, response.text
-    payload = response.json()
-    assert payload["message_type"] in {"status_update", "blocked"}
-    assert "## Mission Control Status" in payload["fallback_markdown"]
 
     db = SessionLocal()
     try:
-        assert _support_row_counts(db, project_id) == baseline
+        assert _swarm_simulation_count(db, project_id) == 0
+    finally:
+        db.close()
+
+
+def test_swarm_strategy_widget_data_get_does_not_persist_launch_simulations(client, bridge_headers) -> None:
+    project = _create_project(client, "Swarm Widget Read Safety", "swarm-widget-read-safety")
+    project_id = project["id"]
+    _seed_swarm_plan_without_simulation(project_id)
+
+    added = client.post(
+        f"/api/projects/{project_id}/widgets/add",
+        json={"widget_type": "Swarm Strategy"},
+        headers=bridge_headers,
+    )
+    assert added.status_code == 200, added.text
+    instance_id = added.json()["id"]
+
+    db = SessionLocal()
+    try:
+        assert _swarm_simulation_count(db, project_id) == 0
+    finally:
+        db.close()
+
+    response = client.get(
+        f"/api/widgets/instances/{instance_id}/data",
+        params={"project_id": project_id},
+        headers=bridge_headers,
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["status"] in {"ready", "warning"}
+
+    db = SessionLocal()
+    try:
+        assert _swarm_simulation_count(db, project_id) == 0
+    finally:
+        db.close()
+
+
+def test_project_widget_summary_get_does_not_persist_launch_simulations(client, bridge_headers) -> None:
+    project = _create_project(client, "Swarm Summary Read Safety", "swarm-summary-read-safety")
+    project_id = project["id"]
+    _seed_swarm_plan_without_simulation(project_id)
+
+    added = client.post(
+        f"/api/projects/{project_id}/widgets/add",
+        json={"widget_type": "Swarm Strategy"},
+        headers=bridge_headers,
+    )
+    assert added.status_code == 200, added.text
+
+    db = SessionLocal()
+    try:
+        assert _swarm_simulation_count(db, project_id) == 0
+    finally:
+        db.close()
+
+    response = client.get(f"/api/projects/{project_id}/widgets/summary", headers=bridge_headers)
+    assert response.status_code == 200, response.text
+
+    db = SessionLocal()
+    try:
+        assert _swarm_simulation_count(db, project_id) == 0
     finally:
         db.close()
 

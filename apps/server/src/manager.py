@@ -7487,7 +7487,7 @@ class MissionControlService:
     ) -> tuple[dict[str, Any], str | None, str | None]:
         simulation = simulation_service.latest_simulation(db, project)
         if simulation is None or simulation.swarm_plan_id != plan.id:
-            simulation = simulation_service.simulate_launch(db, project, plan)
+            simulation = simulation_service.preview_launch(db, project, plan)
         launch_order = list(simulation.recommended_launch_order_json or [])
         next_launch = next((item for item in launch_order if str(item.get("status")) == "launch"), None)
         next_wait = next((item for item in launch_order if str(item.get("status")) == "wait"), None)

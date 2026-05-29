@@ -22,23 +22,7 @@ SPAWN_PHASE_ORDER = {
 
 
 class SimulationService:
-    def list_simulations(self, db: Session, project: Project) -> list[SwarmLaunchSimulation]:
-        return list(
-            db.scalars(
-                select(SwarmLaunchSimulation)
-                .where(SwarmLaunchSimulation.project_id == project.id)
-                .order_by(SwarmLaunchSimulation.created_at.desc(), SwarmLaunchSimulation.id.desc())
-            )
-        )
-
-    def latest_simulation(self, db: Session, project: Project) -> SwarmLaunchSimulation | None:
-        return db.scalar(
-            select(SwarmLaunchSimulation)
-            .where(SwarmLaunchSimulation.project_id == project.id)
-            .order_by(SwarmLaunchSimulation.created_at.desc(), SwarmLaunchSimulation.id.desc())
-        )
-
-    def simulate_launch(self, db: Session, project: Project, swarm_plan: SwarmPlan | None = None) -> SwarmLaunchSimulation:
+    def _build_simulation_fields(self, db: Session, project: Project, swarm_plan: SwarmPlan | None = None) -> dict[str, Any]:
         plan = swarm_plan or db.scalar(
             select(SwarmPlan).where(SwarmPlan.project_id == project.id).order_by(SwarmPlan.id.desc())
         )
@@ -57,19 +41,16 @@ class SimulationService:
         approval_count = 0
 
         if plan is None or not specs:
-            simulation = SwarmLaunchSimulation(
-                project_id=project.id,
-                swarm_plan_id=plan.id if plan is not None else None,
-                safe_to_launch_count=0,
-                should_wait_count=0,
-                needs_user_approval_count=0,
-                conflict_warnings_json=["No swarm plan exists yet."],
-                bottlenecks_json=["Mission Control cannot simulate a swarm that does not exist."],
-                recommended_launch_order_json=[],
-            )
-            db.add(simulation)
-            db.flush()
-            return simulation
+            return {
+                "project_id": project.id,
+                "swarm_plan_id": plan.id if plan is not None else None,
+                "safe_to_launch_count": 0,
+                "should_wait_count": 0,
+                "needs_user_approval_count": 0,
+                "conflict_warnings_json": ["No swarm plan exists yet."],
+                "bottlenecks_json": ["Mission Control cannot simulate a swarm that does not exist."],
+                "recommended_launch_order_json": [],
+            }
 
         path_usage = Counter()
         for spec in specs:
@@ -118,16 +99,38 @@ class SimulationService:
 
         launch_order.sort(key=lambda item: (SPAWN_PHASE_ORDER.get(str(item["spawn_phase"]), 99), int(item["priority"])))
 
-        simulation = SwarmLaunchSimulation(
-            project_id=project.id,
-            swarm_plan_id=plan.id,
-            safe_to_launch_count=safe_count,
-            should_wait_count=wait_count,
-            needs_user_approval_count=approval_count,
-            conflict_warnings_json=warnings,
-            bottlenecks_json=bottlenecks,
-            recommended_launch_order_json=launch_order,
+        return {
+            "project_id": project.id,
+            "swarm_plan_id": plan.id,
+            "safe_to_launch_count": safe_count,
+            "should_wait_count": wait_count,
+            "needs_user_approval_count": approval_count,
+            "conflict_warnings_json": warnings,
+            "bottlenecks_json": bottlenecks,
+            "recommended_launch_order_json": launch_order,
+        }
+
+    def list_simulations(self, db: Session, project: Project) -> list[SwarmLaunchSimulation]:
+        return list(
+            db.scalars(
+                select(SwarmLaunchSimulation)
+                .where(SwarmLaunchSimulation.project_id == project.id)
+                .order_by(SwarmLaunchSimulation.created_at.desc(), SwarmLaunchSimulation.id.desc())
+            )
         )
+
+    def latest_simulation(self, db: Session, project: Project) -> SwarmLaunchSimulation | None:
+        return db.scalar(
+            select(SwarmLaunchSimulation)
+            .where(SwarmLaunchSimulation.project_id == project.id)
+            .order_by(SwarmLaunchSimulation.created_at.desc(), SwarmLaunchSimulation.id.desc())
+        )
+
+    def preview_launch(self, db: Session, project: Project, swarm_plan: SwarmPlan | None = None) -> SwarmLaunchSimulation:
+        return SwarmLaunchSimulation(**self._build_simulation_fields(db, project, swarm_plan))
+
+    def simulate_launch(self, db: Session, project: Project, swarm_plan: SwarmPlan | None = None) -> SwarmLaunchSimulation:
+        simulation = SwarmLaunchSimulation(**self._build_simulation_fields(db, project, swarm_plan))
         db.add(simulation)
         db.flush()
         return simulation
