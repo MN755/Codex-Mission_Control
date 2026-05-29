@@ -74,11 +74,12 @@ class MissionControlMcpServer:
         }
 
     def _build_tool_specs(self) -> list[dict[str, Any]]:
-        common_target = _object_schema(
+        project_scoped_target = _object_schema(
             {
                 "orchestration_id": {"type": "integer", "minimum": 1},
                 "project_id": {"type": "integer", "minimum": 1},
-            }
+            },
+            required=["project_id"],
         )
         return [
             {
@@ -113,13 +114,13 @@ class MissionControlMcpServer:
             {
                 "name": "mission_control_get_status",
                 "description": "Get a compact orchestration status summary suitable for Codex chat polling.",
-                "inputSchema": common_target,
+                "inputSchema": project_scoped_target,
                 "outputSchema": GENERIC_OUTPUT_SCHEMA,
             },
             {
                 "name": "mission_control_get_pending_decisions",
                 "description": "List approvals and manager questions that still need a user answer.",
-                "inputSchema": common_target,
+                "inputSchema": project_scoped_target,
                 "outputSchema": {"type": "array", "items": {"type": "object", "additionalProperties": True}},
             },
             {
@@ -140,19 +141,19 @@ class MissionControlMcpServer:
             {
                 "name": "mission_control_pause",
                 "description": "Pause a running Mission Control orchestration.",
-                "inputSchema": common_target,
+                "inputSchema": project_scoped_target,
                 "outputSchema": GENERIC_OUTPUT_SCHEMA,
             },
             {
                 "name": "mission_control_resume",
                 "description": "Resume a paused Mission Control orchestration.",
-                "inputSchema": common_target,
+                "inputSchema": project_scoped_target,
                 "outputSchema": GENERIC_OUTPUT_SCHEMA,
             },
             {
                 "name": "mission_control_get_handoff",
                 "description": "Fetch the latest Mission Control handoff summary when available.",
-                "inputSchema": common_target,
+                "inputSchema": project_scoped_target,
                 "outputSchema": GENERIC_OUTPUT_SCHEMA,
             },
             {
@@ -197,14 +198,15 @@ class MissionControlMcpServer:
                                 "since_orchestration_start",
                             ],
                         },
-                    }
+                    },
+                    required=["project_id"],
                 ),
                 "outputSchema": GENERIC_OUTPUT_SCHEMA,
             },
             {
                 "name": "mission_control_get_handoff_summary",
                 "description": "Fetch a chat-native handoff summary for a project or orchestration.",
-                "inputSchema": common_target,
+                "inputSchema": project_scoped_target,
                 "outputSchema": GENERIC_OUTPUT_SCHEMA,
             },
             {
@@ -278,7 +280,7 @@ class MissionControlMcpServer:
             {
                 "name": "mission_control_get_diagnostics",
                 "description": "Fetch bridge-safe diagnostics and plugin-health context for a Mission Control project or orchestration.",
-                "inputSchema": common_target,
+                "inputSchema": project_scoped_target,
                 "outputSchema": GENERIC_OUTPUT_SCHEMA,
             },
             {
@@ -476,7 +478,8 @@ class MissionControlMcpServer:
                         "project_id": {"type": "integer", "minimum": 1},
                         "orchestration_id": {"type": "integer", "minimum": 1},
                         "user_context": {"type": "string"},
-                    }
+                    },
+                    required=["project_id"],
                 ),
                 "outputSchema": GENERIC_OUTPUT_SCHEMA,
             },
@@ -565,11 +568,13 @@ class MissionControlMcpServer:
         )
 
     def _call_get_status(self, args: dict[str, Any]) -> Any:
-        orchestration_id, project_id = self._require_target(args)
+        project_id = self._require_int(args, "project_id")
+        orchestration_id = self._optional_int(args, "orchestration_id")
         return self.client.get_status_summary(orchestration_id=orchestration_id, project_id=project_id)
 
     def _call_get_pending_decisions(self, args: dict[str, Any]) -> Any:
-        orchestration_id, project_id = self._require_target(args)
+        project_id = self._require_int(args, "project_id")
+        orchestration_id = self._optional_int(args, "orchestration_id")
         return self.client.get_pending_decisions(orchestration_id=orchestration_id, project_id=project_id)
 
     def _call_answer_decision(self, args: dict[str, Any]) -> Any:
@@ -582,19 +587,18 @@ class MissionControlMcpServer:
         )
 
     def _call_pause(self, args: dict[str, Any]) -> Any:
-        orchestration_id, project_id = self._require_target(args)
-        if orchestration_id is None:
-            raise RuntimeError("Pause requires an orchestration_id.")
+        project_id = self._require_int(args, "project_id")
+        orchestration_id = self._require_int(args, "orchestration_id")
         return self.client.pause(orchestration_id, project_id=project_id)
 
     def _call_resume(self, args: dict[str, Any]) -> Any:
-        orchestration_id, project_id = self._require_target(args)
-        if orchestration_id is None:
-            raise RuntimeError("Resume requires an orchestration_id.")
+        project_id = self._require_int(args, "project_id")
+        orchestration_id = self._require_int(args, "orchestration_id")
         return self.client.resume(orchestration_id, project_id=project_id)
 
     def _call_get_handoff(self, args: dict[str, Any]) -> Any:
-        orchestration_id, project_id = self._require_target(args)
+        project_id = self._require_int(args, "project_id")
+        orchestration_id = self._optional_int(args, "orchestration_id")
         return self.client.get_handoff(orchestration_id=orchestration_id, project_id=project_id)
 
     def _call_import_existing_codebase(self, args: dict[str, Any]) -> Any:
@@ -612,7 +616,8 @@ class MissionControlMcpServer:
         return self.client.enable_safe_mode(self._require_int(args, "project_id"))
 
     def _call_get_event_digest(self, args: dict[str, Any]) -> Any:
-        orchestration_id, project_id = self._require_target(args)
+        project_id = self._require_int(args, "project_id")
+        orchestration_id = self._optional_int(args, "orchestration_id")
         return self.client.get_event_digest(
             orchestration_id=orchestration_id,
             project_id=project_id,
@@ -620,7 +625,8 @@ class MissionControlMcpServer:
         )
 
     def _call_get_handoff_summary(self, args: dict[str, Any]) -> Any:
-        orchestration_id, project_id = self._require_target(args)
+        project_id = self._require_int(args, "project_id")
+        orchestration_id = self._optional_int(args, "orchestration_id")
         return self.client.get_handoff_summary(orchestration_id=orchestration_id, project_id=project_id)
 
     def _call_generate_agents_md(self, args: dict[str, Any]) -> Any:
@@ -663,7 +669,8 @@ class MissionControlMcpServer:
         return self.client.set_import_interview_choice(self._require_int(args, "project_id"), self._require_string(args, "choice"))
 
     def _call_get_diagnostics(self, args: dict[str, Any]) -> Any:
-        orchestration_id, project_id = self._require_target(args)
+        project_id = self._require_int(args, "project_id")
+        orchestration_id = self._optional_int(args, "orchestration_id")
         return self.client.get_diagnostics(orchestration_id=orchestration_id, project_id=project_id)
 
     def _call_get_workspace_tooling(self, args: dict[str, Any]) -> Any:
@@ -756,7 +763,8 @@ class MissionControlMcpServer:
         return self.client.propose_agents_md(self._require_int(args, "project_id"))
 
     def _call_request_recovery_options(self, args: dict[str, Any]) -> Any:
-        orchestration_id, project_id = self._require_target(args)
+        project_id = self._require_int(args, "project_id")
+        orchestration_id = self._optional_int(args, "orchestration_id")
         return self.client.request_recovery_options(
             project_id=project_id,
             orchestration_id=orchestration_id,
