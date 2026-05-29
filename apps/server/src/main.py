@@ -881,7 +881,7 @@ def get_swarm_plan(
     _: None = Depends(_require_bridge_token),
 ) -> SwarmPlanRead | None:
     project = _get_project_or_404(db, project_id)
-    payload = service.get_swarm_plan(db, project)
+    payload = service.get_swarm_plan(db, project, persist_launch_readiness=False)
     return SwarmPlanRead(**payload) if payload else None
 
 

@@ -7484,10 +7484,17 @@ class MissionControlService:
         project: Project,
         plan: SwarmPlan,
         specs: list[SwarmAgentSpec],
+        *,
+        persist_launch_readiness: bool = True,
     ) -> tuple[dict[str, Any], str | None, str | None]:
         simulation = simulation_service.latest_simulation(db, project)
         if simulation is None or simulation.swarm_plan_id != plan.id:
-            simulation = simulation_service.simulate_launch(db, project, plan)
+            simulation = simulation_service.simulate_launch(
+                db,
+                project,
+                plan,
+                persist=persist_launch_readiness,
+            )
         launch_order = list(simulation.recommended_launch_order_json or [])
         next_launch = next((item for item in launch_order if str(item.get("status")) == "launch"), None)
         next_wait = next((item for item in launch_order if str(item.get("status")) == "wait"), None)
@@ -7524,13 +7531,26 @@ class MissionControlService:
         }
         return readiness, wave_label, next_step
 
-    def _serialize_swarm_plan(self, db: Session, project: Project, plan: SwarmPlan | None) -> dict[str, Any] | None:
+    def _serialize_swarm_plan(
+        self,
+        db: Session,
+        project: Project,
+        plan: SwarmPlan | None,
+        *,
+        persist_launch_readiness: bool = True,
+    ) -> dict[str, Any] | None:
         if plan is None:
             return None
         preferences = self._swarm_preferences(project)
         specs = self._swarm_specs_for_plan(db, plan.id)
         spec_status_summary = self._swarm_spec_status_summary(specs)
-        launch_readiness, recommended_wave_label, recommended_next_step = self._swarm_launch_readiness(db, project, plan, specs)
+        launch_readiness, recommended_wave_label, recommended_next_step = self._swarm_launch_readiness(
+            db,
+            project,
+            plan,
+            specs,
+            persist_launch_readiness=persist_launch_readiness,
+        )
         active_agent_count = db.scalar(
             select(func.count(Agent.id)).where(
                 Agent.project_id == project.id,
@@ -7654,8 +7674,19 @@ class MissionControlService:
             for payload in AGENT_ARCHETYPE_CATALOG
         ]
 
-    def get_swarm_plan(self, db: Session, project: Project) -> dict[str, Any] | None:
-        return self._serialize_swarm_plan(db, project, self._current_swarm_plan_record(db, project.id))
+    def get_swarm_plan(
+        self,
+        db: Session,
+        project: Project,
+        *,
+        persist_launch_readiness: bool = True,
+    ) -> dict[str, Any] | None:
+        return self._serialize_swarm_plan(
+            db,
+            project,
+            self._current_swarm_plan_record(db, project.id),
+            persist_launch_readiness=persist_launch_readiness,
+        )
 
     def list_swarm_events(self, db: Session, project: Project) -> list[dict[str, Any]]:
         events = list(
@@ -10372,7 +10403,7 @@ class MissionControlService:
             if str(agent.get("display_status") or "") in {"working", "blocked", "waiting", "error"}
         ]
         timeline = self.list_timeline_events(db, project)[:6]
-        swarm_plan = self.get_swarm_plan(db, project)
+        swarm_plan = self.get_swarm_plan(db, project, persist_launch_readiness=False)
         current_focus = self._dedupe_strings(
             [
                 *(f"{agent['name']}: {agent.get('current_action') or agent['display_status']}" for agent in active_agents[:4]),
@@ -11081,7 +11112,12 @@ class MissionControlService:
             "activity_log": self._activity_log(db, project),
             "degraded_notices": degraded_notices,
             "swarm_preferences": self._serialize_swarm_preferences(swarm_preferences),
-            "swarm_plan": self._serialize_swarm_plan(db, project, swarm_plan),
+            "swarm_plan": self._serialize_swarm_plan(
+                db,
+                project,
+                swarm_plan,
+                persist_launch_readiness=False,
+            ),
             "swarm_events": self.list_swarm_events(db, project)[:8],
         }
 
