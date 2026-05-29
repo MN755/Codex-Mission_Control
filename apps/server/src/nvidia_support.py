@@ -1,0 +1,535 @@
+from __future__ import annotations
+
+import json
+import os
+import time
+from pathlib import Path
+from typing import Any
+from urllib.error import HTTPError, URLError
+from urllib.parse import quote_plus
+from urllib.request import Request, urlopen
+
+from gpu_support import summarize_gpu_cluster_health
+
+
+DEFAULT_NVIDIA_DYNAMO_ENDPOINT = "http://localhost:8000"
+DEFAULT_NVIDIA_AIQ_ENDPOINT = "http://localhost:8000"
+
+
+def _string_list(values: list[Any]) -> list[str]:
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for value in values:
+        text = str(value or "").strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        ordered.append(text)
+    return ordered
+
+
+def _env_first(*keys: str) -> str | None:
+    for key in keys:
+        value = str(os.environ.get(key) or "").strip()
+        if value:
+            return value
+    return None
+
+
+def _normalize_base_url(value: str | None, *, default: str) -> tuple[str, bool]:
+    configured = bool(str(value or "").strip())
+    base = (str(value or "").strip() or default).rstrip("/")
+    return base, configured
+
+
+def _json_request(
+    url: str,
+    *,
+    method: str = "GET",
+    payload: dict[str, Any] | None = None,
+    headers: dict[str, str] | None = None,
+    timeout: float = 8.0,
+) -> dict[str, Any]:
+    request = Request(
+        url,
+        data=json.dumps(payload).encode("utf-8") if payload is not None else None,
+        headers={"Accept": "application/json", **(headers or {})},
+        method=method,
+    )
+    with urlopen(request, timeout=timeout) as response:
+        body = response.read().decode("utf-8", errors="ignore")
+    loaded = json.loads(body or "{}")
+    if not isinstance(loaded, dict):
+        raise RuntimeError("Expected a JSON object response.")
+    return loaded
+
+
+def _json_value_request(
+    url: str,
+    *,
+    method: str = "GET",
+    payload: dict[str, Any] | None = None,
+    headers: dict[str, str] | None = None,
+    timeout: float = 8.0,
+) -> Any:
+    request = Request(
+        url,
+        data=json.dumps(payload).encode("utf-8") if payload is not None else None,
+        headers={"Accept": "application/json", **(headers or {})},
+        method=method,
+    )
+    with urlopen(request, timeout=timeout) as response:
+        body = response.read().decode("utf-8", errors="ignore")
+    return json.loads(body or "null")
+
+
+def _bearer_headers(api_key: str | None) -> dict[str, str]:
+    headers = {"Content-Type": "application/json"}
+    token = str(api_key or "").strip()
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    return headers
+
+
+def _extract_openai_models(payload: dict[str, Any]) -> list[str]:
+    data = payload.get("data")
+    if not isinstance(data, list):
+        return []
+    return _string_list([item.get("id") for item in data if isinstance(item, dict)])
+
+
+def detect_nvidia_dynamo_status(endpoint: str | None = None) -> dict[str, Any]:
+    configured_endpoint = endpoint or _env_first("MISSION_CONTROL_NVIDIA_DYNAMO_ENDPOINT", "NVIDIA_DYNAMO_ENDPOINT")
+    base, endpoint_configured = _normalize_base_url(configured_endpoint, default=DEFAULT_NVIDIA_DYNAMO_ENDPOINT)
+    api_key = _env_first("MISSION_CONTROL_NVIDIA_DYNAMO_API_KEY", "NVIDIA_DYNAMO_API_KEY")
+    notes = [
+        "NVIDIA Dynamo exposes an OpenAI-compatible frontend and fits Mission Control as a GPU-backed worker-provider lane.",
+        "Mission Control treats Dynamo as optional infrastructure for higher-throughput coding swarms, not as a required local dependency.",
+    ]
+    reachable = False
+    auth_required = False
+    available_models: list[str] = []
+    summary = f"NVIDIA Dynamo endpoint is not reachable at {base}."
+    try:
+        payload = _json_request(f"{base}/v1/models", headers=_bearer_headers(api_key), timeout=4.0)
+        available_models = _extract_openai_models(payload)
+        reachable = True
+        summary = f"NVIDIA Dynamo frontend is reachable at {base}."
+    except HTTPError as exc:
+        if exc.code in {401, 403}:
+            reachable = True
+            auth_required = True
+            summary = f"NVIDIA Dynamo frontend is reachable at {base}, but it requires authentication."
+    except (URLError, TimeoutError, OSError, json.JSONDecodeError, RuntimeError):
+        reachable = False
+    authenticated = reachable and (not auth_required or bool(api_key))
+    if auth_required and not api_key:
+        notes.append("Set NVIDIA_DYNAMO_API_KEY or MISSION_CONTROL_NVIDIA_DYNAMO_API_KEY if your Dynamo frontend requires bearer auth.")
+    if not endpoint_configured:
+        notes.append("No explicit Dynamo endpoint is configured, so Mission Control is probing the default localhost frontend.")
+    return {
+        "provider": "nvidia_dynamo",
+        "label": "NVIDIA Dynamo",
+        "cli_detected": reachable or endpoint_configured,
+        "cli_path": base,
+        "cli_path_exists": reachable or endpoint_configured,
+        "cli_execution_available": reachable,
+        "cli_version": base if reachable else None,
+        "login_status": summary,
+        "auth_mode": "api_key" if api_key else ("optional" if not auth_required else None),
+        "authenticated": authenticated,
+        "auth_status_detectable": True,
+        "supports_model_override": True,
+        "supports_reasoning_effort": False,
+        "supports_app_server": False,
+        "supports_builtin_auth": False,
+        "available_models": available_models,
+        "notes": notes,
+        "reachable": reachable,
+        "summary": summary,
+        "endpoint": base,
+        "endpoint_configured": endpoint_configured,
+        "api_key_configured": bool(api_key),
+        "auth_required": auth_required,
+    }
+
+
+def detect_nvidia_aiq_status(endpoint: str | None = None) -> dict[str, Any]:
+    configured_endpoint = endpoint or _env_first("MISSION_CONTROL_NVIDIA_AIQ_ENDPOINT", "NVIDIA_AIQ_ENDPOINT")
+    base, endpoint_configured = _normalize_base_url(configured_endpoint, default=DEFAULT_NVIDIA_AIQ_ENDPOINT)
+    api_key = _env_first("MISSION_CONTROL_NVIDIA_AIQ_API_KEY", "NVIDIA_AIQ_API_KEY")
+    notes = [
+        "NVIDIA AI-Q is a deep-research system built on the NeMo Agent Toolkit with an async jobs API.",
+        "Mission Control uses AI-Q as an optional research delegation lane for cited architecture, dependency, and implementation research.",
+    ]
+    reachable = False
+    auth_required = False
+    dask_available: bool | None = None
+    agent_types: list[str] = []
+    data_sources: list[str] = []
+    summary = f"NVIDIA AI-Q endpoint is not reachable at {base}."
+    headers = _bearer_headers(api_key)
+    try:
+        health = _json_request(f"{base}/health", headers=headers, timeout=4.0)
+        reachable = str(health.get("status") or "").lower() == "ok"
+        dask_available = bool(health.get("dask_available")) if "dask_available" in health else None
+        agents = _json_request(f"{base}/v1/jobs/async/agents", headers=headers, timeout=4.0)
+        raw_agents = agents.get("agents") if isinstance(agents, dict) else []
+        if isinstance(raw_agents, list):
+            agent_types = _string_list([item.get("agent_type") for item in raw_agents if isinstance(item, dict)])
+        try:
+            sources = _json_value_request(f"{base}/v1/data_sources", headers=headers, timeout=4.0)
+            if isinstance(sources, list):
+                data_sources = _string_list([item.get("id") for item in sources if isinstance(item, dict)])
+            elif isinstance(sources, dict):
+                data_sources = _string_list([item.get("id") for item in list(sources.get("data_sources") or []) if isinstance(item, dict)])
+        except Exception:
+            data_sources = []
+        if reachable:
+            summary = f"NVIDIA AI-Q endpoint is reachable at {base}."
+        elif dask_available is False:
+            summary = f"NVIDIA AI-Q endpoint responded at {base}, but its Dask worker stack is not available."
+    except HTTPError as exc:
+        if exc.code in {401, 403}:
+            reachable = True
+            auth_required = True
+            summary = f"NVIDIA AI-Q endpoint is reachable at {base}, but it requires authentication."
+            notes.append("Set NVIDIA_AIQ_API_KEY or MISSION_CONTROL_NVIDIA_AIQ_API_KEY if your AI-Q deployment uses bearer auth.")
+    except (URLError, TimeoutError, OSError, json.JSONDecodeError, RuntimeError):
+        reachable = False
+    available = reachable and (dask_available is not False) and (not auth_required or bool(api_key))
+    install_status = "ready" if available else ("partial" if reachable else "missing")
+    recommended_fix = None
+    if not endpoint_configured:
+        recommended_fix = "Set MISSION_CONTROL_NVIDIA_AIQ_ENDPOINT or NVIDIA_AIQ_ENDPOINT to a running AI-Q web deployment."
+    elif not reachable:
+        recommended_fix = "Start AI-Q in web mode so the REST API is exposed before routing Mission Control research into it."
+    elif dask_available is False:
+        recommended_fix = "Bring the AI-Q Dask worker stack online before expecting deep research jobs to complete."
+    return {
+        "available": available,
+        "install_status": install_status,
+        "summary": summary,
+        "endpoint": base,
+        "endpoint_configured": endpoint_configured,
+        "api_key_configured": bool(api_key),
+        "auth_required": auth_required,
+        "dask_available": dask_available,
+        "agent_types": agent_types,
+        "data_sources": data_sources,
+        "recommended_fix": recommended_fix,
+        "notes": notes,
+    }
+
+
+def run_nvidia_aiq_research(
+    *,
+    query: str,
+    agent_type: str = "deep_researcher",
+    endpoint: str | None = None,
+    timeout_seconds: int = 90,
+    poll_interval_seconds: float = 2.0,
+    expiry_seconds: int = 3600,
+) -> dict[str, Any]:
+    prompt = str(query or "").strip()
+    if not prompt:
+        raise RuntimeError("AI-Q research requires a non-empty query.")
+    configured_endpoint = endpoint or _env_first("MISSION_CONTROL_NVIDIA_AIQ_ENDPOINT", "NVIDIA_AIQ_ENDPOINT")
+    base, _ = _normalize_base_url(configured_endpoint, default=DEFAULT_NVIDIA_AIQ_ENDPOINT)
+    api_key = _env_first("MISSION_CONTROL_NVIDIA_AIQ_API_KEY", "NVIDIA_AIQ_API_KEY")
+    headers = _bearer_headers(api_key)
+    submit = _json_request(
+        f"{base}/v1/jobs/async/submit",
+        method="POST",
+        headers=headers,
+        payload={"agent_type": agent_type, "input": prompt, "expiry_seconds": int(expiry_seconds)},
+        timeout=10.0,
+    )
+    job_id = str(submit.get("job_id") or "").strip()
+    if not job_id:
+        raise RuntimeError("AI-Q submit response did not include a job_id.")
+    deadline = time.monotonic() + max(int(timeout_seconds), 5)
+    poll_count = 0
+    latest_status_payload: dict[str, Any] = dict(submit)
+    final_status = str(submit.get("status") or "SUBMITTED").upper()
+    while time.monotonic() < deadline:
+        poll_count += 1
+        latest_status_payload = _json_request(f"{base}/v1/jobs/async/job/{job_id}", headers=headers, timeout=6.0)
+        final_status = str(latest_status_payload.get("status") or "").upper()
+        if final_status in {"SUCCESS", "FAILURE", "INTERRUPTED"}:
+            break
+        time.sleep(max(float(poll_interval_seconds), 0.2))
+    timed_out = final_status not in {"SUCCESS", "FAILURE", "INTERRUPTED"}
+    report_payload: dict[str, Any] = {}
+    state_payload: dict[str, Any] = {}
+    if not timed_out and final_status == "SUCCESS":
+        try:
+            report_payload = _json_request(f"{base}/v1/jobs/async/job/{job_id}/report", headers=headers, timeout=8.0)
+        except Exception:
+            report_payload = {}
+        try:
+            state_payload = _json_request(f"{base}/v1/jobs/async/job/{job_id}/state", headers=headers, timeout=8.0)
+        except Exception:
+            state_payload = {}
+    report_text = str(report_payload.get("report") or "").strip() if isinstance(report_payload, dict) else ""
+    artifacts = state_payload.get("artifacts") if isinstance(state_payload, dict) else {}
+    sources = artifacts.get("sources") if isinstance(artifacts, dict) else {}
+    cited_urls = _string_list(list(sources.get("cited_urls") or [])) if isinstance(sources, dict) else []
+    found_urls = _string_list(list(sources.get("found_urls") or [])) if isinstance(sources, dict) else []
+    tools = list(artifacts.get("tools") or []) if isinstance(artifacts, dict) else []
+    summary = (
+        f"AI-Q research job {job_id} completed successfully through agent `{agent_type}`."
+        if final_status == "SUCCESS"
+        else f"AI-Q research job {job_id} ended with status `{final_status or 'UNKNOWN'}`."
+    )
+    if timed_out:
+        summary = f"AI-Q research job {job_id} did not finish before the Mission Control polling timeout."
+    return {
+        "endpoint": base,
+        "agent_type": agent_type,
+        "job_id": job_id,
+        "status": final_status or "UNKNOWN",
+        "timed_out": timed_out,
+        "poll_count": poll_count,
+        "summary": summary,
+        "report": report_text,
+        "source_summary": {
+            "found": int(sources.get("found") or 0) if isinstance(sources, dict) else 0,
+            "cited": int(sources.get("cited") or 0) if isinstance(sources, dict) else 0,
+            "cited_urls": cited_urls[:12],
+            "found_urls": found_urls[:12],
+        },
+        "tool_count": len(tools),
+        "tools": [
+            {
+                "name": tool.get("name"),
+                "status": tool.get("status"),
+                "workflow": tool.get("workflow"),
+            }
+            for tool in tools[:12]
+            if isinstance(tool, dict)
+        ],
+        "status_payload": latest_status_payload,
+    }
+
+
+def _prometheus_query(base_url: str, query: str) -> float | None:
+    encoded_query = quote_plus(query)
+    payload = _json_request(f"{base_url}/api/v1/query?query={encoded_query}", timeout=6.0)
+    if str(payload.get("status") or "").lower() != "success":
+        return None
+    data = payload.get("data")
+    if not isinstance(data, dict):
+        return None
+    result = data.get("result")
+    if not isinstance(result, list) or not result:
+        return None
+    first = result[0]
+    if not isinstance(first, dict):
+        return None
+    value = first.get("value")
+    if not isinstance(value, list) or len(value) < 2:
+        return None
+    try:
+        return float(value[1])
+    except (TypeError, ValueError):
+        return None
+
+
+def detect_nvidia_gpu_diagnostics(prometheus_url: str | None = None) -> dict[str, Any]:
+    configured_url = prometheus_url or _env_first("MISSION_CONTROL_NVIDIA_PROMETHEUS_URL", "NVIDIA_PROMETHEUS_URL")
+    if not configured_url:
+        return {
+            "available": False,
+            "status": "missing",
+            "summary": "No Prometheus endpoint is configured for NVIDIA GPU diagnostics.",
+            "prometheus_url": None,
+            "metrics": {},
+            "alerts": [],
+            "recommended_fixes": [
+                "Configure MISSION_CONTROL_NVIDIA_PROMETHEUS_URL or NVIDIA_PROMETHEUS_URL to a Prometheus instance that scrapes dcgm-exporter metrics."
+            ],
+            "queries": {},
+        }
+    base = configured_url.rstrip("/")
+    queries = {
+        "average_gpu_util_percent": "avg(DCGM_FI_DEV_GPU_UTIL)",
+        "framebuffer_used_mib": "sum(DCGM_FI_DEV_FB_USED)",
+        "framebuffer_free_mib": "sum(DCGM_FI_DEV_FB_FREE)",
+        "gpu_count": "count(DCGM_FI_DEV_GPU_UTIL)",
+        "pending_pod_count": 'sum(kube_pod_status_phase{phase="Pending"})',
+        "running_pod_count": 'sum(kube_pod_status_phase{phase="Running"})',
+    }
+    metrics: dict[str, float | None] = {}
+    try:
+        for key, query in queries.items():
+            metrics[key] = _prometheus_query(base, query)
+    except (HTTPError, URLError, TimeoutError, OSError, json.JSONDecodeError, RuntimeError):
+        return {
+            "available": False,
+            "status": "unreachable",
+            "summary": f"Configured Prometheus endpoint is not reachable at {base}.",
+            "prometheus_url": base,
+            "metrics": {},
+            "alerts": ["Prometheus endpoint is unreachable."],
+            "recommended_fixes": [
+                "Verify the Prometheus URL and ensure dcgm-exporter and kube-state-metrics are being scraped."
+            ],
+            "queries": queries,
+        }
+    framebuffer_used = metrics.get("framebuffer_used_mib")
+    framebuffer_free = metrics.get("framebuffer_free_mib")
+    memory_utilization_percent: float | None = None
+    if framebuffer_used is not None and framebuffer_free is not None and (framebuffer_used + framebuffer_free) > 0:
+        memory_utilization_percent = (framebuffer_used / (framebuffer_used + framebuffer_free)) * 100.0
+    metrics["memory_utilization_percent"] = memory_utilization_percent
+    alerts: list[str] = []
+    recommended_fixes: list[str] = []
+    if metrics.get("gpu_count") in {None, 0.0}:
+        alerts.append("No DCGM GPU metrics were returned from Prometheus.")
+        recommended_fixes.append("Confirm dcgm-exporter is deployed and scraped by Prometheus.")
+    if metrics.get("average_gpu_util_percent") is not None and float(metrics["average_gpu_util_percent"] or 0.0) > 90.0:
+        alerts.append("Average GPU utilization is above 90%.")
+        recommended_fixes.append("Consider reducing concurrent agent load or scaling GPU capacity before blaming the code path.")
+    if memory_utilization_percent is not None and memory_utilization_percent > 90.0:
+        alerts.append("Aggregate GPU framebuffer utilization is above 90%.")
+        recommended_fixes.append("Reduce model size, decrease parallel workers, or increase available GPU memory.")
+    pending_pods = metrics.get("pending_pod_count")
+    if pending_pods is not None and pending_pods > 0:
+        alerts.append(f"{int(pending_pods)} Kubernetes pods are pending.")
+        recommended_fixes.append("Check scheduler pressure, node availability, GPU requests, and topology constraints.")
+    status = "ready"
+    if alerts:
+        status = "warning"
+    if metrics.get("gpu_count") in {None, 0.0}:
+        status = "degraded"
+    summary = "NVIDIA GPU telemetry looks healthy enough for Mission Control load."
+    if status == "warning":
+        summary = "NVIDIA GPU telemetry is reachable, but it shows pressure that may affect Mission Control runs."
+    elif status == "degraded":
+        summary = "Prometheus is reachable, but the expected NVIDIA GPU metrics are incomplete or missing."
+    return {
+        "available": True,
+        "status": status,
+        "summary": summary,
+        "prometheus_url": base,
+        "metrics": metrics,
+        "alerts": alerts,
+        "recommended_fixes": _string_list(recommended_fixes),
+        "queries": queries,
+    }
+
+
+def detect_project_nvidia_gpu_diagnostics(
+    workspace_path: str | Path,
+    *,
+    prometheus_url: str | None = None,
+    failure_signals: list[str] | None = None,
+) -> dict[str, Any]:
+    telemetry = detect_nvidia_gpu_diagnostics(prometheus_url)
+    workspace_health = summarize_gpu_cluster_health(workspace_path, failure_signals=failure_signals)
+    workspace_relevant = bool(workspace_health.get("relevant"))
+    workspace_status = str(workspace_health.get("status") or ("missing" if not workspace_relevant else "unknown"))
+    telemetry_status = str(telemetry.get("status") or ("ready" if telemetry.get("available") else "missing"))
+
+    available = bool(telemetry.get("available")) or workspace_relevant
+    if workspace_relevant:
+        if workspace_status == "degraded" or telemetry_status == "degraded":
+            status = "degraded"
+        elif telemetry_status == "warning":
+            status = "warning"
+        elif workspace_status == "unknown":
+            status = telemetry_status if telemetry_status not in {"missing", "unreachable"} else "unknown"
+        else:
+            status = "ready"
+    else:
+        status = telemetry_status
+
+    summary_parts: list[str] = []
+    if workspace_relevant and workspace_status in {"degraded", "unknown"}:
+        summary_parts.append(str(workspace_health.get("summary") or "Workspace GPU summary is incomplete."))
+    elif telemetry_status in {"warning", "degraded", "unreachable"}:
+        summary_parts.append(str(telemetry.get("summary") or "GPU telemetry reported an issue."))
+    elif workspace_relevant:
+        summary_parts.append(str(workspace_health.get("summary") or "Workspace GPU summary looks healthy."))
+    else:
+        summary_parts.append(str(telemetry.get("summary") or "GPU diagnostics status is unknown."))
+    if telemetry_status == "warning" and workspace_relevant and workspace_status == "ready":
+        telemetry_summary = str(telemetry.get("summary") or "").strip()
+        if telemetry_summary and telemetry_summary not in summary_parts:
+            summary_parts.append(telemetry_summary)
+    summary = " ".join(part for part in summary_parts if part).strip()
+
+    metrics = dict(telemetry.get("metrics") or {})
+    pending_pod_count = workspace_health.get("pending_pod_count")
+    if pending_pod_count is None and metrics.get("pending_pod_count") is not None:
+        try:
+            pending_pod_count = int(float(metrics["pending_pod_count"]))
+        except (TypeError, ValueError):
+            pending_pod_count = None
+    workspace_gpu_memory_pct = workspace_health.get("gpu_memory_saturation_pct")
+    telemetry_gpu_memory_pct = None
+    if metrics.get("memory_utilization_percent") is not None:
+        try:
+            telemetry_gpu_memory_pct = float(metrics["memory_utilization_percent"])
+        except (TypeError, ValueError):
+            telemetry_gpu_memory_pct = None
+    gpu_memory_saturation_pct = workspace_gpu_memory_pct
+    if telemetry_gpu_memory_pct is not None:
+        gpu_memory_saturation_pct = (
+            max(float(workspace_gpu_memory_pct), telemetry_gpu_memory_pct)
+            if workspace_gpu_memory_pct is not None
+            else telemetry_gpu_memory_pct
+        )
+    gpu_memory_saturated = bool(
+        workspace_health.get("gpu_memory_saturated")
+        or (gpu_memory_saturation_pct is not None and gpu_memory_saturation_pct >= 90.0)
+    )
+    likely_failure_source = str(workspace_health.get("likely_failure_source") or "unknown")
+    if likely_failure_source == "unknown" and telemetry_status in {"warning", "degraded"}:
+        likely_failure_source = "infrastructure"
+
+    observability_sources = list(workspace_health.get("observability_sources") or [])
+    if telemetry.get("available") or telemetry.get("prometheus_url"):
+        observability_sources = _string_list([*observability_sources, "Prometheus", "DCGM"])
+
+    blocking_reasons = _string_list(
+        [
+            *[str(item) for item in list(workspace_health.get("blocking_reasons") or [])],
+            *[str(item) for item in list(telemetry.get("alerts") or [])],
+        ]
+    )
+    recommended_fixes = _string_list(
+        [
+            *[str(item) for item in list(telemetry.get("recommended_fixes") or [])],
+            *[str(item) for item in list(workspace_health.get("recommended_fixes") or [])],
+        ]
+    )
+    safe_commands = _string_list([str(item) for item in list(workspace_health.get("safe_commands") or [])])
+
+    cluster_usable = workspace_health.get("cluster_usable")
+    if cluster_usable is None and telemetry_status in {"ready", "warning", "degraded"}:
+        cluster_usable = telemetry_status == "ready"
+
+    return {
+        **telemetry,
+        "available": available,
+        "status": status,
+        "summary": summary or str(telemetry.get("summary") or "GPU diagnostics status is unknown."),
+        "workspace_relevant": workspace_relevant,
+        "telemetry_status": telemetry_status,
+        "workspace_summary_status": workspace_status,
+        "repo_mode_enabled": bool(workspace_health.get("repo_mode_enabled")),
+        "repo_mode": workspace_health.get("repo_mode"),
+        "cluster_usable": cluster_usable,
+        "pending_pod_count": pending_pod_count,
+        "gpu_memory_saturation_pct": gpu_memory_saturation_pct,
+        "gpu_memory_saturated": gpu_memory_saturated,
+        "likely_failure_source": likely_failure_source,
+        "blocking_reasons": blocking_reasons,
+        "detected_signals": _string_list([str(item) for item in list(workspace_health.get("detected_signals") or [])]),
+        "observability_sources": observability_sources,
+        "summary_files": [str(item) for item in list(workspace_health.get("summary_files") or [])],
+        "safe_commands": safe_commands,
+        "recommended_fixes": recommended_fixes,
+    }

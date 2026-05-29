@@ -16,6 +16,7 @@ from db import engine
 from device_profile import detect_device_profile, detect_performance_profile, platform_debug_commands
 from errors import MissionControlError, derive_health_status, format_health_check_item
 from manager import service
+from nvidia_support import detect_project_nvidia_gpu_diagnostics
 from system_status import detect_codex_status
 from webwright_support import detect_webwright_status
 
@@ -44,6 +45,7 @@ OVERALL_DEGRADED_CHECK_KEYS = {
     "daemon_identity_confirmed",
     "codex_login_status_detectable",
     "localhost_only_binding",
+    "gpu_cluster_health",
 }
 
 
@@ -541,6 +543,44 @@ async def mission_control_plugin_health() -> dict[str, Any]:
             )
         )
 
+    gpu_health = detect_project_nvidia_gpu_diagnostics(REPO_ROOT)
+    gpu_check_status = (
+        "ready"
+        if gpu_health.get("status") == "ready"
+        else "degraded"
+        if gpu_health.get("status") in {"degraded", "warning"}
+        else "unknown"
+        if gpu_health.get("repo_mode_enabled")
+        else "ready"
+    )
+    gpu_summary = str(gpu_health.get("summary") or "GPU cluster health lane is idle.")
+    if not gpu_health.get("workspace_relevant") and not gpu_health.get("available"):
+        gpu_summary = "GPU cluster health lane is idle because no CUDA repo signals or observability summaries were detected here."
+    checks.append(
+        _check(
+            check_id="gpu_cluster_health",
+            label="GPU cluster health",
+            status=gpu_check_status,
+            summary=gpu_summary,
+            critical=False,
+            fix=next(iter(gpu_health.get("recommended_fixes") or []), None),
+            commands=list(gpu_health.get("safe_commands") or []),
+            details={
+                "repo_mode": gpu_health.get("repo_mode"),
+                "cluster_usable": gpu_health.get("cluster_usable"),
+                "telemetry_status": gpu_health.get("telemetry_status"),
+                "prometheus_url": gpu_health.get("prometheus_url"),
+                "pending_pod_count": gpu_health.get("pending_pod_count"),
+                "gpu_memory_saturated": gpu_health.get("gpu_memory_saturated"),
+                "gpu_memory_saturation_pct": gpu_health.get("gpu_memory_saturation_pct"),
+                "likely_failure_source": gpu_health.get("likely_failure_source"),
+                "blocking_reasons": gpu_health.get("blocking_reasons"),
+                "observability_sources": gpu_health.get("observability_sources"),
+                "summary_files": gpu_health.get("summary_files"),
+            },
+        )
+    )
+
     webwright_status = detect_webwright_status()
     webwright_check_status = "ready" if webwright_status.get("available") else ("degraded" if webwright_status.get("install_status") == "partial" else "unknown")
     checks.append(
@@ -758,6 +798,7 @@ async def mission_control_plugin_health() -> dict[str, Any]:
         "checked_at": _utc_now(),
         "platform_profile": device_profile,
         "performance_profile": performance_profile,
+        "gpu_cluster_health": gpu_health,
         "device_debug_commands": device_debug_commands,
         "notes": [
             "Plugin health checks are read-only and never return daemon tokens, API keys, or secret file contents.",

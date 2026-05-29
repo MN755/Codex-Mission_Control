@@ -106,7 +106,7 @@ MANAGER_INTERVIEW_SCHEMA = {
 }
 
 MANAGER_SWARM_PLAN_SCHEMA = {
-    "mode": "fastest_build|balanced|high_quality|documentation_heavy|research_planning|massive_codebase|manager_decides",
+    "mode": "fastest_build|balanced|high_quality|documentation_heavy|research_planning|massive_codebase|gpu_programming|manager_decides",
     "goal": "string",
     "recommended_agent_count": 5,
     "coordination_risk": "low|medium|high",
@@ -126,6 +126,7 @@ MANAGER_SWARM_PLAN_SCHEMA = {
             "spawn_phase": "string",
             "retire_when": "string",
             "priority": 50,
+            "iteration_budget": 1,
         }
     ],
 }
@@ -137,6 +138,28 @@ class PromptProfile:
     label: str
     manager_rules: tuple[str, ...]
     worker_rules: tuple[str, ...]
+
+
+def _gpu_mode_block(project: Project) -> str:
+    from gpu_support import detect_cuda_repo_mode
+    from nvidia_support import detect_project_nvidia_gpu_diagnostics
+
+    mode = detect_cuda_repo_mode(project.workspace_path)
+    if not mode.get("enabled"):
+        return ""
+    health = detect_project_nvidia_gpu_diagnostics(project.workspace_path)
+    lines = [
+        "GPU programming mode:",
+        f"- Detected GPU repo mode: {mode.get('mode')}.",
+        "- Treat CUDA and GPU validation as first-class work, not generic Python glue.",
+        "- After kernel-affecting edits, plan a build, focused test, benchmark comparison, and Nsight profile loop.",
+        "- Separate infrastructure blockers such as pending pods or saturated GPU memory from code defects before reopening the edit loop.",
+    ]
+    if mode.get("frameworks"):
+        lines.append(f"- Detected GPU stack: {', '.join(str(item) for item in list(mode.get('frameworks') or [])[:4])}.")
+    if health.get("status") in {"degraded", "warning", "unknown"}:
+        lines.append(f"- Current GPU observability verdict: {health.get('summary')}")
+    return "\n".join(lines)
 
 
 def build_prompt_profile(*, provider: str | None = None, model: str | None = None, reasoning_effort: str | None = None) -> PromptProfile:
@@ -359,6 +382,7 @@ def _worker_task_biases(task: Task, profile: PromptProfile) -> tuple[str, ...]:
 
 def manager_system_prompt(project: Project, *, provider: str | None = None, model: str | None = None, reasoning_effort: str | None = None) -> str:
     profile_block = prompt_profile_block(provider=provider, model=model, reasoning_effort=reasoning_effort, audience="manager")
+    gpu_block = _gpu_mode_block(project)
     return f"""You are the Manager AI for Codex Mission Control.
 
 Project name: {project.name}
@@ -378,6 +402,8 @@ Responsibilities:
 - Never claim a project is done unless validation was performed or explicitly marked as not run.
 
 {profile_block}
+
+{gpu_block}
 
 When you reply with structured content, keep it concise and machine-friendly.
 """
@@ -410,6 +436,7 @@ def worker_task_prompt(
     context_pack_section = f"\nRelevant context pack:\n{context_pack_markdown}\n" if context_pack_markdown else ""
     profile = build_prompt_profile(provider=provider, model=model, reasoning_effort=reasoning_effort)
     profile_block = prompt_profile_block(provider=provider, model=model, reasoning_effort=reasoning_effort, audience="worker")
+    gpu_block = _gpu_mode_block(project)
     worker_bias_block = "\n".join(f"- {rule}" for rule in _worker_task_biases(task, profile))
     state_bias_block = "\n".join(f"- {rule}" for rule in _project_state_biases(project, task=task))
     return f"""You are a Codex worker agent operating under Codex Mission Control.
@@ -442,6 +469,8 @@ Requirements:
 
 {profile_block}
 
+{gpu_block}
+
 Task-specific execution biases:
 {worker_bias_block}
 
@@ -469,6 +498,7 @@ def manager_message_prompt(
     reasoning_effort: str | None = None,
 ) -> str:
     profile_block = prompt_profile_block(provider=provider, model=model, reasoning_effort=reasoning_effort, audience="manager")
+    gpu_block = _gpu_mode_block(project)
     return f"""You are the Manager AI for the project "{project.name}".
 
 Project docs live at: {docs_path}
@@ -478,6 +508,8 @@ The user sent this message:
 {user_message}
 
 {profile_block}
+
+{gpu_block}
 
 Respond as the manager coordinating the project. If the message requests changes, outline the next step clearly.
 """
@@ -500,6 +532,7 @@ def manager_action_prompt(
     context = project_context_block(project, docs_path, plan_markdown, user_name)
     profile = build_prompt_profile(provider=provider, model=model, reasoning_effort=reasoning_effort)
     profile_block = prompt_profile_block(provider=provider, model=model, reasoning_effort=reasoning_effort, audience="manager")
+    gpu_block = _gpu_mode_block(project)
     action_biases = _manager_action_biases(action, profile)
     state_biases = _project_state_biases(project, action=action)
     action_bias_block = "\n".join(f"- {rule}" for rule in [*action_biases, *state_biases])
@@ -515,7 +548,9 @@ Objective:
 Input payload:
 {json.dumps(payload, indent=2, default=str)}
 
-{profile_block}{task_bias_section}
+{profile_block}
+
+{gpu_block}{task_bias_section}
 
 Response rules:
 - Return only valid JSON.
@@ -544,6 +579,7 @@ def manager_interview_prompt(
 ) -> str:
     profile = build_prompt_profile(provider=provider, model=model, reasoning_effort=reasoning_effort)
     profile_block = prompt_profile_block(provider=provider, model=model, reasoning_effort=reasoning_effort, audience="manager")
+    gpu_block = _gpu_mode_block(project)
     action_bias_block = "\n".join(f"- {rule}" for rule in [*_manager_action_biases(action, profile), *_project_state_biases(project, action=action)])
     task_bias_section = f"\nTask-specific decision biases:\n{action_bias_block}" if action_bias_block else ""
     return f"""You are the Manager AI for Codex Mission Control.
@@ -558,7 +594,9 @@ Objective:
 
 Preferred user name: {user_name or project.created_by or "Operator"}
 
-{profile_block}{task_bias_section}
+{profile_block}
+
+{gpu_block}{task_bias_section}
 
 Interview requirements:
 - You are interviewing the user to gather project-specific requirements.
@@ -591,6 +629,7 @@ def manager_swarm_prompt(
 ) -> str:
     profile = build_prompt_profile(provider=provider, model=model, reasoning_effort=reasoning_effort)
     profile_block = prompt_profile_block(provider=provider, model=model, reasoning_effort=reasoning_effort, audience="manager")
+    gpu_block = _gpu_mode_block(project)
     action_bias_block = "\n".join(f"- {rule}" for rule in [*_manager_action_biases("swarm.plan", profile), *_project_state_biases(project, action="swarm.plan")])
     task_bias_section = f"\nTask-specific decision biases:\n{action_bias_block}" if action_bias_block else ""
     return f"""You are the Manager AI for Codex Mission Control.
@@ -601,7 +640,9 @@ Project idea:
 
 Preferred user name: {user_name or project.created_by or "Operator"}
 
-{profile_block}{task_bias_section}
+{profile_block}
+
+{gpu_block}{task_bias_section}
 
 You are producing an adaptive swarm plan for this specific project.
 
@@ -611,6 +652,7 @@ Swarm planning rules:
 - Avoid spawning vague agents or multiple agents that will obviously fight over the same files.
 - Use the project idea, docs, repo shape, interview understanding, runner/tool limits, and project preferences.
 - Multiple agents from the same archetype are allowed only when they have distinct missions and path ownership.
+- Give each specialist an explicit iteration budget so optimization and review loops do not run forever.
 - Documentation-heavy projects may use multiple docs specialists.
 - High-quality projects should emphasize review, testing, and security.
 - Massive codebases should assign subsystem or path ownership before aggressive parallel edits.

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib.resources
 import json
 from functools import lru_cache
 from pathlib import Path
@@ -14,22 +15,36 @@ def discover_repo_root() -> Path:
     raise RuntimeError("Could not discover the Codex Mission Control repository root.")
 
 
+def _load_bundled_json(filename: str) -> dict[str, Any]:
+    package_files = importlib.resources.files("mission_control_mcp_server._bundled")
+    text = (package_files / filename).read_text(encoding="utf-8")
+    payload = json.loads(text)
+    if not isinstance(payload, dict):
+        raise RuntimeError(f"Bundled Mission Control asset {filename} is not a JSON object.")
+    return payload
+
+
+def _load_repo_json(*parts: str) -> dict[str, Any] | None:
+    try:
+        path = discover_repo_root().joinpath(*parts)
+    except RuntimeError:
+        return None
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
 @lru_cache(maxsize=1)
 def load_plugin_manifest() -> dict[str, Any]:
-    path = discover_repo_root() / "plugins" / "mission-control" / "plugin.json"
-    return json.loads(path.read_text(encoding="utf-8"))
+    return _load_repo_json("plugins", "mission-control", "plugin.json") or _load_bundled_json("plugin.json")
 
 
 @lru_cache(maxsize=1)
 def load_resource_catalog() -> dict[str, Any]:
-    path = discover_repo_root() / "plugins" / "mission-control" / "mcp" / "resources.json"
-    return json.loads(path.read_text(encoding="utf-8"))
+    return _load_repo_json("plugins", "mission-control", "mcp", "resources.json") or _load_bundled_json("resources.json")
 
 
 @lru_cache(maxsize=1)
 def load_prompt_catalog() -> dict[str, Any]:
-    path = discover_repo_root() / "plugins" / "mission-control" / "mcp" / "prompts.json"
-    return json.loads(path.read_text(encoding="utf-8"))
+    return _load_repo_json("plugins", "mission-control", "mcp", "prompts.json") or _load_bundled_json("prompts.json")
 
 
 def resource_entries() -> list[dict[str, Any]]:

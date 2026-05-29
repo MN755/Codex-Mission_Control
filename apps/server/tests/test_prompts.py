@@ -1,8 +1,15 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from conftest import sample_workspace
 from models import Agent, Project, Task
 from prompts import build_prompt_profile, manager_action_prompt, manager_interview_prompt, manager_swarm_prompt, worker_task_prompt
+
+
+def _write(path: Path, content: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content, encoding="utf-8")
 
 
 def test_build_prompt_profile_prefers_compact_local_rules_for_small_ollama_model() -> None:
@@ -233,3 +240,44 @@ def test_worker_task_prompt_adds_project_state_biases_for_single_path_fix() -> N
 
     assert "Treat the repository as real inherited state." in prompt
     assert "Path ownership is intentionally narrow here." in prompt
+
+
+def test_worker_task_prompt_switches_into_gpu_programming_mode_for_cuda_repo() -> None:
+    workspace = Path(sample_workspace("prompt-cuda"))
+    workspace.mkdir(parents=True, exist_ok=True)
+    _write(workspace / "CMakeLists.txt", "project(cuda_demo LANGUAGES CXX CUDA)\nfind_package(CUDAToolkit REQUIRED)\n")
+    _write(workspace / "kernels" / "main.cu", "__global__ void kernel() {}\n")
+
+    project = Project(name="Prompt Demo", idea="Tune a CUDA kernel", workspace_path=workspace.as_posix(), status="building", runner_mode="auto", manager_mode="auto")
+    agent = Agent(project_id=1, name="GPU Worker", role="CUDA implementation", kind="worker", status="idle", workspace_path=project.workspace_path)
+    task = Task(
+        id=5,
+        project_id=1,
+        title="Optimize the CUDA kernel",
+        goal="Improve the GPU kernel path without breaking correctness.",
+        scope="Edit only the GPU kernel path and its focused validation loop.",
+        agent_role="CUDA implementation",
+        milestone="Milestone 1",
+        allowed_paths_json=["kernels"],
+        forbidden_paths_json=["docs"],
+        validation_steps_json=["Build and run the focused GPU validation loop"],
+        success_criteria_json=["The kernel path is validated honestly"],
+        estimated_complexity="medium",
+        dependencies_json=[],
+        status="backlog",
+        priority=10,
+    )
+
+    prompt = worker_task_prompt(
+        project,
+        agent,
+        task,
+        docs_path=f"{project.workspace_path}/mission-control",
+        provider="codex",
+        model="gpt-5.5",
+        reasoning_effort="high",
+    )
+
+    assert "GPU programming mode:" in prompt
+    assert "Treat CUDA and GPU validation as first-class work" in prompt
+    assert "benchmark comparison, and Nsight profile loop" in prompt

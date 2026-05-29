@@ -420,3 +420,77 @@ def test_plugin_health_broken_when_critical_checks_fail(monkeypatch, client, tmp
     response = client.get("/api/plugin/health", headers=_bridge_headers())
     assert response.status_code == 200
     assert response.json()["status"] == "broken"
+
+
+def test_plugin_health_surfaces_gpu_cluster_lane(monkeypatch, tmp_path) -> None:
+    async def fake_inventory() -> list[dict]:
+        return [{"runner_type": "dry_run", "availability": True}]
+
+    runtime_root = tmp_path / "runtime"
+    launcher_root = tmp_path / "launcher"
+    monkeypatch.setattr(
+        "plugin_health.detect_codex_status",
+        lambda: {
+            "cli_detected": True,
+            "cli_execution_available": True,
+            "cli_version": "codex 1.0.0",
+            "login_status": "Logged in using ChatGPT",
+            "auth_mode": "chatgpt",
+            "authenticated": True,
+            "auth_status_detectable": True,
+            "mcp_servers": [{"name": "mission-control", "status": "connected"}],
+            "configured_mcp_servers": [{"name": "mission-control"}],
+            "local_skills": [],
+        },
+    )
+    monkeypatch.setattr(
+        "plugin_health.daemon_identity_snapshot",
+        lambda: _daemon_identity(
+            repo_root=str(__import__("plugin_health").REPO_ROOT),
+            runtime_root=str(runtime_root),
+            launcher_root=str(launcher_root),
+        ),
+    )
+    monkeypatch.setattr("plugin_health.read_daemon_metadata", lambda: {"host": "127.0.0.1", "port": 8000, "mode": "daemon"})
+    monkeypatch.setattr(
+        "plugin_health.resolve_backend_binding",
+        lambda: {"host": "127.0.0.1", "port": 8000, "mode": "daemon", "source": "daemon_metadata"},
+    )
+    monkeypatch.setattr("plugin_health.daemon_dashboard_url", lambda project_id=None: "http://127.0.0.1:8000/dashboard")
+    monkeypatch.setattr("plugin_health._probe_url", lambda url, timeout=2.0: (True, "HTTP 200"))
+    monkeypatch.setattr("plugin_health.service.runners.inventory", fake_inventory)
+    monkeypatch.setattr("plugin_health.RUNTIME_ROOT", runtime_root)
+    monkeypatch.setattr(
+        "plugin_health.detect_project_nvidia_gpu_diagnostics",
+        lambda workspace_path: {
+            "available": True,
+            "status": "degraded",
+            "summary": "GPU cluster summaries show pending pods.",
+            "prometheus_url": "http://prometheus:9090",
+            "workspace_relevant": True,
+            "telemetry_status": "warning",
+            "workspace_summary_status": "degraded",
+            "repo_mode_enabled": True,
+            "repo_mode": "cuda_cpp",
+            "cluster_usable": False,
+            "pending_pod_count": 2,
+            "gpu_memory_saturated": False,
+            "gpu_memory_saturation_pct": None,
+            "likely_failure_source": "infrastructure",
+            "blocking_reasons": ["2 GPU pod(s) are pending."],
+            "observability_sources": ["Prometheus", "DCGM"],
+            "summary_files": ["obs/gpu.json"],
+            "recommended_fixes": ["Clear pending GPU pods before retrying the run."],
+            "safe_commands": ["kubectl get pods -A --field-selector=status.phase=Pending"],
+            "metrics": {},
+            "alerts": [],
+            "queries": {},
+        },
+    )
+
+    payload = asyncio.run(__import__("plugin_health").mission_control_plugin_health())
+    checks = {check["key"]: check for check in payload["checks"]}
+
+    assert payload["status"] == "degraded"
+    assert checks["gpu_cluster_health"]["status"] == "degraded"
+    assert "pending pods" in checks["gpu_cluster_health"]["summary"].lower()

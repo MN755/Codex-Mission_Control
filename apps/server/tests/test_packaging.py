@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import importlib.util
+import sys
+from fastapi.testclient import TestClient
 from pathlib import Path
 
 
@@ -8,6 +10,17 @@ def _load_packaging_module():
     root = Path(__file__).resolve().parents[3]
     module_path = root / "scripts" / "package-desktop.py"
     spec = importlib.util.spec_from_file_location("package_desktop", module_path)
+    assert spec is not None
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+    return module
+
+
+def _load_desktop_app_module():
+    root = Path(__file__).resolve().parents[3]
+    module_path = root / "apps" / "desktop" / "src" / "mission_control_desktop" / "app.py"
+    spec = importlib.util.spec_from_file_location("mission_control_desktop_app_test", module_path)
     assert spec is not None
     module = importlib.util.module_from_spec(spec)
     assert spec.loader is not None
@@ -141,3 +154,65 @@ def test_launcher_scripts_use_configured_launcher_dir() -> None:
     assert "npm.cmd run build" not in desktop_app
     assert "launcherLogDir" in stop_script
     assert 'Join-Path $launcherDir "pids.json"' in stop_script
+
+
+def test_desktop_app_ignores_fake_site_packages_repo_roots(monkeypatch, tmp_path) -> None:
+    monkeypatch.delenv("MISSION_CONTROL_REPO_ROOT", raising=False)
+    module = _load_desktop_app_module()
+    monkeypatch.delenv("MISSION_CONTROL_REPO_ROOT", raising=False)
+    fake_path = tmp_path / "site-packages" / "mission_control_desktop" / "app.py"
+    fake_path.parent.mkdir(parents=True, exist_ok=True)
+    fake_path.write_text("# placeholder\n", encoding="utf-8")
+
+    assert module._discover_source_repo_root(fake_path) is None
+
+
+def test_desktop_app_loads_backend_from_installed_modules(monkeypatch, tmp_path) -> None:
+    module = _load_desktop_app_module()
+    app_support_root = tmp_path / "app-home"
+    ensure_calls: list[str] = []
+    fake_app = object()
+    original_import = module.importlib.import_module
+
+    class FakeConfigModule:
+        APP_SUPPORT_ROOT = app_support_root
+
+        @staticmethod
+        def ensure_runtime_dirs() -> None:
+            ensure_calls.append("called")
+
+    class FakeMainModule:
+        app = fake_app
+
+    def fake_import(name: str):
+        if name == "config":
+            return FakeConfigModule
+        if name == "main":
+            return FakeMainModule
+        return original_import(name)
+
+    monkeypatch.setattr(module, "SOURCE_REPO_ROOT", None)
+    monkeypatch.setattr(module, "SERVER_SRC", None)
+    monkeypatch.setattr(module.importlib, "import_module", fake_import)
+
+    loaded_root, ensure_runtime_dirs, loaded_app = module._load_backend_runtime()
+    ensure_runtime_dirs()
+
+    assert loaded_root == app_support_root
+    assert loaded_app is fake_app
+    assert ensure_calls == ["called"]
+
+
+def test_packaged_server_serves_embedded_frontend_when_bundle_is_missing(monkeypatch) -> None:
+    if "main" not in sys.modules:
+        import main  # noqa: F401
+    import main
+
+    monkeypatch.setattr(main, "_frontend_dist_dir", lambda: None)
+    monkeypatch.setattr(main, "RUNNING_FROM_SOURCE", False)
+
+    client = TestClient(main.app)
+    response = client.get("/")
+
+    assert response.status_code == 200
+    assert "Codex Mission Control" in response.text

@@ -224,6 +224,92 @@ def test_selected_custom_provider_without_adapter_degrades_startup(client, bridg
     assert "custom" in payload["failed_checks"]
 
 
+def test_selected_nvidia_dynamo_provider_without_frontend_degrades_startup(monkeypatch, client, bridge_headers) -> None:
+    monkeypatch.setattr(
+        "startup.detect_provider_statuses",
+        lambda selected_provider=None, adapter_command=None, provider_endpoint=None, adapter_args=None: [
+            {
+                "provider": "codex",
+                "runtime_ready": True,
+                "runtime_summary": "ready",
+                "login_status": "ready",
+                "cli_detected": True,
+                "authenticated": True,
+                "app_server_supported": True,
+                "configured_plugins": [],
+                "configured_mcp_servers": [],
+                "local_skills": [],
+                "mcp_servers": [],
+                "mcp_state": {},
+                "notes": [],
+            },
+            {
+                "provider": "claude_code",
+                "runtime_ready": False,
+                "runtime_summary": "missing",
+                "login_status": "missing",
+                "cli_detected": False,
+            },
+            {
+                "provider": "ollama",
+                "runtime_ready": False,
+                "runtime_summary": "offline",
+                "login_status": "offline",
+                "cli_detected": False,
+            },
+            {
+                "provider": "openai_api",
+                "runtime_ready": False,
+                "runtime_summary": "missing",
+                "login_status": "missing",
+                "cli_detected": False,
+            },
+            {
+                "provider": "anthropic_api",
+                "runtime_ready": False,
+                "runtime_summary": "missing",
+                "login_status": "missing",
+                "cli_detected": False,
+            },
+            {
+                "provider": "xai_api",
+                "runtime_ready": False,
+                "runtime_summary": "missing",
+                "login_status": "missing",
+                "cli_detected": False,
+            },
+            {
+                "provider": "nvidia_dynamo",
+                "runtime_ready": False,
+                "runtime_summary": "NVIDIA Dynamo frontend is not reachable.",
+                "login_status": "NVIDIA Dynamo frontend is not reachable.",
+                "cli_detected": False,
+            },
+            {
+                "provider": "custom",
+                "runtime_ready": False,
+                "runtime_summary": "missing",
+                "login_status": "missing",
+                "cli_detected": False,
+            },
+        ],
+    )
+    client.post(
+        "/api/startup/complete-first-run",
+        json={
+            "username": "Morgan",
+            "provider": "nvidia_dynamo",
+            "auth_mode": "external",
+            "default_runner_mode": "auto",
+        },
+    )
+    payload = client.post("/api/startup/check", json={"attempt_number": 1, "include_optional_checks": True}, headers=bridge_headers).json()
+    assert payload["mode"] == "degraded"
+    assert payload["overall_status"] == "degraded"
+    assert payload["error_code"] == "MC-RUNNER-NONE-AVAILABLE-001"
+    assert "nvidia_dynamo" in payload["failed_checks"]
+
+
 def test_diagnostics_collects_daemon_launcher_logs(monkeypatch, tmp_path) -> None:
     launcher = tmp_path / "launcher"
     launcher.mkdir()

@@ -13,6 +13,7 @@ Mission Control uses runners to execute background work. Runner availability dep
 - `openai_api`
 - `anthropic_api`
 - `xai_api`
+- `nvidia_dynamo`
 
 ## Detection model
 
@@ -21,11 +22,20 @@ Mission Control uses runners to execute background work. Runner availability dep
 - `ollama` uses the built-in `scripts/ollama_adapter.py` recipe and still requires a reachable local endpoint
 - `claude_cli` depends on a working local CLI environment
 - API-backed runners use the built-in `scripts/api_provider_adapter.py` recipe, still require secure external API keys, and may incur billing
+- `nvidia_dynamo` uses the built-in OpenAI-compatible adapter recipe and expects a reachable NVIDIA Dynamo frontend; API keys are optional unless the deployment enforces bearer auth
 - Webwright is not a runner type; it is an optional browser-agent companion that Mission Control can detect and route browser tasks toward when the local runtime is ready
+
+## NVIDIA Dynamo polish
+
+- Mission Control now reports Dynamo runtime truth in two layers:
+  - frontend reachability and model listing from the Dynamo endpoint
+  - worker-runtime readiness from the local adapter command and any required API key
+- if Dynamo is reachable but the adapter command is missing, Mission Control reports that as a runtime blocker instead of pretending the stack is ready
+- if the deployment requires bearer auth, Mission Control reports the missing key directly instead of flattening it into generic degraded status
 
 ## Built-in adapter recipes
 
-- Mission Control now ships first-class default adapter recipes for `ollama`, `openai_api`, `anthropic_api`, and `xai_api`
+- Mission Control now ships first-class default adapter recipes for `ollama`, `openai_api`, `anthropic_api`, `xai_api`, and `nvidia_dynamo`
 - those recipes use the current Python interpreter plus the repo-local adapter script
 - users can still override the adapter command or args explicitly when they need a custom path
 - `custom` providers stay opt-in and do not get a fake default recipe

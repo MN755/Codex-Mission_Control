@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib
 import json
 import os
 import socket
@@ -9,10 +10,26 @@ import time
 import urllib.request
 import webbrowser
 from pathlib import Path
+from typing import Any, Callable
 
 IS_FROZEN = bool(getattr(sys, "frozen", False))
-BUNDLE_ROOT = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parents[4]))
-SOURCE_REPO_ROOT = None if IS_FROZEN else Path(__file__).resolve().parents[4]
+BUNDLE_ROOT = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
+
+
+def _discover_source_repo_root(current_file: str | Path | None = None) -> Path | None:
+    explicit = os.environ.get("MISSION_CONTROL_REPO_ROOT")
+    if explicit:
+        candidate = Path(explicit).expanduser().resolve()
+        if (candidate / "apps" / "server" / "src" / "main.py").exists() and (candidate / "README.md").exists():
+            return candidate
+    file_path = Path(current_file or __file__).resolve()
+    for parent in file_path.parents:
+        if (parent / "apps" / "server" / "src" / "main.py").exists() and (parent / "README.md").exists():
+            return parent
+    return None
+
+
+SOURCE_REPO_ROOT = None if IS_FROZEN else _discover_source_repo_root()
 SERVER_SRC = (SOURCE_REPO_ROOT / "apps" / "server" / "src") if SOURCE_REPO_ROOT is not None else None
 FRONTEND_DIST = (
     (SOURCE_REPO_ROOT / "apps" / "dashboard" / "dist")
@@ -72,17 +89,24 @@ def _wait_for_server(url: str, timeout_seconds: float = 20.0) -> None:
     raise RuntimeError(f"Timed out waiting for {url}")
 
 
+def _load_backend_runtime() -> tuple[Path, Callable[[], None], Any]:
+    if SERVER_SRC is not None and SERVER_SRC.exists() and str(SERVER_SRC) not in sys.path:
+        sys.path.insert(0, str(SERVER_SRC))
+    config_module = importlib.import_module("config")
+    main_module = importlib.import_module("main")
+    return config_module.APP_SUPPORT_ROOT, config_module.ensure_runtime_dirs, main_module.app
+
+
 def main() -> None:
     if os.environ.get("MISSION_CONTROL_DESKTOP_SMOKE_TEST") == "1":
         print("mission-control-desktop smoke ok", flush=True)
         return
     import uvicorn
 
-    from config import APP_SUPPORT_ROOT, ensure_runtime_dirs
-    from main import app as fastapi_app
+    app_support_root, ensure_runtime_dirs, fastapi_app = _load_backend_runtime()
 
     ensure_runtime_dirs()
-    if not FRONTEND_DIST.exists():
+    if SOURCE_REPO_ROOT is not None and not FRONTEND_DIST.exists():
         raise SystemExit(
             f"Frontend build not found. Run `{_frontend_build_command()}` in apps/dashboard first, "
             "or use the launcher script that builds the desktop UI automatically."
@@ -111,7 +135,7 @@ def main() -> None:
     thread = threading.Thread(target=server.run, daemon=True)
     thread.start()
     _wait_for_server(health_url)
-    _write_launcher_metadata(port, app_support_root=APP_SUPPORT_ROOT)
+    _write_launcher_metadata(port, app_support_root=app_support_root)
 
     def _shutdown() -> None:
         server.should_exit = True
@@ -148,4 +172,4 @@ def main() -> None:
             _shutdown()
 
 
-__all__ = ["main"]
+__all__ = ["main", "_discover_source_repo_root", "_load_backend_runtime"]

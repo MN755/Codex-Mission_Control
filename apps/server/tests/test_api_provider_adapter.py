@@ -27,6 +27,20 @@ def test_model_defaults_follow_provider(monkeypatch) -> None:
     assert api_provider_adapter._model() == "gpt-4o-mini"
     monkeypatch.setenv("MISSION_CONTROL_PROVIDER", "anthropic_api")
     assert api_provider_adapter._model() == "claude-3-5-sonnet-latest"
+    monkeypatch.setenv("MISSION_CONTROL_PROVIDER", "nvidia_dynamo")
+    assert api_provider_adapter._model() == "Qwen/Qwen3-0.6B"
+
+
+def test_dynamo_endpoint_and_api_key_are_optional(monkeypatch) -> None:
+    monkeypatch.setenv("MISSION_CONTROL_PROVIDER", "nvidia_dynamo")
+    monkeypatch.setenv("MISSION_CONTROL_PROVIDER_ENDPOINT", "http://dynamo.local:8000")
+    monkeypatch.delenv("NVIDIA_DYNAMO_API_KEY", raising=False)
+    monkeypatch.delenv("MISSION_CONTROL_NVIDIA_DYNAMO_API_KEY", raising=False)
+
+    assert api_provider_adapter._endpoint() == "http://dynamo.local:8000/v1/chat/completions"
+    key_name, key_value = api_provider_adapter._api_key()
+    assert key_name == "NVIDIA_DYNAMO_API_KEY"
+    assert key_value == ""
 
 
 def test_repair_reason_requires_json_for_edit_contract() -> None:

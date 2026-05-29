@@ -224,3 +224,109 @@ def test_detect_system_status_reports_runtime_blockers_for_selected_provider(mon
     assert payload["runtime_status"] == "blocked"
     assert "api_key_missing" in payload["runtime_blockers"]
     assert "adapter_command_unavailable" in payload["runtime_blockers"]
+
+
+def test_detect_system_status_reports_dynamo_runtime_when_selected(monkeypatch) -> None:
+    monkeypatch.setattr("system_status.detect_codex_status", lambda: {
+        "provider": "codex",
+        "label": "Codex",
+        "cli_detected": True,
+        "cli_path": "codex",
+        "cli_path_exists": True,
+        "cli_execution_available": True,
+        "cli_version": "codex 1.0.0",
+        "login_status": "Logged in using ChatGPT",
+        "auth_mode": "chatgpt",
+        "authenticated": True,
+        "app_server_supported": True,
+        "configured_plugins": [],
+        "configured_mcp_servers": [],
+        "local_skills": [],
+        "mcp_servers": [],
+        "mcp_state": {},
+        "notes": [],
+    })
+    monkeypatch.setattr("system_status.detect_claude_code_status", lambda: {
+        "provider": "claude_code",
+        "label": "Claude Code",
+        "cli_detected": False,
+        "cli_path": None,
+        "cli_path_exists": False,
+        "cli_execution_available": False,
+        "cli_version": None,
+        "login_status": "missing",
+        "auth_mode": None,
+        "authenticated": False,
+        "auth_status_detectable": False,
+        "supports_model_override": True,
+        "supports_reasoning_effort": False,
+        "supports_app_server": False,
+        "supports_builtin_auth": False,
+        "available_models": [],
+        "notes": [],
+    })
+    monkeypatch.setattr("system_status.detect_ollama_status", lambda endpoint=None: {
+        "provider": "ollama",
+        "label": "Ollama",
+        "cli_detected": False,
+        "cli_path": None,
+        "cli_path_exists": False,
+        "cli_execution_available": False,
+        "cli_version": None,
+        "login_status": "missing",
+        "auth_mode": None,
+        "authenticated": False,
+        "auth_status_detectable": True,
+        "supports_model_override": True,
+        "supports_reasoning_effort": True,
+        "supports_app_server": False,
+        "supports_builtin_auth": False,
+        "available_models": [],
+        "notes": [],
+        "reachable": False,
+        "summary": "missing",
+    })
+    monkeypatch.setattr("system_status.detect_nvidia_dynamo_status", lambda endpoint=None: {
+        "provider": "nvidia_dynamo",
+        "label": "NVIDIA Dynamo",
+        "cli_detected": True,
+        "cli_path": endpoint or "http://dynamo.local:8000",
+        "cli_path_exists": True,
+        "cli_execution_available": True,
+        "cli_version": endpoint or "http://dynamo.local:8000",
+        "login_status": "reachable",
+        "auth_mode": "optional",
+        "authenticated": True,
+        "auth_status_detectable": True,
+        "supports_model_override": True,
+        "supports_reasoning_effort": False,
+        "supports_app_server": False,
+        "supports_builtin_auth": False,
+        "available_models": ["Qwen/Qwen3-0.6B"],
+        "notes": [],
+        "reachable": True,
+        "summary": "reachable",
+        "endpoint": endpoint or "http://dynamo.local:8000",
+        "endpoint_configured": True,
+        "api_key_configured": False,
+        "auth_required": False,
+    })
+    monkeypatch.setattr("system_status.detect_webwright_status", lambda: {"summary": "not installed"})
+    monkeypatch.setattr("system_status.detect_custom_status", lambda command=None, args=None: {
+        "provider": "custom",
+        "cli_detected": True,
+    })
+
+    from system_status import detect_system_status
+
+    payload = detect_system_status(
+        selected_provider="nvidia_dynamo",
+        adapter_command="custom-adapter",
+        ollama_endpoint="http://dynamo.local:8000",
+    )
+
+    assert payload["selected_provider"] == "nvidia_dynamo"
+    assert payload["selected_provider_label"] == "NVIDIA Dynamo"
+    assert payload["runtime_ready"] is True
+    assert payload["runtime_status"] == "ready"
+    assert payload["runtime_blockers"] == []

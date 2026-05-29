@@ -9,6 +9,7 @@ from bootstrap.secret_redaction import redact_bootstrap_value
 from errors import MissionControlError
 from provider_adapter_recipes import resolve_adapter_recipe
 from system_status import detect_claude_code_status, detect_codex_status, detect_custom_status, detect_ollama_status
+from nvidia_support import detect_nvidia_dynamo_status
 
 
 API_RUNNERS: list[tuple[str, str, str]] = [
@@ -222,6 +223,62 @@ def probe_claude_cli() -> dict[str, Any]:
     )
 
 
+def probe_nvidia_dynamo(*, endpoint: str | None = None, adapter_command: str | None = None, adapter_args: list[str] | None = None) -> dict[str, Any]:
+    status = detect_nvidia_dynamo_status(endpoint)
+    recipe = resolve_adapter_recipe("nvidia_dynamo", adapter_command, adapter_args)
+    effective_command = recipe.command if recipe else None
+    effective_args = list(recipe.args) if recipe else []
+    adapter_status = detect_custom_status(effective_command, effective_args)
+    adapter_ready = bool(adapter_status.get("cli_detected"))
+    adapter_configured = bool(effective_command)
+    reachable = bool(status.get("reachable"))
+    auth_required = bool(status.get("auth_required"))
+    api_key_configured = bool(status.get("api_key_configured"))
+    available = reachable or adapter_ready or adapter_configured or bool(status.get("endpoint_configured"))
+    if reachable and adapter_ready and (not auth_required or api_key_configured):
+        install_status = "ready"
+        recommended_fix = None
+        error = None
+    elif reachable and adapter_ready and auth_required and not api_key_configured:
+        install_status = "auth_required"
+        recommended_fix = "Set NVIDIA_DYNAMO_API_KEY or MISSION_CONTROL_NVIDIA_DYNAMO_API_KEY before routing Mission Control workers into this Dynamo frontend."
+        error = MissionControlError(code="MC-API-KEY-MISSING-001", breakpoint="api_provider.auth_check", severity="warning", safe_details={"runner": "nvidia_dynamo"})
+    elif reachable:
+        install_status = "endpoint_ready_needs_adapter"
+        recommended_fix = "Keep the Dynamo frontend reachable and make sure the Mission Control API adapter recipe remains executable."
+        error = MissionControlError(code="MC-RUNNER-NONE-AVAILABLE-001", breakpoint="runner.select", severity="warning", safe_details={"runner": "nvidia_dynamo"})
+    else:
+        install_status = "not_configured" if not status.get("endpoint_configured") else "installed_not_running"
+        recommended_fix = "Expose an NVIDIA Dynamo OpenAI-compatible frontend and keep the Mission Control adapter recipe available before selecting this provider."
+        error = MissionControlError(code="MC-RUNNER-NONE-AVAILABLE-001", breakpoint="runner.select", severity="warning", safe_details={"runner": "nvidia_dynamo"})
+    return _probe(
+        runner_id="nvidia_dynamo",
+        label="NVIDIA Dynamo",
+        available=available,
+        configured=reachable and adapter_ready and (not auth_required or api_key_configured),
+        auth_status="authenticated" if api_key_configured else "unauthenticated" if auth_required else "optional",
+        install_status=install_status,
+        safe_default=False,
+        requires_user_action=not (reachable and adapter_ready),
+        recommended_fix=recommended_fix,
+        billing_warning="NVIDIA Dynamo may run on metered or shared GPU infrastructure depending on deployment.",
+        error=error,
+        models=[str(item) for item in list(status.get("available_models", []))],
+        details={
+            "endpoint": status.get("endpoint"),
+            "reachable": reachable,
+            "summary": status.get("summary"),
+            "adapter_command": effective_command,
+            "adapter_args": effective_args,
+            "adapter_recipe_source": recipe.source if recipe else "none",
+            "adapter_ready": adapter_ready,
+            "adapter_configured": adapter_configured,
+            "api_key_configured": api_key_configured,
+            "auth_required": auth_required,
+        },
+    )
+
+
 def _api_probe(runner_id: str, label: str, env_key: str, *, adapter_command: str | None = None, adapter_args: list[str] | None = None) -> dict[str, Any]:
     configured_in_env = bool(os.environ.get(env_key))
     recipe = resolve_adapter_recipe(runner_id, adapter_command, adapter_args)
@@ -265,19 +322,37 @@ def _api_probe(runner_id: str, label: str, env_key: str, *, adapter_command: str
     )
 
 
-def probe_runners(*, ollama_endpoint: str | None = None, adapter_command: str | None = None, adapter_args: list[str] | None = None) -> list[dict[str, Any]]:
+def probe_runners(
+    *,
+    ollama_endpoint: str | None = None,
+    nvidia_dynamo_endpoint: str | None = None,
+    adapter_command: str | None = None,
+    adapter_args: list[str] | None = None,
+) -> list[dict[str, Any]]:
     probes = [
         probe_dry_run(),
         probe_codex_cli(),
         probe_ollama(endpoint=ollama_endpoint, adapter_command=adapter_command, adapter_args=adapter_args),
+        probe_nvidia_dynamo(endpoint=nvidia_dynamo_endpoint, adapter_command=adapter_command, adapter_args=adapter_args),
         probe_claude_cli(),
     ]
     probes.extend(_api_probe(*runner, adapter_command=adapter_command, adapter_args=adapter_args) for runner in API_RUNNERS)
     return probes
 
 
-def summarize_runner_status(*, ollama_endpoint: str | None = None, adapter_command: str | None = None, adapter_args: list[str] | None = None) -> dict[str, Any]:
-    probes = probe_runners(ollama_endpoint=ollama_endpoint, adapter_command=adapter_command, adapter_args=adapter_args)
+def summarize_runner_status(
+    *,
+    ollama_endpoint: str | None = None,
+    nvidia_dynamo_endpoint: str | None = None,
+    adapter_command: str | None = None,
+    adapter_args: list[str] | None = None,
+) -> dict[str, Any]:
+    probes = probe_runners(
+        ollama_endpoint=ollama_endpoint,
+        nvidia_dynamo_endpoint=nvidia_dynamo_endpoint,
+        adapter_command=adapter_command,
+        adapter_args=adapter_args,
+    )
     enabled = [probe["runner_id"] for probe in probes if probe["configured"] or probe["runner_id"] == "dry_run"]
     safe_defaults = [probe["runner_id"] for probe in probes if probe["safe_default"]]
     live_ready = [probe["runner_id"] for probe in probes if probe["runner_id"] != "dry_run" and probe["configured"]]

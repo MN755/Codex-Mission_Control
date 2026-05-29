@@ -21,6 +21,7 @@ _BUILTIN_ADAPTER_SCRIPTS = {
     "openai_api": REPO_ROOT / "scripts" / "api_provider_adapter.py",
     "anthropic_api": REPO_ROOT / "scripts" / "api_provider_adapter.py",
     "xai_api": REPO_ROOT / "scripts" / "api_provider_adapter.py",
+    "nvidia_dynamo": REPO_ROOT / "scripts" / "api_provider_adapter.py",
 }
 
 
@@ -62,4 +63,3 @@ def resolve_adapter_recipe(provider: str, command: str | None = None, args: list
             source="explicit",
         )
     return default_adapter_recipe(normalized)
-

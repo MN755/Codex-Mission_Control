@@ -138,6 +138,7 @@ def _apply_sqlite_migrations() -> None:
         _ensure_column("swarm_agent_specs", "spawn_phase", "spawn_phase VARCHAR(80) NOT NULL DEFAULT 'build_start'")
         _ensure_column("swarm_agent_specs", "retire_when", "retire_when TEXT NOT NULL DEFAULT ''")
         _ensure_column("swarm_agent_specs", "priority", "priority INTEGER NOT NULL DEFAULT 50")
+        _ensure_column("swarm_agent_specs", "iteration_budget", "iteration_budget INTEGER NOT NULL DEFAULT 1")
         _ensure_column("swarm_agent_specs", "status", "status VARCHAR(30) NOT NULL DEFAULT 'planned'")
         with engine.begin() as connection:
             connection.execute(

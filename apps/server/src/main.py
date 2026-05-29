@@ -7,7 +7,7 @@ from typing import Any
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response, StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -16,7 +16,7 @@ from bootstrap.runner_autowire import autowire_headless, get_headless_config, ge
 from bootstrap.runner_probe import summarize_runner_status
 from capabilities import capability_service
 from codex_auth import auth_service
-from config import DEFAULT_FRONTEND_PORT, frontend_dist_root, load_launcher_config
+from config import DEFAULT_FRONTEND_PORT, RUNNING_FROM_SOURCE, frontend_dist_root, load_launcher_config
 from context_packs import context_pack_service
 from db import get_db, init_db
 from diagnostics import open_folder
@@ -80,6 +80,8 @@ from schemas import (
     ChangeRequestTriageRead,
     ChangeRequestUpdate,
     CodebaseMapRead,
+    CodebaseSearchRead,
+    CodebaseSearchRequest,
     CodebaseUnderstandingRead,
     ContextPackBuildRequest,
     ContextPackRead,
@@ -127,6 +129,11 @@ from schemas import (
     ManagerQueueRead,
     AgentInstructionsStatusRead,
     AgentsMdProposalRead,
+    NvidiaAiqResearchRead,
+    NvidiaAiqResearchRequest,
+    NvidiaAiqStatusRead,
+    NvidiaDynamoStatusRead,
+    NvidiaGpuDiagnosticsRead,
     OperationalInstinctPreviewRead,
     OperatorSnapshotRead,
     OpenPathResponse,
@@ -218,6 +225,7 @@ from schemas import (
     ValidationCoverageAreaRead,
     VerificationBriefRead,
     WebwrightStatusRead,
+    WorkspaceToolingStatusRead,
     RiskRecordCreate,
     RiskRecordRead,
     RiskRecordUpdate,
@@ -289,6 +297,50 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+PACKAGED_FRONTEND_FALLBACK_HTML = """<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Codex Mission Control</title>
+    <style>
+      :root { color-scheme: dark; }
+      body {
+        margin: 0;
+        font-family: ui-sans-serif, system-ui, sans-serif;
+        background: linear-gradient(160deg, #08111d, #102744 60%, #174869);
+        color: #eef6ff;
+        min-height: 100vh;
+        display: grid;
+        place-items: center;
+      }
+      main {
+        max-width: 44rem;
+        padding: 2rem;
+        border: 1px solid rgba(255,255,255,0.12);
+        border-radius: 1rem;
+        background: rgba(7, 17, 29, 0.72);
+        box-shadow: 0 1rem 3rem rgba(0,0,0,0.28);
+      }
+      h1 { margin-top: 0; font-size: 1.8rem; }
+      p { line-height: 1.5; color: #d4e3f5; }
+      code {
+        padding: 0.15rem 0.35rem;
+        border-radius: 0.35rem;
+        background: rgba(255,255,255,0.08);
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Codex Mission Control</h1>
+      <p>The packaged backend is running, but the dashboard build is not bundled in this environment.</p>
+      <p>API routes remain available. To serve the full dashboard from source, build <code>apps/dashboard</code>.</p>
+    </main>
+  </body>
+</html>
+"""
 
 
 @app.exception_handler(MissionControlError)
@@ -520,6 +572,10 @@ def _frontend_file_for_path(requested_path: str) -> Path | None:
         return candidate
     index_path = dist_dir / "index.html"
     return index_path if index_path.exists() else None
+
+
+def _packaged_frontend_fallback_response() -> HTMLResponse:
+    return HTMLResponse(PACKAGED_FRONTEND_FALLBACK_HTML)
 
 
 def _attach_workspace_via_bridge(db: Session, payload: OrchestrationAttachRequest) -> dict[str, Any]:
@@ -2270,6 +2326,34 @@ def get_project_verification_brief(
     return VerificationBriefRead(**service.build_verification_brief(db, project))
 
 
+@app.get("/api/projects/{project_id}/workspace-tooling", response_model=WorkspaceToolingStatusRead)
+def get_project_workspace_tooling_status(
+    project_id: int,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> WorkspaceToolingStatusRead:
+    project = _get_project_or_404(db, project_id)
+    return WorkspaceToolingStatusRead(**service.build_workspace_tooling_status(project))
+
+
+@app.post("/api/projects/{project_id}/codebase/search", response_model=CodebaseSearchRead)
+def search_project_codebase(
+    project_id: int,
+    payload: CodebaseSearchRequest,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> CodebaseSearchRead:
+    project = _get_project_or_404(db, project_id)
+    return CodebaseSearchRead(
+        **service.search_codebase(
+            project,
+            pattern=payload.pattern,
+            glob=payload.glob,
+            max_matches=payload.max_matches,
+        )
+    )
+
+
 @app.get("/api/projects/{project_id}/webwright", response_model=WebwrightStatusRead)
 def get_project_webwright_status(
     project_id: int,
@@ -2278,6 +2362,57 @@ def get_project_webwright_status(
 ) -> WebwrightStatusRead:
     project = _get_project_or_404(db, project_id)
     return WebwrightStatusRead(**service.build_webwright_status(project))
+
+
+@app.get("/api/projects/{project_id}/nvidia/dynamo", response_model=NvidiaDynamoStatusRead)
+def get_project_nvidia_dynamo_status(
+    project_id: int,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> NvidiaDynamoStatusRead:
+    project = _get_project_or_404(db, project_id)
+    return NvidiaDynamoStatusRead(**service.build_nvidia_dynamo_status(db, project))
+
+
+@app.get("/api/projects/{project_id}/nvidia/aiq", response_model=NvidiaAiqStatusRead)
+def get_project_nvidia_aiq_status(
+    project_id: int,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> NvidiaAiqStatusRead:
+    project = _get_project_or_404(db, project_id)
+    return NvidiaAiqStatusRead(**service.build_nvidia_aiq_status(project))
+
+
+@app.post("/api/projects/{project_id}/nvidia/aiq/research", response_model=NvidiaAiqResearchRead)
+def run_project_nvidia_aiq_research(
+    project_id: int,
+    payload: NvidiaAiqResearchRequest,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> NvidiaAiqResearchRead:
+    project = _get_project_or_404(db, project_id)
+    return NvidiaAiqResearchRead(
+        **service.run_project_nvidia_aiq_research(
+            project,
+            query=payload.query,
+            agent_type=payload.agent_type,
+            timeout_seconds=payload.timeout_seconds,
+            poll_interval_seconds=payload.poll_interval_seconds,
+            expiry_seconds=payload.expiry_seconds,
+            endpoint_override=payload.endpoint_override,
+        )
+    )
+
+
+@app.get("/api/projects/{project_id}/nvidia/gpu-diagnostics", response_model=NvidiaGpuDiagnosticsRead)
+def get_project_nvidia_gpu_diagnostics(
+    project_id: int,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> NvidiaGpuDiagnosticsRead:
+    project = _get_project_or_404(db, project_id)
+    return NvidiaGpuDiagnosticsRead(**service.build_nvidia_gpu_diagnostics(project))
 
 
 @app.get("/api/projects/{project_id}/snapshots", response_model=list[ProjectSnapshotRead])
@@ -3492,18 +3627,22 @@ async def manager_next_step(
 
 
 @app.get("/", include_in_schema=False)
-def frontend_root() -> FileResponse:
+def frontend_root() -> Response:
     file_path = _frontend_file_for_path("")
     if file_path is None:
+        if not RUNNING_FROM_SOURCE:
+            return _packaged_frontend_fallback_response()
         raise HTTPException(status_code=404, detail="Frontend build not found")
     return FileResponse(file_path)
 
 
 @app.get("/{path:path}", include_in_schema=False)
-def frontend_path(path: str) -> FileResponse:
+def frontend_path(path: str) -> Response:
     if path.startswith("api/"):
         raise HTTPException(status_code=404, detail="Not found")
     file_path = _frontend_file_for_path(path)
     if file_path is None:
+        if not RUNNING_FROM_SOURCE:
+            return _packaged_frontend_fallback_response()
         raise HTTPException(status_code=404, detail="Frontend build not found")
     return FileResponse(file_path)

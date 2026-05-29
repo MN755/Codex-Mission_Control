@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import importlib
+import importlib.util
 import json
 import os
 import socket
@@ -11,6 +13,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 import httpx
+from platformdirs import user_data_dir
 
 DEFAULT_BACKEND_HOST = "127.0.0.1"
 DEFAULT_BACKEND_PORT = 8010
@@ -41,25 +44,36 @@ class MissionControlDaemonClient:
         self.timeout = timeout
         self._orchestration_project_ids: dict[int, int] = {}
 
-    def _discover_repo_root(self) -> Path:
+    def _discover_repo_root(self) -> Path | None:
         explicit = os.environ.get("MISSION_CONTROL_REPO_ROOT")
         if explicit:
-            return Path(explicit).expanduser().resolve()
+            candidate = Path(explicit).expanduser().resolve()
+            if (candidate / "apps" / "server" / "src" / "main.py").exists() and (candidate / "README.md").exists():
+                return candidate
+            return None
         current = Path(__file__).resolve()
         for parent in current.parents:
             if (parent / "apps" / "server" / "src" / "main.py").exists() and (parent / "README.md").exists():
                 return parent
-        raise RuntimeError("Could not discover the Codex Mission Control repository root.")
+        return None
+
+    def _default_app_support_root(self) -> Path:
+        explicit = os.environ.get("MISSION_CONTROL_APP_HOME")
+        if explicit:
+            return Path(explicit).expanduser().resolve()
+        return Path(user_data_dir("Codex Mission Control", "OpenAI")).resolve()
 
     def _load_launcher_config(self) -> dict[str, Any]:
-        server_src = self.repo_root / "apps" / "server" / "src"
-        if server_src.exists() and str(server_src) not in sys.path:
+        server_src = (self.repo_root / "apps" / "server" / "src") if self.repo_root is not None else None
+        if server_src is not None and server_src.exists() and str(server_src) not in sys.path:
             sys.path.insert(0, str(server_src))
         try:
-            from config import load_launcher_config
+            load_launcher_config = importlib.import_module("config").load_launcher_config
 
             return load_launcher_config()
         except Exception:
+            if self.repo_root is None:
+                return {"host": DEFAULT_BACKEND_HOST, "backendPort": DEFAULT_BACKEND_PORT}
             config_path = self.repo_root / "scripts" / "mission-control.config.json"
             if not config_path.exists():
                 return {"host": DEFAULT_BACKEND_HOST, "backendPort": DEFAULT_BACKEND_PORT}
@@ -82,7 +96,9 @@ class MissionControlDaemonClient:
         explicit = os.environ.get("MISSION_CONTROL_RUNTIME_ROOT")
         if explicit:
             return Path(explicit).expanduser().resolve()
-        return (self.repo_root / "apps" / "server" / ".runtime").resolve()
+        if self.repo_root is not None:
+            return (self.repo_root / "apps" / "server" / ".runtime").resolve()
+        return (self._default_app_support_root() / "runtime").resolve()
 
     @property
     def _launcher_root(self) -> Path:
@@ -90,15 +106,38 @@ class MissionControlDaemonClient:
         if explicit:
             return Path(explicit).expanduser().resolve()
         launcher_dir = str(self.config.get("launcherLogDir", ".runtime/launcher"))
-        return (self.repo_root / launcher_dir).resolve()
+        launcher_path = Path(launcher_dir)
+        if launcher_path.is_absolute():
+            return launcher_path.resolve()
+        if self.repo_root is not None:
+            return (self.repo_root / launcher_dir).resolve()
+        return (self._default_app_support_root() / launcher_dir).resolve()
 
     @property
     def _daemon_token_path(self) -> Path:
         return self._runtime_root / "daemon.token"
 
     @property
-    def _server_script(self) -> Path:
-        return (self.repo_root / "apps" / "server" / "src" / "mission_control_daemon.py").resolve()
+    def _server_script(self) -> Path | None:
+        if self.repo_root is None:
+            return None
+        script_path = (self.repo_root / "apps" / "server" / "src" / "mission_control_daemon.py").resolve()
+        return script_path if script_path.exists() else None
+
+    def _daemon_launch_command(self) -> list[str]:
+        if self._server_script is not None:
+            return [sys.executable, str(self._server_script)]
+        if importlib.util.find_spec("mission_control_daemon") is not None:
+            return [sys.executable, "-m", "mission_control_daemon"]
+        raise RuntimeError(
+            "Mission Control daemon startup requires the source checkout or the installed "
+            "`codex-mission-control-server` package."
+        )
+
+    def _daemon_working_dir(self) -> str:
+        if self.repo_root is not None:
+            return str(self.repo_root)
+        return str(self._default_app_support_root())
 
     def _read_daemon_token(self) -> str | None:
         if not self._daemon_token_path.exists():
@@ -147,11 +186,11 @@ class MissionControlDaemonClient:
         identity = self._daemon_identity()
         if not identity:
             return
-        expected_repo = str(self.repo_root)
+        expected_repo = str(self.repo_root) if self.repo_root is not None else ""
         actual_repo = str(identity.get("repo_root") or "")
         actual_port = int(identity.get("port") or 0)
         actual_mode = str(identity.get("mode") or "unknown")
-        if actual_repo and actual_repo != expected_repo:
+        if expected_repo and actual_repo and actual_repo != expected_repo:
             raise RuntimeError(
                 "Mission Control daemon is healthy, but the current port belongs to a different repository checkout. "
                 f"expected_repo_root={expected_repo} actual_repo_root={actual_repo} configured_base_url={self.base_url}."
@@ -187,10 +226,13 @@ class MissionControlDaemonClient:
         env.setdefault("MISSION_CONTROL_SERVER_MODE", "daemon")
         env.setdefault("MISSION_CONTROL_BACKEND_HOST", urlparse(self.base_url).hostname or self._configured_host)
         env.setdefault("MISSION_CONTROL_BACKEND_PORT", str(urlparse(self.base_url).port or self._configured_port))
-        env.setdefault("MISSION_CONTROL_REPO_ROOT", str(self.repo_root))
+        if self.repo_root is not None:
+            env.setdefault("MISSION_CONTROL_REPO_ROOT", str(self.repo_root))
+        else:
+            env.setdefault("MISSION_CONTROL_APP_HOME", str(self._default_app_support_root()))
         stdout_handle = open(self._launcher_root / "daemon.stdout.log", "a", encoding="utf-8")
         stderr_handle = open(self._launcher_root / "daemon.stderr.log", "a", encoding="utf-8")
-        kwargs: dict[str, Any] = {"cwd": str(self.repo_root), "env": env, "stdout": stdout_handle, "stderr": stderr_handle}
+        kwargs: dict[str, Any] = {"cwd": self._daemon_working_dir(), "env": env, "stdout": stdout_handle, "stderr": stderr_handle}
         if os.name == "nt":
             kwargs["creationflags"] = (
                 getattr(subprocess, "DETACHED_PROCESS", 0)
@@ -200,7 +242,7 @@ class MissionControlDaemonClient:
             )
         else:
             kwargs["start_new_session"] = True
-        subprocess.Popen([sys.executable, str(self._server_script)], **kwargs)
+        subprocess.Popen(self._daemon_launch_command(), **kwargs)
         deadline = time.time() + self.timeout
         while time.time() < deadline:
             if self._healthcheck():
@@ -426,8 +468,58 @@ class MissionControlDaemonClient:
     def get_verification_brief(self, project_id: int) -> dict[str, Any]:
         return self._request("GET", f"/api/projects/{project_id}/verification-brief")
 
+    def get_workspace_tooling(self, project_id: int) -> dict[str, Any]:
+        return self._request("GET", f"/api/projects/{project_id}/workspace-tooling")
+
+    def search_codebase(
+        self,
+        project_id: int,
+        *,
+        pattern: str,
+        glob: str | None = None,
+        max_matches: int = 40,
+    ) -> dict[str, Any]:
+        return self._request(
+            "POST",
+            f"/api/projects/{project_id}/codebase/search",
+            json_body={"pattern": pattern, "glob": glob, "max_matches": max_matches},
+        )
+
     def get_webwright_status(self, project_id: int) -> dict[str, Any]:
         return self._request("GET", f"/api/projects/{project_id}/webwright")
+
+    def get_nvidia_dynamo_status(self, project_id: int) -> dict[str, Any]:
+        return self._request("GET", f"/api/projects/{project_id}/nvidia/dynamo")
+
+    def get_nvidia_aiq_status(self, project_id: int) -> dict[str, Any]:
+        return self._request("GET", f"/api/projects/{project_id}/nvidia/aiq")
+
+    def run_nvidia_aiq_research(
+        self,
+        project_id: int,
+        *,
+        query: str,
+        agent_type: str = "deep_researcher",
+        timeout_seconds: int = 90,
+        poll_interval_seconds: float = 2.0,
+        expiry_seconds: int = 3600,
+        endpoint_override: str | None = None,
+    ) -> dict[str, Any]:
+        return self._request(
+            "POST",
+            f"/api/projects/{project_id}/nvidia/aiq/research",
+            json_body={
+                "query": query,
+                "agent_type": agent_type,
+                "timeout_seconds": timeout_seconds,
+                "poll_interval_seconds": poll_interval_seconds,
+                "expiry_seconds": expiry_seconds,
+                "endpoint_override": endpoint_override,
+            },
+        )
+
+    def get_nvidia_gpu_diagnostics(self, project_id: int) -> dict[str, Any]:
+        return self._request("GET", f"/api/projects/{project_id}/nvidia/gpu-diagnostics")
 
     def get_codebase_map(self, project_id: int) -> dict[str, Any]:
         return self._request("GET", f"/api/projects/{project_id}/codebase-map", requires_token=False)
@@ -574,14 +666,16 @@ class MissionControlDaemonClient:
             "project_id": resolved_project_id,
             "plugin_health": plugin_health.get("status"),
             "health_checks": plugin_health.get("checks", []),
-            "recommended_fixes": plugin_health.get("recommended_fixes", []),
+            "recommended_fixes": plugin_health.get("recommended_fixes", plugin_health.get("recommended_next_steps", [])),
             "recent_reports": reports[:5],
             "platform_profile": latest_report.get("platform_profile", {}) if isinstance(latest_report, dict) else {},
             "performance_profile": latest_report.get("performance_profile", {}) if isinstance(latest_report, dict) else {},
+            "gpu_cluster_health": plugin_health.get("gpu_cluster_health", {}),
             "safe_debug_commands": latest_report.get("safe_debug_commands", []) if isinstance(latest_report, dict) else [],
             "bundle_path": latest_report.get("bundle_path") if isinstance(latest_report, dict) else None,
             "orchestration_status": status.get("orchestration_status") if status else None,
             "manager_status": status.get("manager_status") if status else None,
+            "nvidia_gpu_diagnostics": self.get_nvidia_gpu_diagnostics(resolved_project_id) if resolved_project_id is not None else None,
         }
 
     def import_existing_codebase(
@@ -872,6 +966,22 @@ class MissionControlDaemonClient:
             "generated_at": brief.get("generated_at"),
         }
 
+    def _summarize_workspace_tooling(self, project_id: int, payload: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "project_id": project_id,
+            "project_name": payload.get("project_name"),
+            "workspace_path": payload.get("workspace_path"),
+            "available": bool(payload.get("available")),
+            "summary": payload.get("summary"),
+            "repo_profile": dict(payload.get("repo_profile") or {}),
+            "packs": list(payload.get("packs") or [])[:6],
+            "intake_commands": list(payload.get("intake_commands") or [])[:6],
+            "validation_commands": list(payload.get("validation_commands") or [])[:8],
+            "security_commands": list(payload.get("security_commands") or [])[:8],
+            "recommended_next_steps": list(payload.get("recommended_next_steps") or [])[:8],
+            "tools": list(payload.get("tools") or [])[:12],
+        }
+
     def _summarize_webwright_status(self, project_id: int, payload: dict[str, Any]) -> dict[str, Any]:
         return {
             "project_id": project_id,
@@ -886,6 +996,75 @@ class MissionControlDaemonClient:
             "use_cases": list(payload.get("use_cases") or [])[:6],
             "notes": list(payload.get("notes") or [])[:6],
             "version": payload.get("version"),
+        }
+
+    def _summarize_nvidia_dynamo_status(self, project_id: int, payload: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "project_id": project_id,
+            "project_name": payload.get("project_name"),
+            "available": bool(payload.get("available")),
+            "reachable": bool(payload.get("reachable")),
+            "endpoint": payload.get("endpoint"),
+            "endpoint_configured": bool(payload.get("endpoint_configured")),
+            "api_key_configured": bool(payload.get("api_key_configured")),
+            "auth_required": bool(payload.get("auth_required")),
+            "authenticated": bool(payload.get("authenticated")),
+            "available_models": list(payload.get("available_models") or [])[:12],
+            "runtime_ready": bool(payload.get("runtime_ready")),
+            "runtime_status": payload.get("runtime_status"),
+            "runtime_summary": payload.get("runtime_summary"),
+            "runtime_blockers": list(payload.get("runtime_blockers") or [])[:8],
+            "adapter_command_configured": bool(payload.get("adapter_command_configured")),
+            "adapter_command_detected": bool(payload.get("adapter_command_detected")),
+            "adapter_command_path": payload.get("adapter_command_path"),
+            "adapter_args": list(payload.get("adapter_args") or [])[:8],
+            "adapter_recipe_source": payload.get("adapter_recipe_source"),
+            "summary": payload.get("summary"),
+            "notes": list(payload.get("notes") or [])[:8],
+        }
+
+    def _summarize_nvidia_aiq_status(self, project_id: int, payload: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "project_id": project_id,
+            "project_name": payload.get("project_name"),
+            "available": bool(payload.get("available")),
+            "install_status": payload.get("install_status"),
+            "summary": payload.get("summary"),
+            "endpoint": payload.get("endpoint"),
+            "endpoint_configured": bool(payload.get("endpoint_configured")),
+            "api_key_configured": bool(payload.get("api_key_configured")),
+            "auth_required": bool(payload.get("auth_required")),
+            "dask_available": payload.get("dask_available"),
+            "agent_types": list(payload.get("agent_types") or [])[:8],
+            "data_sources": list(payload.get("data_sources") or [])[:8],
+            "recommended_fix": payload.get("recommended_fix"),
+            "notes": list(payload.get("notes") or [])[:8],
+        }
+
+    def _summarize_nvidia_gpu_diagnostics(self, project_id: int, payload: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "project_id": project_id,
+            "project_name": payload.get("project_name"),
+            "available": bool(payload.get("available")),
+            "status": payload.get("status"),
+            "summary": payload.get("summary"),
+            "prometheus_url": payload.get("prometheus_url"),
+            "workspace_relevant": bool(payload.get("workspace_relevant")),
+            "telemetry_status": payload.get("telemetry_status"),
+            "workspace_summary_status": payload.get("workspace_summary_status"),
+            "repo_mode": payload.get("repo_mode"),
+            "cluster_usable": payload.get("cluster_usable"),
+            "pending_pod_count": payload.get("pending_pod_count"),
+            "gpu_memory_saturation_pct": payload.get("gpu_memory_saturation_pct"),
+            "gpu_memory_saturated": bool(payload.get("gpu_memory_saturated")),
+            "likely_failure_source": payload.get("likely_failure_source"),
+            "blocking_reasons": list(payload.get("blocking_reasons") or [])[:8],
+            "observability_sources": list(payload.get("observability_sources") or [])[:8],
+            "summary_files": list(payload.get("summary_files") or [])[:8],
+            "safe_commands": list(payload.get("safe_commands") or [])[:8],
+            "metrics": dict(payload.get("metrics") or {}),
+            "alerts": list(payload.get("alerts") or [])[:8],
+            "recommended_fixes": list(payload.get("recommended_fixes") or [])[:8],
         }
 
     def _summarize_handoff(self, project_id: int, payload: dict[str, Any]) -> dict[str, Any]:
@@ -1116,6 +1295,14 @@ class MissionControlDaemonClient:
                 return self._summarize_instincts_preview(project_id, self.get_instincts_preview(project_id))
             if kind == "verification-brief":
                 return self._summarize_verification_brief(project_id, self.get_verification_brief(project_id))
+            if kind == "workspace-tooling":
+                return self._summarize_workspace_tooling(project_id, self.get_workspace_tooling(project_id))
             if kind == "webwright":
                 return self._summarize_webwright_status(project_id, self.get_webwright_status(project_id))
+            if kind == "nvidia-dynamo":
+                return self._summarize_nvidia_dynamo_status(project_id, self.get_nvidia_dynamo_status(project_id))
+            if kind == "nvidia-aiq":
+                return self._summarize_nvidia_aiq_status(project_id, self.get_nvidia_aiq_status(project_id))
+            if kind == "nvidia-gpu-diagnostics":
+                return self._summarize_nvidia_gpu_diagnostics(project_id, self.get_nvidia_gpu_diagnostics(project_id))
         raise RuntimeError("Unsupported Mission Control resource URI.")

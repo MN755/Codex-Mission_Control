@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Literal
 
 
-ProviderId = Literal["codex", "ollama", "openai_api", "anthropic_api", "xai_api", "claude_code", "custom"]
+ProviderId = Literal["codex", "ollama", "openai_api", "anthropic_api", "xai_api", "nvidia_dynamo", "claude_code", "custom"]
 
 
 PROVIDER_LABELS: dict[str, str] = {
@@ -12,6 +12,7 @@ PROVIDER_LABELS: dict[str, str] = {
     "openai_api": "OpenAI API",
     "anthropic_api": "Anthropic API",
     "xai_api": "xAI API",
+    "nvidia_dynamo": "NVIDIA Dynamo",
     "claude_code": "Claude Code",
     "custom": "Custom provider",
 }
@@ -21,6 +22,8 @@ PROVIDER_ALIASES: dict[str, str] = {
     "api": "openai_api",
     "openclaw": "custom",
     "claude": "claude_code",
+    "dynamo": "nvidia_dynamo",
+    "nvidia": "nvidia_dynamo",
 }
 
 
@@ -58,8 +61,8 @@ def supports_reasoning_effort(provider: str) -> bool:
 
 
 def provider_uses_adapter(provider: str) -> bool:
-    return normalize_provider(provider) in {"ollama", "openai_api", "anthropic_api", "xai_api", "custom"}
+    return normalize_provider(provider) in {"ollama", "openai_api", "anthropic_api", "xai_api", "nvidia_dynamo", "custom"}
 
 
 def provider_uses_endpoint(provider: str) -> bool:
-    return normalize_provider(provider) in {"ollama", "openai_api", "anthropic_api", "xai_api"}
+    return normalize_provider(provider) in {"ollama", "openai_api", "anthropic_api", "xai_api", "nvidia_dynamo"}

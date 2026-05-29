@@ -4,6 +4,7 @@ from pathlib import Path
 
 from conftest import sample_workspace
 from db import SessionLocal
+from manager import service
 from models import Plan
 
 
@@ -26,6 +27,19 @@ def create_workspace_layout(workspace_name: str, directories: list[str]) -> str:
     workspace.mkdir(parents=True, exist_ok=True)
     for directory in directories:
         (workspace / directory).mkdir(parents=True, exist_ok=True)
+    return workspace.as_posix()
+
+
+def create_cuda_workspace(workspace_name: str) -> str:
+    workspace = Path(sample_workspace(workspace_name))
+    workspace.mkdir(parents=True, exist_ok=True)
+    (workspace / "kernels").mkdir(parents=True, exist_ok=True)
+    (workspace / "benchmarks").mkdir(parents=True, exist_ok=True)
+    (workspace / "CMakeLists.txt").write_text(
+        "project(cuda_demo LANGUAGES CXX CUDA)\nfind_package(CUDAToolkit REQUIRED)\n# CUDA Tile\n",
+        encoding="utf-8",
+    )
+    (workspace / "kernels" / "main.cu").write_text("__global__ void kernel() {}\n", encoding="utf-8")
     return workspace.as_posix()
 
 
@@ -61,6 +75,24 @@ def insert_plan(project_id: int, *, version: int = 1, status: str = "pending_app
         return plan.id
     finally:
         db.close()
+
+
+def test_make_swarm_spec_tolerates_legacy_toolset_position() -> None:
+    spec = service._make_swarm_spec(
+        "planner",
+        "Execution Planner",
+        "Keep milestone routing coherent.",
+        "Prefer the default worker model with medium reasoning.",
+        ["docs"],
+        ["src"],
+        "plan_review",
+        "Plan is reviewable.",
+        10,
+        iteration_budget=["task_planning"],
+    )
+
+    assert spec.toolset == ["task_planning"]
+    assert spec.iteration_budget == 1
 
 
 def test_default_swarm_preferences_created(client) -> None:
@@ -384,3 +416,28 @@ def test_dry_run_swarm_behavior_changes_by_preference(client) -> None:
 
     assert sum(1 for archetype in fast_archetypes if archetype in {"feature", "backend", "integration"}) >= 3
     assert docs_archetypes.count("docs") >= 3
+
+
+def test_gpu_programming_mode_emits_specialized_cuda_roles(client) -> None:
+    workspace = create_cuda_workspace("swarm-gpu-programming")
+    project = client.post(
+        "/api/projects",
+        json={
+            "name": "CUDA Swarm",
+            "idea": "Write and validate CUDA kernels safely.",
+            "workspace_path": workspace,
+            "provider": "codex",
+            "runner_mode": "dry_run",
+            "manager_mode": "deterministic",
+        },
+    ).json()
+    update_swarm_preferences(client, project["id"], optimization_mode="manager_decides", max_agents=6)
+
+    response = client.post(f"/api/projects/{project['id']}/swarm/plan", json={"goal": "Generate a GPU programming swarm."})
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["mode"] == "gpu_programming"
+    assert any(spec["name"] == "CUDA Kernel Generator" for spec in payload["specs"])
+    assert any(spec["archetype"] == "performance" for spec in payload["specs"])
+    assert any(spec["iteration_budget"] > 1 for spec in payload["specs"])

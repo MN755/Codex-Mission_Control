@@ -15,7 +15,7 @@ Provider autowiring probes the local environment and enables only the runners th
 ## What autowire now persists
 
 - selected provider endpoint for endpoint-backed providers
-- built-in adapter command and args for `ollama`, `openai_api`, `anthropic_api`, and `xai_api`
+- built-in adapter command and args for `ollama`, `openai_api`, `anthropic_api`, `xai_api`, and `nvidia_dynamo`
 - install-path-aware plugin and skill paths in the headless config
 - a fresh startup status check instead of stale cached bootstrap state
 

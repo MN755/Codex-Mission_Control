@@ -8,7 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from capabilities import CAPABILITY_CATEGORIES
 
 
-ProviderId = Literal["codex", "ollama", "openai_api", "anthropic_api", "xai_api", "claude_code", "custom"]
+ProviderId = Literal["codex", "ollama", "openai_api", "anthropic_api", "xai_api", "nvidia_dynamo", "claude_code", "custom"]
 StartupProviderChoice = ProviderId
 StartupStartMode = Literal["new_project", "guided_walkthrough"]
 RunnerMode = Literal["auto", "cli", "app_server", "dry_run"]
@@ -127,7 +127,7 @@ InterviewCategory = Literal[
 ]
 InterviewQuestionState = Literal["pending", "answered", "superseded", "cancelled"]
 InterviewQuestionSource = Literal["manager_ai", "fallback_generated"]
-SwarmOptimizationMode = Literal["fastest_build", "balanced", "high_quality", "documentation_heavy", "research_planning", "massive_codebase", "manager_decides"]
+SwarmOptimizationMode = Literal["fastest_build", "balanced", "high_quality", "documentation_heavy", "research_planning", "massive_codebase", "gpu_programming", "manager_decides"]
 SwarmAggressiveness = Literal["small", "medium", "large", "maximum", "manager_decides"]
 DocsDepth = Literal["minimal", "standard", "detailed", "publishable"]
 TestingDepth = Literal["minimal", "standard", "extensive", "release_grade"]
@@ -619,6 +619,7 @@ class SwarmAgentSpecRead(BaseModel):
     spawn_phase: str
     retire_when: str
     priority: int
+    iteration_budget: int = 1
     status: SwarmAgentSpecStatus
 
     model_config = ConfigDict(from_attributes=True)
@@ -1485,6 +1486,71 @@ class VerificationBriefRead(BaseModel):
     generated_at: datetime
 
 
+class WorkspaceToolingItemRead(BaseModel):
+    id: str
+    label: str
+    category: str
+    installed: bool = False
+    binary_path: str | None = None
+    configured: bool = False
+    config_files: list[str] = Field(default_factory=list)
+    config_sections: list[str] = Field(default_factory=list)
+    status: str
+    recommended_commands: list[str] = Field(default_factory=list)
+    notes: list[str] = Field(default_factory=list)
+
+
+class WorkspaceToolingPackRead(BaseModel):
+    id: str
+    title: str
+    status: str
+    summary: str
+    tool_ids: list[str] = Field(default_factory=list)
+    installed_tool_ids: list[str] = Field(default_factory=list)
+    missing_tool_ids: list[str] = Field(default_factory=list)
+
+
+class WorkspaceToolingStatusRead(BaseModel):
+    project_id: int
+    project_name: str
+    workspace_path: str | None = None
+    available: bool = False
+    summary: str
+    repo_profile: dict[str, Any] = Field(default_factory=dict)
+    tools: list[WorkspaceToolingItemRead] = Field(default_factory=list)
+    packs: list[WorkspaceToolingPackRead] = Field(default_factory=list)
+    recommended_next_steps: list[str] = Field(default_factory=list)
+    intake_commands: list[str] = Field(default_factory=list)
+    validation_commands: list[str] = Field(default_factory=list)
+    security_commands: list[str] = Field(default_factory=list)
+
+
+class CodebaseSearchMatchRead(BaseModel):
+    path: str
+    line_number: int
+    line_text: str
+
+
+class CodebaseSearchRequest(BaseModel):
+    pattern: str = Field(min_length=1)
+    glob: str | None = None
+    max_matches: int = Field(default=40, ge=1, le=200)
+
+
+class CodebaseSearchRead(BaseModel):
+    project_id: int
+    project_name: str
+    workspace_path: str
+    pattern: str
+    glob: str | None = None
+    match_count: int = 0
+    truncated: bool = False
+    search_backend: str
+    command: str
+    matches: list[CodebaseSearchMatchRead] = Field(default_factory=list)
+    notes: list[str] = Field(default_factory=list)
+
+
 class WebwrightStatusRead(BaseModel):
     project_id: int
     project_name: str
@@ -1506,6 +1572,109 @@ class WebwrightStatusRead(BaseModel):
     notes: list[str] = Field(default_factory=list)
     bridge_markdown: str
     details: dict[str, Any] = Field(default_factory=dict)
+
+
+class NvidiaDynamoStatusRead(BaseModel):
+    project_id: int
+    project_name: str
+    provider: str = "nvidia_dynamo"
+    label: str = "NVIDIA Dynamo"
+    available: bool = False
+    reachable: bool = False
+    endpoint: str
+    endpoint_configured: bool = False
+    api_key_configured: bool = False
+    auth_required: bool = False
+    authenticated: bool = False
+    available_models: list[str] = Field(default_factory=list)
+    runtime_ready: bool = False
+    runtime_status: str = "blocked"
+    runtime_summary: str = ""
+    runtime_blockers: list[str] = Field(default_factory=list)
+    adapter_command_configured: bool = False
+    adapter_command_detected: bool = False
+    adapter_command_path: str | None = None
+    adapter_args: list[str] = Field(default_factory=list)
+    adapter_recipe_source: str | None = None
+    summary: str
+    notes: list[str] = Field(default_factory=list)
+
+
+class NvidiaAiqStatusRead(BaseModel):
+    project_id: int
+    project_name: str
+    available: bool = False
+    install_status: Literal["ready", "partial", "missing"]
+    summary: str
+    endpoint: str
+    endpoint_configured: bool = False
+    api_key_configured: bool = False
+    auth_required: bool = False
+    dask_available: bool | None = None
+    agent_types: list[str] = Field(default_factory=list)
+    data_sources: list[str] = Field(default_factory=list)
+    recommended_fix: str | None = None
+    notes: list[str] = Field(default_factory=list)
+
+
+class NvidiaAiqResearchRequest(BaseModel):
+    query: str = Field(min_length=1)
+    agent_type: str = Field(default="deep_researcher", min_length=1)
+    timeout_seconds: int = 90
+    poll_interval_seconds: float = 2.0
+    expiry_seconds: int = 3600
+    endpoint_override: str | None = None
+
+
+class NvidiaAiqToolInvocationRead(BaseModel):
+    name: str | None = None
+    status: str | None = None
+    workflow: str | None = None
+
+
+class NvidiaAiqResearchRead(BaseModel):
+    project_id: int
+    project_name: str
+    endpoint: str
+    agent_type: str
+    job_id: str
+    status: str
+    timed_out: bool = False
+    poll_count: int = 0
+    summary: str
+    report: str = ""
+    source_summary: dict[str, Any] = Field(default_factory=dict)
+    tool_count: int = 0
+    tools: list[NvidiaAiqToolInvocationRead] = Field(default_factory=list)
+    status_payload: dict[str, Any] = Field(default_factory=dict)
+
+
+class NvidiaGpuDiagnosticsRead(BaseModel):
+    project_id: int
+    project_name: str
+    available: bool = False
+    status: str
+    summary: str
+    prometheus_url: str | None = None
+    workspace_relevant: bool = False
+    telemetry_status: str = "missing"
+    workspace_summary_status: str = "missing"
+    repo_mode_enabled: bool = False
+    repo_mode: str | None = None
+    cluster_usable: bool | None = None
+    pending_pod_count: int | None = None
+    gpu_memory_saturation_pct: float | None = None
+    gpu_memory_saturated: bool = False
+    likely_failure_source: str = "unknown"
+    blocking_reasons: list[str] = Field(default_factory=list)
+    detected_signals: list[str] = Field(default_factory=list)
+    observability_sources: list[str] = Field(default_factory=list)
+    summary_files: list[str] = Field(default_factory=list)
+    safe_commands: list[str] = Field(default_factory=list)
+    metrics: dict[str, Any] = Field(default_factory=dict)
+    alerts: list[str] = Field(default_factory=list)
+    recommended_fixes: list[str] = Field(default_factory=list)
+    queries: dict[str, str] = Field(default_factory=dict)
 
 
 class ProjectConfidenceRead(BaseModel):

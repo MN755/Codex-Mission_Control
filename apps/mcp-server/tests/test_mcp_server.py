@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import importlib
 import subprocess
+import sys
 from pathlib import Path
 
+from mission_control_mcp_server import catalog
 from mission_control_mcp_server.client import MissionControlDaemonClient, _base_url
 from mission_control_mcp_server.server import MissionControlMcpServer
 
@@ -15,8 +18,12 @@ EXPECTED_RESOURCES = {
     "mission-control://projects/{project_id}/pending-decisions",
     "mission-control://projects/{project_id}/handoff",
     "mission-control://projects/{project_id}/codebase-map",
+    "mission-control://projects/{project_id}/workspace-tooling",
     "mission-control://projects/{project_id}/diagnostics",
     "mission-control://projects/{project_id}/webwright",
+    "mission-control://projects/{project_id}/nvidia-dynamo",
+    "mission-control://projects/{project_id}/nvidia-aiq",
+    "mission-control://projects/{project_id}/nvidia-gpu-diagnostics",
     "mission-control://projects/{project_id}/swarm-plan",
     "mission-control://projects/{project_id}/risk-register",
     "mission-control://projects/{project_id}/agent-contracts",
@@ -148,6 +155,39 @@ class FakeClient:
         self.calls.append(("get_diagnostics", kwargs))
         return {"plugin_health": "healthy", "recent_reports": []}
 
+    def get_workspace_tooling(self, project_id: int):
+        self.calls.append(("get_workspace_tooling", {"project_id": project_id}))
+        return {
+            "project_id": project_id,
+            "project_name": "Demo",
+            "workspace_path": "C:/demo",
+            "available": True,
+            "summary": "Detected 3 installed helper CLIs. validation evidence lane available.",
+            "repo_profile": {"python_repo": True, "node_repo": False, "lockfiles": ["uv.lock"]},
+            "packs": [{"id": "validation_evidence_pack", "status": "ready"}],
+            "intake_commands": ["rg --files"],
+            "validation_commands": ["uv run pytest", "ruff check ."],
+            "security_commands": ["gitleaks dir . --redact"],
+            "recommended_next_steps": ["Install OSV-Scanner for dependency auditing."],
+            "tools": [{"id": "uv", "label": "uv", "installed": True, "configured": True, "status": "ready"}],
+        }
+
+    def search_codebase(self, project_id: int, **kwargs):
+        self.calls.append(("search_codebase", {"project_id": project_id, **kwargs}))
+        return {
+            "project_id": project_id,
+            "project_name": "Demo",
+            "workspace_path": "C:/demo",
+            "pattern": kwargs["pattern"],
+            "glob": kwargs.get("glob"),
+            "match_count": 1,
+            "truncated": False,
+            "search_backend": "ripgrep",
+            "command": "rg --line-number TODO .",
+            "matches": [{"path": "src/main.py", "line_number": 3, "line_text": "TODO wire validation lane"}],
+            "notes": ["Search used ripgrep."],
+        }
+
     def get_webwright_status(self, project_id: int):
         self.calls.append(("get_webwright_status", {"project_id": project_id}))
         return {
@@ -163,6 +203,77 @@ class FakeClient:
             "use_cases": ["Browser automation"],
             "notes": ["Optional companion runtime."],
             "version": "0.1.0",
+        }
+
+    def get_nvidia_dynamo_status(self, project_id: int):
+        self.calls.append(("get_nvidia_dynamo_status", {"project_id": project_id}))
+        return {
+            "project_id": project_id,
+            "project_name": "Demo",
+            "provider": "nvidia_dynamo",
+            "label": "NVIDIA Dynamo",
+            "available": True,
+            "reachable": True,
+            "endpoint": "http://localhost:8000",
+            "endpoint_configured": True,
+            "api_key_configured": False,
+            "auth_required": False,
+            "authenticated": True,
+            "available_models": ["Qwen/Qwen3-0.6B"],
+            "summary": "NVIDIA Dynamo frontend is reachable.",
+            "notes": ["Optional GPU-backed provider lane."],
+        }
+
+    def get_nvidia_aiq_status(self, project_id: int):
+        self.calls.append(("get_nvidia_aiq_status", {"project_id": project_id}))
+        return {
+            "project_id": project_id,
+            "project_name": "Demo",
+            "available": True,
+            "install_status": "ready",
+            "summary": "NVIDIA AI-Q endpoint is reachable.",
+            "endpoint": "http://localhost:8000",
+            "endpoint_configured": True,
+            "api_key_configured": False,
+            "auth_required": False,
+            "dask_available": True,
+            "agent_types": ["deep_researcher"],
+            "data_sources": ["pubmed"],
+            "recommended_fix": None,
+            "notes": ["Async research lane is ready."],
+        }
+
+    def run_nvidia_aiq_research(self, project_id: int, **kwargs):
+        self.calls.append(("run_nvidia_aiq_research", {"project_id": project_id, **kwargs}))
+        return {
+            "project_id": project_id,
+            "project_name": "Demo",
+            "endpoint": "http://localhost:8000",
+            "agent_type": kwargs.get("agent_type", "deep_researcher"),
+            "job_id": "job-123",
+            "status": "SUCCESS",
+            "timed_out": False,
+            "poll_count": 2,
+            "summary": "AI-Q research completed.",
+            "report": "Use a retrieval-backed plan.",
+            "source_summary": {"found": 3, "cited": 2},
+            "tool_count": 1,
+            "tools": [{"name": "web-search", "status": "ok", "workflow": "research"}],
+            "status_payload": {"status": "SUCCESS"},
+        }
+
+    def get_nvidia_gpu_diagnostics(self, project_id: int):
+        self.calls.append(("get_nvidia_gpu_diagnostics", {"project_id": project_id}))
+        return {
+            "project_id": project_id,
+            "project_name": "Demo",
+            "available": True,
+            "status": "ready",
+            "summary": "GPU telemetry looks healthy.",
+            "prometheus_url": "http://prometheus:9090",
+            "metrics": {"average_gpu_util_percent": 42.0},
+            "alerts": [],
+            "recommended_fixes": [],
         }
 
     def get_swarm_plan(self, project_id: int):
@@ -240,6 +351,8 @@ def test_tool_schemas_are_exposed() -> None:
     assert "mission_control_get_event_digest" in names
     assert "mission_control_request_snapshot" in names
     assert "mission_control_request_recovery_plan" in names
+    assert "mission_control_get_workspace_tooling" in names
+    assert "mission_control_search_codebase" in names
     assert all(tool["inputSchema"]["additionalProperties"] is False for tool in server.list_tools())
 
 
@@ -281,7 +394,13 @@ def test_new_runtime_tools_dispatch_to_client() -> None:
     server.call_tool("mission_control_plugin_health", {})
     server.call_tool("mission_control_enable_safe_mode", {"project_id": 7})
     server.call_tool("mission_control_get_event_digest", {"project_id": 7, "window": "last_15_minutes"})
+    server.call_tool("mission_control_get_workspace_tooling", {"project_id": 7})
+    server.call_tool("mission_control_search_codebase", {"project_id": 7, "pattern": "TODO", "max_matches": 5})
     server.call_tool("mission_control_get_webwright_status", {"project_id": 7})
+    server.call_tool("mission_control_get_nvidia_dynamo_status", {"project_id": 7})
+    server.call_tool("mission_control_get_nvidia_aiq_status", {"project_id": 7})
+    server.call_tool("mission_control_run_nvidia_aiq_research", {"project_id": 7, "query": "Best CUDA testing loop?"})
+    server.call_tool("mission_control_get_nvidia_gpu_diagnostics", {"project_id": 7})
     server.call_tool("mission_control_request_snapshot", {"project_id": 7, "label": "Before edits", "description": "Checkpoint"})
     server.call_tool("mission_control_request_recovery_plan", {"project_id": 7, "trigger_summary": "Workers are stuck."})
 
@@ -289,7 +408,13 @@ def test_new_runtime_tools_dispatch_to_client() -> None:
     assert "plugin_health_summary" in called
     assert "enable_safe_mode" in called
     assert "get_event_digest" in called
+    assert "get_workspace_tooling" in called
+    assert "search_codebase" in called
     assert "get_webwright_status" in called
+    assert "get_nvidia_dynamo_status" in called
+    assert "get_nvidia_aiq_status" in called
+    assert "run_nvidia_aiq_research" in called
+    assert "get_nvidia_gpu_diagnostics" in called
     assert "create_snapshot" in called
     assert "request_recovery_plan" in called
 
@@ -376,6 +501,24 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
     )
     monkeypatch.setattr(
         client,
+        "get_workspace_tooling",
+        lambda project_id: {
+            "project_id": project_id,
+            "project_name": "Demo",
+            "workspace_path": "C:/demo",
+            "available": True,
+            "summary": "Detected 3 installed helper CLIs. validation evidence lane available.",
+            "repo_profile": {"python_repo": True, "lockfiles": ["uv.lock"]},
+            "packs": [{"id": "validation_evidence_pack", "status": "ready"}],
+            "intake_commands": ["rg --files"],
+            "validation_commands": ["uv run pytest", "ruff check ."],
+            "security_commands": ["gitleaks dir . --redact"],
+            "recommended_next_steps": ["Install OSV-Scanner for dependency auditing."],
+            "tools": [{"id": "uv", "label": "uv", "installed": True, "configured": True, "status": "ready"}],
+        },
+    )
+    monkeypatch.setattr(
+        client,
         "get_webwright_status",
         lambda project_id: {
             "project_id": project_id,
@@ -392,19 +535,80 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
             "version": "0.1.0",
         },
     )
+    monkeypatch.setattr(
+        client,
+        "get_nvidia_dynamo_status",
+        lambda project_id: {
+            "project_id": project_id,
+            "project_name": "Demo",
+            "available": True,
+            "reachable": True,
+            "endpoint": "http://localhost:8000",
+            "endpoint_configured": True,
+            "api_key_configured": False,
+            "auth_required": False,
+            "authenticated": True,
+            "available_models": ["Qwen/Qwen3-0.6B"],
+            "summary": "NVIDIA Dynamo frontend is reachable.",
+            "notes": ["Optional GPU-backed provider lane."],
+        },
+    )
+    monkeypatch.setattr(
+        client,
+        "get_nvidia_aiq_status",
+        lambda project_id: {
+            "project_id": project_id,
+            "project_name": "Demo",
+            "available": True,
+            "install_status": "ready",
+            "summary": "NVIDIA AI-Q endpoint is reachable.",
+            "endpoint": "http://localhost:8000",
+            "endpoint_configured": True,
+            "api_key_configured": False,
+            "auth_required": False,
+            "dask_available": True,
+            "agent_types": ["deep_researcher"],
+            "data_sources": ["pubmed"],
+            "recommended_fix": None,
+            "notes": ["Async research lane is ready."],
+        },
+    )
+    monkeypatch.setattr(
+        client,
+        "get_nvidia_gpu_diagnostics",
+        lambda project_id: {
+            "project_id": project_id,
+            "project_name": "Demo",
+            "available": True,
+            "status": "ready",
+            "summary": "GPU telemetry looks healthy.",
+            "prometheus_url": "http://prometheus:9090",
+            "metrics": {"average_gpu_util_percent": 42.0},
+            "alerts": [],
+            "recommended_fixes": [],
+        },
+    )
 
     snapshot = client.read_resource("mission-control://projects/7/operator-snapshot")
     instincts = client.read_resource("mission-control://projects/7/instincts")
     verification = client.read_resource("mission-control://projects/7/verification-brief")
+    tooling = client.read_resource("mission-control://projects/7/workspace-tooling")
     webwright = client.read_resource("mission-control://projects/7/webwright")
+    dynamo = client.read_resource("mission-control://projects/7/nvidia-dynamo")
+    aiq = client.read_resource("mission-control://projects/7/nvidia-aiq")
+    gpu = client.read_resource("mission-control://projects/7/nvidia-gpu-diagnostics")
 
     assert snapshot["project_name"] == "Demo"
     assert snapshot["recommended_next_action"] == "Run the named pytest lane."
     assert instincts["instincts"][0]["key"] == "ship-with-evidence"
     assert verification["readiness"] == "blocked"
     assert verification["required_checks"] == ["python -m pytest apps/server/tests/test_operator_surfaces.py -q"]
+    assert tooling["validation_commands"] == ["uv run pytest", "ruff check ."]
     assert webwright["available"] is True
     assert webwright["launch_command"] == "webwright"
+    assert dynamo["reachable"] is True
+    assert aiq["install_status"] == "ready"
+    assert gpu["status"] == "ready"
 
 
 def test_daemon_client_auto_start_launches_when_health_fails(monkeypatch, tmp_path: Path) -> None:
@@ -431,3 +635,65 @@ def test_daemon_client_auto_start_launches_when_health_fails(monkeypatch, tmp_pa
 
     assert launches
     assert any("mission_control_daemon.py" in segment for segment in launches[0])
+
+
+def test_daemon_client_constructs_without_repo_checkout(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.delenv("MISSION_CONTROL_REPO_ROOT", raising=False)
+    monkeypatch.setenv("MISSION_CONTROL_APP_HOME", str(tmp_path / "app-home"))
+    monkeypatch.setattr(MissionControlDaemonClient, "_discover_repo_root", lambda self: None)
+
+    client = MissionControlDaemonClient(base_url="http://127.0.0.1:8010", timeout=0.1)
+
+    assert client.repo_root is None
+    assert client._runtime_root == (tmp_path / "app-home" / "runtime").resolve()
+    assert client._launcher_root == (tmp_path / "app-home" / ".runtime" / "launcher").resolve()
+
+
+def test_catalog_uses_bundled_assets_when_repo_is_unavailable(monkeypatch) -> None:
+    catalog.load_plugin_manifest.cache_clear()
+    catalog.load_resource_catalog.cache_clear()
+    catalog.load_prompt_catalog.cache_clear()
+    monkeypatch.setattr(catalog, "discover_repo_root", lambda: (_ for _ in ()).throw(RuntimeError("no repo")))
+
+    resources = catalog.resource_entries()
+    prompts = catalog.prompt_entries()
+    manifest = catalog.load_plugin_manifest()
+
+    assert any(entry["uri_template"] == "mission-control://projects/{project_id}/diagnostics" for entry in resources)
+    assert any(entry["name"] == "continue_orchestration" for entry in prompts)
+    assert manifest["name"] == "mission-control"
+
+
+def test_daemon_client_launches_installed_module_when_repo_script_is_unavailable(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.delenv("MISSION_CONTROL_REPO_ROOT", raising=False)
+    monkeypatch.setenv("MISSION_CONTROL_APP_HOME", str(tmp_path / "app-home"))
+    monkeypatch.setattr(MissionControlDaemonClient, "_discover_repo_root", lambda self: None)
+    client = MissionControlDaemonClient(base_url="http://127.0.0.1:8124", timeout=0.2)
+    attempts = {"count": 0}
+
+    def fake_healthcheck() -> bool:
+        attempts["count"] += 1
+        return attempts["count"] > 1
+
+    launches: list[list[str]] = []
+
+    def fake_popen(args, **kwargs):
+        launches.append(list(args))
+        return object()
+
+    original_find_spec = importlib.util.find_spec
+
+    def fake_find_spec(name: str, package=None):
+        if name == "mission_control_daemon":
+            return object()
+        return original_find_spec(name, package)
+
+    monkeypatch.setattr(client, "_healthcheck", fake_healthcheck)
+    monkeypatch.setattr(client, "_port_in_use", lambda: False)
+    monkeypatch.setattr(importlib.util, "find_spec", fake_find_spec)
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+
+    client.ensure_daemon_running()
+
+    assert launches
+    assert launches[0][:3] == [sys.executable, "-m", "mission_control_daemon"]

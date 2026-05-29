@@ -362,6 +362,7 @@ class SwarmAgentSpec(Base):
     spawn_phase: Mapped[str] = mapped_column(String(80), default="build_start", nullable=False)
     retire_when: Mapped[str] = mapped_column(Text, nullable=False)
     priority: Mapped[int] = mapped_column(Integer, default=50, nullable=False)
+    iteration_budget: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
     status: Mapped[str] = mapped_column(String(30), default="planned", nullable=False)
 
     swarm_plan: Mapped[SwarmPlan] = relationship(back_populates="agent_specs")

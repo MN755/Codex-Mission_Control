@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from fastapi.testclient import TestClient
 
 from conftest import sample_workspace, wait_for
@@ -232,6 +234,8 @@ def test_runtime_and_project_control_routes_require_token(client) -> None:
         assert raw_client.get("/api/agents/reputation").status_code == 401
         assert raw_client.post(f"/api/projects/{project_id}/change-requests", json={"request_text": "Make it better"}).status_code == 401
         assert raw_client.get(f"/api/projects/{project_id}/context-packs").status_code == 401
+        assert raw_client.get(f"/api/projects/{project_id}/workspace-tooling").status_code == 401
+        assert raw_client.post(f"/api/projects/{project_id}/codebase/search", json={"pattern": "TODO"}).status_code == 401
         assert raw_client.get("/api/context-packs/1", params={"project_id": project_id}).status_code == 401
         assert raw_client.get(f"/api/projects/{project_id}/risks").status_code == 401
         assert raw_client.get(f"/api/projects/{project_id}/scope-creep").status_code == 401
@@ -256,4 +260,51 @@ def test_runtime_and_project_control_routes_require_token(client) -> None:
         assert raw_client.get(f"/api/projects/{project_id}/agents").status_code == 401
         assert raw_client.post(f"/api/projects/{project_id}/manager/message", json={"message": "What next?"}).status_code == 401
         assert raw_client.post(f"/api/projects/{project_id}/manager/next-step").status_code == 401
+        assert raw_client.get(f"/api/projects/{project_id}/nvidia/dynamo").status_code == 401
+        assert raw_client.get(f"/api/projects/{project_id}/nvidia/aiq").status_code == 401
+        assert raw_client.post(f"/api/projects/{project_id}/nvidia/aiq/research", json={"query": "test"}).status_code == 401
+        assert raw_client.get(f"/api/projects/{project_id}/nvidia/gpu-diagnostics").status_code == 401
         assert raw_client.post("/api/projects/import-folder", json={"folder_path": sample_workspace("auth-import"), "import_mode": "linked"}).status_code == 401
+
+
+def test_workspace_tooling_and_codebase_search_routes_return_project_scoped_payloads(client, bridge_headers, monkeypatch) -> None:
+    workspace = sample_workspace("tooling-search")
+    Path(workspace).mkdir(parents=True, exist_ok=True)
+    Path(workspace, "pyproject.toml").write_text("[project]\nname='demo'\n", encoding="utf-8")
+    Path(workspace, "app.py").write_text("print('hi')\n# TODO hook quality gate\n", encoding="utf-8")
+    project = client.post(
+        "/api/projects",
+        json={
+            "name": "Tooling Search Demo",
+            "idea": "Check workspace tooling and repo search",
+            "workspace_path": workspace,
+            "provider": "codex",
+            "runner_mode": "dry_run",
+            "manager_mode": "auto",
+        },
+    ).json()
+    project_id = project["id"]
+
+    monkeypatch.setattr("manager.shutil.which", lambda command: "C:/tools/rg.exe" if command == "rg" else None)
+
+    class Result:
+        returncode = 0
+        stdout = "app.py:2:# TODO hook quality gate\n"
+
+    monkeypatch.setattr("manager.subprocess.run", lambda *args, **kwargs: Result())
+
+    tooling = client.get(f"/api/projects/{project_id}/workspace-tooling", headers=bridge_headers)
+    assert tooling.status_code == 200
+    assert tooling.json()["project_id"] == project_id
+    assert "repo_profile" in tooling.json()
+
+    search = client.post(
+        f"/api/projects/{project_id}/codebase/search",
+        json={"pattern": "TODO", "max_matches": 5},
+        headers=bridge_headers,
+    )
+    assert search.status_code == 200
+    payload = search.json()
+    assert payload["project_id"] == project_id
+    assert payload["search_backend"] == "ripgrep"
+    assert payload["matches"][0]["path"] == "app.py"

@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import fnmatch
 import hashlib
 import json
 import re
+import shutil
 import subprocess
 from collections import Counter
 from datetime import datetime, timedelta, timezone
@@ -33,6 +35,7 @@ from config import (
 from context_packs import context_pack_service
 from device_profile import recommended_swarm_max_agents
 from events import EventService
+from gpu_support import detect_cuda_repo_mode
 from intelligence import planning_intelligence_service, reputation_service, scope_creep_service
 from interview import INTERVIEW_CATEGORIES, select_fallback_questions
 from diagnostics import list_diagnostic_reports
@@ -92,6 +95,7 @@ from models import (
     AgentLoadSnapshot,
     utc_now,
 )
+from nvidia_support import detect_nvidia_aiq_status, detect_nvidia_dynamo_status, detect_project_nvidia_gpu_diagnostics, run_nvidia_aiq_research
 from playbooks import playbook_service
 from preferences import preference_service
 from planner import build_plan_markdown
@@ -142,6 +146,7 @@ from task_board import build_initial_tasks, can_assign_task, conflicting_agents,
 from tool_catalog import TOOL_CATALOG, catalog_with_permissions
 from validation_coverage import validation_coverage_service
 from webwright_support import detect_webwright_status
+from workspace_tooling import detect_workspace_tooling
 from widget_catalog import (
     DASHBOARD_WIDGET_DEFAULTS,
     DASHBOARD_WIDGET_TYPES,
@@ -303,6 +308,7 @@ class ManagerSwarmSpecPayload(BaseModel):
     spawn_phase: str = "build_start"
     retire_when: str
     priority: int = 50
+    iteration_budget: int = 1
 
 
 class ManagerSwarmPlanPayload(BaseModel):
@@ -1029,6 +1035,8 @@ class MissionControlService:
         latest_plan = self._latest_plan(db, project.id)
         manifest = self._workspace_manifest_summary(project)
         status = await self.get_system_status(db, project)
+        cuda_mode = detect_cuda_repo_mode(project.workspace_path)
+        gpu_cluster_health = self._gpu_cluster_health(project)
         current_agents = [
             {
                 "name": agent.name,
@@ -1060,6 +1068,8 @@ class MissionControlService:
             "understanding": self.get_project_understanding(project),
             "docs_summary": self._project_docs_summary(project),
             "repo_summary": manifest,
+            "gpu_programming": cuda_mode,
+            "gpu_cluster_health": gpu_cluster_health,
             "plan_summary": latest_plan.summary_json if latest_plan else None,
             "available_tools": [
                 {
@@ -1124,6 +1134,8 @@ class MissionControlService:
     ) -> str:
         if preferences.optimization_mode != "manager_decides":
             return preferences.optimization_mode
+        if detect_cuda_repo_mode(project.workspace_path).get("enabled"):
+            return "gpu_programming"
         idea = f"{project.name}\n{project.idea}".lower()
         unknowns = len(understanding.unknowns_json or {})
         if preferences.docs_depth in {"detailed", "publishable"} or any(token in idea for token in {"docs", "documentation", "guide", "developer portal"}):
@@ -1160,7 +1172,11 @@ class MissionControlService:
         retire_when: str,
         priority: int,
         toolset: list[str] | None = None,
+        iteration_budget: int = 1,
     ) -> ManagerSwarmSpecPayload:
+        if toolset is None and isinstance(iteration_budget, list):
+            toolset = [str(item) for item in iteration_budget if str(item).strip()]
+            iteration_budget = 1
         deduped_allowed: list[str] = []
         for item in allowed_paths:
             text = str(item).strip()
@@ -1182,6 +1198,7 @@ class MissionControlService:
             spawn_phase=spawn_phase,
             retire_when=retire_when,
             priority=priority,
+            iteration_budget=max(1, int(iteration_budget)),
         )
 
     def _deterministic_swarm_plan(
@@ -1199,7 +1216,7 @@ class MissionControlService:
         intelligence_context = intelligence_context or {}
         mode = self._choose_swarm_mode(project, preferences, understanding, manifest)
         playbook = intelligence_context.get("playbook") or {}
-        if preferences.optimization_mode == "manager_decides" and playbook.get("status") in {"suggested", "applied"}:
+        if mode != "gpu_programming" and preferences.optimization_mode == "manager_decides" and playbook.get("status") in {"suggested", "applied"}:
             playbook_key = playbook.get("key")
             if playbook_key in {"fastapi_react_web_app", "generic_custom", "local_desktop_app"}:
                 mode = "balanced"
@@ -1220,6 +1237,8 @@ class MissionControlService:
             "Keep validation aligned with the swarm mode and explicit project risk.",
             "Record what was actually tested, reviewed, or deferred.",
         ]
+        gpu_mode = intelligence_context.get("gpu_programming") or detect_cuda_repo_mode(project.workspace_path)
+        gpu_health = intelligence_context.get("gpu_cluster_health") or self._gpu_cluster_health(project)
 
         def add(spec: ManagerSwarmSpecPayload) -> None:
             if len(specs) < capacity:
@@ -1241,7 +1260,100 @@ class MissionControlService:
         def test_paths() -> list[str]:
             return buckets["tests"] or ["tests"]
 
-        if mode == "fastest_build":
+        if mode == "gpu_programming":
+            gpu_paths = list(gpu_mode.get("important_paths") or []) or backend_paths() or frontend_paths()
+            kernel_paths = [path for path in gpu_paths if any(token in path.lower() for token in ("kernel", "cuda", "bench", "profile"))] or gpu_paths
+            add(
+                self._make_swarm_spec(
+                    archetype="feature",
+                    name="CUDA Kernel Generator",
+                    mission="Implement or repair the primary CUDA kernel path and keep correctness ahead of storytelling.",
+                    model_policy=model_policy_for("code_editing", "Prefer the strongest available code-editing model with explicit GPU reasoning."),
+                    allowed_paths=kernel_paths,
+                    forbidden_paths=docs_paths(),
+                    spawn_phase="build_start",
+                    retire_when="The changed kernel path compiles and passes a focused GPU validation workload.",
+                    priority=10,
+                    iteration_budget=3,
+                    toolset=["feature_work", "tests"],
+                )
+            )
+            add(
+                self._make_swarm_spec(
+                    archetype="performance",
+                    name="Tile and Autotune Optimizer",
+                    mission="Profile kernels, compare benchmarks, and tune tile or compiler parameters after correctness is stable.",
+                    model_policy=model_policy_for("performance_optimization", "Prefer a performance-oriented model that can reason about Nsight traces and benchmark diffs."),
+                    allowed_paths=kernel_paths,
+                    forbidden_paths=docs_paths(),
+                    spawn_phase="after_first_slice",
+                    retire_when="Benchmark deltas and profiling evidence are recorded honestly.",
+                    priority=20,
+                    iteration_budget=3,
+                    toolset=["profiling", "benchmarking"],
+                )
+            )
+            add(
+                self._make_swarm_spec(
+                    archetype="test",
+                    name="GPU Benchmark and Validation Runner",
+                    mission="Run build, test, benchmark, and profile loops after code changes instead of declaring victory from vibes.",
+                    model_policy=model_policy_for("test_generation", "Prefer a careful validation model that reports real command evidence."),
+                    allowed_paths=test_paths() + kernel_paths,
+                    forbidden_paths=[],
+                    spawn_phase="build_start",
+                    retire_when="The GPU validation loop is complete or blocked with evidence.",
+                    priority=25,
+                    iteration_budget=2,
+                    toolset=["test_runner", "smoke_checks"],
+                )
+            )
+            add(
+                self._make_swarm_spec(
+                    archetype="reviewer",
+                    name="CUDA Correctness Reviewer",
+                    mission="Review memory movement, launch geometry, and correctness regressions separately from raw performance claims.",
+                    model_policy=model_policy_for("reliability", "Prefer a higher-reasoning reviewer for GPU correctness and regression risk."),
+                    allowed_paths=kernel_paths + backend_paths(),
+                    forbidden_paths=[],
+                    spawn_phase="after_first_implementation",
+                    retire_when="The GPU correctness review is closed or converted into explicit follow-ups.",
+                    priority=30,
+                    iteration_budget=2,
+                    toolset=["code_review", "diff_analysis"],
+                )
+            )
+            if gpu_health.get("status") in {"degraded", "unknown"} and len(specs) < capacity:
+                add(
+                    self._make_swarm_spec(
+                        archetype="integration",
+                        name="GPU Infrastructure Triage",
+                        mission="Separate cluster-health blockers from code failures using pending-pod, memory, and telemetry evidence.",
+                        model_policy=model_policy_for("shell_command_reasoning", "Prefer a careful model that can distinguish infrastructure evidence from code defects."),
+                        allowed_paths=[".mission-control/gpu", "observability", "diagnostics", "docs"],
+                        forbidden_paths=kernel_paths,
+                        spawn_phase="plan_review",
+                        retire_when="The failed-run verdict is narrowed to infrastructure, code, or mixed with evidence.",
+                        priority=15,
+                        iteration_budget=2,
+                        toolset=["integration_work", "env_validation"],
+                    )
+                )
+            bottlenecks.extend(
+                [
+                    "GPU work stalls when cluster health is unknown and every failed run gets blamed on the code.",
+                    "Kernel edits without benchmark and profile loops create fake performance wins.",
+                ]
+            )
+            for reason in list(gpu_health.get("blocking_reasons") or [])[:2]:
+                bottlenecks.append(f"GPU infrastructure pressure: {reason}")
+            validation_strategy = [
+                "Run a build, focused GPU test, benchmark comparison, and Nsight profile after kernel-affecting changes.",
+                "Treat pending pods or saturated GPU memory as infrastructure blockers before reopening the code loop.",
+                "Capture benchmark and profiler deltas for each optimization iteration.",
+                "Record whether the failure source looks like code, infrastructure, or mixed evidence.",
+            ]
+        elif mode == "fastest_build":
             add(
                 self._make_swarm_spec(
                     archetype="feature",
@@ -1253,6 +1365,7 @@ class MissionControlService:
                     spawn_phase="build_start",
                     retire_when="The first runnable vertical slice is merged and demoable.",
                     priority=10,
+                    iteration_budget=2,
                     toolset=["feature_work", "tests"],
                 )
             )
@@ -1267,6 +1380,7 @@ class MissionControlService:
                     spawn_phase="build_start",
                     retire_when="The core flow behind the vertical slice is stable.",
                     priority=15,
+                    iteration_budget=2,
                     toolset=["api_editing", "tests"],
                 )
             )
@@ -1281,6 +1395,7 @@ class MissionControlService:
                     spawn_phase="after_first_slice",
                     retire_when="The primary workflow can be demonstrated without manual stitching.",
                     priority=25,
+                    iteration_budget=2,
                     toolset=["integration_work"],
                 )
             )
@@ -1295,6 +1410,7 @@ class MissionControlService:
                     spawn_phase="after_first_slice",
                     retire_when="Smoke validation is recorded and obvious breakages are fixed or documented.",
                     priority=35,
+                    iteration_budget=1,
                     toolset=["test_runner", "smoke_checks"],
                 )
             )
@@ -1409,11 +1525,17 @@ class MissionControlService:
             validation_strategy.append(f"Add explicit validation coverage for {area}.")
 
         recommended = max(1, min(capacity, len(specs)))
-        coordination_risk = "high" if recommended >= 7 or mode == "massive_codebase" else "medium" if recommended >= 5 or mode in {"documentation_heavy", "high_quality"} else "low"
+        coordination_risk = (
+            "high"
+            if recommended >= 7 or mode == "massive_codebase" or (mode == "gpu_programming" and gpu_health.get("status") == "degraded")
+            else "medium"
+            if recommended >= 5 or mode in {"documentation_heavy", "high_quality", "gpu_programming"}
+            else "low"
+        )
         path_conflict_risk = "high" if mode == "massive_codebase" else "medium" if any(len(spec.allowed_paths) > 1 for spec in specs) else "low"
         strategy_summary = (
             f"{self._titleize_path_label(mode.replace('_', ' '))} mode with {recommended} worker lane(s). "
-            f"Bias toward {('throughput' if mode == 'fastest_build' else 'review depth' if mode == 'high_quality' else 'documentation quality' if mode == 'documentation_heavy' else 'research clarity' if mode == 'research_planning' else 'subsystem ownership' if mode == 'massive_codebase' else 'balanced execution')} "
+            f"Bias toward {('throughput' if mode == 'fastest_build' else 'review depth' if mode == 'high_quality' else 'documentation quality' if mode == 'documentation_heavy' else 'research clarity' if mode == 'research_planning' else 'subsystem ownership' if mode == 'massive_codebase' else 'benchmark-backed kernel iteration' if mode == 'gpu_programming' else 'balanced execution')} "
             f"while keeping path ownership explicit."
         )
         return ManagerSwarmPlanPayload(
@@ -2015,12 +2137,24 @@ class MissionControlService:
         }
         agents_by_id = {agent.id: agent for agent in db.scalars(select(Agent).where(Agent.project_id == project.id))}
         tasks_by_id = {task.id: task for task in db.scalars(select(Task).where(Task.project_id == project.id))}
+        specs = list(db.scalars(select(SwarmAgentSpec).where(SwarmAgentSpec.project_id == project.id)))
+        specs_by_identity: dict[tuple[int | None, str], SwarmAgentSpec] = {}
+        for spec in specs:
+            specs_by_identity[(spec.swarm_plan_id, spec.name)] = spec
+            specs_by_identity[(spec.swarm_plan_id, spec.archetype)] = spec
         for run in runs:
             if run.id in existing_run_ids:
                 continue
             agent = agents_by_id.get(run.agent_id)
             task = tasks_by_id.get(run.task_id) if run.task_id is not None else None
             raw_report = self._redact_payload(run.report_json or {})
+            gpu_mode = detect_cuda_repo_mode(project.workspace_path)
+            gpu_health = self._gpu_cluster_health(project)
+            matched_spec = None
+            if agent is not None:
+                matched_spec = specs_by_identity.get((agent.swarm_plan_id, agent.name))
+                if matched_spec is None and agent.archetype:
+                    matched_spec = specs_by_identity.get((agent.swarm_plan_id, agent.archetype))
             files_changed = [str(item) for item in (raw_report.get("files_changed") or []) if str(item).strip()]
             tests_run = [str(item) for item in (raw_report.get("tests_run") or []) if str(item).strip()]
             approvals = [
@@ -2042,6 +2176,32 @@ class MissionControlService:
             if run.runner_type:
                 commands_attempted.append(f"runner:{run.runner_type}")
             commands_attempted.extend(tests_run[:3])
+            loop_haystack = " ".join(
+                str(item or "")
+                for item in [
+                    task.title if task else None,
+                    task.goal if task else None,
+                    agent.name if agent else None,
+                    agent.mission if agent else None,
+                ]
+            ).lower()
+            loop_kind = (
+                "optimization"
+                if any(token in loop_haystack for token in ("optimiz", "benchmark", "profile", "autotune", "tile"))
+                else "review"
+                if any(token in loop_haystack for token in ("review", "correctness", "audit"))
+                else "codegen"
+                if gpu_mode.get("enabled")
+                else None
+            )
+            if loop_kind:
+                raw_report["evaluation_trace"] = {
+                    "loop_kind": loop_kind,
+                    "iteration_budget": matched_spec.iteration_budget if matched_spec is not None else 1,
+                    "repo_mode": gpu_mode.get("mode"),
+                    "failure_verdict": gpu_health.get("likely_failure_source"),
+                    "cluster_usable": gpu_health.get("cluster_usable"),
+                }
             trace = AgentExecutionTrace(
                 project_id=project.id,
                 agent_id=run.agent_id,
@@ -3181,8 +3341,8 @@ class MissionControlService:
                 "project_id": project.id,
                 "type": "degraded",
                 "severity": "warning",
-                "title": degraded_notices[0],
-                "message": "Mission Control can still continue in degraded mode.",
+                "title": "Degraded",
+                "message": degraded_notices[0],
                 "requesting_agent_id": None,
                 "related_task_id": None,
                 "command_id": None,
@@ -3452,11 +3612,16 @@ class MissionControlService:
             ".tsx": "TypeScript",
             ".js": "JavaScript",
             ".jsx": "JavaScript",
+            ".cc": "C++",
+            ".cpp": "C++",
+            ".cxx": "C++",
             ".go": "Go",
             ".rs": "Rust",
             ".java": "Java",
             ".cs": "C#",
             ".rb": "Ruby",
+            ".cu": "CUDA",
+            ".cuh": "CUDA",
         }
         languages = sorted({language for ext, language in language_map.items() if extensions.get(ext)})
         frameworks: set[str] = set()
@@ -3464,6 +3629,7 @@ class MissionControlService:
         build_commands: list[str] = []
         test_commands: list[str] = []
         entry_points: list[str] = []
+        cuda_mode = detect_cuda_repo_mode(root)
         package_json = root / "package.json"
         if package_json.exists():
             try:
@@ -3517,10 +3683,33 @@ class MissionControlService:
                 requirements_text = ""
             if "fastapi" in requirements_text:
                 frameworks.add("FastAPI")
+        if (root / "CMakeLists.txt").exists():
+            package_managers.add("cmake")
+        if (root / "Makefile").exists():
+            package_managers.add("make")
         for candidate in ["main.py", "app.py", "manage.py", "src/main.ts", "src/main.tsx", "src/index.tsx", "src/index.ts", "server.py"]:
             if (root / candidate).exists():
                 entry_points.append(candidate)
-        important_folders = [folder.name for folder in root.iterdir() if folder.is_dir() and folder.name in {"src", "app", "apps", "server", "client", "docs", "tests", "scripts"}]
+        for language in list(cuda_mode.get("languages") or []):
+            if language not in languages:
+                languages.append(language)
+        for framework in list(cuda_mode.get("frameworks") or []):
+            frameworks.add(str(framework))
+        for command in list(cuda_mode.get("build_commands") or []):
+            if command not in build_commands:
+                build_commands.append(command)
+        for command in list(cuda_mode.get("test_commands") or []):
+            if command not in test_commands:
+                test_commands.append(command)
+        important_folders = [
+            folder.name
+            for folder in root.iterdir()
+            if folder.is_dir() and folder.name in {"src", "app", "apps", "server", "client", "docs", "tests", "scripts", "benchmarks", "kernels", "profiles"}
+        ]
+        for item in list(cuda_mode.get("important_paths") or []):
+            label = str(item).split("/", 1)[0]
+            if label and label not in important_folders:
+                important_folders.append(label)
         risky_files = [str(path.relative_to(root)) for path in file_paths if path.name.lower().startswith(".env") or "secret" in path.name.lower()][:12]
         docs_found = [str(path.relative_to(root)) for path in file_paths if path.suffix.lower() == ".md" and ("readme" in path.name.lower() or "docs" in path.parts)]
         ci_config = [str(path.relative_to(root)) for path in file_paths if ".github" in path.parts or path.name.lower() in {"azure-pipelines.yml", "azure-pipelines.yaml", ".gitlab-ci.yml"}]
@@ -3530,13 +3719,13 @@ class MissionControlService:
             if path.name.lower() in {"dockerfile", "docker-compose.yml", "docker-compose.yaml", "vercel.json", "fly.toml", "render.yaml", "netlify.toml"}
         ]
         return {
-            "languages_json": languages,
+            "languages_json": sorted(dict.fromkeys(languages)),
             "frameworks_json": sorted(frameworks),
             "package_managers_json": sorted(package_managers),
             "entry_points_json": entry_points,
-            "build_commands_json": build_commands,
-            "test_commands_json": test_commands,
-            "important_folders_json": important_folders,
+            "build_commands_json": list(dict.fromkeys(build_commands)),
+            "test_commands_json": list(dict.fromkeys(test_commands)),
+            "important_folders_json": list(dict.fromkeys(important_folders)),
             "risky_files_json": risky_files,
             "docs_found_json": docs_found[:20],
             "ci_config_json": ci_config[:20],
@@ -3757,7 +3946,7 @@ class MissionControlService:
         tasks = list(db.scalars(select(Task).where(Task.project_id == project.id).order_by(Task.priority.asc(), Task.id.asc())))
         settings = self._project_settings_preview(db, project)
         _ = settings
-        degraded: list[str] = []
+        degraded = self._workspace_degraded_notices_preview(project)
         current_action = self._derive_current_action_preview(db, project, degraded)
         overview = self._project_overview(db, project, tasks, current_action)
         support = self._preview_widget_support_records(
@@ -4610,7 +4799,7 @@ class MissionControlService:
         availability_by_tool = {item["id"]: item for item in tool_catalog}
         existing = existing or {}
         archetypes = self._archetype_lookup_preview() if use_preview_archetypes else self._archetype_lookup(db)
-        for archetype_name in ["manager", "planner", "research", "frontend", "backend", "feature", "test", "reviewer", "security", "docs", "ops"]:
+        for archetype_name in ["manager", "planner", "research", "frontend", "backend", "feature", "integration", "performance", "test", "reviewer", "security", "docs", "ops"]:
             entry = existing.get(archetype_name)
             if entry is None:
                 entry = ToolRoutingPolicy(project_id=project.id, agent_archetype=archetype_name)
@@ -4786,7 +4975,12 @@ class MissionControlService:
             db.flush()
         repo = self._scan_repo_intelligence(db, project)
         preferences = self._ensure_swarm_preferences(db, project)
-        recipe.steps_json = self._validation_recipe_steps(repo.build_commands_json, repo.test_commands_json, preferences.testing_depth)
+        recipe.steps_json = self._validation_recipe_steps(
+            repo.build_commands_json,
+            repo.test_commands_json,
+            preferences.testing_depth,
+            gpu_mode=detect_cuda_repo_mode(project.workspace_path),
+        )
         recipe.status = "active"
         db.flush()
         return recipe
@@ -4796,12 +4990,55 @@ class MissionControlService:
         build_commands: list[str] | None,
         test_commands: list[str] | None,
         testing_depth: str,
+        *,
+        gpu_mode: dict[str, Any] | None = None,
     ) -> list[dict[str, Any]]:
         steps: list[dict[str, Any]] = []
         for command in list(build_commands or [])[:1]:
             steps.append({"title": "Build the project", "command": command, "type": "build", "requires_approval": True, "status": "pending"})
         for command in list(test_commands or [])[:1]:
             steps.append({"title": "Run automated tests", "command": command, "type": "test", "requires_approval": True, "status": "pending"})
+        if gpu_mode and gpu_mode.get("enabled"):
+            if not any(step["type"] == "build" for step in steps):
+                steps.append({"title": "Build the CUDA target", "command": None, "type": "build", "requires_approval": True, "status": "pending"})
+            if not any(step["type"] == "test" for step in steps):
+                steps.append(
+                    {
+                        "title": "Run the focused GPU validation workload",
+                        "command": None,
+                        "type": "test",
+                        "requires_approval": True,
+                        "status": "pending",
+                    }
+                )
+            steps.append(
+                {
+                    "title": "Compare GPU benchmark results",
+                    "command": next(iter(gpu_mode.get("benchmark_commands") or []), None),
+                    "type": "benchmark",
+                    "requires_approval": True,
+                    "status": "pending",
+                }
+            )
+            steps.append(
+                {
+                    "title": "Capture an Nsight profile for the changed GPU path",
+                    "command": next(iter(gpu_mode.get("profile_commands") or []), None),
+                    "type": "profile",
+                    "requires_approval": True,
+                    "status": "pending",
+                }
+            )
+            steps.append(
+                {
+                    "title": "Review tile or compiler autotuning guidance",
+                    "command": None,
+                    "type": "autotune",
+                    "requires_approval": False,
+                    "status": "pending",
+                    "guidance": list(gpu_mode.get("autotune_notes") or []),
+                }
+            )
         if testing_depth != "minimal":
             steps.append({"title": "Run smoke validation", "command": None, "type": "smoke", "requires_approval": False, "status": "pending"})
         steps.append({"title": "Review docs and handoff notes", "command": None, "type": "docs", "requires_approval": False, "status": "pending"})
@@ -4825,6 +5062,7 @@ class MissionControlService:
             repo_payload.get("build_commands_json"),
             repo_payload.get("test_commands_json"),
             preferences.testing_depth,
+            gpu_mode=detect_cuda_repo_mode(project.workspace_path),
         )
         recipe.status = "active"
         return recipe
@@ -7446,6 +7684,7 @@ class MissionControlService:
             "spawn_phase": spec.spawn_phase,
             "retire_when": spec.retire_when,
             "priority": spec.priority,
+            "iteration_budget": spec.iteration_budget,
             "status": spec.status,
         }
 
@@ -8077,12 +8316,39 @@ class MissionControlService:
                 status="auto_decided",
             )
 
+    def _gpu_cluster_health(self, project: Project, *, failure_signals: list[str] | None = None) -> dict[str, Any]:
+        return detect_project_nvidia_gpu_diagnostics(project.workspace_path, failure_signals=failure_signals)
+
+    def _gpu_cluster_notice(self, project: Project) -> str | None:
+        health = self._gpu_cluster_health(project)
+        if not health.get("workspace_relevant") and not health.get("available"):
+            return None
+        blockers = list(health.get("blocking_reasons") or [])
+        verdict = str(health.get("likely_failure_source") or "unknown")
+        if health.get("status") in {"degraded", "warning"}:
+            lead = blockers[0] if blockers else str(health.get("summary") or "GPU cluster health is degraded.")
+            if verdict == "infrastructure":
+                return f"GPU cluster blocker: {lead} Failed-run verdict currently leans infrastructure."
+            if verdict == "mixed":
+                return f"GPU cluster blocker: {lead} Failed-run verdict is mixed across infrastructure and code."
+            return f"GPU cluster blocker: {lead}"
+        if health.get("status") == "unknown" and health.get("repo_mode_enabled"):
+            return "GPU observability missing: CUDA repo detected but no Prometheus/DCGM/Grafana summary was found."
+        return None
+
+    def _workspace_degraded_notices_preview(self, project: Project) -> list[str]:
+        notice = self._gpu_cluster_notice(project)
+        return [notice] if notice else []
+
     async def _workspace_degraded_notices(self, project: Project, settings: ProjectSettings) -> list[str]:
         notices: list[str] = []
         resolved = resolve_manager_settings(project, settings)
         effective_mode = await self.runners.effective_mode(resolved)
         if effective_mode == "unavailable":
             notices.append(f"Runner degraded: {provider_label(settings.provider)} is not currently available in {settings.runner_mode} mode.")
+        gpu_notice = self._gpu_cluster_notice(project)
+        if gpu_notice:
+            notices.append(gpu_notice)
         return notices
 
     def _derive_current_action(
@@ -8193,8 +8459,8 @@ class MissionControlService:
                 "project_id": project.id,
                 "type": "degraded",
                 "severity": "warning",
-                "title": degraded_notices[0],
-                "message": "Mission Control can still continue in degraded mode.",
+                "title": "Degraded",
+                "message": degraded_notices[0],
                 "requesting_agent_id": None,
                 "related_task_id": None,
                 "command_id": None,
@@ -9141,6 +9407,7 @@ class MissionControlService:
             "documentation_heavy",
             "research_planning",
             "massive_codebase",
+            "gpu_programming",
             "manager_decides",
         } else fallback_payload.mode
         coordination_risk = payload.coordination_risk if payload.coordination_risk in SWARM_RISK_LEVELS else fallback_payload.coordination_risk
@@ -9172,6 +9439,7 @@ class MissionControlService:
                     retire_when=spec.retire_when.strip() if spec.retire_when.strip() else "Retire when the assigned slice is complete.",
                     priority=max(1, min(100, int(spec.priority or index * 10))),
                     toolset=self._normalize_string_list(spec.toolset),
+                    iteration_budget=max(1, int(spec.iteration_budget or 1)),
                 )
             )
             if len(specs) >= capacity:
@@ -9245,6 +9513,7 @@ class MissionControlService:
                 spawn_phase=spec.spawn_phase,
                 retire_when=spec.retire_when,
                 priority=spec.priority,
+                iteration_budget=spec.iteration_budget,
                 status=spec_status,
             )
             db.add(record)
@@ -9280,6 +9549,8 @@ class MissionControlService:
             category: planning_intelligence_service.recommend_model_policy(db, category)
             for category in CAPABILITY_CATEGORIES
         }
+        intelligence_context["gpu_programming"] = detect_cuda_repo_mode(project.workspace_path)
+        intelligence_context["gpu_cluster_health"] = self._gpu_cluster_health(project)
         fallback_payload = self._deterministic_swarm_plan(
             project,
             preferences,
@@ -10352,7 +10623,7 @@ class MissionControlService:
 
     def build_operator_snapshot(self, db: Session, project: Project) -> dict[str, Any]:
         tasks = list(db.scalars(select(Task).where(Task.project_id == project.id).order_by(Task.priority.asc(), Task.id.asc())))
-        current_action = self._derive_current_action_preview(db, project, [])
+        current_action = self._derive_current_action_preview(db, project, self._workspace_degraded_notices_preview(project))
         health = self.get_project_health_preview(db, project)
         handoff = self.get_project_handoff_summary(db, project)
         pending_approvals = self.list_pending_approvals(db, project)
@@ -10550,7 +10821,12 @@ class MissionControlService:
 
     def build_verification_brief(self, db: Session, project: Project) -> dict[str, Any]:
         tasks = list(db.scalars(select(Task).where(Task.project_id == project.id).order_by(Task.priority.asc(), Task.id.asc())))
-        overview = self._project_overview(db, project, tasks, self._derive_current_action_preview(db, project, []))
+        overview = self._project_overview(
+            db,
+            project,
+            tasks,
+            self._derive_current_action_preview(db, project, self._workspace_degraded_notices_preview(project)),
+        )
         preferences = project.swarm_preferences or self._swarm_preferences(project)
         conflicts = self._preview_conflicts(db, project)
         review_gates = list(project.review_gates or []) or self._preview_review_gates(
@@ -10565,8 +10841,11 @@ class MissionControlService:
         coverage = validation_coverage_service.coverage_summary(db, project)
         handoff = self.get_project_handoff_summary(db, project)
         pending_approvals = self.list_pending_approvals(db, project)
+        tooling = self.build_workspace_tooling_status(project)
         required_checks = self._dedupe_strings(
             [
+                *list(tooling.get("validation_commands") or []),
+                *list(tooling.get("security_commands") or []),
                 *[
                     str(step.get("command") or step.get("title") or "").strip()
                     for step in list(recipe.steps_json or [])
@@ -10580,6 +10859,9 @@ class MissionControlService:
         )
         recommended_checks = self._dedupe_strings(
             [
+                *list(tooling.get("intake_commands") or [])[:2],
+                *list(tooling.get("validation_commands") or [])[:3],
+                *list(tooling.get("security_commands") or [])[:2],
                 *[
                     str(step.get("title") or step.get("command") or "").strip()
                     for step in list(recipe.steps_json or [])
@@ -10604,6 +10886,11 @@ class MissionControlService:
         evidence_gaps = self._dedupe_strings(
             [
                 *[f"Validation gap: {gap}" for gap in list(coverage.get("gaps") or [])],
+                *[
+                    f"Workspace tooling gap: {tool['label']} is referenced by the repo but not installed in the current runtime."
+                    for tool in tooling.get("tools", [])
+                    if tool.get("configured") and not tool.get("installed")
+                ],
                 *["No validated handoff evidence has been recorded yet." if str(handoff.get("evidence_status") or "") == "missing" else ""],
             ]
         )
@@ -10651,10 +10938,177 @@ class MissionControlService:
             "generated_at": utc_now(),
         }
 
+    def build_workspace_tooling_status(self, project: Project) -> dict[str, Any]:
+        payload = detect_workspace_tooling(project.workspace_path or project.source_path, project_name=project.name)
+        return {
+            "project_id": project.id,
+            "project_name": project.name,
+            **payload,
+        }
+
+    def search_codebase(
+        self,
+        project: Project,
+        *,
+        pattern: str,
+        glob: str | None = None,
+        max_matches: int = 40,
+    ) -> dict[str, Any]:
+        root = resolve_local_path(project.source_path or project.workspace_path, must_exist=True, must_be_dir=True)
+        safe_pattern = str(pattern).strip()
+        if not safe_pattern:
+            raise ValueError("Search pattern must be a non-empty string.")
+        clamped_max = max(1, min(int(max_matches), 200))
+        rg_path = shutil.which("rg")
+        matches: list[dict[str, Any]] = []
+        truncated = False
+        backend = "python"
+        command: list[str] | str
+        notes: list[str] = []
+        if rg_path:
+            backend = "ripgrep"
+            command_parts = [rg_path, "--line-number", "--with-filename", safe_pattern, "."]
+            if glob:
+                command_parts[1:1] = ["--glob", glob]
+            completed = subprocess.run(
+                command_parts,
+                cwd=root,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                check=False,
+            )
+            command = " ".join(command_parts)
+            if completed.returncode not in {0, 1}:
+                raise RuntimeError(f"ripgrep search failed with exit code {completed.returncode}.")
+            for line in completed.stdout.splitlines():
+                path_text, separator, remainder = line.partition(":")
+                if not separator:
+                    continue
+                line_number_text, separator, line_text = remainder.partition(":")
+                if not separator:
+                    continue
+                try:
+                    line_number = int(line_number_text)
+                except ValueError:
+                    continue
+                matches.append(
+                    {
+                        "path": path_text.replace("\\", "/"),
+                        "line_number": line_number,
+                        "line_text": line_text.strip(),
+                    }
+                )
+            if len(matches) > clamped_max:
+                matches = matches[:clamped_max]
+                truncated = True
+            notes.append("Search used ripgrep for .gitignore-aware repo scanning.")
+        else:
+            command = "python-fallback-search"
+            suffixes = {".py", ".ts", ".tsx", ".js", ".jsx", ".md", ".json", ".toml", ".yml", ".yaml", ".go", ".rs"}
+            for path in root.rglob("*"):
+                if len(matches) >= clamped_max:
+                    truncated = True
+                    break
+                if not path.is_file() or path.suffix.lower() not in suffixes:
+                    continue
+                relative_path = str(path.relative_to(root)).replace("\\", "/")
+                if glob and not fnmatch.fnmatch(relative_path, glob):
+                    continue
+                try:
+                    for line_number, line_text in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+                        if safe_pattern in line_text:
+                            matches.append({"path": relative_path, "line_number": line_number, "line_text": line_text.strip()})
+                            if len(matches) >= clamped_max:
+                                truncated = True
+                                break
+                except OSError:
+                    continue
+            notes.append("ripgrep was not installed, so Mission Control fell back to a slower built-in text scan.")
+        return {
+            "project_id": project.id,
+            "project_name": project.name,
+            "workspace_path": str(root),
+            "pattern": safe_pattern,
+            "glob": glob,
+            "match_count": len(matches),
+            "truncated": truncated,
+            "search_backend": backend,
+            "command": command if isinstance(command, str) else " ".join(command),
+            "matches": matches,
+            "notes": notes,
+        }
+
     def build_webwright_status(self, project: Project) -> dict[str, Any]:
         return {
             "project_id": project.id,
             **detect_webwright_status(workspace_path=project.workspace_path, project_name=project.name),
+        }
+
+    def build_nvidia_dynamo_status(self, db: Session, project: Project) -> dict[str, Any]:
+        settings = self._project_settings(db, project)
+        provider_endpoint = settings.provider_endpoint if normalize_provider(settings.provider) == "nvidia_dynamo" else None
+        from system_status import detect_provider_statuses
+
+        provider_statuses = detect_provider_statuses(
+            selected_provider="nvidia_dynamo",
+            adapter_command=settings.adapter_command,
+            provider_endpoint=provider_endpoint,
+            adapter_args=list(settings.adapter_args_json or []),
+        )
+        provider_runtime = next((item for item in provider_statuses if item.get("provider") == "nvidia_dynamo"), {})
+        return {
+            "project_id": project.id,
+            "project_name": project.name,
+            **detect_nvidia_dynamo_status(provider_endpoint),
+            "runtime_ready": bool(provider_runtime.get("runtime_ready")),
+            "runtime_status": str(provider_runtime.get("runtime_status") or "blocked"),
+            "runtime_summary": str(provider_runtime.get("runtime_summary") or ""),
+            "runtime_blockers": list(provider_runtime.get("runtime_blockers") or []),
+            "adapter_command_configured": bool(provider_runtime.get("adapter_command_configured")),
+            "adapter_command_detected": bool(provider_runtime.get("adapter_command_detected")),
+            "adapter_command_path": provider_runtime.get("adapter_command_path"),
+            "adapter_args": list(provider_runtime.get("adapter_args") or []),
+            "adapter_recipe_source": provider_runtime.get("adapter_recipe_source"),
+        }
+
+    def build_nvidia_aiq_status(self, project: Project) -> dict[str, Any]:
+        return {
+            "project_id": project.id,
+            "project_name": project.name,
+            **detect_nvidia_aiq_status(),
+        }
+
+    def run_project_nvidia_aiq_research(
+        self,
+        project: Project,
+        *,
+        query: str,
+        agent_type: str = "deep_researcher",
+        timeout_seconds: int = 90,
+        poll_interval_seconds: float = 2.0,
+        expiry_seconds: int = 3600,
+        endpoint_override: str | None = None,
+    ) -> dict[str, Any]:
+        return {
+            "project_id": project.id,
+            "project_name": project.name,
+            **run_nvidia_aiq_research(
+                query=query,
+                agent_type=agent_type,
+                timeout_seconds=timeout_seconds,
+                poll_interval_seconds=poll_interval_seconds,
+                expiry_seconds=expiry_seconds,
+                endpoint=endpoint_override,
+            ),
+        }
+
+    def build_nvidia_gpu_diagnostics(self, project: Project) -> dict[str, Any]:
+        return {
+            "project_id": project.id,
+            "project_name": project.name,
+            **detect_project_nvidia_gpu_diagnostics(project.workspace_path),
         }
 
     def get_tool_catalog(self, db: Session) -> list[dict[str, Any]]:

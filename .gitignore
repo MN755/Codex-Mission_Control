@@ -1,11 +1,13 @@
 .venv/
 __pycache__/
 *.pyc
+*.egg-info/
 .pytest_cache/
 .mypy_cache/
 .runtime/
 node_modules/
 dist/
+build/
 coverage/
 *.sqlite
 *.sqlite-shm
@@ -23,9 +25,8 @@ apps/dashboard/vite*.log
 apps/dashboard/vite.config.js
 apps/dashboard/vite.config.d.ts
 apps/dashboard/*.tsbuildinfo
-apps/server/codex_mission_control_server.egg-info/
-apps/desktop/codex_mission_control_desktop.egg-info/
 apps/desktop/*.spec
 *.AppImage
 tmp_remote_probe/
 /Tests/
+/.codex-relay/

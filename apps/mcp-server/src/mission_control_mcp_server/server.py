@@ -51,7 +51,13 @@ class MissionControlMcpServer:
             "mission_control_get_codebase_understanding": self._call_get_codebase_understanding,
             "mission_control_set_import_interview_choice": self._call_set_import_interview_choice,
             "mission_control_get_diagnostics": self._call_get_diagnostics,
+            "mission_control_get_workspace_tooling": self._call_get_workspace_tooling,
+            "mission_control_search_codebase": self._call_search_codebase,
             "mission_control_get_webwright_status": self._call_get_webwright_status,
+            "mission_control_get_nvidia_dynamo_status": self._call_get_nvidia_dynamo_status,
+            "mission_control_get_nvidia_aiq_status": self._call_get_nvidia_aiq_status,
+            "mission_control_run_nvidia_aiq_research": self._call_run_nvidia_aiq_research,
+            "mission_control_get_nvidia_gpu_diagnostics": self._call_get_nvidia_gpu_diagnostics,
             "mission_control_get_swarm_plan": self._call_get_swarm_plan,
             "mission_control_update_swarm_preferences": self._call_update_swarm_preferences,
             "mission_control_generate_swarm_plan": self._call_generate_swarm_plan,
@@ -276,8 +282,63 @@ class MissionControlMcpServer:
                 "outputSchema": GENERIC_OUTPUT_SCHEMA,
             },
             {
+                "name": "mission_control_get_workspace_tooling",
+                "description": "Fetch the project-scoped repo-native tooling summary covering intake, validation, and security helper lanes.",
+                "inputSchema": _object_schema({"project_id": {"type": "integer", "minimum": 1}}, required=["project_id"]),
+                "outputSchema": GENERIC_OUTPUT_SCHEMA,
+            },
+            {
+                "name": "mission_control_search_codebase",
+                "description": "Search the attached workspace with ripgrep when available, with a safe fallback if ripgrep is missing.",
+                "inputSchema": _object_schema(
+                    {
+                        "project_id": {"type": "integer", "minimum": 1},
+                        "pattern": {"type": "string", "minLength": 1},
+                        "glob": {"type": "string", "minLength": 1},
+                        "max_matches": {"type": "integer", "minimum": 1, "maximum": 200},
+                    },
+                    required=["project_id", "pattern"],
+                ),
+                "outputSchema": GENERIC_OUTPUT_SCHEMA,
+            },
+            {
                 "name": "mission_control_get_webwright_status",
                 "description": "Fetch the project-scoped Webwright readiness summary for browser-agent work.",
+                "inputSchema": _object_schema({"project_id": {"type": "integer", "minimum": 1}}, required=["project_id"]),
+                "outputSchema": GENERIC_OUTPUT_SCHEMA,
+            },
+            {
+                "name": "mission_control_get_nvidia_dynamo_status",
+                "description": "Fetch the project-scoped NVIDIA Dynamo readiness summary for GPU-backed Mission Control worker inference.",
+                "inputSchema": _object_schema({"project_id": {"type": "integer", "minimum": 1}}, required=["project_id"]),
+                "outputSchema": GENERIC_OUTPUT_SCHEMA,
+            },
+            {
+                "name": "mission_control_get_nvidia_aiq_status",
+                "description": "Fetch the project-scoped NVIDIA AI-Q readiness summary for deep research delegation.",
+                "inputSchema": _object_schema({"project_id": {"type": "integer", "minimum": 1}}, required=["project_id"]),
+                "outputSchema": GENERIC_OUTPUT_SCHEMA,
+            },
+            {
+                "name": "mission_control_run_nvidia_aiq_research",
+                "description": "Submit a deep research query to NVIDIA AI-Q and return the final structured report summary when available.",
+                "inputSchema": _object_schema(
+                    {
+                        "project_id": {"type": "integer", "minimum": 1},
+                        "query": {"type": "string", "minLength": 1},
+                        "agent_type": {"type": "string", "minLength": 1},
+                        "timeout_seconds": {"type": "integer", "minimum": 5},
+                        "poll_interval_seconds": {"type": "number", "minimum": 0.2},
+                        "expiry_seconds": {"type": "integer", "minimum": 60},
+                        "endpoint_override": {"type": "string", "minLength": 1},
+                    },
+                    required=["project_id", "query"],
+                ),
+                "outputSchema": GENERIC_OUTPUT_SCHEMA,
+            },
+            {
+                "name": "mission_control_get_nvidia_gpu_diagnostics",
+                "description": "Fetch NVIDIA GPU cluster diagnostics derived from Prometheus and DCGM-exporter metrics when configured.",
                 "inputSchema": _object_schema({"project_id": {"type": "integer", "minimum": 1}}, required=["project_id"]),
                 "outputSchema": GENERIC_OUTPUT_SCHEMA,
             },
@@ -605,8 +666,39 @@ class MissionControlMcpServer:
         orchestration_id, project_id = self._require_target(args)
         return self.client.get_diagnostics(orchestration_id=orchestration_id, project_id=project_id)
 
+    def _call_get_workspace_tooling(self, args: dict[str, Any]) -> Any:
+        return self.client.get_workspace_tooling(self._require_int(args, "project_id"))
+
+    def _call_search_codebase(self, args: dict[str, Any]) -> Any:
+        return self.client.search_codebase(
+            self._require_int(args, "project_id"),
+            pattern=self._require_string(args, "pattern"),
+            glob=str(args["glob"]).strip() if args.get("glob") else None,
+            max_matches=int(args.get("max_matches", 40)),
+        )
+
     def _call_get_webwright_status(self, args: dict[str, Any]) -> Any:
         return self.client.get_webwright_status(self._require_int(args, "project_id"))
+
+    def _call_get_nvidia_dynamo_status(self, args: dict[str, Any]) -> Any:
+        return self.client.get_nvidia_dynamo_status(self._require_int(args, "project_id"))
+
+    def _call_get_nvidia_aiq_status(self, args: dict[str, Any]) -> Any:
+        return self.client.get_nvidia_aiq_status(self._require_int(args, "project_id"))
+
+    def _call_run_nvidia_aiq_research(self, args: dict[str, Any]) -> Any:
+        return self.client.run_nvidia_aiq_research(
+            self._require_int(args, "project_id"),
+            query=self._require_string(args, "query"),
+            agent_type=str(args.get("agent_type", "deep_researcher")),
+            timeout_seconds=int(args.get("timeout_seconds", 90)),
+            poll_interval_seconds=float(args.get("poll_interval_seconds", 2.0)),
+            expiry_seconds=int(args.get("expiry_seconds", 3600)),
+            endpoint_override=str(args["endpoint_override"]).strip() if args.get("endpoint_override") else None,
+        )
+
+    def _call_get_nvidia_gpu_diagnostics(self, args: dict[str, Any]) -> Any:
+        return self.client.get_nvidia_gpu_diagnostics(self._require_int(args, "project_id"))
 
     def _call_get_swarm_plan(self, args: dict[str, Any]) -> Any:
         return self.client.get_swarm_plan(self._require_int(args, "project_id"))

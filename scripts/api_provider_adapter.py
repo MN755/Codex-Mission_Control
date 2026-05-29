@@ -12,12 +12,14 @@ DEFAULT_MODELS = {
     "openai_api": "gpt-4o-mini",
     "anthropic_api": "claude-3-5-sonnet-latest",
     "xai_api": "grok-code-fast-1",
+    "nvidia_dynamo": "Qwen/Qwen3-0.6B",
 }
 
 DEFAULT_ENDPOINTS = {
     "openai_api": "https://api.openai.com/v1/chat/completions",
     "anthropic_api": "https://api.anthropic.com/v1/messages",
     "xai_api": "https://api.x.ai/v1/chat/completions",
+    "nvidia_dynamo": "http://localhost:8000/v1/chat/completions",
 }
 
 
@@ -46,6 +48,9 @@ def _endpoint() -> str:
 
 def _api_key() -> tuple[str, str]:
     provider = _provider()
+    if provider == "nvidia_dynamo":
+        key_value = (os.environ.get("NVIDIA_DYNAMO_API_KEY") or os.environ.get("MISSION_CONTROL_NVIDIA_DYNAMO_API_KEY") or "").strip()
+        return "NVIDIA_DYNAMO_API_KEY", key_value
     key_name = {
         "openai_api": "OPENAI_API_KEY",
         "anthropic_api": "ANTHROPIC_API_KEY",
@@ -132,8 +137,9 @@ def _generate(prompt: str) -> str:
     }
     headers = {
         "Content-Type": "application/json",
-        "Authorization": f"Bearer {api_key}",
     }
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
     response = _request_json(url, headers=headers, payload=payload)
     return _extract_openai_text(response)
 

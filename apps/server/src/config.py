@@ -18,7 +18,9 @@ BUNDLE_ROOT = Path(getattr(sys, "_MEIPASS", APP_DIR))
 def _discover_source_repo_root() -> Path | None:
     explicit = os.environ.get("MISSION_CONTROL_REPO_ROOT")
     if explicit:
-        return Path(explicit).expanduser().resolve()
+        candidate = Path(explicit).expanduser().resolve()
+        if (candidate / "apps" / "server" / "src" / "main.py").exists() and (candidate / "README.md").exists():
+            return candidate
     for parent in APP_DIR.parents:
         if (parent / "apps" / "server" / "src").exists() and (parent / "README.md").exists():
             return parent

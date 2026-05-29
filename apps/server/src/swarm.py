@@ -10,6 +10,7 @@ SWARM_MODES = [
     "documentation_heavy",
     "research_planning",
     "massive_codebase",
+    "gpu_programming",
     "manager_decides",
 ]
 
