@@ -140,3 +140,46 @@ def test_orchestration_status_summary_stays_read_only(client, bridge_headers) ->
 
     assert response.status_code == 200, response.text
     assert _simulation_count(project["id"]) == 0
+
+
+def test_project_widgets_summary_stays_read_only(client, bridge_headers) -> None:
+    project = _create_project(client, "Widget Summary Read Safety", "widget-summary-read-safety")
+    _seed_swarm_plan(client, project["id"])
+
+    added = client.post(
+        f"/api/projects/{project['id']}/widgets/add",
+        json={"widget_type": "Swarm Strategy"},
+        headers=bridge_headers,
+    )
+    assert added.status_code == 200, added.text
+
+    _clear_simulations(project["id"])
+
+    response = client.get(f"/api/projects/{project['id']}/widgets/summary", headers=bridge_headers)
+
+    assert response.status_code == 200, response.text
+    assert _simulation_count(project["id"]) == 0
+
+
+def test_widget_instance_data_stays_read_only(client, bridge_headers) -> None:
+    project = _create_project(client, "Widget Data Read Safety", "widget-data-read-safety")
+    _seed_swarm_plan(client, project["id"])
+
+    added = client.post(
+        f"/api/projects/{project['id']}/widgets/add",
+        json={"widget_type": "Swarm Strategy"},
+        headers=bridge_headers,
+    )
+    assert added.status_code == 200, added.text
+    instance_id = added.json()["id"]
+
+    _clear_simulations(project["id"])
+
+    response = client.get(
+        f"/api/widgets/instances/{instance_id}/data",
+        headers=bridge_headers,
+        params={"project_id": project["id"]},
+    )
+
+    assert response.status_code == 200, response.text
+    assert _simulation_count(project["id"]) == 0

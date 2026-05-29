@@ -5792,6 +5792,7 @@ class MissionControlService:
         overview: dict[str, Any],
         degraded_notices: list[str],
         preview_support: bool = False,
+        persist_launch_readiness: bool = True,
     ) -> dict[str, Any]:
         support_records: dict[str, Any] | None = None
 
@@ -5818,7 +5819,12 @@ class MissionControlService:
                     )
             return support_records
 
-        swarm_plan = self._serialize_swarm_plan(db, project, self._current_swarm_plan_record(db, project.id))
+        swarm_plan = self._serialize_swarm_plan(
+            db,
+            project,
+            self._current_swarm_plan_record(db, project.id),
+            persist_launch_readiness=persist_launch_readiness,
+        )
         if instance.widget_type == "Swarm Strategy":
             if swarm_plan is None:
                 return self._serialize_widget_data(instance, status="empty", empty_state="No swarm plan exists yet. Ask the Manager to generate one.")
@@ -6817,6 +6823,8 @@ class MissionControlService:
             current_action=current_action,
             overview=overview,
             degraded_notices=degraded_notices,
+            preview_support=True,
+            persist_launch_readiness=False,
         )
 
     async def get_dashboard_widget_summary(self, db: Session) -> dict[str, Any]:
@@ -6869,6 +6877,7 @@ class MissionControlService:
                 overview=overview,
                 degraded_notices=degraded_notices,
                 preview_support=True,
+                persist_launch_readiness=False,
             )
             for instance in instances
         ]
