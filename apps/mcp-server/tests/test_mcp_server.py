@@ -343,7 +343,8 @@ class FakeClient:
 
 def test_tool_schemas_are_exposed() -> None:
     server = MissionControlMcpServer(client=FakeClient())
-    names = {tool["name"] for tool in server.list_tools()}
+    tools = {tool["name"]: tool for tool in server.list_tools()}
+    names = set(tools)
     assert "mission_control_attach_workspace" in names
     assert "mission_control_start_task" in names
     assert "mission_control_import_existing_codebase" in names
@@ -353,7 +354,17 @@ def test_tool_schemas_are_exposed() -> None:
     assert "mission_control_request_recovery_plan" in names
     assert "mission_control_get_workspace_tooling" in names
     assert "mission_control_search_codebase" in names
-    assert all(tool["inputSchema"]["additionalProperties"] is False for tool in server.list_tools())
+    assert all(tool["inputSchema"]["additionalProperties"] is False for tool in tools.values())
+
+    assert tools["mission_control_get_status"]["inputSchema"]["required"] == ["project_id"]
+    assert tools["mission_control_get_pending_decisions"]["inputSchema"]["required"] == ["project_id"]
+    assert tools["mission_control_pause"]["inputSchema"]["required"] == ["project_id", "orchestration_id"]
+    assert tools["mission_control_resume"]["inputSchema"]["required"] == ["project_id", "orchestration_id"]
+    assert tools["mission_control_get_handoff"]["inputSchema"]["required"] == ["project_id"]
+    assert tools["mission_control_get_event_digest"]["inputSchema"]["required"] == ["project_id"]
+    assert tools["mission_control_get_handoff_summary"]["inputSchema"]["required"] == ["project_id"]
+    assert tools["mission_control_request_recovery_plan"]["inputSchema"]["required"] == ["project_id", "trigger_summary"]
+    assert tools["mission_control_get_orchestration_events"]["inputSchema"]["required"] == ["project_id", "orchestration_id"]
 
 
 def test_attach_workspace_tool_calls_daemon_client() -> None:

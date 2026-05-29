@@ -80,6 +80,20 @@ class MissionControlMcpServer:
                 "project_id": {"type": "integer", "minimum": 1},
             }
         )
+        project_target = _object_schema(
+            {
+                "orchestration_id": {"type": "integer", "minimum": 1},
+                "project_id": {"type": "integer", "minimum": 1},
+            },
+            required=["project_id"],
+        )
+        orchestration_target = _object_schema(
+            {
+                "orchestration_id": {"type": "integer", "minimum": 1},
+                "project_id": {"type": "integer", "minimum": 1},
+            },
+            required=["project_id", "orchestration_id"],
+        )
         return [
             {
                 "name": "mission_control_attach_workspace",
@@ -113,13 +127,13 @@ class MissionControlMcpServer:
             {
                 "name": "mission_control_get_status",
                 "description": "Get a compact orchestration status summary suitable for Codex chat polling.",
-                "inputSchema": common_target,
+                "inputSchema": project_target,
                 "outputSchema": GENERIC_OUTPUT_SCHEMA,
             },
             {
                 "name": "mission_control_get_pending_decisions",
                 "description": "List approvals and manager questions that still need a user answer.",
-                "inputSchema": common_target,
+                "inputSchema": project_target,
                 "outputSchema": {"type": "array", "items": {"type": "object", "additionalProperties": True}},
             },
             {
@@ -140,19 +154,19 @@ class MissionControlMcpServer:
             {
                 "name": "mission_control_pause",
                 "description": "Pause a running Mission Control orchestration.",
-                "inputSchema": common_target,
+                "inputSchema": orchestration_target,
                 "outputSchema": GENERIC_OUTPUT_SCHEMA,
             },
             {
                 "name": "mission_control_resume",
                 "description": "Resume a paused Mission Control orchestration.",
-                "inputSchema": common_target,
+                "inputSchema": orchestration_target,
                 "outputSchema": GENERIC_OUTPUT_SCHEMA,
             },
             {
                 "name": "mission_control_get_handoff",
                 "description": "Fetch the latest Mission Control handoff summary when available.",
-                "inputSchema": common_target,
+                "inputSchema": project_target,
                 "outputSchema": GENERIC_OUTPUT_SCHEMA,
             },
             {
@@ -197,14 +211,15 @@ class MissionControlMcpServer:
                                 "since_orchestration_start",
                             ],
                         },
-                    }
+                    },
+                    required=["project_id"],
                 ),
                 "outputSchema": GENERIC_OUTPUT_SCHEMA,
             },
             {
                 "name": "mission_control_get_handoff_summary",
                 "description": "Fetch a chat-native handoff summary for a project or orchestration.",
-                "inputSchema": common_target,
+                "inputSchema": project_target,
                 "outputSchema": GENERIC_OUTPUT_SCHEMA,
             },
             {
@@ -241,14 +256,14 @@ class MissionControlMcpServer:
                         "related_task_id": {"type": "integer", "minimum": 1},
                         "suggested_actions_json": {"type": "array", "items": {"type": "string"}},
                     },
-                    required=["trigger_summary"],
+                    required=["project_id", "trigger_summary"],
                 ),
                 "outputSchema": GENERIC_OUTPUT_SCHEMA,
             },
             {
                 "name": "mission_control_get_orchestration_events",
                 "description": "Fetch recent safe orchestration events for debugging or progress summaries.",
-                "inputSchema": _object_schema({"orchestration_id": {"type": "integer", "minimum": 1}}, required=["orchestration_id"]),
+                "inputSchema": orchestration_target,
                 "outputSchema": {"type": "array", "items": {"type": "object", "additionalProperties": True}},
             },
             {
@@ -278,7 +293,7 @@ class MissionControlMcpServer:
             {
                 "name": "mission_control_get_diagnostics",
                 "description": "Fetch bridge-safe diagnostics and plugin-health context for a Mission Control project or orchestration.",
-                "inputSchema": common_target,
+                "inputSchema": project_target,
                 "outputSchema": GENERIC_OUTPUT_SCHEMA,
             },
             {
