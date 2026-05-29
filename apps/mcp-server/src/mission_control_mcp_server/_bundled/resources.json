@@ -10,7 +10,7 @@
   },
   "resources": [
     {
-      "uri_template": "mission-control://orchestrations/{orchestration_id}/status",
+      "uri_template": "mission-control://projects/{project_id}/orchestrations/{orchestration_id}/status",
       "title": "Orchestration status",
       "summary": "Compact bridge-safe orchestration status with phase, blockers, pending decisions, and handoff readiness.",
       "support_status": "implemented",
@@ -43,7 +43,7 @@
       }
     },
     {
-      "uri_template": "mission-control://orchestrations/{orchestration_id}/events",
+      "uri_template": "mission-control://projects/{project_id}/orchestrations/{orchestration_id}/events",
       "title": "Orchestration events",
       "summary": "Recent orchestration events summarized for Codex chat without raw log streaming.",
       "support_status": "implemented",

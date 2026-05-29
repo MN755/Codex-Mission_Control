@@ -11,8 +11,8 @@ from mission_control_mcp_server.server import MissionControlMcpServer
 
 
 EXPECTED_RESOURCES = {
-    "mission-control://orchestrations/{orchestration_id}/status",
-    "mission-control://orchestrations/{orchestration_id}/events",
+    "mission-control://projects/{project_id}/orchestrations/{orchestration_id}/status",
+    "mission-control://projects/{project_id}/orchestrations/{orchestration_id}/events",
     "mission-control://projects/{project_id}/status",
     "mission-control://projects/{project_id}/agents",
     "mission-control://projects/{project_id}/pending-decisions",
@@ -447,6 +447,45 @@ def test_resources_return_safe_summary_payloads() -> None:
     result = server.read_resource("mission-control://projects/7/status")
     assert result["contents"][0]["mimeType"] == "application/json"
     assert '"safe": true' in result["contents"][0]["text"]
+
+
+def test_project_scoped_orchestration_resources_forward_project_scope(monkeypatch) -> None:
+    client = MissionControlDaemonClient(base_url="http://127.0.0.1:8010", timeout=0.1)
+    calls: list[tuple[str, dict]] = []
+
+    monkeypatch.setattr(
+        client,
+        "get_status",
+        lambda **kwargs: calls.append(("get_status", kwargs))
+        or {
+            "orchestration_id": kwargs["orchestration_id"],
+            "project_id": kwargs["project_id"],
+            "project_name": "Demo",
+            "orchestration_status": "running",
+            "manager_status": "active",
+            "current_phase": "planning",
+            "pending_decisions_count": 0,
+            "current_blockers": [],
+            "next_expected_action": "Continue.",
+            "handoff_readiness": "not_ready",
+        },
+    )
+    monkeypatch.setattr(
+        client,
+        "get_orchestration_events",
+        lambda orchestration_id, *, project_id=None: calls.append(
+            ("get_orchestration_events", {"orchestration_id": orchestration_id, "project_id": project_id})
+        )
+        or [{"event_type": "orchestration_created"}],
+    )
+
+    status = client.read_resource("mission-control://projects/7/orchestrations/14/status")
+    events = client.read_resource("mission-control://projects/7/orchestrations/14/events")
+
+    assert status["project_id"] == 7
+    assert events["orchestration_id"] == 14
+    assert ("get_status", {"orchestration_id": 14, "project_id": 7}) in calls
+    assert ("get_orchestration_events", {"orchestration_id": 14, "project_id": 7}) in calls
 
 
 def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch) -> None:

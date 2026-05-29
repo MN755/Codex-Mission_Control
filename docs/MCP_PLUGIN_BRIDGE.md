@@ -36,7 +36,7 @@ The bridge keeps Codex chat thin. Mission Control remains the orchestrator. MCP 
 - `mission-control://projects/{project_id}/handoff`
 - `mission-control://projects/{project_id}/codebase-map`
 - `mission-control://projects/{project_id}/diagnostics`
-- `mission-control://orchestrations/{orchestration_id}/status`
+- `mission-control://projects/{project_id}/orchestrations/{orchestration_id}/status`
 
 ## Bridge rules
 

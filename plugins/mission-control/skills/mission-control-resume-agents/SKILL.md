@@ -32,7 +32,7 @@ Tools:
 - `mission_control_resume`
 
 Resources:
-- `mission-control://orchestrations/{orchestration_id}/status`
+- `mission-control://projects/{project_id}/orchestrations/{orchestration_id}/status`
 - `mission-control://projects/{project_id}/pending-decisions`
 - `mission-control://projects/{project_id}/agents`
 

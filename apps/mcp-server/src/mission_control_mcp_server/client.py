@@ -1247,6 +1247,14 @@ class MissionControlDaemonClient:
         if not uri.startswith("mission-control://"):
             raise RuntimeError("Unsupported Mission Control resource URI.")
         parts = [segment for segment in uri.removeprefix("mission-control://").split("/") if segment]
+        if len(parts) >= 5 and parts[0] == "projects" and parts[2] == "orchestrations":
+            project_id = int(parts[1])
+            orchestration_id = int(parts[3])
+            kind = parts[4]
+            if kind == "status":
+                return self._summarize_status(self.get_status(orchestration_id=orchestration_id, project_id=project_id))
+            if kind == "events":
+                return self._summarize_events(orchestration_id, self.get_orchestration_events(orchestration_id, project_id=project_id))
         if len(parts) >= 3 and parts[0] == "orchestrations":
             orchestration_id = int(parts[1])
             kind = parts[2]

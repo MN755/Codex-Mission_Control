@@ -21,7 +21,7 @@
       "description": "Start a manager-led Mission Control workflow for the current repo from Codex chat.",
       "required_arguments": ["WORKSPACE_PATH", "USER_REQUEST"],
       "tool_sequence": ["mission_control_attach_workspace", "mission_control_start_task", "mission_control_get_status", "mission_control_get_pending_decisions"],
-      "resource_sequence": ["mission-control://orchestrations/{orchestration_id}/status", "mission-control://projects/{project_id}/pending-decisions"],
+      "resource_sequence": ["mission-control://projects/{project_id}/orchestrations/{orchestration_id}/status", "mission-control://projects/{project_id}/pending-decisions"],
       "expected_chat_output": "Compact status, pending decisions if any, and a clear statement that Mission Control owns orchestration.",
       "safety_notes": "Codex is the bridge, not the manager. Do not bypass approvals.",
       "prompt_text": "Use Mission Control for this repo. Attach the workspace, start the requested manager-led task, summarize status, and surface pending decisions if Mission Control needs user input. Do not act like the manager yourself."
@@ -45,7 +45,7 @@
       "description": "Start a Mission Control task for an already attached project and return compact status.",
       "required_arguments": ["PROJECT_ID", "USER_REQUEST"],
       "tool_sequence": ["mission_control_start_task", "mission_control_get_status", "mission_control_get_pending_decisions"],
-      "resource_sequence": ["mission-control://orchestrations/{orchestration_id}/status"],
+      "resource_sequence": ["mission-control://projects/{project_id}/orchestrations/{orchestration_id}/status"],
       "expected_chat_output": "New or reused orchestration state plus any user-blocking decisions.",
       "safety_notes": "Respect existing pending decisions instead of replacing them with a new local plan.",
       "prompt_text": "Start a Mission Control manager-led task for the attached project. Return compact status and surface any pending decisions immediately if the orchestration is waiting on the user."
@@ -57,7 +57,7 @@
       "description": "Check the current orchestration, summarize progress, and stop at pending user decisions when necessary.",
       "required_arguments": ["PROJECT_OR_ORCHESTRATION_REFERENCE"],
       "tool_sequence": ["mission_control_get_status", "mission_control_get_pending_decisions", "mission_control_get_event_digest"],
-      "resource_sequence": ["mission-control://orchestrations/{orchestration_id}/status", "mission-control://projects/{project_id}/agents", "mission-control://projects/{project_id}/pending-decisions"],
+      "resource_sequence": ["mission-control://projects/{project_id}/orchestrations/{orchestration_id}/status", "mission-control://projects/{project_id}/agents", "mission-control://projects/{project_id}/pending-decisions"],
       "expected_chat_output": "Progress summary, blockers, active agents, and pending decisions if present.",
       "safety_notes": "Poll only when useful and do not confuse waiting with completion.",
       "prompt_text": "Continue the Mission Control orchestration by checking status, a safe event digest, and pending decisions. If the run is blocked on the user, present that cleanly and stop there. If it is active, summarize progress in compact markdown."
@@ -129,7 +129,7 @@
       "description": "Pause the active Mission Control orchestration and confirm the new state.",
       "required_arguments": ["ORCHESTRATION_ID"],
       "tool_sequence": ["mission_control_pause", "mission_control_get_status"],
-      "resource_sequence": ["mission-control://orchestrations/{orchestration_id}/status"],
+      "resource_sequence": ["mission-control://projects/{project_id}/orchestrations/{orchestration_id}/status"],
       "expected_chat_output": "Confirmation that the orchestration is paused and what remains pending.",
       "safety_notes": "Pausing is a state change. Confirm the right orchestration before doing it.",
       "prompt_text": "Pause the specified Mission Control orchestration and then confirm the paused state with a compact status summary."
@@ -141,7 +141,7 @@
       "description": "Resume a paused Mission Control orchestration after the user confirms it should continue.",
       "required_arguments": ["ORCHESTRATION_ID"],
       "tool_sequence": ["mission_control_resume", "mission_control_get_status", "mission_control_get_pending_decisions"],
-      "resource_sequence": ["mission-control://orchestrations/{orchestration_id}/status"],
+      "resource_sequence": ["mission-control://projects/{project_id}/orchestrations/{orchestration_id}/status"],
       "expected_chat_output": "Confirmation that the orchestration resumed or a clear explanation of what still blocks it.",
       "safety_notes": "Do not auto-resume a found orchestration without the user asking.",
       "prompt_text": "Resume the specified Mission Control orchestration if the user asked to continue, then summarize the updated state and any remaining pending decisions."

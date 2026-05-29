@@ -15,7 +15,7 @@ Start a headless Mission Control run for the current repo from Codex chat.
 2. Call `mission_control_start_task`.
 3. Call `mission_control_get_status`.
 4. Call `mission_control_get_pending_decisions`.
-5. Read `mission-control://orchestrations/{orchestration_id}/status` when available.
+5. Read `mission-control://projects/{project_id}/orchestrations/{orchestration_id}/status` when available.
 
 ## Expected User-Facing Codex Chat Output
 

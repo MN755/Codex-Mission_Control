@@ -21,8 +21,8 @@ The canonical machine-readable catalogs live here:
 
 ### Orchestration resources
 
-- `mission-control://orchestrations/{orchestration_id}/status`
-- `mission-control://orchestrations/{orchestration_id}/events`
+- `mission-control://projects/{project_id}/orchestrations/{orchestration_id}/status`
+- `mission-control://projects/{project_id}/orchestrations/{orchestration_id}/events`
 
 ### Project resources
 

@@ -79,7 +79,7 @@ The MCP bridge can auto-start the daemon when `GET /api/health` fails and the co
 - `mission-control://projects/{project_id}/pending-decisions`
 - `mission-control://projects/{project_id}/handoff`
 - `mission-control://projects/{project_id}/codebase-map`
-- `mission-control://orchestrations/{orchestration_id}/status`
+- `mission-control://projects/{project_id}/orchestrations/{orchestration_id}/status`
 
 These resources expose safe summaries only. They do not expose raw logs, secret headers, or giant transcripts by default because this is an orchestration bridge, not an exfiltration bridge.
 
