@@ -5585,7 +5585,7 @@ class MissionControlService:
                     "items": [
                         {
                             "title": category.replace("_", " "),
-                            "detail": f"{entry['provider']} / {entry['model']} • score {entry['score']}",
+                            "detail": f"{entry['provider']} / {entry['model']} â€¢ score {entry['score']}",
                         }
                         for category, entry in summary["top_categories"].items()
                     ],
@@ -5603,7 +5603,7 @@ class MissionControlService:
                     "items": [
                         {
                             "title": f"{item['archetype']} ({item['model'] or item['provider'] or 'default'})",
-                            "detail": f"success {int(item['success_rate'] * 100)}% • confidence {item['confidence']}",
+                            "detail": f"success {int(item['success_rate'] * 100)}% â€¢ confidence {item['confidence']}",
                         }
                         for item in reputation[:8]
                     ]
@@ -5625,7 +5625,7 @@ class MissionControlService:
                     "items": [
                         {
                             "title": item.summary,
-                            "detail": f"{item.severity} • {item.suggested_action} • {item.status}",
+                            "detail": f"{item.severity} â€¢ {item.suggested_action} â€¢ {item.status}",
                         }
                         for item in signals
                     ]
@@ -5642,7 +5642,7 @@ class MissionControlService:
                     "items": [
                         {
                             "title": item.key,
-                            "detail": f"{item.value_json} • {item.source}",
+                            "detail": f"{item.value_json} â€¢ {item.source}",
                         }
                         for item in preferences[:8]
                     ]
@@ -5756,7 +5756,7 @@ class MissionControlService:
                             "project_id": project.id,
                             "project_name": project.name,
                             "title": plan.trigger_summary,
-                            "detail": f"{plan.trigger_type} · {plan.status}",
+                            "detail": f"{plan.trigger_type} Â· {plan.status}",
                         }
                     )
             if not items:
@@ -5792,6 +5792,7 @@ class MissionControlService:
         overview: dict[str, Any],
         degraded_notices: list[str],
         preview_support: bool = False,
+        persist_launch_readiness: bool = True,
     ) -> dict[str, Any]:
         support_records: dict[str, Any] | None = None
 
@@ -5818,7 +5819,12 @@ class MissionControlService:
                     )
             return support_records
 
-        swarm_plan = self._serialize_swarm_plan(db, project, self._current_swarm_plan_record(db, project.id))
+        swarm_plan = self._serialize_swarm_plan(
+            db,
+            project,
+            self._current_swarm_plan_record(db, project.id),
+            persist_launch_readiness=persist_launch_readiness,
+        )
         if instance.widget_type == "Swarm Strategy":
             if swarm_plan is None:
                 return self._serialize_widget_data(instance, status="empty", empty_state="No swarm plan exists yet. Ask the Manager to generate one.")
@@ -5848,7 +5854,7 @@ class MissionControlService:
                     "items": [
                         {
                             "title": f"{item['archetype']} ({item['model'] or item['provider'] or 'default'})",
-                            "detail": f"success {int(item['success_rate'] * 100)}% • best: {', '.join(item['recommended_for']) or 'unknown'}",
+                            "detail": f"success {int(item['success_rate'] * 100)}% â€¢ best: {', '.join(item['recommended_for']) or 'unknown'}",
                             "weak_spots": item["avoid_for"],
                         }
                         for item in reputation[:8]
@@ -5883,7 +5889,7 @@ class MissionControlService:
                     "items": [
                         {
                             "title": item["title"],
-                            "detail": f"files {len(item['included_files_json'])} • docs {len(item['included_docs_json'])} • warnings {len(item['warnings_json'])}",
+                            "detail": f"files {len(item['included_files_json'])} â€¢ docs {len(item['included_docs_json'])} â€¢ warnings {len(item['warnings_json'])}",
                             "task_id": item["task_id"],
                             "agent_id": item["agent_id"],
                         }
@@ -5902,7 +5908,7 @@ class MissionControlService:
                     "items": [
                         {
                             "title": item.title,
-                            "detail": f"{item.severity}/{item.likelihood} • {item.status} • mitigation: {item.mitigation or 'none'}",
+                            "detail": f"{item.severity}/{item.likelihood} â€¢ {item.status} â€¢ mitigation: {item.mitigation or 'none'}",
                             "owner": item.owner_agent_id,
                         }
                         for item in risks[:10]
@@ -5976,7 +5982,7 @@ class MissionControlService:
                     "items": [
                         {
                             "title": item.summary,
-                            "detail": f"{item.severity} • {item.suggested_action} • {item.status}",
+                            "detail": f"{item.severity} â€¢ {item.suggested_action} â€¢ {item.status}",
                         }
                         for item in signals[:10]
                     ]
@@ -6011,9 +6017,9 @@ class MissionControlService:
                         {
                             "title": item["area"] if isinstance(item, dict) else item.area,
                             "detail": (
-                                f"{item['coverage_status']} • {item.get('evidence_summary') or 'No evidence recorded yet.'}"
+                                f"{item['coverage_status']} â€¢ {item.get('evidence_summary') or 'No evidence recorded yet.'}"
                                 if isinstance(item, dict)
-                                else f"{item.coverage_status} • {item.evidence_summary or 'No evidence recorded yet.'}"
+                                else f"{item.coverage_status} â€¢ {item.evidence_summary or 'No evidence recorded yet.'}"
                             ),
                         }
                         for item in items
@@ -6032,7 +6038,7 @@ class MissionControlService:
                     "items": [
                         {
                             "title": item.key,
-                            "detail": f"{item.value_json} • {item.source} • {item.scope}",
+                            "detail": f"{item.value_json} â€¢ {item.source} â€¢ {item.scope}",
                         }
                         for item in preferences[:10]
                     ]
@@ -6817,6 +6823,8 @@ class MissionControlService:
             current_action=current_action,
             overview=overview,
             degraded_notices=degraded_notices,
+            preview_support=True,
+            persist_launch_readiness=False,
         )
 
     async def get_dashboard_widget_summary(self, db: Session) -> dict[str, Any]:
@@ -6869,6 +6877,7 @@ class MissionControlService:
                 overview=overview,
                 degraded_notices=degraded_notices,
                 preview_support=True,
+                persist_launch_readiness=False,
             )
             for instance in instances
         ]
@@ -7484,10 +7493,17 @@ class MissionControlService:
         project: Project,
         plan: SwarmPlan,
         specs: list[SwarmAgentSpec],
+        *,
+        persist_launch_readiness: bool = True,
     ) -> tuple[dict[str, Any], str | None, str | None]:
         simulation = simulation_service.latest_simulation(db, project)
         if simulation is None or simulation.swarm_plan_id != plan.id:
-            simulation = simulation_service.simulate_launch(db, project, plan)
+            simulation = simulation_service.simulate_launch(
+                db,
+                project,
+                plan,
+                persist=persist_launch_readiness,
+            )
         launch_order = list(simulation.recommended_launch_order_json or [])
         next_launch = next((item for item in launch_order if str(item.get("status")) == "launch"), None)
         next_wait = next((item for item in launch_order if str(item.get("status")) == "wait"), None)
@@ -7524,13 +7540,26 @@ class MissionControlService:
         }
         return readiness, wave_label, next_step
 
-    def _serialize_swarm_plan(self, db: Session, project: Project, plan: SwarmPlan | None) -> dict[str, Any] | None:
+    def _serialize_swarm_plan(
+        self,
+        db: Session,
+        project: Project,
+        plan: SwarmPlan | None,
+        *,
+        persist_launch_readiness: bool = True,
+    ) -> dict[str, Any] | None:
         if plan is None:
             return None
         preferences = self._swarm_preferences(project)
         specs = self._swarm_specs_for_plan(db, plan.id)
         spec_status_summary = self._swarm_spec_status_summary(specs)
-        launch_readiness, recommended_wave_label, recommended_next_step = self._swarm_launch_readiness(db, project, plan, specs)
+        launch_readiness, recommended_wave_label, recommended_next_step = self._swarm_launch_readiness(
+            db,
+            project,
+            plan,
+            specs,
+            persist_launch_readiness=persist_launch_readiness,
+        )
         active_agent_count = db.scalar(
             select(func.count(Agent.id)).where(
                 Agent.project_id == project.id,
@@ -7654,8 +7683,19 @@ class MissionControlService:
             for payload in AGENT_ARCHETYPE_CATALOG
         ]
 
-    def get_swarm_plan(self, db: Session, project: Project) -> dict[str, Any] | None:
-        return self._serialize_swarm_plan(db, project, self._current_swarm_plan_record(db, project.id))
+    def get_swarm_plan(
+        self,
+        db: Session,
+        project: Project,
+        *,
+        persist_launch_readiness: bool = True,
+    ) -> dict[str, Any] | None:
+        return self._serialize_swarm_plan(
+            db,
+            project,
+            self._current_swarm_plan_record(db, project.id),
+            persist_launch_readiness=persist_launch_readiness,
+        )
 
     def list_swarm_events(self, db: Session, project: Project) -> list[dict[str, Any]]:
         events = list(
@@ -10372,7 +10412,7 @@ class MissionControlService:
             if str(agent.get("display_status") or "") in {"working", "blocked", "waiting", "error"}
         ]
         timeline = self.list_timeline_events(db, project)[:6]
-        swarm_plan = self.get_swarm_plan(db, project)
+        swarm_plan = self.get_swarm_plan(db, project, persist_launch_readiness=False)
         current_focus = self._dedupe_strings(
             [
                 *(f"{agent['name']}: {agent.get('current_action') or agent['display_status']}" for agent in active_agents[:4]),
@@ -11081,7 +11121,12 @@ class MissionControlService:
             "activity_log": self._activity_log(db, project),
             "degraded_notices": degraded_notices,
             "swarm_preferences": self._serialize_swarm_preferences(swarm_preferences),
-            "swarm_plan": self._serialize_swarm_plan(db, project, swarm_plan),
+            "swarm_plan": self._serialize_swarm_plan(
+                db,
+                project,
+                swarm_plan,
+                persist_launch_readiness=False,
+            ),
             "swarm_events": self.list_swarm_events(db, project)[:8],
         }
 
