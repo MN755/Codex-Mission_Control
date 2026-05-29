@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import sys
 from pathlib import Path
 
 
@@ -141,3 +142,39 @@ def test_launcher_scripts_use_configured_launcher_dir() -> None:
     assert "npm.cmd run build" not in desktop_app
     assert "launcherLogDir" in stop_script
     assert 'Join-Path $launcherDir "pids.json"' in stop_script
+
+
+def test_desktop_package_declares_server_runtime_dependency() -> None:
+    pyproject = (Path(__file__).resolve().parents[3] / "apps" / "desktop" / "pyproject.toml").read_text(encoding="utf-8")
+    assert 'codex-mission-control-server==1.3.0b1' in pyproject
+
+
+def test_server_package_exports_runtime_modules_used_by_desktop() -> None:
+    pyproject = (Path(__file__).resolve().parents[3] / "apps" / "server" / "pyproject.toml").read_text(encoding="utf-8")
+    for module_name in ("config", "device_profile", "plugin_health", "provider_adapter_recipes", "webwright_support"):
+        assert f'"{module_name}"' in pyproject
+
+
+def test_desktop_app_discovery_skips_non_repo_site_packages_ancestors(tmp_path, monkeypatch) -> None:
+    app_path = Path(__file__).resolve().parents[3] / "apps" / "desktop" / "src" / "mission_control_desktop" / "app.py"
+    fake_root = tmp_path / "site-packages" / "mission_control_desktop"
+    fake_root.mkdir(parents=True)
+    fake_app = fake_root / "app.py"
+    fake_app.write_text(app_path.read_text(encoding="utf-8"), encoding="utf-8")
+    sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "apps" / "server" / "src"))
+    monkeypatch.delenv("MISSION_CONTROL_REPO_ROOT", raising=False)
+    try:
+        spec = importlib.util.spec_from_file_location("desktop_packaging_probe", fake_app)
+        assert spec is not None and spec.loader is not None
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+    finally:
+        sys.path.pop(0)
+        sys.modules.pop("desktop_packaging_probe", None)
+    assert module.SOURCE_REPO_ROOT is None
+    assert module.SERVER_SRC is None
+    assert module.BUNDLE_ROOT == fake_root
+    app_support_root, ensure_runtime_dirs, fastapi_app = module._load_backend_runtime()
+    assert callable(ensure_runtime_dirs)
+    assert app_support_root
+    assert fastapi_app

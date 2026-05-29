@@ -11,8 +11,21 @@ import webbrowser
 from pathlib import Path
 
 IS_FROZEN = bool(getattr(sys, "frozen", False))
-BUNDLE_ROOT = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parents[4]))
-SOURCE_REPO_ROOT = None if IS_FROZEN else Path(__file__).resolve().parents[4]
+BUNDLE_ROOT = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
+
+
+def _discover_source_repo_root() -> Path | None:
+    explicit = os.environ.get("MISSION_CONTROL_REPO_ROOT")
+    if explicit:
+        return Path(explicit).expanduser().resolve()
+    current = Path(__file__).resolve()
+    for parent in current.parents:
+        if (parent / "apps" / "server" / "src" / "main.py").exists() and (parent / "README.md").exists():
+            return parent
+    return None
+
+
+SOURCE_REPO_ROOT = None if IS_FROZEN else _discover_source_repo_root()
 SERVER_SRC = (SOURCE_REPO_ROOT / "apps" / "server" / "src") if SOURCE_REPO_ROOT is not None else None
 FRONTEND_DIST = (
     (SOURCE_REPO_ROOT / "apps" / "dashboard" / "dist")
@@ -72,14 +85,20 @@ def _wait_for_server(url: str, timeout_seconds: float = 20.0) -> None:
     raise RuntimeError(f"Timed out waiting for {url}")
 
 
+def _load_backend_runtime():
+    from config import APP_SUPPORT_ROOT, ensure_runtime_dirs
+    from main import app as fastapi_app
+
+    return APP_SUPPORT_ROOT, ensure_runtime_dirs, fastapi_app
+
+
 def main() -> None:
     if os.environ.get("MISSION_CONTROL_DESKTOP_SMOKE_TEST") == "1":
         print("mission-control-desktop smoke ok", flush=True)
         return
     import uvicorn
 
-    from config import APP_SUPPORT_ROOT, ensure_runtime_dirs
-    from main import app as fastapi_app
+    APP_SUPPORT_ROOT, ensure_runtime_dirs, fastapi_app = _load_backend_runtime()
 
     ensure_runtime_dirs()
     if not FRONTEND_DIST.exists():
