@@ -20,7 +20,10 @@
   <img alt="Host" src="https://img.shields.io/badge/Host-Codex%20chat%20primary-111111">
   <img alt="Claude Code" src="https://img.shields.io/badge/Claude%20Code-supported-D97706">
   <img alt="Local First" src="https://img.shields.io/badge/Local--first-yes-16A34A">
-</p>
+  <img alt="Nvidia Dynamo" src="https://img.shields.io/badge/NVIDIA_Dynamo_Support-Yes-brightgreen">
+  <img alt="CUDA Kernal Generation" src="https://img.shields.io/badge/CUDA_Kernal_Generation-Yes-brightgreen">
+  <img alt="NVIDIA NSIGHT Profiling" src="https://img.shields.io/badge/NVIDIA_NSIGHT_Profiling-Yes-brightgreen">
+  <img alt="NVIDIA Benchmark Comparison" src="https://img.shields.io/badge/NVIDIA_Benchmark_Comparison-Yes-brightgreen">
 
 <p align="center"><strong>One chat. One manager. Many agents. No orchestration circus.</strong></p>
 
