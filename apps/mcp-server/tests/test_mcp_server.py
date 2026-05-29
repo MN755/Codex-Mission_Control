@@ -370,7 +370,7 @@ def test_attach_workspace_tool_calls_daemon_client() -> None:
 def test_get_status_returns_compact_summary() -> None:
     client = FakeClient()
     server = MissionControlMcpServer(client=client)
-    result = server.call_tool("mission_control_get_status", {"orchestration_id": 14})
+    result = server.call_tool("mission_control_get_status", {"project_id": 7, "orchestration_id": 14})
     assert result["structuredContent"]["message_type"] == "blocked"
     assert result["structuredContent"]["user_action_required"] is True
     assert client.calls[0][0] == "get_status_summary"
@@ -436,6 +436,50 @@ def test_resources_return_safe_summary_payloads() -> None:
     result = server.read_resource("mission-control://projects/7/status")
     assert result["contents"][0]["mimeType"] == "application/json"
     assert '"safe": true' in result["contents"][0]["text"]
+
+
+def test_project_scoped_tool_schemas_require_project_id() -> None:
+    server = MissionControlMcpServer(client=FakeClient())
+    tool_names = {
+        "mission_control_get_status",
+        "mission_control_get_pending_decisions",
+        "mission_control_pause",
+        "mission_control_resume",
+        "mission_control_get_handoff",
+        "mission_control_get_event_digest",
+        "mission_control_get_handoff_summary",
+        "mission_control_get_diagnostics",
+        "mission_control_request_recovery_options",
+    }
+    required_by_tool = {
+        tool["name"]: tool["inputSchema"].get("required", [])
+        for tool in server.list_tools()
+        if tool["name"] in tool_names
+    }
+
+    assert required_by_tool
+    assert all("project_id" in required for required in required_by_tool.values())
+
+
+def test_project_scoped_tools_reject_missing_project_id() -> None:
+    server = MissionControlMcpServer(client=FakeClient())
+    for name, payload in [
+        ("mission_control_get_status", {"orchestration_id": 14}),
+        ("mission_control_get_pending_decisions", {"orchestration_id": 14}),
+        ("mission_control_pause", {"orchestration_id": 14}),
+        ("mission_control_resume", {"orchestration_id": 14}),
+        ("mission_control_get_handoff", {"orchestration_id": 14}),
+        ("mission_control_get_event_digest", {"orchestration_id": 14}),
+        ("mission_control_get_handoff_summary", {"orchestration_id": 14}),
+        ("mission_control_get_diagnostics", {"orchestration_id": 14}),
+        ("mission_control_request_recovery_options", {"orchestration_id": 14}),
+    ]:
+        try:
+            server.call_tool(name, payload)
+        except RuntimeError as exc:
+            assert str(exc) == "Missing required argument: project_id"
+        else:
+            raise AssertionError(f"{name} unexpectedly accepted a missing project_id.")
 
 
 def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch) -> None:
@@ -609,6 +653,33 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
     assert dynamo["reachable"] is True
     assert aiq["install_status"] == "ready"
     assert gpu["status"] == "ready"
+
+
+def test_project_status_resource_keeps_project_scope_for_active_orchestration(monkeypatch) -> None:
+    client = MissionControlDaemonClient(base_url="http://127.0.0.1:8010", timeout=0.1)
+    monkeypatch.setattr(client, "get_project", lambda project_id: {"id": project_id, "name": "Demo"})
+    monkeypatch.setattr(
+        client,
+        "active_project_orchestration",
+        lambda project_id: {"id": 14, "project_id": project_id, "status": "running"},
+    )
+    monkeypatch.setattr(
+        client,
+        "get_status",
+        lambda *, orchestration_id=None, project_id=None: {
+            "project_id": project_id,
+            "orchestration_id": orchestration_id,
+            "project_name": "Demo",
+            "orchestration_status": "running",
+            "manager_status": "active",
+        },
+    )
+
+    result = client.read_resource("mission-control://projects/7/status")
+
+    assert result["project_id"] == 7
+    assert result["project_name"] == "Demo"
+    assert result["orchestration_status"] == "running"
 
 
 def test_daemon_client_auto_start_launches_when_health_fails(monkeypatch, tmp_path: Path) -> None:
