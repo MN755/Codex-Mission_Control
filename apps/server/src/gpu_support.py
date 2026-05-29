@@ -185,30 +185,39 @@ def detect_cuda_repo_mode(workspace_path: str | Path) -> dict[str, Any]:
         _append_unique(languages, ["C++", "CUDA"])
         signals.append("Detected CUDA source files (*.cu, *.cuh, *.ptx, or *.cubin).")
 
-    top_texts: list[str] = []
+    project_texts: list[str] = []
+    supporting_texts: list[str] = []
     for candidate in [
         root / "CMakeLists.txt",
         root / "Makefile",
         root / "pyproject.toml",
         root / "setup.py",
         root / "requirements.txt",
-        root / "README.md",
     ]:
         if candidate.exists():
-            top_texts.append(_safe_read_text(candidate))
+            project_texts.append(_safe_read_text(candidate))
             important_paths.append(candidate.relative_to(root).as_posix())
-    combined_text = "\n".join(top_texts).lower()
+    readme_path = root / "README.md"
+    if readme_path.exists():
+        supporting_texts.append(_safe_read_text(readme_path))
+        important_paths.append(readme_path.relative_to(root).as_posix())
+    combined_text = "\n".join(project_texts).lower()
+    supporting_text = "\n".join([*project_texts, *supporting_texts]).lower()
 
     if any(token in combined_text for token in ("cuda", "cudart", "cublas", "cudnn", "nvcc")):
         if "CUDA" not in languages:
             _append_unique(languages, ["CUDA"])
         frameworks.append("NVIDIA CUDA")
         signals.append("Detected CUDA toolchain references in build or project files.")
-    if any(token in combined_text for token in ("cuda::tile", "cuda tile", "tile programming", "cuda::std::")):
+    if any(token in supporting_text for token in ("cuda::tile", "cuda tile", "tile programming", "cuda::std::")) and (
+        "CUDA" in languages or "NVIDIA CUDA" in frameworks
+    ):
         frameworks.append("CUDA Tile")
         signals.append("Detected CUDA Tile programming signals.")
         autotune_notes.append("Treat tile shapes and launch configuration as tunable performance parameters, not fixed trivia.")
-    if any(token in combined_text for token in ("nsight", "nsys", "ncu")):
+    if any(token in supporting_text for token in ("nsight", "nsys", "ncu")) and (
+        "CUDA" in languages or "NVIDIA CUDA" in frameworks or any(path.suffix.lower() in CUDA_FILE_EXTENSIONS for path in files)
+    ):
         frameworks.append("Nsight")
         signals.append("Detected Nsight profiling tooling references.")
     if any(token in combined_text for token in ("cupy", "numba.cuda", "torch.utils.cpp_extension", "pytorch")):
@@ -230,7 +239,7 @@ def detect_cuda_repo_mode(workspace_path: str | Path) -> dict[str, Any]:
     if (root / "pyproject.toml").exists() or (root / "setup.py").exists():
         if any(token in combined_text for token in ("cupy", "numba", "torch.utils.cpp_extension", "cuda")):
             build_commands.append("python -m pip install -e .")
-    if (root / "requirements.txt").exists() and any("pytest" in text.lower() for text in top_texts):
+    if (root / "requirements.txt").exists() and any("pytest" in text.lower() for text in project_texts):
         test_commands.append("python -m pytest")
     if any("pytest" in path for path in relative_paths):
         _append_unique(test_commands, ["python -m pytest"])

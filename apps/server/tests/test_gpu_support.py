@@ -37,6 +37,17 @@ def test_detect_cuda_repo_mode_finds_tile_signals_and_commands() -> None:
     assert "benchmarks" in payload["important_paths"]
 
 
+def test_detect_cuda_repo_mode_does_not_treat_readme_marketing_as_cuda_repo() -> None:
+    workspace = Path(sample_workspace("cuda-readme-only"))
+    workspace.mkdir(parents=True, exist_ok=True)
+    _write(workspace / "README.md", "Mission Control can help with CUDA Tile, Nsight, and NVIDIA GPU workflows.\n")
+
+    payload = detect_cuda_repo_mode(workspace)
+
+    assert payload["enabled"] is False
+    assert payload["mode"] is None
+
+
 def test_gpu_cluster_health_flags_pending_pods_and_memory_pressure() -> None:
     workspace = Path(sample_workspace("gpu-health-blocked"))
     workspace.mkdir(parents=True, exist_ok=True)
