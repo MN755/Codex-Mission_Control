@@ -19,6 +19,7 @@ OBSERVABILITY_DIR_CANDIDATES = [
     "gpu-observability",
 ]
 OBSERVABILITY_FILE_HINTS = ("gpu", "dcgm", "grafana", "prometheus", "nvidia", "cluster-health")
+OBSERVABILITY_FILE_EXTENSIONS = {".json", ".jsonl", ".ndjson", ".yaml", ".yml", ".txt", ".log", ".out"}
 INFRA_PATTERNS: list[tuple[str, str]] = [
     (r"insufficient\s+nvidia\.com/gpu", "Kubernetes cannot currently schedule the requested GPUs."),
     (r"unschedulable", "GPU workloads are unschedulable right now."),
@@ -87,6 +88,8 @@ def _candidate_observability_files(root: Path) -> list[Path]:
                 candidates.append(child)
     for path in _scan_files(root):
         lowered = path.name.lower()
+        if path.suffix.lower() not in OBSERVABILITY_FILE_EXTENSIONS:
+            continue
         if any(token in lowered for token in OBSERVABILITY_FILE_HINTS):
             candidates.append(path)
     env_paths = os.environ.get("MISSION_CONTROL_GPU_SUMMARY_PATHS", "")

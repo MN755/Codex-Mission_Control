@@ -85,6 +85,18 @@ def test_gpu_cluster_health_can_blame_code_when_cluster_looks_ready() -> None:
     assert payload["likely_failure_source"] == "code"
 
 
+def test_gpu_cluster_health_ignores_repo_source_files_that_only_sound_gpu_related() -> None:
+    workspace = Path(sample_workspace("gpu-health-ignore-source-files"))
+    workspace.mkdir(parents=True, exist_ok=True)
+    _write(workspace / "gpu_support.py", "def helper():\n    return 'not observability'\n")
+    _write(workspace / "nvidia_notes.md", "# NVIDIA notes\nThis is just documentation.\n")
+
+    payload = summarize_gpu_cluster_health(workspace)
+
+    assert payload["relevant"] is False
+    assert payload["summary_files"] == []
+
+
 def test_project_actions_surface_gpu_cluster_blockers(client) -> None:
     workspace = Path(sample_workspace("gpu-actions"))
     workspace.mkdir(parents=True, exist_ok=True)
