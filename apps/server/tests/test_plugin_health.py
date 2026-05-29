@@ -66,6 +66,29 @@ def test_plugin_health_ready(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr("plugin_health._probe_url", lambda url, timeout=2.0: (True, "HTTP 200"))
     monkeypatch.setattr("plugin_health.service.runners.inventory", fake_inventory)
     monkeypatch.setattr("plugin_health.RUNTIME_ROOT", runtime_root)
+    monkeypatch.setattr(
+        "plugin_health.detect_project_nvidia_gpu_diagnostics",
+        lambda workspace_path: {
+            "available": False,
+            "status": "ready",
+            "summary": "GPU cluster health lane is idle.",
+            "workspace_relevant": False,
+            "telemetry_status": "idle",
+            "workspace_summary_status": "idle",
+            "repo_mode_enabled": False,
+            "repo_mode": None,
+            "cluster_usable": None,
+            "pending_pod_count": None,
+            "gpu_memory_saturated": False,
+            "gpu_memory_saturation_pct": None,
+            "likely_failure_source": "unknown",
+            "blocking_reasons": [],
+            "observability_sources": [],
+            "summary_files": [],
+            "recommended_fixes": [],
+            "safe_commands": [],
+        },
+    )
 
     payload = asyncio.run(__import__("plugin_health").mission_control_plugin_health())
     assert payload["status"] == "ready"
