@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import json
 import subprocess
 from pathlib import Path
 
+from mission_control_mcp_server import catalog
 from mission_control_mcp_server.client import MissionControlDaemonClient, _base_url
 from mission_control_mcp_server.server import MissionControlMcpServer
 
@@ -431,3 +433,89 @@ def test_daemon_client_auto_start_launches_when_health_fails(monkeypatch, tmp_pa
 
     assert launches
     assert any("mission_control_daemon.py" in segment for segment in launches[0])
+
+
+def test_catalog_falls_back_to_bundled_json_when_repo_root_is_missing(monkeypatch) -> None:
+    catalog.load_plugin_manifest.cache_clear()
+    catalog.load_resource_catalog.cache_clear()
+    catalog.load_prompt_catalog.cache_clear()
+    monkeypatch.setattr(catalog, "discover_repo_root", lambda: None)
+
+    manifest = catalog.load_plugin_manifest()
+    resources = catalog.resource_entries()
+    prompts = catalog.prompt_entries()
+
+    assert manifest["name"] == "mission-control"
+    assert {entry["uri_template"] for entry in resources} == EXPECTED_RESOURCES
+    assert EXPECTED_PROMPTS.issubset({entry["name"] for entry in prompts})
+
+
+def test_bundled_catalog_files_match_repo_catalog_sources() -> None:
+    repo_root = Path(__file__).resolve().parents[3]
+    bundled_root = repo_root / "apps" / "mcp-server" / "src" / "mission_control_mcp_server" / "_bundled"
+    assert json.loads((bundled_root / "plugin.json").read_text(encoding="utf-8")) == json.loads(
+        (repo_root / "plugins" / "mission-control" / "plugin.json").read_text(encoding="utf-8")
+    )
+    assert json.loads((bundled_root / "resources.json").read_text(encoding="utf-8")) == json.loads(
+        (repo_root / "plugins" / "mission-control" / "mcp" / "resources.json").read_text(encoding="utf-8")
+    )
+    assert json.loads((bundled_root / "prompts.json").read_text(encoding="utf-8")) == json.loads(
+        (repo_root / "plugins" / "mission-control" / "mcp" / "prompts.json").read_text(encoding="utf-8")
+    )
+
+
+def test_daemon_client_uses_packaged_runtime_defaults_without_repo_root(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.delenv("MISSION_CONTROL_REPO_ROOT", raising=False)
+    monkeypatch.delenv("MISSION_CONTROL_RUNTIME_ROOT", raising=False)
+    monkeypatch.delenv("MISSION_CONTROL_LAUNCHER_DIR", raising=False)
+    monkeypatch.setenv("MISSION_CONTROL_APP_HOME", str(tmp_path / "app-home"))
+    monkeypatch.setattr(MissionControlDaemonClient, "_discover_repo_root", lambda self: None)
+
+    client = MissionControlDaemonClient(timeout=0.1)
+
+    assert client.repo_root is None
+    assert client.config["backendPort"] == 8010
+    assert client._runtime_root == (tmp_path / "app-home" / "runtime").resolve()
+    assert client._launcher_root == (tmp_path / "app-home" / "launcher").resolve()
+
+
+def test_daemon_client_auto_start_uses_module_launch_when_repo_root_is_missing(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("MISSION_CONTROL_RUNTIME_ROOT", str(tmp_path / "runtime"))
+    monkeypatch.setenv("MISSION_CONTROL_LAUNCHER_DIR", str(tmp_path / "launcher"))
+    monkeypatch.setattr(MissionControlDaemonClient, "_discover_repo_root", lambda self: None)
+    monkeypatch.setattr("mission_control_mcp_server.client.find_spec", lambda name: object() if name == "mission_control_daemon" else None)
+    client = MissionControlDaemonClient(base_url="http://127.0.0.1:8123", timeout=0.2)
+    attempts = {"count": 0}
+
+    def fake_healthcheck() -> bool:
+        attempts["count"] += 1
+        return attempts["count"] > 1
+
+    launches: list[list[str]] = []
+
+    def fake_popen(args, **kwargs):
+        launches.append(list(args))
+        return object()
+
+    monkeypatch.setattr(client, "_healthcheck", fake_healthcheck)
+    monkeypatch.setattr(client, "_port_in_use", lambda: False)
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+
+    client.ensure_daemon_running()
+
+    assert launches
+    assert launches[0][0].endswith("python") or launches[0][0].endswith("python.exe")
+    assert launches[0][1:] == ["-m", "mission_control_daemon"]
+
+
+def test_daemon_client_reports_missing_backend_install(monkeypatch) -> None:
+    monkeypatch.setattr(MissionControlDaemonClient, "_discover_repo_root", lambda self: None)
+    monkeypatch.setattr("mission_control_mcp_server.client.find_spec", lambda _name: None)
+    client = MissionControlDaemonClient(timeout=0.1)
+
+    try:
+        client._server_command()
+    except RuntimeError as exc:
+        assert "codex-mission-control-server" in str(exc)
+    else:
+        raise AssertionError("Expected packaged daemon launch to require an installed backend.")

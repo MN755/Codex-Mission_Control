@@ -1,0 +1,529 @@
+{
+  "catalog_version": "0.3.0",
+  "kind": "mission-control-resource-catalog",
+  "implementation_status": "implemented_with_safe_summaries",
+  "safety_defaults": {
+    "summary_only": true,
+    "runs_commands": false,
+    "shows_raw_logs": false,
+    "redact_secrets": true
+  },
+  "resources": [
+    {
+      "uri_template": "mission-control://orchestrations/{orchestration_id}/status",
+      "title": "Orchestration status",
+      "summary": "Compact bridge-safe orchestration status with phase, blockers, pending decisions, and handoff readiness.",
+      "support_status": "implemented",
+      "source_hint": {
+        "rest_endpoints": [
+          "/api/orchestrations/{orchestration_id}/status"
+        ]
+      },
+      "default_fields": [
+        "orchestration_id",
+        "project_id",
+        "project_name",
+        "orchestration_status",
+        "current_phase",
+        "manager_status",
+        "pending_decisions_count",
+        "current_blockers",
+        "next_expected_action",
+        "handoff_readiness"
+      ],
+      "redaction": {
+        "omit_fields": [
+          "bridge_token",
+          "secret_headers",
+          "raw_event_stream",
+          "raw_log",
+          "stack_trace"
+        ],
+        "notes": "Return compact orchestration state only. Do not expose raw traces or bridge secrets."
+      }
+    },
+    {
+      "uri_template": "mission-control://orchestrations/{orchestration_id}/events",
+      "title": "Orchestration events",
+      "summary": "Recent orchestration events summarized for Codex chat without raw log streaming.",
+      "support_status": "implemented",
+      "source_hint": {
+        "rest_endpoints": [
+          "/api/orchestrations/{orchestration_id}/events"
+        ]
+      },
+      "default_fields": [
+        "orchestration_id",
+        "event_count",
+        "latest_event_at",
+        "recent_events"
+      ],
+      "redaction": {
+        "omit_fields": [
+          "raw_log",
+          "stack_trace",
+          "secret_values",
+          "full_payload"
+        ],
+        "notes": "Return the most recent safe events with short payload summaries only."
+      }
+    },
+    {
+      "uri_template": "mission-control://projects/{project_id}/status",
+      "title": "Project status",
+      "summary": "High-signal project summary combining project state, active orchestration state, and next checkpoint.",
+      "support_status": "implemented",
+      "source_hint": {
+        "rest_endpoints": [
+          "/api/projects/{project_id}",
+          "/api/projects/{project_id}/orchestrations/active",
+          "/api/orchestrations/{orchestration_id}/status"
+        ]
+      },
+      "default_fields": [
+        "project_id",
+        "project_name",
+        "project_status",
+        "orchestration_status",
+        "manager_status",
+        "current_phase",
+        "next_expected_action",
+        "handoff_readiness"
+      ],
+      "redaction": {
+        "omit_fields": [
+          "api_key",
+          "token",
+          "secret",
+          "authorization",
+          "raw_command",
+          "raw_log"
+        ],
+        "notes": "Expose status labels and next actions, not raw execution output."
+      }
+    },
+    {
+      "uri_template": "mission-control://projects/{project_id}/agents",
+      "title": "Project agents",
+      "summary": "Compact worker roster summary with agent role, state, and current assignment hints.",
+      "support_status": "implemented",
+      "source_hint": {
+        "rest_endpoints": [
+          "/api/projects/{project_id}/agents"
+        ]
+      },
+      "default_fields": [
+        "project_id",
+        "agent_count",
+        "agents"
+      ],
+      "redaction": {
+        "omit_fields": [
+          "full_transcript",
+          "provider_token",
+          "raw_log",
+          "command_output"
+        ],
+        "notes": "Return short per-agent summaries instead of transcripts."
+      }
+    },
+    {
+      "uri_template": "mission-control://projects/{project_id}/pending-decisions",
+      "title": "Pending decisions",
+      "summary": "Unified queue of approvals, manager questions, and orchestration decisions that need user input.",
+      "support_status": "implemented",
+      "source_hint": {
+        "rest_endpoints": [
+          "/api/orchestrations/{orchestration_id}/pending-decisions",
+          "/api/projects/{project_id}/pending-decisions"
+        ]
+      },
+      "default_fields": [
+        "project_id",
+        "decision_count",
+        "decisions"
+      ],
+      "redaction": {
+        "omit_fields": [
+          "secret_args",
+          "environment_values",
+          "raw_command",
+          "raw_log"
+        ],
+        "notes": "Return title, reason, risk, and options. Strip sensitive payload details."
+      }
+    },
+    {
+      "uri_template": "mission-control://projects/{project_id}/handoff",
+      "title": "Project handoff",
+      "summary": "Final handoff summary with run guidance, evidence posture, limitations, and dry-run warnings.",
+      "support_status": "implemented",
+      "source_hint": {
+        "rest_endpoints": [
+          "/api/projects/{project_id}/handoff"
+        ]
+      },
+      "default_fields": [
+        "project_id",
+        "project_name",
+        "status",
+        "summary",
+        "run_instructions",
+        "tests_count",
+        "evidence_status",
+        "known_limitations",
+        "dry_run"
+      ],
+      "redaction": {
+        "omit_fields": [
+          "full_evidence_body",
+          "raw_artifacts",
+          "secret_paths",
+          "raw_log"
+        ],
+        "notes": "Expose handoff conclusions and safe evidence posture only."
+      }
+    },
+    {
+      "uri_template": "mission-control://projects/{project_id}/codebase-map",
+      "title": "Codebase map",
+      "summary": "Compact structure and repo-understanding summary for imported or attached codebases.",
+      "support_status": "implemented",
+      "source_hint": {
+        "rest_endpoints": [
+          "/api/projects/{project_id}/codebase-map",
+          "/api/projects/{project_id}/codebase-understanding"
+        ]
+      },
+      "default_fields": [
+        "project_id",
+        "source_path",
+        "languages",
+        "frameworks",
+        "entry_points",
+        "build_commands",
+        "test_commands",
+        "important_folders",
+        "risk_flags",
+        "understanding_summary"
+      ],
+      "redaction": {
+        "omit_fields": [
+          "file_contents",
+          "secrets_detected",
+          "ignored_private_files"
+        ],
+        "notes": "Return structure and summary only. Never inline source files by default."
+      }
+    },
+    {
+      "uri_template": "mission-control://projects/{project_id}/diagnostics",
+      "title": "Project diagnostics",
+      "summary": "Bridge-safe diagnostic summary for degraded orchestration or environment issues.",
+      "support_status": "implemented",
+      "source_hint": {
+        "rest_endpoints": [
+          "/api/diagnostics/reports",
+          "/api/orchestrations/plugin-health",
+          "/api/projects/{project_id}/orchestrations/active"
+        ]
+      },
+      "default_fields": [
+        "project_id",
+        "plugin_health",
+        "report_count",
+        "latest_report",
+        "orchestration_status",
+        "platform_profile",
+        "performance_profile",
+        "safe_debug_commands",
+        "bundle_path",
+        "notes"
+      ],
+      "redaction": {
+        "omit_fields": [
+          "raw_log",
+          "absolute_secret_paths",
+          "stack_trace",
+          "env_dump"
+        ],
+        "notes": "Return report metadata and top-level failures only."
+      }
+    },
+    {
+      "uri_template": "mission-control://projects/{project_id}/webwright",
+      "title": "Webwright readiness",
+      "summary": "Project-scoped Webwright readiness summary for browser-agent work, install posture, and recommended next steps.",
+      "support_status": "implemented",
+      "source_hint": {
+        "rest_endpoints": [
+          "/api/projects/{project_id}/webwright"
+        ]
+      },
+      "default_fields": [
+        "project_id",
+        "project_name",
+        "available",
+        "install_status",
+        "summary",
+        "launch_command",
+        "workspace_signals",
+        "recommended_fix",
+        "recommended_install_commands",
+        "use_cases"
+      ],
+      "redaction": {
+        "omit_fields": [
+          "raw_log",
+          "secret_env",
+          "private_browser_state"
+        ],
+        "notes": "Expose install posture and safe usage guidance only. Do not expose browser cookies, auth state, or raw workspace artifacts."
+      }
+    },
+    {
+      "uri_template": "mission-control://projects/{project_id}/swarm-plan",
+      "title": "Swarm plan",
+      "summary": "Current or proposed swarm plan, risk posture, dynamic spawning state, and approval requirements.",
+      "support_status": "implemented",
+      "source_hint": {
+        "rest_endpoints": [
+          "/api/projects/{project_id}/swarm/preferences",
+          "/api/projects/{project_id}/swarm/plan"
+        ]
+      },
+      "default_fields": [
+        "project_id",
+        "mode",
+        "recommended_agent_count",
+        "active_agent_count",
+        "coordination_risk",
+        "path_conflict_risk",
+        "approval_required",
+        "dynamic_spawning_enabled",
+        "strategy_summary"
+      ],
+      "redaction": {
+        "omit_fields": [
+          "full_prompt",
+          "internal_reasoning",
+          "secret_paths",
+          "raw_log"
+        ],
+        "notes": "Expose plan shape and safety posture without chain-of-thought or raw path dumps."
+      }
+    },
+    {
+      "uri_template": "mission-control://projects/{project_id}/risk-register",
+      "title": "Risk register",
+      "summary": "Open and recently mitigated project risks summarized for bridge-safe review.",
+      "support_status": "implemented",
+      "source_hint": {
+        "rest_endpoints": [
+          "/api/projects/{project_id}/risks"
+        ]
+      },
+      "default_fields": [
+        "project_id",
+        "risk_count",
+        "open_risks",
+        "mitigated_risks"
+      ],
+      "redaction": {
+        "omit_fields": [
+          "raw_artifact_body",
+          "secret_paths",
+          "raw_log"
+        ],
+        "notes": "Return concise risk summaries and status counts only."
+      }
+    },
+    {
+      "uri_template": "mission-control://projects/{project_id}/agent-contracts",
+      "title": "Agent contracts",
+      "summary": "Read-only summary of per-agent mission contracts, allowed paths, tool boundaries, and validation expectations.",
+      "support_status": "implemented",
+      "source_hint": {
+        "rest_endpoints": [
+          "/api/projects/{project_id}/agent-contracts"
+        ]
+      },
+      "default_fields": [
+        "project_id",
+        "contract_count",
+        "contracts"
+      ],
+      "redaction": {
+        "omit_fields": [
+          "full_contract_prompt",
+          "secret_paths",
+          "raw_log"
+        ],
+        "notes": "Expose agent boundaries and expectations without leaking internal prompt bodies."
+      }
+    },
+    {
+      "uri_template": "mission-control://projects/{project_id}/validation-summary",
+      "title": "Validation summary",
+      "summary": "Compact validation coverage summary with counts and notable gaps.",
+      "support_status": "implemented",
+      "source_hint": {
+        "rest_endpoints": [
+          "/api/projects/{project_id}/validation-coverage"
+        ]
+      },
+      "default_fields": [
+        "project_id",
+        "coverage_counts",
+        "areas",
+        "notable_gaps"
+      ],
+      "redaction": {
+        "omit_fields": [
+          "raw_log",
+          "artifact_body",
+          "secret_paths"
+        ],
+        "notes": "Summarize coverage and missing areas without dumping raw evidence artifacts."
+      }
+    },
+    {
+      "uri_template": "mission-control://projects/{project_id}/decision-ledger",
+      "title": "Decision ledger",
+      "summary": "Read-only ledger of important user and manager decisions that shaped the orchestration.",
+      "support_status": "implemented",
+      "source_hint": {
+        "rest_endpoints": [
+          "/api/projects/{project_id}/decision-ledger"
+        ]
+      },
+      "default_fields": [
+        "project_id",
+        "decision_count",
+        "recent_decisions"
+      ],
+      "redaction": {
+        "omit_fields": [
+          "secret_inputs",
+          "raw_command",
+          "raw_log"
+        ],
+        "notes": "Return concise decision summaries, not raw execution payloads."
+      }
+    },
+    {
+      "uri_template": "mission-control://projects/{project_id}/path-locks",
+      "title": "Path locks",
+      "summary": "Read-only summary of active and waiting path ownership constraints used to keep worker edits safe.",
+      "support_status": "implemented",
+      "source_hint": {
+        "rest_endpoints": [
+          "/api/projects/{project_id}/path-locks"
+        ]
+      },
+      "default_fields": [
+        "project_id",
+        "lock_count",
+        "active_lock_count",
+        "waiting_lock_count",
+        "locks"
+      ],
+      "redaction": {
+        "omit_fields": [
+          "raw_log",
+          "secret_paths_outside_workspace"
+        ],
+        "notes": "Expose coordination-safe lock summaries only."
+      }
+    },
+    {
+      "uri_template": "mission-control://projects/{project_id}/operator-snapshot",
+      "title": "Operator snapshot",
+      "summary": "Compact operator-facing snapshot of project health, focus, risks, and next action.",
+      "support_status": "implemented",
+      "source_hint": {
+        "rest_endpoints": [
+          "/api/projects/{project_id}/operator-snapshot"
+        ]
+      },
+      "default_fields": [
+        "project_id",
+        "project_name",
+        "project_status",
+        "overall_status",
+        "orchestration_status",
+        "handoff_status",
+        "current_action",
+        "pending_approvals_count",
+        "pending_questions_count",
+        "active_agent_count",
+        "current_focus",
+        "top_risks",
+        "recommended_next_action"
+      ],
+      "redaction": {
+        "omit_fields": [
+          "raw_log",
+          "secret_paths",
+          "internal_reasoning",
+          "full_transcript"
+        ],
+        "notes": "Expose the operator-facing state snapshot only, not raw execution details."
+      }
+    },
+    {
+      "uri_template": "mission-control://projects/{project_id}/instincts",
+      "title": "Operational instincts",
+      "summary": "Derived operational instincts that turn current project state into reusable execution rules.",
+      "support_status": "implemented",
+      "source_hint": {
+        "rest_endpoints": [
+          "/api/projects/{project_id}/instincts/preview"
+        ]
+      },
+      "default_fields": [
+        "project_id",
+        "instinct_count",
+        "instincts"
+      ],
+      "redaction": {
+        "omit_fields": [
+          "internal_reasoning",
+          "secret_paths",
+          "raw_prompt"
+        ],
+        "notes": "Expose concise operational rules and evidence without raw prompt or hidden chain-of-thought."
+      }
+    },
+    {
+      "uri_template": "mission-control://projects/{project_id}/verification-brief",
+      "title": "Verification brief",
+      "summary": "Release- and review-oriented verification brief with checks, blockers, and evidence gaps.",
+      "support_status": "implemented",
+      "source_hint": {
+        "rest_endpoints": [
+          "/api/projects/{project_id}/verification-brief"
+        ]
+      },
+      "default_fields": [
+        "project_id",
+        "readiness",
+        "required_checks",
+        "recommended_checks",
+        "evidence_gaps",
+        "release_blockers",
+        "handoff_warnings",
+        "loop_strategy"
+      ],
+      "redaction": {
+        "omit_fields": [
+          "raw_log",
+          "internal_reasoning",
+          "secret_paths",
+          "full_artifact_bodies"
+        ],
+        "notes": "Expose the verification plan and blockers, not raw evidence artifacts."
+      }
+    }
+  ]
+}

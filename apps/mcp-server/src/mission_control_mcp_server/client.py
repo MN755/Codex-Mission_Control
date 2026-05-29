@@ -6,15 +6,19 @@ import socket
 import subprocess
 import sys
 import time
+from importlib.util import find_spec
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
 import httpx
+from platformdirs import user_data_dir
 
 DEFAULT_BACKEND_HOST = "127.0.0.1"
 DEFAULT_BACKEND_PORT = 8010
 LOCAL_HOSTS = {"127.0.0.1", "localhost", "::1"}
+APP_NAME = "Codex Mission Control"
+APP_AUTHOR = "OpenAI"
 
 
 def _url_host(host: str) -> str:
@@ -41,7 +45,7 @@ class MissionControlDaemonClient:
         self.timeout = timeout
         self._orchestration_project_ids: dict[int, int] = {}
 
-    def _discover_repo_root(self) -> Path:
+    def _discover_repo_root(self) -> Path | None:
         explicit = os.environ.get("MISSION_CONTROL_REPO_ROOT")
         if explicit:
             return Path(explicit).expanduser().resolve()
@@ -49,24 +53,31 @@ class MissionControlDaemonClient:
         for parent in current.parents:
             if (parent / "apps" / "server" / "src" / "main.py").exists() and (parent / "README.md").exists():
                 return parent
-        raise RuntimeError("Could not discover the Codex Mission Control repository root.")
+        return None
+
+    def _default_app_support_root(self) -> Path:
+        explicit = os.environ.get("MISSION_CONTROL_APP_HOME")
+        if explicit:
+            return Path(explicit).expanduser().resolve()
+        return Path(user_data_dir(APP_NAME, APP_AUTHOR)).resolve()
 
     def _load_launcher_config(self) -> dict[str, Any]:
-        server_src = self.repo_root / "apps" / "server" / "src"
-        if server_src.exists() and str(server_src) not in sys.path:
+        server_src = (self.repo_root / "apps" / "server" / "src") if self.repo_root is not None else None
+        if server_src is not None and server_src.exists() and str(server_src) not in sys.path:
             sys.path.insert(0, str(server_src))
         try:
             from config import load_launcher_config
 
             return load_launcher_config()
         except Exception:
-            config_path = self.repo_root / "scripts" / "mission-control.config.json"
-            if not config_path.exists():
-                return {"host": DEFAULT_BACKEND_HOST, "backendPort": DEFAULT_BACKEND_PORT}
-            try:
-                return json.loads(config_path.read_text(encoding="utf-8"))
-            except json.JSONDecodeError:
-                return {"host": DEFAULT_BACKEND_HOST, "backendPort": DEFAULT_BACKEND_PORT}
+            if self.repo_root is not None:
+                config_path = self.repo_root / "scripts" / "mission-control.config.json"
+                if config_path.exists():
+                    try:
+                        return json.loads(config_path.read_text(encoding="utf-8"))
+                    except json.JSONDecodeError:
+                        pass
+            return {"host": DEFAULT_BACKEND_HOST, "backendPort": DEFAULT_BACKEND_PORT}
 
     def _validate_localhost_binding(self) -> None:
         parsed = urlparse(self.base_url)
@@ -82,7 +93,9 @@ class MissionControlDaemonClient:
         explicit = os.environ.get("MISSION_CONTROL_RUNTIME_ROOT")
         if explicit:
             return Path(explicit).expanduser().resolve()
-        return (self.repo_root / "apps" / "server" / ".runtime").resolve()
+        if self.repo_root is not None:
+            return (self.repo_root / "apps" / "server" / ".runtime").resolve()
+        return (self._default_app_support_root() / "runtime").resolve()
 
     @property
     def _launcher_root(self) -> Path:
@@ -90,7 +103,9 @@ class MissionControlDaemonClient:
         if explicit:
             return Path(explicit).expanduser().resolve()
         launcher_dir = str(self.config.get("launcherLogDir", ".runtime/launcher"))
-        return (self.repo_root / launcher_dir).resolve()
+        if self.repo_root is not None:
+            return (self.repo_root / launcher_dir).resolve()
+        return (self._default_app_support_root() / "launcher").resolve()
 
     @property
     def _daemon_token_path(self) -> Path:
@@ -98,7 +113,24 @@ class MissionControlDaemonClient:
 
     @property
     def _server_script(self) -> Path:
+        if self.repo_root is None:
+            raise RuntimeError(
+                "Mission Control backend is not available from this install. "
+                "Install the codex-mission-control-server package or set MISSION_CONTROL_REPO_ROOT to a full source checkout."
+            )
         return (self.repo_root / "apps" / "server" / "src" / "mission_control_daemon.py").resolve()
+
+    def _server_command(self) -> list[str]:
+        if self.repo_root is not None:
+            server_script = self._server_script
+            if server_script.exists():
+                return [sys.executable, str(server_script)]
+        if find_spec("mission_control_daemon") is not None:
+            return [sys.executable, "-m", "mission_control_daemon"]
+        raise RuntimeError(
+            "Mission Control backend is not installed. "
+            "Install the codex-mission-control-server package or set MISSION_CONTROL_REPO_ROOT to a full source checkout."
+        )
 
     def _read_daemon_token(self) -> str | None:
         if not self._daemon_token_path.exists():
@@ -187,10 +219,12 @@ class MissionControlDaemonClient:
         env.setdefault("MISSION_CONTROL_SERVER_MODE", "daemon")
         env.setdefault("MISSION_CONTROL_BACKEND_HOST", urlparse(self.base_url).hostname or self._configured_host)
         env.setdefault("MISSION_CONTROL_BACKEND_PORT", str(urlparse(self.base_url).port or self._configured_port))
-        env.setdefault("MISSION_CONTROL_REPO_ROOT", str(self.repo_root))
+        if self.repo_root is not None:
+            env.setdefault("MISSION_CONTROL_REPO_ROOT", str(self.repo_root))
         stdout_handle = open(self._launcher_root / "daemon.stdout.log", "a", encoding="utf-8")
         stderr_handle = open(self._launcher_root / "daemon.stderr.log", "a", encoding="utf-8")
-        kwargs: dict[str, Any] = {"cwd": str(self.repo_root), "env": env, "stdout": stdout_handle, "stderr": stderr_handle}
+        launch_cwd = self.repo_root or self._runtime_root
+        kwargs: dict[str, Any] = {"cwd": str(launch_cwd), "env": env, "stdout": stdout_handle, "stderr": stderr_handle}
         if os.name == "nt":
             kwargs["creationflags"] = (
                 getattr(subprocess, "DETACHED_PROCESS", 0)
@@ -200,7 +234,7 @@ class MissionControlDaemonClient:
             )
         else:
             kwargs["start_new_session"] = True
-        subprocess.Popen([sys.executable, str(self._server_script)], **kwargs)
+        subprocess.Popen(self._server_command(), **kwargs)
         deadline = time.time() + self.timeout
         while time.time() < deadline:
             if self._healthcheck():
