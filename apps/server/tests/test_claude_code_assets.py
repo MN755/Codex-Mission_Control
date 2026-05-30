@@ -54,14 +54,17 @@ def test_claude_code_project_assets_exist_and_are_bridge_oriented() -> None:
 def test_packaged_claude_plugin_assets_exist_and_route_through_mission_control() -> None:
     plugin_root = ROOT / "plugins" / "mission-control"
     manifest_path = plugin_root / ".claude-plugin" / "plugin.json"
+    bundle_manifest_path = plugin_root / "plugin.json"
     commands_root = plugin_root / "commands"
     agents_root = plugin_root / "agents"
 
     assert manifest_path.exists()
+    assert bundle_manifest_path.exists()
     assert commands_root.exists()
     assert agents_root.exists()
 
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    bundle_manifest = json.loads(bundle_manifest_path.read_text(encoding="utf-8"))
     assert manifest["name"] == "mission-control"
     assert "Mission Control" in manifest["description"]
 
@@ -84,6 +87,7 @@ def test_packaged_claude_plugin_assets_exist_and_route_through_mission_control()
         "mission-control-evals.md",
         "mission-control-doc-workflow.md",
         "mission-control-skill-builder.md",
+        "mission-control-webapp-testing.md",
     }
     expected_agents = {
         "code-explorer.md",
@@ -105,6 +109,7 @@ def test_packaged_claude_plugin_assets_exist_and_route_through_mission_control()
 
     assert expected_commands.issubset({path.name for path in commands_root.glob("*.md")})
     assert expected_agents.issubset({path.name for path in agents_root.glob("*.md")})
+    assert set(bundle_manifest["claude_code"]["primary_commands"]).issubset({path.stem for path in commands_root.glob("*.md")})
 
     for path in commands_root.glob("*.md"):
         text = path.read_text(encoding="utf-8")
