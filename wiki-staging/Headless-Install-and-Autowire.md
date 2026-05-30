@@ -2,7 +2,7 @@
 
 This page describes the intended headless bootstrap and repair experience for Mission Control plugin mode.
 
-> Status: Planned / Partial
+> Status: Current
 
 ## Planned commands
 
@@ -40,7 +40,7 @@ Health mode should stay read-only and report:
 
 ## Current status note
 
-The repo currently contains daemon start scripts and plugin package content. If the specific install and health scripts above are not present, treat the command surface as planned while using the documented manual steps from the repo docs.
+The repo already ships install and health scripts for headless plugin workflows. Use those entrypoints first, then fall back to the manual diagnostics and repair guidance when local prerequisites are missing or degraded.
 
 ## Related pages
 
