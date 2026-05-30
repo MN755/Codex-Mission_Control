@@ -6,25 +6,25 @@ This page summarizes the prompt workflows packaged for Mission Control bridge mo
 
 ## Reference
 
-- attach current workspace
-- use Mission Control for this repo
-- import existing codebase
-- start manager-led task
-- continue orchestration
-- show pending approvals
-- answer pending approval
-- review latest handoff
-- debug failed orchestration
-- use Webwright for browser task
-- pause orchestration
-- resume orchestration
-- explain current swarm
-- switch swarm strategy
-- enable safe mode
-- generate AGENTS.md proposal
-- install from GitHub
-- autowire providers
-- ask Manager for plan
+- Attach current workspace
+- Use Mission Control for this repo
+- Import existing codebase
+- Start Manager-led task
+- Continue orchestration
+- Show pending approvals
+- Answer pending approval
+- Review latest handoff
+- Debug failed orchestration
+- Use Webwright for browser task
+- Pause orchestration
+- Resume orchestration
+- Explain current swarm
+- Switch swarm strategy
+- Enable safe mode
+- Generate AGENTS.md proposal
+- Install from GitHub
+- Autowire providers
+- Ask Manager for plan
 
 ## Example
 
