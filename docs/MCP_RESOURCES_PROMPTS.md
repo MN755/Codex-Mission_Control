@@ -31,11 +31,21 @@ The canonical machine-readable catalogs live here:
 - `mission-control://projects/{project_id}/pending-decisions`
 - `mission-control://projects/{project_id}/handoff`
 - `mission-control://projects/{project_id}/codebase-map`
+- `mission-control://projects/{project_id}/workspace-tooling`
 - `mission-control://projects/{project_id}/diagnostics`
+- `mission-control://projects/{project_id}/webwright`
+- `mission-control://projects/{project_id}/nvidia-dynamo`
+- `mission-control://projects/{project_id}/nvidia-aiq`
+- `mission-control://projects/{project_id}/nvidia-gpu-diagnostics`
 - `mission-control://projects/{project_id}/swarm-plan`
 - `mission-control://projects/{project_id}/risk-register`
 - `mission-control://projects/{project_id}/agent-contracts`
 - `mission-control://projects/{project_id}/validation-summary`
+- `mission-control://projects/{project_id}/decision-ledger`
+- `mission-control://projects/{project_id}/path-locks`
+- `mission-control://projects/{project_id}/operator-snapshot`
+- `mission-control://projects/{project_id}/instincts`
+- `mission-control://projects/{project_id}/verification-brief`
 
 ## Prompt Rules
 
