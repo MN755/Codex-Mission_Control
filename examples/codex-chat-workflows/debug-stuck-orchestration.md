@@ -10,9 +10,11 @@
 2. Tool: `mission_control_get_status`
 3. Tool: `mission_control_get_diagnostics`
 4. Tool: `mission_control_get_pending_decisions`
-5. Tool: `mission_control_get_orchestration_events`
-6. Tool: `mission_control_request_recovery_options`
+5. Tool: `mission_control_get_event_digest`
+6. Resource: `mission-control://projects/{project_id}/diagnostics`
+7. Resource: `mission-control://projects/{project_id}/decision-ledger`
+8. Tool: `mission_control_request_recovery_plan`
 
 ## Expected Codex Chat Response
 
-Return a concise blocker explanation, recent events, whether the issue is user-blocked or infrastructure-blocked, and safe recovery options.
+Return a concise blocker explanation, the latest safe event digest, whether the issue is user-blocked or infrastructure-blocked, and safe recovery options.
