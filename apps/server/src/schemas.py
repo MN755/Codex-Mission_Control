@@ -3,12 +3,10 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
-
-from capabilities import CAPABILITY_CATEGORIES
+from pydantic import BaseModel, ConfigDict, Field
 
 
-ProviderId = Literal["codex", "ollama", "openai_api", "anthropic_api", "xai_api", "nvidia_dynamo", "nvidia_nim", "claude_code", "custom"]
+ProviderId = Literal["codex", "ollama", "openai_api", "anthropic_api", "xai_api", "claude_code", "custom"]
 StartupProviderChoice = ProviderId
 StartupStartMode = Literal["new_project", "guided_walkthrough"]
 RunnerMode = Literal["auto", "cli", "app_server", "dry_run"]
@@ -127,7 +125,7 @@ InterviewCategory = Literal[
 ]
 InterviewQuestionState = Literal["pending", "answered", "superseded", "cancelled"]
 InterviewQuestionSource = Literal["manager_ai", "fallback_generated"]
-SwarmOptimizationMode = Literal["fastest_build", "balanced", "high_quality", "documentation_heavy", "research_planning", "massive_codebase", "gpu_programming", "manager_decides"]
+SwarmOptimizationMode = Literal["fastest_build", "balanced", "high_quality", "documentation_heavy", "research_planning", "massive_codebase", "manager_decides"]
 SwarmAggressiveness = Literal["small", "medium", "large", "maximum", "manager_decides"]
 DocsDepth = Literal["minimal", "standard", "detailed", "publishable"]
 TestingDepth = Literal["minimal", "standard", "extensive", "release_grade"]
@@ -547,21 +545,21 @@ class ProjectSettingsRead(BaseModel):
 
 
 class ProjectSettingsUpdate(BaseModel):
-    provider: ProviderId | None = None
+    provider: ProviderId = "codex"
     manager_model: str | None = None
     default_worker_model: str | None = None
     manager_reasoning_effort: ReasoningEffort | None = None
     default_worker_reasoning_effort: ReasoningEffort | None = None
-    per_role_model_overrides_json: dict[str, str] | None = None
-    per_role_reasoning_overrides_json: dict[str, str] | None = None
+    per_role_model_overrides_json: dict[str, str] = Field(default_factory=dict)
+    per_role_reasoning_overrides_json: dict[str, str] = Field(default_factory=dict)
     provider_endpoint: str | None = None
     adapter_command: str | None = None
-    adapter_args_json: list[str] | None = None
-    runner_mode: RunnerMode | None = None
-    sandbox_mode: SandboxMode | None = None
-    approval_policy: ApprovalPolicy | None = None
-    workspace_widgets_json: list[str] | None = None
-    approval_overrides_json: dict[str, Any] | None = None
+    adapter_args_json: list[str] = Field(default_factory=list)
+    runner_mode: RunnerMode = "auto"
+    sandbox_mode: SandboxMode = "workspace-write"
+    approval_policy: ApprovalPolicy = "on-request"
+    workspace_widgets_json: list[str] = Field(default_factory=list)
+    approval_overrides_json: dict[str, Any] = Field(default_factory=dict)
 
 
 class SwarmPreferencesRead(BaseModel):
@@ -581,14 +579,14 @@ class SwarmPreferencesRead(BaseModel):
 
 
 class SwarmPreferencesUpdate(BaseModel):
-    optimization_mode: SwarmOptimizationMode | None = None
-    swarm_aggressiveness: SwarmAggressiveness | None = None
-    max_agents: int | None = Field(default=None, ge=1, le=50)
-    require_approval_above_agent_count: int | None = Field(default=None, ge=1, le=50)
-    allow_dynamic_spawning: bool | None = None
-    allow_dynamic_retirement: bool | None = None
-    docs_depth: DocsDepth | None = None
-    testing_depth: TestingDepth | None = None
+    optimization_mode: SwarmOptimizationMode = "balanced"
+    swarm_aggressiveness: SwarmAggressiveness = "medium"
+    max_agents: int = Field(default=8, ge=1, le=50)
+    require_approval_above_agent_count: int = Field(default=10, ge=1, le=50)
+    allow_dynamic_spawning: bool = True
+    allow_dynamic_retirement: bool = True
+    docs_depth: DocsDepth = "standard"
+    testing_depth: TestingDepth = "standard"
 
 
 class AgentArchetypeRead(BaseModel):
@@ -619,7 +617,6 @@ class SwarmAgentSpecRead(BaseModel):
     spawn_phase: str
     retire_when: str
     priority: int
-    iteration_budget: int = 1
     status: SwarmAgentSpecStatus
 
     model_config = ConfigDict(from_attributes=True)
@@ -783,16 +780,16 @@ class SecurityPolicyRead(BaseModel):
 
 
 class SecurityPolicyUpdate(BaseModel):
-    default_command_policy: DefaultExecutionPolicy | None = None
-    default_tool_policy: DefaultExecutionPolicy | None = None
-    network_access_policy: NetworkAccessPolicy | None = None
-    write_access_policy: WriteAccessPolicy | None = None
-    external_account_policy: ExternalAccountPolicy | None = None
-    deployment_policy: DeploymentPolicy | None = None
-    destructive_action_policy: DestructiveActionPolicy | None = None
-    auto_approve_low_risk: bool | None = None
-    auto_approve_medium_risk: bool | None = None
-    high_risk_requires_user: bool | None = None
+    default_command_policy: DefaultExecutionPolicy = "ask"
+    default_tool_policy: DefaultExecutionPolicy = "ask"
+    network_access_policy: NetworkAccessPolicy = "ask"
+    write_access_policy: WriteAccessPolicy = "workspace_write"
+    external_account_policy: ExternalAccountPolicy = "ask"
+    deployment_policy: DeploymentPolicy = "deny"
+    destructive_action_policy: DestructiveActionPolicy = "critical_approval"
+    auto_approve_low_risk: bool = False
+    auto_approve_medium_risk: bool = False
+    high_risk_requires_user: bool = True
 
 
 class RiskAssessRequest(BaseModel):
@@ -1321,6 +1318,7 @@ class WidgetInstanceCreate(BaseModel):
 
 
 class WidgetInstanceUpdate(BaseModel):
+    project_id: int | None = None
     area: WidgetArea | None = None
     order_index: int | None = Field(default=None, ge=0)
     size: WidgetSize | None = None
@@ -1422,345 +1420,6 @@ class DecisionRecordRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
-class OperatorSnapshotAgentRead(BaseModel):
-    id: int
-    name: str
-    role: str
-    display_status: str
-    current_action: str | None = None
-
-
-class OperatorSnapshotRead(BaseModel):
-    project_id: int
-    project_name: str
-    project_status: str
-    overall_status: str
-    orchestration_status: str | None = None
-    handoff_status: str = "not_ready"
-    current_action: str
-    pending_approvals_count: int = 0
-    pending_questions_count: int = 0
-    active_agent_count: int = 0
-    active_agents: list[OperatorSnapshotAgentRead] = Field(default_factory=list)
-    current_focus: list[str] = Field(default_factory=list)
-    top_risks: list[str] = Field(default_factory=list)
-    recent_events: list[str] = Field(default_factory=list)
-    validation_gap_count: int = 0
-    swarm_mode: str | None = None
-    recommended_next_action: str
-    diagnostics_summary: str | None = None
-    diagnostics_bundle_path: str | None = None
-    performance_note: str | None = None
-    snapshot_markdown: str
-    generated_at: datetime
-
-
-class OperationalInstinctRead(BaseModel):
-    key: str
-    title: str
-    trigger: str
-    rule: str
-    rationale: str
-    evidence: list[str] = Field(default_factory=list)
-    confidence: str
-    tags: list[str] = Field(default_factory=list)
-
-
-class OperationalInstinctPreviewRead(BaseModel):
-    project_id: int
-    instinct_count: int = 0
-    instincts: list[OperationalInstinctRead] = Field(default_factory=list)
-    generated_at: datetime
-
-
-class VerificationBriefRead(BaseModel):
-    project_id: int
-    readiness: str
-    required_checks: list[str] = Field(default_factory=list)
-    recommended_checks: list[str] = Field(default_factory=list)
-    evidence_gaps: list[str] = Field(default_factory=list)
-    release_blockers: list[str] = Field(default_factory=list)
-    handoff_warnings: list[str] = Field(default_factory=list)
-    loop_strategy: list[str] = Field(default_factory=list)
-    brief_markdown: str
-    generated_at: datetime
-
-
-class WorkspaceToolingItemRead(BaseModel):
-    id: str
-    label: str
-    category: str
-    installed: bool = False
-    binary_path: str | None = None
-    configured: bool = False
-    config_files: list[str] = Field(default_factory=list)
-    config_sections: list[str] = Field(default_factory=list)
-    status: str
-    recommended_commands: list[str] = Field(default_factory=list)
-    notes: list[str] = Field(default_factory=list)
-
-
-class WorkspaceToolingPackRead(BaseModel):
-    id: str
-    title: str
-    status: str
-    summary: str
-    tool_ids: list[str] = Field(default_factory=list)
-    installed_tool_ids: list[str] = Field(default_factory=list)
-    missing_tool_ids: list[str] = Field(default_factory=list)
-
-
-class WorkspaceToolingStatusRead(BaseModel):
-    project_id: int
-    project_name: str
-    workspace_path: str | None = None
-    available: bool = False
-    summary: str
-    repo_profile: dict[str, Any] = Field(default_factory=dict)
-    tools: list[WorkspaceToolingItemRead] = Field(default_factory=list)
-    packs: list[WorkspaceToolingPackRead] = Field(default_factory=list)
-    recommended_next_steps: list[str] = Field(default_factory=list)
-    intake_commands: list[str] = Field(default_factory=list)
-    validation_commands: list[str] = Field(default_factory=list)
-    security_commands: list[str] = Field(default_factory=list)
-
-
-class CodebaseSearchMatchRead(BaseModel):
-    path: str
-    line_number: int
-    line_text: str
-
-
-class CodebaseSearchRequest(BaseModel):
-    pattern: str = Field(min_length=1)
-    glob: str | None = None
-    max_matches: int = Field(default=40, ge=1, le=200)
-
-
-class CodebaseSearchRead(BaseModel):
-    project_id: int
-    project_name: str
-    workspace_path: str
-    pattern: str
-    glob: str | None = None
-    match_count: int = 0
-    truncated: bool = False
-    search_backend: str
-    command: str
-    matches: list[CodebaseSearchMatchRead] = Field(default_factory=list)
-    notes: list[str] = Field(default_factory=list)
-
-
-class WebwrightStatusRead(BaseModel):
-    project_id: int
-    project_name: str
-    workspace_path: str | None = None
-    available: bool = False
-    install_status: Literal["ready", "partial", "missing"]
-    cli_detected: bool = False
-    cli_path: str | None = None
-    python_package_detected: bool = False
-    playwright_package_detected: bool = False
-    playwright_cli_detected: bool = False
-    version: str | None = None
-    launch_command: str | None = None
-    workspace_signals: list[str] = Field(default_factory=list)
-    summary: str
-    recommended_fix: str | None = None
-    recommended_install_commands: list[str] = Field(default_factory=list)
-    use_cases: list[str] = Field(default_factory=list)
-    notes: list[str] = Field(default_factory=list)
-    bridge_markdown: str
-    details: dict[str, Any] = Field(default_factory=dict)
-
-
-class NvidiaDynamoStatusRead(BaseModel):
-    project_id: int
-    project_name: str
-    provider: str = "nvidia_dynamo"
-    label: str = "NVIDIA Dynamo"
-    available: bool = False
-    reachable: bool = False
-    endpoint: str
-    endpoint_configured: bool = False
-    api_key_configured: bool = False
-    auth_required: bool = False
-    authenticated: bool = False
-    available_models: list[str] = Field(default_factory=list)
-    runtime_ready: bool = False
-    runtime_status: str = "blocked"
-    runtime_summary: str = ""
-    runtime_blockers: list[str] = Field(default_factory=list)
-    adapter_command_configured: bool = False
-    adapter_command_detected: bool = False
-    adapter_command_path: str | None = None
-    adapter_args: list[str] = Field(default_factory=list)
-    adapter_recipe_source: str | None = None
-    summary: str
-    notes: list[str] = Field(default_factory=list)
-
-
-class NvidiaNimStatusRead(BaseModel):
-    project_id: int
-    project_name: str
-    provider: str = "nvidia_nim"
-    label: str = "NVIDIA NIM"
-    available: bool = False
-    reachable: bool = False
-    endpoint: str
-    endpoint_configured: bool = False
-    api_key_configured: bool = False
-    auth_required: bool = False
-    authenticated: bool = False
-    available_models: list[str] = Field(default_factory=list)
-    runtime_ready: bool = False
-    runtime_status: str = "blocked"
-    runtime_summary: str = ""
-    runtime_blockers: list[str] = Field(default_factory=list)
-    adapter_command_configured: bool = False
-    adapter_command_detected: bool = False
-    adapter_command_path: str | None = None
-    adapter_args: list[str] = Field(default_factory=list)
-    adapter_recipe_source: str | None = None
-    summary: str
-    notes: list[str] = Field(default_factory=list)
-
-
-class NvidiaAiqStatusRead(BaseModel):
-    project_id: int
-    project_name: str
-    available: bool = False
-    install_status: Literal["ready", "partial", "missing"]
-    summary: str
-    endpoint: str
-    endpoint_configured: bool = False
-    api_key_configured: bool = False
-    auth_required: bool = False
-    dask_available: bool | None = None
-    agent_types: list[str] = Field(default_factory=list)
-    data_sources: list[str] = Field(default_factory=list)
-    recommended_fix: str | None = None
-    notes: list[str] = Field(default_factory=list)
-
-
-class NvidiaAiqResearchRequest(BaseModel):
-    query: str = Field(min_length=1)
-    agent_type: str = Field(default="deep_researcher", min_length=1)
-    timeout_seconds: int = 90
-    poll_interval_seconds: float = 2.0
-    expiry_seconds: int = 3600
-    endpoint_override: str | None = None
-
-
-class NvidiaAiqToolInvocationRead(BaseModel):
-    name: str | None = None
-    status: str | None = None
-    workflow: str | None = None
-
-
-class NvidiaAiqResearchRead(BaseModel):
-    project_id: int
-    project_name: str
-    endpoint: str
-    agent_type: str
-    job_id: str
-    status: str
-    timed_out: bool = False
-    poll_count: int = 0
-    summary: str
-    report: str = ""
-    source_summary: dict[str, Any] = Field(default_factory=dict)
-    tool_count: int = 0
-    tools: list[NvidiaAiqToolInvocationRead] = Field(default_factory=list)
-    status_payload: dict[str, Any] = Field(default_factory=dict)
-
-
-class NvidiaGpuDiagnosticsRead(BaseModel):
-    project_id: int
-    project_name: str
-    available: bool = False
-    status: str
-    summary: str
-    prometheus_url: str | None = None
-    workspace_relevant: bool = False
-    telemetry_status: str = "missing"
-    workspace_summary_status: str = "missing"
-    repo_mode_enabled: bool = False
-    repo_mode: str | None = None
-    cluster_usable: bool | None = None
-    pending_pod_count: int | None = None
-    gpu_memory_saturation_pct: float | None = None
-    gpu_memory_saturated: bool = False
-    likely_failure_source: str = "unknown"
-    blocking_reasons: list[str] = Field(default_factory=list)
-    detected_signals: list[str] = Field(default_factory=list)
-    observability_sources: list[str] = Field(default_factory=list)
-    summary_files: list[str] = Field(default_factory=list)
-    safe_commands: list[str] = Field(default_factory=list)
-    metrics: dict[str, Any] = Field(default_factory=dict)
-    alerts: list[str] = Field(default_factory=list)
-    recommended_fixes: list[str] = Field(default_factory=list)
-    queries: dict[str, str] = Field(default_factory=dict)
-
-
-class NvidiaLocalRuntimeStatusRead(BaseModel):
-    project_id: int
-    project_name: str
-    available: bool = False
-    status: str
-    summary: str
-    repo_mode_enabled: bool = False
-    repo_mode: str | None = None
-    detected_tools: list[str] = Field(default_factory=list)
-    missing_required_tools: list[str] = Field(default_factory=list)
-    missing_optional_tools: list[str] = Field(default_factory=list)
-    tool_paths: dict[str, str] = Field(default_factory=dict)
-    gpu_names: list[str] = Field(default_factory=list)
-    driver_version: str | None = None
-    nvcc_version: str | None = None
-    cuda_release: str | None = None
-    cuda_home: str | None = None
-    compute_sanitizer_available: bool = False
-    nsight_systems_available: bool = False
-    nsight_compute_available: bool = False
-    cuda_gdb_available: bool = False
-    container_toolkit_available: bool = False
-    ngc_cli_available: bool = False
-    container_runtime_ready: bool = False
-    docker_available: bool = False
-    recommended_fixes: list[str] = Field(default_factory=list)
-    validation_hints: list[str] = Field(default_factory=list)
-    notes: list[str] = Field(default_factory=list)
-
-
-class NvidiaValidationPlanStepRead(BaseModel):
-    title: str
-    command: str | None = None
-    type: str
-    source: str
-    status: str
-
-
-class NvidiaValidationPlanRead(BaseModel):
-    project_id: int
-    project_name: str
-    available: bool = False
-    status: str
-    summary: str
-    repo_mode_enabled: bool = False
-    repo_mode: str | None = None
-    local_runtime_status: str | None = None
-    gpu_diagnostics_status: str | None = None
-    sanitizer_ready: bool = False
-    profiler_ready: bool = False
-    container_smoke_ready: bool = False
-    ngc_smoke_image: str | None = None
-    steps: list[NvidiaValidationPlanStepRead] = Field(default_factory=list)
-    blockers: list[str] = Field(default_factory=list)
-    recommended_fixes: list[str] = Field(default_factory=list)
-    evidence_targets: list[str] = Field(default_factory=list)
-
-
 class ProjectConfidenceRead(BaseModel):
     id: int
     project_id: int
@@ -1800,29 +1459,6 @@ class AgentStuckSignalRead(BaseModel):
     resolved_at: datetime | None = None
 
     model_config = ConfigDict(from_attributes=True)
-
-
-class RecoveryPlanPreviewItemRead(BaseModel):
-    project_id: int
-    trigger_type: str
-    trigger_summary: str
-    related_agent_id: int | None = None
-    related_task_id: int | None = None
-    suggested_actions_json: list[str] = Field(default_factory=list)
-    status: str = "proposed"
-    source: Literal["computed"] = "computed"
-
-
-class RecoveryPlanPreviewSummaryRead(BaseModel):
-    project_id: int
-    current_action: dict[str, Any] = Field(default_factory=dict)
-    blocked_task_count: int = 0
-    stuck_signal_count: int = 0
-    persisted: list[RecoveryPlanRead] = Field(default_factory=list)
-    derived_candidates: list[RecoveryPlanPreviewItemRead] = Field(default_factory=list)
-    stored_count: int = 0
-    derived_candidate_count: int = 0
-    generated_at: datetime
 
 
 class ReviewGateRead(BaseModel):
@@ -2179,27 +1815,6 @@ class HandoffEvidenceRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
-class HandoffEvidencePreviewItemRead(BaseModel):
-    project_id: int
-    evidence_type: str
-    claim: str
-    summary: str
-    source_path: str | None = None
-    command: str | None = None
-    status: str
-    metadata_json: dict[str, Any] = Field(default_factory=dict)
-    derived_from_run_id: int | None = None
-
-
-class HandoffEvidencePreviewSummaryRead(BaseModel):
-    project_id: int
-    persisted: list[HandoffEvidenceRead] = Field(default_factory=list)
-    derived_candidates: list[HandoffEvidencePreviewItemRead] = Field(default_factory=list)
-    stored_count: int = 0
-    derived_candidate_count: int = 0
-    generated_at: datetime
-
-
 class EvidenceBasedHandoffRead(BaseModel):
     id: int
     project_id: int
@@ -2383,15 +1998,6 @@ class CapabilityBenchmarkCreate(BaseModel):
     sample_size: int = Field(default=1, ge=0)
     notes: str | None = None
     last_run_at: datetime | None = None
-
-    @field_validator("category")
-    @classmethod
-    def validate_capability_category(cls, value: str) -> str:
-        normalized = value.strip()
-        if normalized not in CAPABILITY_CATEGORIES:
-            allowed = ", ".join(CAPABILITY_CATEGORIES)
-            raise ValueError(f"Category must be one of: {allowed}")
-        return normalized
 
 
 class CapabilityBenchmarkRead(BaseModel):
