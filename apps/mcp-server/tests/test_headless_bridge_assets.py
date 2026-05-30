@@ -6,6 +6,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[3]
 PLUGIN_MANIFEST = ROOT / "plugins" / "mission-control" / "plugin.json"
+BUNDLED_ROOT = ROOT / "apps" / "mcp-server" / "src" / "mission_control_mcp_server" / "_bundled"
 PLUGIN_SKILLS = ROOT / "plugins" / "mission-control" / "skills"
 LOCAL_SKILLS = ROOT / ".codex" / "skills"
 PROMPTS_DIR = ROOT / "plugins" / "mission-control" / "prompts"
@@ -97,3 +98,14 @@ def test_chat_templates_examples_and_docs_exist() -> None:
         assert (EXAMPLES_DIR / example_name).exists(), f"Missing example: {example_name}"
     for doc_path in EXPECTED_DOCS:
         assert doc_path.exists(), f"Missing doc: {doc_path}"
+
+
+def test_bundled_manifest_claude_paths_exist() -> None:
+    manifest = json.loads((BUNDLED_ROOT / "plugin.json").read_text(encoding="utf-8"))
+    bundled_paths = [
+        BUNDLED_ROOT / manifest["claude_code"]["manifest"].removeprefix("./"),
+        BUNDLED_ROOT / manifest["claude_code"]["commands"].removeprefix("./"),
+        BUNDLED_ROOT / manifest["claude_code"]["agents"].removeprefix("./"),
+    ]
+    for path in bundled_paths:
+        assert path.exists(), f"Missing bundled Claude asset: {path}"
