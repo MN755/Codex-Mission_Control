@@ -2109,12 +2109,25 @@ def _update_manifest_and_docs() -> None:
     INSTALL_DOC_PATH.write_text(install_doc, encoding="utf-8")
 
 
+def _assert_generator_matches_shipped_manifest(names: set[str]) -> None:
+    manifest = json.loads(PLUGIN_MANIFEST.read_text(encoding="utf-8"))
+    manifest_names = {str(name) for name in manifest.get("skills", [])}
+    if names != manifest_names:
+        missing = sorted(manifest_names - names)
+        extra = sorted(names - manifest_names)
+        raise SystemExit(
+            "Generator skill set is stale relative to plugins/mission-control/plugin.json. "
+            f"Missing={missing} Extra={extra}"
+        )
+
+
 def main() -> None:
     names = {str(skill["name"]) for skill in SKILLS}
     if names != EXPECTED_SKILL_NAMES:
         missing = sorted(EXPECTED_SKILL_NAMES - names)
         extra = sorted(names - EXPECTED_SKILL_NAMES)
         raise SystemExit(f"Skill manifest mismatch. Missing={missing} Extra={extra}")
+    _assert_generator_matches_shipped_manifest(names)
     for skill in SKILLS:
         _write_skill(skill)
     _write_index()
