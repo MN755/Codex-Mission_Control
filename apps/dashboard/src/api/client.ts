@@ -474,14 +474,20 @@ export const api = {
   getAgents: (projectId: number) => request<Agent[]>(`/api/projects/${projectId}/agents`),
   getReservations: (projectId: number) => request<Reservation[]>(`/api/projects/${projectId}/reservations`),
   startProjectAgents: (projectId: number) => request<AgentActionResponse>(`/api/projects/${projectId}/agents/start`, { method: "POST" }),
-  startAgent: (agentId: number) => request<AgentActionResponse>(`/api/agents/${agentId}/start`, { method: "POST" }),
-  pauseAgent: (agentId: number) => request<AgentActionResponse>(`/api/agents/${agentId}/pause`, { method: "POST" }),
-  stopAgent: (agentId: number) => request<AgentActionResponse>(`/api/agents/${agentId}/stop`, { method: "POST" }),
-  getAgentLogs: (agentId: number) => request<LogRead>(`/api/agents/${agentId}/logs`),
+  startAgent: (projectId: number, agentId: number) =>
+    request<AgentActionResponse>(withQuery(`/api/agents/${agentId}/start`, { project_id: projectId }), { method: "POST" }),
+  pauseAgent: (projectId: number, agentId: number) =>
+    request<AgentActionResponse>(withQuery(`/api/agents/${agentId}/pause`, { project_id: projectId }), { method: "POST" }),
+  stopAgent: (projectId: number, agentId: number) =>
+    request<AgentActionResponse>(withQuery(`/api/agents/${agentId}/stop`, { project_id: projectId }), { method: "POST" }),
+  getAgentLogs: (projectId: number, agentId: number) =>
+    request<LogRead>(withQuery(`/api/agents/${agentId}/logs`, { project_id: projectId })),
   getTasks: (projectId: number) => request<Task[]>(`/api/projects/${projectId}/tasks`),
   generateTasks: (projectId: number) => request<{ count: number; manager_mode_used: string }>(`/api/projects/${projectId}/tasks/generate`, { method: "POST" }),
-  startTask: (taskId: number) => request<AgentActionResponse>(`/api/tasks/${taskId}/start`, { method: "POST" }),
-  completeTask: (taskId: number) => request<AgentActionResponse>(`/api/tasks/${taskId}/complete`, { method: "POST" }),
+  startTask: (projectId: number, taskId: number) =>
+    request<AgentActionResponse>(withQuery(`/api/tasks/${taskId}/start`, { project_id: projectId }), { method: "POST" }),
+  completeTask: (projectId: number, taskId: number) =>
+    request<AgentActionResponse>(withQuery(`/api/tasks/${taskId}/complete`, { project_id: projectId }), { method: "POST" }),
   getEvents: (projectId: number, afterId?: number) =>
     request<ProjectEvent[]>(`/api/projects/${projectId}/events${afterId ? `?after_id=${afterId}` : ""}`),
   parseEventPayload: (raw: MessageEvent<string>): AppEvent | null => {
