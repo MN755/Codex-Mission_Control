@@ -4,7 +4,7 @@ This compatibility document now points to the current headless skill documentati
 
 Use that document for:
 
-- the current ten-skill bridge pack
+- the current Mission Control skill library entrypoints
 - the bridge-vs-manager rule
-- current skill purposes and workflows
+- canonical links to the shipped manifest and grouped skill index
 - Codex-chat-safe fallback behavior
