@@ -1,8 +1,8 @@
 # Mission Control Skills
 
-This document describes the first-party Codex-facing Mission Control skill pack.
+This compatibility document points to the current first-party Codex-facing Mission Control skill library.
 
-The skill pack exists in both repo layouts:
+The skill library exists in both repo layouts:
 
 - [plugins/mission-control/skills](../plugins/mission-control/skills)
 - [.codex/skills](../.codex/skills)
@@ -11,51 +11,32 @@ Every skill in this pack follows the same rule:
 
 The Codex chat agent is not the Mission Control Manager. It is the bridge.
 
-## Skill Inventory
+## Canonical Sources
 
-### `mission-control-orchestrate`
+Use these files as the authoritative references for the current skill surface:
 
-Use when the user wants Mission Control to manage the current repo or task. This skill attaches the workspace, starts the task, surfaces pending decisions, and retrieves the handoff when complete.
+- [plugins/mission-control/plugin.json](../plugins/mission-control/plugin.json) for the shipped skill manifest
+- [plugins/mission-control/SKILL_INDEX.md](../plugins/mission-control/SKILL_INDEX.md) for the grouped plugin index
+- [docs/MISSION_CONTROL_SKILL_LIBRARY.md](./MISSION_CONTROL_SKILL_LIBRARY.md) for bridge usage guidance and grouping notes
 
-### `mission-control-import-codebase`
+## Core Bridge Workflows
 
-Use for existing repos and folders. This skill keeps the first pass read-only, retrieves the codebase map and understanding summary, asks for the interview mode, and then starts the requested work.
+These are the most common entrypoints, not an exhaustive inventory:
 
-### `mission-control-status`
-
-Use for status questions. This skill reads orchestration status, agent activity, and pending decisions, then returns a compact bridge-safe markdown summary.
-
-### `mission-control-approve`
-
-Use when Mission Control is blocked on user input. This skill renders the top approval or question, explains the options, and sends the user's answer back to Mission Control.
-
-### `mission-control-handoff`
-
-Use when the user wants the final output. This skill retrieves the latest handoff and summarizes changes, run instructions, evidence posture, limitations, and next steps.
-
-### `mission-control-debug`
-
-Use when orchestration is stuck, degraded, or unclear. This skill pulls status, diagnostics, pending decisions, and recent events, then asks Mission Control for recovery guidance when available.
-
-### `mission-control-swarm`
-
-Use when the user wants to inspect or adjust swarm strategy. This skill explains the current swarm plan and routes safe preference changes through Mission Control approval rules.
-
-### `mission-control-safe-mode`
-
-Use when the user wants stricter safety. This skill tightens approvals, pauses dynamic spawning when supported, preserves read-only import posture, and restricts risky tools.
-
-### `mission-control-resume`
-
-Use in a new Codex chat when the user wants to continue later. This skill reattaches the workspace, finds the active orchestration, surfaces pending decisions, and resumes only if the user asks.
-
-### `mission-control-agents-md`
-
-Use to review or generate `AGENTS.md`. This skill reads the codebase map, checks existing `AGENTS.md` status, requests a proposal, and asks the user before any write step.
+- `mission-control-orchestrate`
+- `mission-control-import-codebase`
+- `mission-control-status`
+- `mission-control-approve`
+- `mission-control-handoff`
+- `mission-control-debug`
+- `mission-control-swarm`
+- `mission-control-safe-mode`
+- `mission-control-resume`
+- `mission-control-agents-md`
 
 ## Skill Design Requirements
 
-Each `SKILL.md` in this pack includes:
+Each `SKILL.md` in this library includes:
 
 - purpose
 - when to use
@@ -68,4 +49,4 @@ Each `SKILL.md` in this pack includes:
 
 ## Compatibility Note
 
-Some earlier placeholder skills still exist in the repo for compatibility or historical context. The headless Codex-chat pack for this pass is the ten-skill set listed above.
+Older docs may still mention the original starter workflow set. Treat the plugin manifest, grouped index, and library doc above as the current source of truth for the full shipped skill surface.
