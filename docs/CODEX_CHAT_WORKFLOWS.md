@@ -14,6 +14,8 @@ This document maps the example headless Mission Control workflows that live unde
 - [enable-safe-mode.md](../examples/codex-chat-workflows/enable-safe-mode.md)
 - [generate-agents-md.md](../examples/codex-chat-workflows/generate-agents-md.md)
 - [continue-later.md](../examples/codex-chat-workflows/continue-later.md)
+- [empty-folder-new-project.md](../examples/codex-chat-workflows/empty-folder-new-project.md)
+- [existing-codebase-fix-bug.md](../examples/codex-chat-workflows/existing-codebase-fix-bug.md)
 
 ## Common Tool Sequence
 
