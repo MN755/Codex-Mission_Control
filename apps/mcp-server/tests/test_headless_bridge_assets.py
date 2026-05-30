@@ -64,6 +64,11 @@ EXPECTED_DOCS = [
     ROOT / "docs" / "PENDING_DECISIONS.md",
 ]
 
+PROMPT_SEQUENCE_ALIASES = {
+    "import_existing_codebase": "import-existing-codebase.md",
+    "review_latest_handoff": "review-latest-handoff.md",
+}
+
 
 def test_plugin_manifest_lists_expected_headless_skills() -> None:
     manifest = json.loads(PLUGIN_MANIFEST.read_text(encoding="utf-8"))
@@ -97,3 +102,17 @@ def test_chat_templates_examples_and_docs_exist() -> None:
         assert (EXAMPLES_DIR / example_name).exists(), f"Missing example: {example_name}"
     for doc_path in EXPECTED_DOCS:
         assert doc_path.exists(), f"Missing doc: {doc_path}"
+
+
+def test_alias_prompt_markdown_mentions_catalog_sequences() -> None:
+    prompt_catalog = json.loads((ROOT / "plugins" / "mission-control" / "mcp" / "prompts.json").read_text(encoding="utf-8"))
+    catalog_by_name = {entry["name"]: entry for entry in prompt_catalog["prompts"]}
+
+    for prompt_name, alias_filename in PROMPT_SEQUENCE_ALIASES.items():
+        prompt_entry = catalog_by_name[prompt_name]
+        prompt_markdown = (PROMPTS_DIR / alias_filename).read_text(encoding="utf-8")
+
+        for tool_name in prompt_entry["tool_sequence"]:
+            assert tool_name in prompt_markdown, f"{alias_filename} is missing tool {tool_name}"
+        for resource_name in prompt_entry["resource_sequence"]:
+            assert resource_name in prompt_markdown, f"{alias_filename} is missing resource {resource_name}"

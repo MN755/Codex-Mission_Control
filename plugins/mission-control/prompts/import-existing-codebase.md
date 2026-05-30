@@ -11,12 +11,11 @@ Attach an existing codebase to Mission Control with a read-only understanding pa
 
 ## Intended Tool And Resource Sequence
 
-1. Call `mission_control_attach_workspace` in existing-codebase mode.
-2. Call `mission_control_get_codebase_map`.
-3. Call `mission_control_get_codebase_understanding`.
+1. Call `mission_control_import_existing_codebase`.
+2. Call `mission_control_set_import_interview_choice`.
+3. Call `mission_control_start_task`.
 4. Read `mission-control://projects/{project_id}/codebase-map`.
-5. Call `mission_control_set_import_interview_choice`.
-6. Call `mission_control_start_task`.
+5. Read `mission-control://projects/{project_id}/status`.
 
 ## Expected User-Facing Codex Chat Output
 

@@ -10,8 +10,9 @@ Retrieve and summarize the latest Mission Control handoff in Codex chat.
 
 ## Intended Tool And Resource Sequence
 
-1. Call `mission_control_get_handoff`.
-2. Read `mission-control://projects/{project_id}/validation-summary` when available.
+1. Call `mission_control_get_handoff_summary`.
+2. Read `mission-control://projects/{project_id}/handoff`.
+3. Read `mission-control://projects/{project_id}/validation-summary` when available.
 
 ## Expected User-Facing Codex Chat Output
 
