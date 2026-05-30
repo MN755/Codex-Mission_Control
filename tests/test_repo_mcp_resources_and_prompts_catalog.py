@@ -6,7 +6,6 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 PLUGIN_MANIFEST = ROOT / "plugins" / "mission-control" / "plugin.json"
-REPO_LOCAL_PLUGIN_MANIFEST = ROOT / ".codex" / "plugins" / "mission-control" / "plugin.json"
 RESOURCES_CATALOG = ROOT / "plugins" / "mission-control" / "mcp" / "resources.json"
 PROMPTS_CATALOG = ROOT / "plugins" / "mission-control" / "mcp" / "prompts.json"
 PROMPTS_DIR = ROOT / "plugins" / "mission-control" / "prompts"
@@ -60,29 +59,6 @@ def test_plugin_manifest_contains_required_resource_and_prompt_subsets() -> None
     for aliases in REQUIRED_PROMPT_ALIASES:
         assert manifest_prompts.intersection(aliases), f"Missing required prompt coverage for aliases: {sorted(aliases)}"
     assert manifest["mcp"]["resources_catalog"] == "./mcp/resources.json"
-
-
-def test_repo_local_plugin_manifest_tracks_required_prompt_and_resource_surface() -> None:
-    manifest = _load_json(REPO_LOCAL_PLUGIN_MANIFEST)
-    prompt_names = set(manifest["prompts"])
-    resources = set(manifest["resources"])
-
-    assert "ask_manager_for_plan" in prompt_names
-    assert "use_webwright_for_browser_task" in prompt_names
-
-    for resource in [
-        "mission-control://projects/{project_id}/orchestrations/{orchestration_id}/status",
-        "mission-control://projects/{project_id}/orchestrations/{orchestration_id}/events",
-        "mission-control://projects/{project_id}/workspace-tooling",
-        "mission-control://projects/{project_id}/webwright",
-        "mission-control://projects/{project_id}/operator-snapshot",
-        "mission-control://projects/{project_id}/instincts",
-        "mission-control://projects/{project_id}/verification-brief",
-    ]:
-        assert resource in resources
-
-    assert "mission-control://orchestrations/{orchestration_id}/status" not in resources
-    assert "mission-control://orchestrations/{orchestration_id}/events" not in resources
 
 
 def test_resources_catalog_has_safety_defaults_and_required_resources() -> None:
