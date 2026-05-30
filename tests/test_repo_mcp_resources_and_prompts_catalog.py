@@ -6,6 +6,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 PLUGIN_MANIFEST = ROOT / "plugins" / "mission-control" / "plugin.json"
+REPO_LOCAL_PLUGIN_MANIFEST = ROOT / ".codex" / "plugins" / "mission-control" / "plugin.json"
 RESOURCES_CATALOG = ROOT / "plugins" / "mission-control" / "mcp" / "resources.json"
 PROMPTS_CATALOG = ROOT / "plugins" / "mission-control" / "mcp" / "prompts.json"
 PROMPTS_DIR = ROOT / "plugins" / "mission-control" / "prompts"
@@ -22,6 +23,7 @@ WIKI_PLUGIN_ARCH_DOC = ROOT / "wiki-staging" / "MCP-Plugin-Architecture.md"
 WIKI_RESOURCES_DOC = ROOT / "wiki-staging" / "MCP-Resources-Catalog.md"
 WIKI_PROMPTS_DOC = ROOT / "wiki-staging" / "MCP-Prompts-Catalog.md"
 WIKI_SKILLS_PROMPTS_DOC = ROOT / "wiki-staging" / "Skills-and-Prompts.md"
+REPO_LOCAL_PLUGIN_README = ROOT / ".codex" / "plugins" / "mission-control" / "README.md"
 
 REQUIRED_RESOURCES = {
     "mission-control://projects/{project_id}/status",
@@ -60,6 +62,29 @@ def test_plugin_manifest_contains_required_resource_and_prompt_subsets() -> None
     assert manifest["mcp"]["resources_catalog"] == "./mcp/resources.json"
 
 
+def test_repo_local_plugin_manifest_tracks_required_prompt_and_resource_surface() -> None:
+    manifest = _load_json(REPO_LOCAL_PLUGIN_MANIFEST)
+    prompt_names = set(manifest["prompts"])
+    resources = set(manifest["resources"])
+
+    assert "ask_manager_for_plan" in prompt_names
+    assert "use_webwright_for_browser_task" in prompt_names
+
+    for resource in [
+        "mission-control://projects/{project_id}/orchestrations/{orchestration_id}/status",
+        "mission-control://projects/{project_id}/orchestrations/{orchestration_id}/events",
+        "mission-control://projects/{project_id}/workspace-tooling",
+        "mission-control://projects/{project_id}/webwright",
+        "mission-control://projects/{project_id}/operator-snapshot",
+        "mission-control://projects/{project_id}/instincts",
+        "mission-control://projects/{project_id}/verification-brief",
+    ]:
+        assert resource in resources
+
+    assert "mission-control://orchestrations/{orchestration_id}/status" not in resources
+    assert "mission-control://orchestrations/{orchestration_id}/events" not in resources
+
+
 def test_resources_catalog_has_safety_defaults_and_required_resources() -> None:
     catalog = _load_json(RESOURCES_CATALOG)
     assert catalog["safety_defaults"] == {
@@ -96,6 +121,17 @@ def test_docs_explain_tools_resources_prompts_and_redaction() -> None:
     assert "MCP Resources" in content
     assert "Prompts" in content
     assert "safe summaries" in content or "read-only resource rules" in content
+
+
+def test_repo_local_plugin_readme_links_only_existing_docs() -> None:
+    content = REPO_LOCAL_PLUGIN_README.read_text(encoding="utf-8")
+    for link in [
+        "../../../docs/CODEX_PLUGIN_MODE.md",
+        "../../../docs/MCP_RESOURCES_PROMPTS.md",
+        "../../../wiki-staging/Install-From-Codex.md",
+    ]:
+        assert link in content
+        assert (REPO_LOCAL_PLUGIN_README.parent / link).resolve().exists()
 
 
 def test_docs_and_wiki_track_full_resource_catalog() -> None:
