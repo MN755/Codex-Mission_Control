@@ -36,6 +36,12 @@ REQUIRED_PROMPT_ALIASES = [
     {"resume-orchestration", "resume_orchestration"},
 ]
 
+CANONICAL_PROMPTS_WITH_CATALOG_RESOURCES = {
+    "attach_current_workspace",
+    "show_pending_approvals",
+    "answer_pending_approval",
+}
+
 
 def _load_json(path: Path) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
@@ -77,6 +83,16 @@ def test_required_prompt_files_exist_and_are_nonempty() -> None:
             content = prompt_path.read_text(encoding="utf-8").strip()
             assert content.startswith("# ")
             assert len(content) > 40
+
+
+def test_selected_canonical_prompt_files_reference_catalog_resources() -> None:
+    prompts = {item["name"]: item for item in _load_json(ROOT / "plugins" / "mission-control" / "mcp" / "prompts.json")["prompts"]}
+
+    for prompt_name in CANONICAL_PROMPTS_WITH_CATALOG_RESOURCES:
+        prompt = prompts[prompt_name]
+        prompt_text = (PROMPTS_DIR / f"{prompt_name}.md").read_text(encoding="utf-8")
+        for resource in prompt["resource_sequence"]:
+            assert resource in prompt_text, f"{prompt_name} is missing catalog resource {resource}"
 
 
 def test_docs_explain_tools_resources_prompts_and_redaction() -> None:
