@@ -364,9 +364,25 @@ export const api = {
       enabled?: boolean;
       config_json?: Record<string, unknown> | null;
     },
-  ) => request<WidgetInstance>(`/api/widgets/instances/${instanceId}`, { method: "PATCH", body: JSON.stringify(payload) }),
-  deleteWidgetInstance: (instanceId: number) => request<void>(`/api/widgets/instances/${instanceId}`, { method: "DELETE" }),
-  getWidgetInstanceData: (instanceId: number) => request<WidgetDataResponse>(`/api/widgets/instances/${instanceId}/data`),
+    projectId?: number | null,
+  ) =>
+    request<WidgetInstance>(`/api/widgets/instances/${instanceId}`, {
+      method: "PATCH",
+      body: JSON.stringify(projectId == null ? payload : { ...payload, project_id: projectId }),
+    }),
+  deleteWidgetInstance: (instanceId: number, projectId?: number | null) =>
+    request<void>(
+      projectId == null ? `/api/widgets/instances/${instanceId}` : withQuery(`/api/widgets/instances/${instanceId}`, { project_id: projectId }),
+      {
+        method: "DELETE",
+      },
+    ),
+  getWidgetInstanceData: (instanceId: number, projectId?: number | null) =>
+    request<WidgetDataResponse>(
+      projectId == null
+        ? `/api/widgets/instances/${instanceId}/data`
+        : withQuery(`/api/widgets/instances/${instanceId}/data`, { project_id: projectId }),
+    ),
   getProjectWidgetSummary: (projectId: number) => request<WidgetSummary>(`/api/projects/${projectId}/widgets/summary`),
   addDashboardWidget: (payload: { widget_type: string; area?: WidgetArea | null; size?: WidgetSize | null }) =>
     request<WidgetInstance>("/api/dashboard/widgets/add", { method: "POST", body: JSON.stringify(payload) }),
