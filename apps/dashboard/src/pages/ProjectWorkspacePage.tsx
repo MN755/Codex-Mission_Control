@@ -1164,18 +1164,18 @@ export function ProjectWorkspacePage() {
 
   async function updateProjectWidget(instance: WidgetInstance, payload: { collapsed?: boolean; size?: WidgetSize; order_index?: number }) {
     await runAction(async () => {
-      await api.updateWidgetInstance(instance.id, payload);
+      await api.updateWidgetInstance(instance.id, payload, workspace?.project.id);
     }, `Updating ${instance.widget_type}...`);
   }
 
   async function removeProjectWidget(instance: WidgetInstance) {
     await runAction(async () => {
-      await api.deleteWidgetInstance(instance.id);
+      await api.deleteWidgetInstance(instance.id, workspace?.project.id);
     }, `Removing ${instance.widget_type}...`);
   }
 
   async function refreshProjectWidget(instance: WidgetInstance) {
-    const nextData = await api.getWidgetInstanceData(instance.id);
+    const nextData = await api.getWidgetInstanceData(instance.id, workspace?.project.id);
     setWidgetDataState((current) => {
       const remaining = current.filter((entry) => entry.widget_instance_id !== instance.id);
       return [...remaining, nextData];
