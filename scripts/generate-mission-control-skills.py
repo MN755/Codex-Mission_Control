@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import json
+import os
+import shutil
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-SKILLS_ROOT = ROOT / "plugins" / "mission-control" / "skills"
+PLUGIN_SKILLS_ROOT = ROOT / "plugins" / "mission-control" / "skills"
+CODEX_SKILLS_ROOT = Path(os.environ.get("MISSION_CONTROL_CODEX_SKILLS_ROOT", str(ROOT / ".codex" / "skills")))
 PLUGIN_MANIFEST = ROOT / "plugins" / "mission-control" / "plugin.json"
 INDEX_PATH = ROOT / "plugins" / "mission-control" / "SKILL_INDEX.md"
 DOC_PATH = ROOT / "docs" / "MISSION_CONTROL_SKILL_LIBRARY.md"
@@ -1763,61 +1766,6 @@ SKILLS: list[dict[str, object]] = [
     },
 ]
 
-EXPECTED_SKILL_NAMES = {
-    "mission-control-orchestrate",
-    "mission-control-import-codebase",
-    "mission-control-status",
-    "mission-control-approve",
-    "mission-control-handoff",
-    "mission-control-debug",
-    "mission-control-swarm",
-    "mission-control-safe-mode",
-    "mission-control-resume",
-    "mission-control-agents-md",
-    "mission-control-plan",
-    "mission-control-interview",
-    "mission-control-skip-interview",
-    "mission-control-quick-clarify",
-    "mission-control-existing-repo-fix",
-    "mission-control-run-validation",
-    "mission-control-review-tests",
-    "mission-control-generate-runbook",
-    "mission-control-explain-codebase",
-    "mission-control-refactor-safely",
-    "mission-control-security-review",
-    "mission-control-docs-heavy",
-    "mission-control-github-ready-docs",
-    "mission-control-release-prep",
-    "mission-control-scope-creep-check",
-    "mission-control-risk-register",
-    "mission-control-decision-ledger",
-    "mission-control-context-pack",
-    "mission-control-agent-contracts",
-    "mission-control-path-locks",
-    "mission-control-snapshot",
-    "mission-control-restore-plan",
-    "mission-control-conflict-resolution",
-    "mission-control-agent-stuck",
-    "mission-control-recovery-plan",
-    "mission-control-model-policy",
-    "mission-control-tool-policy",
-    "mission-control-local-first",
-    "mission-control-ollama-mode",
-    "mission-control-codex-cli-mode",
-    "mission-control-claude-cli-mode",
-    "mission-control-api-provider-mode",
-    "mission-control-plugin-health",
-    "mission-control-event-digest",
-    "mission-control-evidence-check",
-    "mission-control-change-request",
-    "mission-control-continue-handoff",
-    "mission-control-pause",
-    "mission-control-resume-agents",
-    "mission-control-stop",
-}
-
-# The remaining generation logic is simple and deterministic.
-
 GROUPS: list[tuple[str, list[str]]] = [
     (
         "Core bridge workflows",
@@ -1897,6 +1845,19 @@ GROUPS: list[tuple[str, list[str]]] = [
     ),
 ]
 
+
+def _skill_names() -> list[str]:
+    return [str(skill["name"]) for skill in SKILLS]
+
+
+GROUPED_SKILL_NAMES = {name for _, names in GROUPS for name in names}
+
+
+def _manifest_skill_names() -> list[str]:
+    manifest = json.loads(PLUGIN_MANIFEST.read_text(encoding="utf-8"))
+    return [str(name) for name in (manifest.get("skills") or [])]
+
+
 RELATED_SKILLS: dict[str, list[str]] = {
     "mission-control-orchestrate": ["mission-control-status", "mission-control-approve", "mission-control-handoff"],
     "mission-control-import-codebase": ["mission-control-explain-codebase", "mission-control-plan", "mission-control-existing-repo-fix"],
@@ -1951,8 +1912,8 @@ RELATED_SKILLS: dict[str, list[str]] = {
 }
 
 
-def _write_skill(skill: dict[str, object]) -> None:
-    path = SKILLS_ROOT / str(skill["name"])
+def _write_skill_tree(root: Path, skill: dict[str, object]) -> None:
+    path = root / str(skill["name"])
     path.mkdir(parents=True, exist_ok=True)
     lines = [
         "---",
@@ -1999,14 +1960,95 @@ def _write_skill(skill: dict[str, object]) -> None:
     )
 
 
+def _prune_skill_tree(root: Path, expected_names: set[str]) -> None:
+    root.mkdir(parents=True, exist_ok=True)
+    for directory in root.iterdir():
+        if not directory.is_dir() or directory.name in expected_names:
+            continue
+        shutil.rmtree(directory)
+
+
+def _sync_skill_mirror(expected_names: list[str]) -> None:
+    expected_name_set = set(expected_names)
+    CODEX_SKILLS_ROOT.mkdir(parents=True, exist_ok=True)
+    for skill_name in expected_names:
+        source = PLUGIN_SKILLS_ROOT / skill_name
+        target = CODEX_SKILLS_ROOT / skill_name
+        if not source.exists():
+            raise SystemExit(f"Cannot mirror missing plugin skill directory: {source}")
+        if target.exists():
+            shutil.rmtree(target)
+        shutil.copytree(source, target)
+    _prune_skill_tree(CODEX_SKILLS_ROOT, expected_name_set)
+
+
+def _related_skills_for(name: str, group_names: list[str]) -> list[str]:
+    explicit = RELATED_SKILLS.get(name)
+    if explicit:
+        return explicit
+    if name not in group_names:
+        return []
+    index = group_names.index(name)
+    related: list[str] = []
+    for offset in range(1, len(group_names)):
+        for candidate_index in (index - offset, index + offset):
+            if 0 <= candidate_index < len(group_names):
+                candidate = group_names[candidate_index]
+                if candidate != name and candidate not in related:
+                    related.append(candidate)
+            if len(related) == 3:
+                return related
+    return related
+
+
+def _extract_section(content: str, heading: str) -> str:
+    marker = f"## {heading}"
+    if marker not in content:
+        return ""
+    tail = content.split(marker, 1)[1]
+    next_heading = tail.find("\n## ")
+    section = tail if next_heading == -1 else tail[:next_heading]
+    return section.strip()
+
+
+def _extract_list_items(section: str) -> list[str]:
+    items: list[str] = []
+    for raw_line in section.splitlines():
+        line = raw_line.strip()
+        if line.startswith("- "):
+            items.append(line[2:].strip())
+        elif line[:2].isdigit() and ". " in line:
+            items.append(line.split(". ", 1)[1].strip())
+    return items
+
+
+def _skill_summary(skill_name: str) -> dict[str, str]:
+    skill_path = PLUGIN_SKILLS_ROOT / skill_name / "SKILL.md"
+    content = skill_path.read_text(encoding="utf-8")
+    purpose_section = _extract_section(content, "Purpose")
+    use_when_section = _extract_section(content, "Use when")
+    calls_section = _extract_section(content, "Mission Control calls")
+    purpose = purpose_section.splitlines()[0].strip() if purpose_section else skill_name
+    use_when_items = _extract_list_items(use_when_section)
+    use_when = use_when_items[0] if use_when_items else "See SKILL.md"
+    call_items = _extract_list_items(calls_section)
+    primary = ", ".join(call_items[:4]) if call_items else "See SKILL.md"
+    return {
+        "purpose": purpose,
+        "use_when": use_when,
+        "primary": primary,
+    }
+
+
 def _write_index() -> None:
-    skill_map = {str(skill["name"]): skill for skill in SKILLS}
+    manifest_skill_names = _manifest_skill_names()
+    skill_summaries = {name: _skill_summary(name) for name in manifest_skill_names}
     lines = [
         "# Mission Control Skill Index",
         "",
         "Canonical skill library for Codex chat when it is acting as the Mission Control bridge.",
         "",
-        f"Total indexed skills: {len(SKILLS)}",
+        f"Total indexed skills: {len(manifest_skill_names)}",
         "",
     ]
     for group_name, names in GROUPS:
@@ -2014,17 +2056,30 @@ def _write_index() -> None:
         lines.append("")
         lines.append("| Skill name | Purpose | When to use | Primary tools/resources | Related skills |")
         lines.append("| --- | --- | --- | --- | --- |")
-        for name in names:
-            skill = skill_map[name]
-            primary = ", ".join(list(skill["tools"])[:2] + list(skill["resources"])[:2])  # type: ignore[index]
-            when = list(skill["use_when"])[0]  # type: ignore[index]
-            related = ", ".join(RELATED_SKILLS[name])
-            lines.append(f"| `{name}` | {skill['purpose']} | {when} | {primary} | {related} |")
+        group_skill_names = [name for name in names if name in skill_summaries]
+        for name in group_skill_names:
+            skill = skill_summaries[name]
+            related = ", ".join(_related_skills_for(name, names))
+            lines.append(f"| `{name}` | {skill['purpose']} | {skill['use_when']} | {skill['primary']} | {related} |")
+        lines.append("")
+    additional_names = [name for name in manifest_skill_names if name not in GROUPED_SKILL_NAMES]
+    if additional_names:
+        lines.append("## Additional shipped skills")
+        lines.append("")
+        lines.append("Automatically listed shipped skills that are not part of the core grouped bridge taxonomy above.")
+        lines.append("")
+        lines.append("| Skill name | Purpose | When to use | Primary tools/resources | Related skills |")
+        lines.append("| --- | --- | --- | --- | --- |")
+        for name in additional_names:
+            skill = skill_summaries[name]
+            related = ", ".join(_related_skills_for(name, additional_names))
+            lines.append(f"| `{name}` | {skill['purpose']} | {skill['use_when']} | {skill['primary']} | {related} |")
         lines.append("")
     INDEX_PATH.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 def _write_docs() -> None:
+    manifest_skill_count = len(_manifest_skill_names())
     lines = [
         "# Mission Control Skill Library",
         "",
@@ -2038,7 +2093,8 @@ def _write_docs() -> None:
         "- Planning and intake workflows handle import, interviews, clarifications, plans, and scoped follow-up requests.",
         "- Execution and swarm workflows handle swarm plans, contracts, path locks, snapshots, and conflict or stuck-agent handling.",
         "- Validation, evidence, docs, and release workflows keep proof, runbooks, public docs, and release readiness explicit.",
-        "- Diagnostics and policy workflows cover recovery, health, model or tool policy, local-first posture, and provider modes.",
+        "- Diagnostics and policy workflows cover recovery, health, install/update maintenance, model or tool policy, local-first posture, and provider modes.",
+        "- Additional shipped skills are listed automatically in the index so the manifest and published library cannot quietly drift apart.",
         "",
         "## How Codex should use these skills",
         "",
@@ -2077,16 +2133,12 @@ def _write_docs() -> None:
         "",
         "## Index",
         "",
-        "See `plugins/mission-control/SKILL_INDEX.md` for the grouped index of all 50 skills.",
+        f"See `plugins/mission-control/SKILL_INDEX.md` for the grouped index of all {manifest_skill_count} skills.",
     ]
     DOC_PATH.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 def _update_manifest_and_docs() -> None:
-    manifest = json.loads(PLUGIN_MANIFEST.read_text(encoding="utf-8"))
-    manifest["skills"] = [str(skill["name"]) for skill in SKILLS]
-    PLUGIN_MANIFEST.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
-
     readme = README_PATH.read_text(encoding="utf-8")
     if "SKILL_INDEX.md" not in readme:
         readme = readme.replace(
@@ -2110,13 +2162,17 @@ def _update_manifest_and_docs() -> None:
 
 
 def main() -> None:
-    names = {str(skill["name"]) for skill in SKILLS}
-    if names != EXPECTED_SKILL_NAMES:
-        missing = sorted(EXPECTED_SKILL_NAMES - names)
-        extra = sorted(names - EXPECTED_SKILL_NAMES)
-        raise SystemExit(f"Skill manifest mismatch. Missing={missing} Extra={extra}")
+    manifest_skill_names = _manifest_skill_names()
+    manifest_name_set = set(manifest_skill_names)
+    unknown_group_entries = sorted(GROUPED_SKILL_NAMES - manifest_name_set)
+    if unknown_group_entries:
+        raise SystemExit(f"Grouped skill list references unknown skills: {unknown_group_entries}")
     for skill in SKILLS:
-        _write_skill(skill)
+        if str(skill["name"]) not in manifest_name_set:
+            raise SystemExit(f"Generated skill is missing from plugin.json: {skill['name']}")
+        _write_skill_tree(PLUGIN_SKILLS_ROOT, skill)
+    _prune_skill_tree(PLUGIN_SKILLS_ROOT, manifest_name_set)
+    _sync_skill_mirror(manifest_skill_names)
     _write_index()
     _write_docs()
     _update_manifest_and_docs()

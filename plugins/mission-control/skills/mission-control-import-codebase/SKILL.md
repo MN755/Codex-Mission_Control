@@ -19,16 +19,12 @@ The Codex chat agent is not the Mission Control Manager. It is the bridge betwee
 
 ## Workflow
 
-1. Verify the Mission Control bridge surface first:
-   - prefer named `mission_control_*` tools when exposed
-   - in Codex CLI sessions, use `codex mcp list` if needed to tell "registered" apart from "callable here"
-   - if exposure is unclear, confirm MCP registration or resource visibility before declaring import tooling missing
-2. Attach the current workspace with `mission_control_attach_workspace`.
-3. Use `mission_control_import_existing_codebase` or the import prompt path for non-empty folders.
-4. Request a read-only scan first.
-5. Retrieve the codebase map and understanding summary.
-6. Ask whether to skip interview, quick clarify, full interview, or let the Manager decide.
-7. Start the requested task only after the understanding path is chosen.
+1. Attach the current workspace with `mission_control_attach_workspace`.
+2. Use `mission_control_import_existing_codebase` or the import prompt path for non-empty folders.
+3. Request a read-only scan first.
+4. Retrieve the codebase map and understanding summary.
+5. Ask whether to skip interview, quick clarify, full interview, or let the Manager decide.
+6. Start the requested task only after the understanding path is chosen.
 
 ## Mission Control calls
 
@@ -61,13 +57,7 @@ Ask before any write-capable step, import permission change, or interview-skippi
 
 ## Failure and fallback
 
-If import tooling is missing, distinguish between:
-
-- import tooling truly absent
-- Mission Control registered but only partial MCP capabilities exposed
-- bridge down entirely
-
-Only then fall back to read-only codebase resources where available.
+If import tooling is missing, attach the workspace, explain that import-specific tooling is expected or future, and rely on read-only codebase resources where available.
 
 ## Example invocation
 
