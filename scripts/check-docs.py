@@ -30,6 +30,8 @@ REQUIRED_FILES = [
     DOCS / "PENDING_DECISIONS.md",
     DOCS / "HANDOFFS.md",
     DOCS / "SECURITY.md",
+    DOCS / "MISSION_CONTROL_SKILLS.md",
+    DOCS / "SKILL_PACK.md",
     DOCS / "TROUBLESHOOTING.md",
     DOCS / "PUBLIC_RELEASE_CHECKLIST.md",
 ]
@@ -41,6 +43,10 @@ README_FORBIDDEN = [
     "right sidebar",
     "widget-heavy",
     "dashboard as main product",
+]
+SKILL_DOCS_FORBIDDEN = [
+    "the current ten-skill bridge pack",
+    "the headless codex-chat pack for this pass is the ten-skill set listed above.",
 ]
 
 STATUS_PREFIX = "> Status:"
@@ -62,6 +68,14 @@ def check_readme(errors: list[str]) -> None:
     for phrase in README_FORBIDDEN:
         if phrase in text:
             errors.append(f"README contains forbidden phrase: {phrase}")
+
+
+def check_skill_pack_docs(errors: list[str]) -> None:
+    for path in [DOCS / "MISSION_CONTROL_SKILLS.md", DOCS / "SKILL_PACK.md"]:
+        text = content(path).lower()
+        for phrase in SKILL_DOCS_FORBIDDEN:
+            if phrase in text:
+                errors.append(f"stale skill-pack phrase in {path.relative_to(ROOT)}: {phrase}")
 
 
 def iter_markdown_files() -> list[Path]:
@@ -133,6 +147,7 @@ def main() -> int:
     errors: list[str] = []
     check_required_files(errors)
     check_readme(errors)
+    check_skill_pack_docs(errors)
     check_links(errors)
     check_wiki_status_labels(errors)
     check_generated_exports(errors)
