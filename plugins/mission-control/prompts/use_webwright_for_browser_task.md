@@ -1,6 +1,7 @@
 # Use Webwright For Browser Task
 
 Check the project's Webwright readiness first.
+Resource sequence: `mission-control://projects/{project_id}/webwright` -> `mission-control://projects/{project_id}/status`
 
 If Webwright is ready:
 
