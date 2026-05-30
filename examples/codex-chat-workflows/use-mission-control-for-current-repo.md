@@ -9,8 +9,10 @@
 1. Prompt: `use-mission-control-for-this-repo`
 2. Tool: `mission_control_attach_workspace`
 3. Tool: `mission_control_start_task`
-4. Resource: `mission-control://orchestrations/{orchestration_id}/status`
-5. Tool: `mission_control_get_pending_decisions`
+4. Tool: `mission_control_get_status`
+5. Resource: `mission-control://orchestrations/{orchestration_id}/status`
+6. Tool: `mission_control_get_pending_decisions`
+7. Resource: `mission-control://projects/{project_id}/pending-decisions`
 
 ## Expected Codex Chat Response
 
