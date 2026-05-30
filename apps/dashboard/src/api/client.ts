@@ -311,6 +311,7 @@ export const api = {
     created_by?: "manager" | "user" | "agent" | "system";
   }) => request<RiskRecord>(`/api/projects/${projectId}/risks`, { method: "POST", body: JSON.stringify(payload) }),
   updateRisk: (
+    projectId: number,
     riskId: number,
     payload: Partial<{
       title: string;
@@ -322,7 +323,7 @@ export const api = {
       status: "open" | "monitoring" | "mitigated" | "accepted" | "closed";
       related_task_id: number | null;
     }>,
-  ) => request<RiskRecord>(`/api/risks/${riskId}`, { method: "PATCH", body: JSON.stringify(payload) }),
+  ) => request<RiskRecord>(withQuery(`/api/risks/${riskId}`, { project_id: projectId }), { method: "PATCH", body: JSON.stringify(payload) }),
   getScopeCreep: (projectId: number) => request<ScopeChangeSignal[]>(`/api/projects/${projectId}/scope-creep`),
   analyzeScopeCreep: (projectId: number, payload: { source?: string; summary?: string | null; related_task_id?: number | null; related_message_id?: number | null }) =>
     request<ScopeChangeSignal[]>(`/api/projects/${projectId}/scope-creep/analyze`, { method: "POST", body: JSON.stringify(payload) }),
