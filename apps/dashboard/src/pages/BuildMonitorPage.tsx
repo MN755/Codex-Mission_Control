@@ -88,7 +88,7 @@ export function BuildMonitorPage() {
 
   async function handleLogs(agentId: number) {
     try {
-      const nextLogs = await api.getAgentLogs(agentId);
+      const nextLogs = await api.getAgentLogs(numericProjectId, agentId);
       setLogs(nextLogs);
     } catch (logError) {
       setError(logError instanceof Error ? logError.message : "Could not load logs.");
@@ -118,9 +118,9 @@ export function BuildMonitorPage() {
           <AgentSidebar
             agents={workerAgents}
             tasks={tasks}
-            onStart={(agentId) => void act(() => api.startAgent(agentId))}
-            onPause={(agentId) => void act(() => api.pauseAgent(agentId))}
-            onStop={(agentId) => void act(() => api.stopAgent(agentId))}
+            onStart={(agentId) => void act(() => api.startAgent(numericProjectId, agentId))}
+            onPause={(agentId) => void act(() => api.pauseAgent(numericProjectId, agentId))}
+            onStop={(agentId) => void act(() => api.stopAgent(numericProjectId, agentId))}
             onLogs={(agentId) => void handleLogs(agentId)}
           />
 
@@ -182,7 +182,7 @@ export function BuildMonitorPage() {
             </SectionCard>
 
             <SectionCard title="Task board" subtitle="Worker assignments stay non-overlapping and visible.">
-              <TaskBoard tasks={tasks} onStartTask={(taskId) => void act(() => api.startTask(taskId))} />
+              <TaskBoard tasks={tasks} onStartTask={(taskId) => void act(() => api.startTask(numericProjectId, taskId))} />
             </SectionCard>
 
             <div className="monitor-lower-grid">
