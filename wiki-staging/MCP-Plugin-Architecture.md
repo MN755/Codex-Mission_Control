@@ -37,6 +37,7 @@ Expected tools:
 - `mission_control_get_codebase_map`
 - `mission_control_get_codebase_understanding`
 - `mission_control_set_import_interview_choice`
+- `mission_control_get_diagnostics`
 - `mission_control_get_workspace_tooling`
 - `mission_control_search_codebase`
 - `mission_control_get_webwright_status`
@@ -46,7 +47,6 @@ Expected tools:
 - `mission_control_get_nvidia_gpu_diagnostics`
 - `mission_control_get_nvidia_local_runtime_status`
 - `mission_control_get_nvidia_validation_plan`
-- `mission_control_get_diagnostics`
 - `mission_control_get_swarm_plan`
 - `mission_control_update_swarm_preferences`
 - `mission_control_generate_swarm_plan`
@@ -76,6 +76,7 @@ Expected resources:
 - `mission-control://projects/{project_id}/diagnostics`
 - `mission-control://projects/{project_id}/webwright`
 - `mission-control://projects/{project_id}/nvidia-dynamo`
+- `mission-control://projects/{project_id}/nvidia-nim`
 - `mission-control://projects/{project_id}/nvidia-aiq`
 - `mission-control://projects/{project_id}/nvidia-gpu-diagnostics`
 - `mission-control://projects/{project_id}/nvidia-local-runtime`
