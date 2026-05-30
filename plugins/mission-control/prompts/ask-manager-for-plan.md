@@ -1,16 +1,31 @@
 # Ask Manager for Plan
 
-Ask Mission Control Manager for the current plan without taking over orchestration.
+# Ask Manager For Plan
 
-Checklist:
+## Purpose
 
-1. Read project status and swarm-plan resources first if they exist.
-2. Ask the manager for the current plan, next milestone, and blocking assumptions.
-3. Return the manager's plan summary to the user in plain language.
-4. Do not independently redesign the plan unless the user explicitly asks Mission Control to revise it.
+Request a fresh Mission Control manager plan without replacing the manager with Codex chat logic.
 
-Project context:
+## Required Arguments
 
-```text
-{{PROJECT_REFERENCE}}
-```
+- `PROJECT_ID`
+- `USER_REQUEST`
+
+## Intended Tool And Resource Sequence
+
+1. Call `mission_control_start_task`.
+2. Call `mission_control_get_status`.
+3. Call `mission_control_get_pending_decisions`.
+4. Read `mission-control://projects/{project_id}/status`.
+5. Read `mission-control://projects/{project_id}/swarm-plan`.
+
+## Expected User-Facing Codex Chat Output
+
+- Compact status summary
+- Current manager plan posture
+- Plan-blocking decision when Mission Control needs user input
+
+## Safety Notes
+
+- Use Mission Control as the planner.
+- Do not improvise the plan locally in Codex chat.
