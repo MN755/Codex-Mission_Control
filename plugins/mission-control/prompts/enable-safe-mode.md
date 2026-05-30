@@ -10,12 +10,10 @@ Tighten Mission Control safety settings for a cautious chat-driven workflow.
 
 ## Intended Tool And Resource Sequence
 
-1. Call `mission_control_get_project_settings`.
-2. Call `mission_control_update_project_settings`.
-3. Call `mission_control_get_import_safety`.
-4. Call `mission_control_update_import_safety`.
-5. Call `mission_control_get_tool_catalog`.
-6. Call `mission_control_set_tool_permission`.
+1. Call `mission_control_enable_safe_mode`.
+2. Call `mission_control_get_diagnostics`.
+3. Read `mission-control://projects/{project_id}/diagnostics`.
+4. Read `mission-control://projects/{project_id}/path-locks`.
 
 ## Expected User-Facing Codex Chat Output
 
