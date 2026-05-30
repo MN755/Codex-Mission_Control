@@ -16,7 +16,7 @@ Codex chat should:
 - start or continue the Mission Control task
 - poll compact status
 - surface pending decisions
-- send the user’s answer back
+- send the user's answer back
 - retrieve the final handoff
 
 Codex chat should not:
@@ -24,7 +24,7 @@ Codex chat should not:
 - invent its own manager plan
 - spawn extra workers outside Mission Control mode
 - bypass Mission Control approvals
-- quietly edit the repo on Mission Control’s behalf
+- quietly edit the repo on Mission Control's behalf
 
 ## Bridge flow
 
@@ -59,7 +59,7 @@ Useful commands:
 
 The MCP bridge can auto-start the daemon when `GET /api/health` fails and the configured localhost port is free. If the port is occupied but does not answer the health check, the bridge returns a structured error instead of blindly trampling some unrelated process.
 
-## Current MCP tools
+## Bootstrap MCP tools
 
 - `mission_control_attach_workspace`
 - `mission_control_start_task`
@@ -69,9 +69,11 @@ The MCP bridge can auto-start the daemon when `GET /api/health` fails and the co
 - `mission_control_pause`
 - `mission_control_resume`
 - `mission_control_get_handoff`
-- `mission_control_open_dashboard`
+- `mission_control_plugin_health`
 
-## Current MCP resources
+For the full current MCP tool catalog, see [MCP Tools](MCP_TOOLS.md).
+
+## Common MCP resources
 
 - `mission-control://projects/{project_id}/status`
 - `mission-control://projects/{project_id}/swarm-plan`
@@ -82,6 +84,8 @@ The MCP bridge can auto-start the daemon when `GET /api/health` fails and the co
 - `mission-control://orchestrations/{orchestration_id}/status`
 
 These resources expose safe summaries only. They do not expose raw logs, secret headers, or giant transcripts by default because this is an orchestration bridge, not an exfiltration bridge.
+
+For the full current MCP resource catalog, see [MCP Resources](MCP_RESOURCES.md).
 
 ## Pending decisions
 
