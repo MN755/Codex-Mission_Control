@@ -21,12 +21,14 @@ def test_mcp_prompts_doc_lists_every_canonical_prompt() -> None:
         assert f"`{name}`" in doc, f"{name} is missing from {MCP_PROMPTS_DOC}"
 
 
-def test_mcp_resources_prompts_doc_lists_every_hyphenated_alias() -> None:
+def test_mcp_resources_prompts_doc_lists_every_published_prompt_name() -> None:
     doc = MCP_RESOURCES_PROMPTS_DOC.read_text(encoding="utf-8")
-    aliases = sorted(
-        alias
-        for prompt in _load_prompts()
-        for alias in prompt.get("aliases", [])
-    )
-    for alias in aliases:
-        assert f"`{alias}`" in doc, f"{alias} is missing from {MCP_RESOURCES_PROMPTS_DOC}"
+    published_names = []
+    for prompt in _load_prompts():
+        aliases = prompt.get("aliases", [])
+        if aliases:
+            published_names.extend(aliases)
+        else:
+            published_names.append(prompt["name"])
+    for name in sorted(published_names):
+        assert f"`{name}`" in doc, f"{name} is missing from {MCP_RESOURCES_PROMPTS_DOC}"

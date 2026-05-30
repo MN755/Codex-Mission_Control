@@ -61,6 +61,8 @@ The canonical machine-readable catalogs live here:
 - `switch-swarm-strategy`
 - `enable-safe-mode`
 - `generate-agents-md-proposal`
+- `install_from_github`
+- `autowire_providers`
 - `ask-manager-for-plan`
 
 ## Prompt To Tool Pattern
