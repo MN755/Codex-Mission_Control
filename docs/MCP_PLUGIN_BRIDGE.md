@@ -15,7 +15,7 @@ The bridge keeps Codex chat thin. Mission Control remains the orchestrator. MCP 
 - MCP prompts: reusable workflow templates for common tasks
 - skills: Codex-facing instructions that tell the bridge how to use Mission Control safely
 
-## Expected tools
+## Core bridge tools
 
 - `mission_control_attach_workspace`
 - `mission_control_start_task`
@@ -28,7 +28,9 @@ The bridge keeps Codex chat thin. Mission Control remains the orchestrator. MCP 
 - `mission_control_plugin_health`
 - `mission_control_enable_safe_mode`
 
-## Expected resources
+The full current tool catalog lives in [MCP Tools](MCP_TOOLS.md).
+
+## Common bridge resources
 
 - `mission-control://projects/{project_id}/status`
 - `mission-control://projects/{project_id}/agents`
@@ -37,6 +39,8 @@ The bridge keeps Codex chat thin. Mission Control remains the orchestrator. MCP 
 - `mission-control://projects/{project_id}/codebase-map`
 - `mission-control://projects/{project_id}/diagnostics`
 - `mission-control://orchestrations/{orchestration_id}/status`
+
+The full current resource catalog lives in [MCP Resources](MCP_RESOURCES.md), and the workflow catalog lives in [MCP Prompts](MCP_PROMPTS.md).
 
 ## Bridge rules
 
