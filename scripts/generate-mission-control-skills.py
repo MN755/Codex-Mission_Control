@@ -43,7 +43,7 @@ SKILLS: list[dict[str, object]] = [
             "`mission-control://projects/{project_id}/status`",
             "`mission-control://projects/{project_id}/pending-decisions`",
             "`mission-control://projects/{project_id}/handoff`",
-            "`mission-control://projects/{project_id}/orchestrations/{orchestration_id}/status`",
+            "`mission-control://orchestrations/{orchestration_id}/status`",
         ],
         "output": [
             "Report the attached project or orchestration identifier.",
@@ -119,7 +119,7 @@ SKILLS: list[dict[str, object]] = [
         "tools": ["`mission_control_get_status`"],
         "resources": [
             "`mission-control://projects/{project_id}/status`",
-            "`mission-control://projects/{project_id}/orchestrations/{orchestration_id}/status`",
+            "`mission-control://orchestrations/{orchestration_id}/status`",
             "`mission-control://projects/{project_id}/agents`",
             "`mission-control://projects/{project_id}/pending-decisions`",
             "`mission-control://projects/{project_id}/handoff`",
@@ -156,7 +156,7 @@ SKILLS: list[dict[str, object]] = [
         "tools": ["`mission_control_get_pending_decisions`", "`mission_control_answer_decision`"],
         "resources": [
             "`mission-control://projects/{project_id}/pending-decisions`",
-            "`mission-control://projects/{project_id}/orchestrations/{orchestration_id}/status`",
+            "`mission-control://orchestrations/{orchestration_id}/status`",
         ],
         "output": [
             "Identify the decision type: command approval, tool approval, write permission, Manager question, swarm approval, snapshot approval, handoff review, recovery decision, or scope change decision.",
@@ -340,7 +340,7 @@ SKILLS: list[dict[str, object]] = [
             "`mission_control_resume`",
         ],
         "resources": [
-            "`mission-control://projects/{project_id}/orchestrations/{orchestration_id}/status`",
+            "`mission-control://orchestrations/{orchestration_id}/status`",
             "`mission-control://projects/{project_id}/status`",
             "`mission-control://projects/{project_id}/pending-decisions`",
         ],
@@ -499,7 +499,7 @@ SKILLS: list[dict[str, object]] = [
     },
     {
         "name": "mission-control-quick-clarify",
-        "description": "Ask only a few high-impact Mission Control clarifying questions. Use when the user wants speed, the repo already explains most things, or the task is urgent and only 3–6 targeted questions are justified.",
+        "description": "Ask only a few high-impact Mission Control clarifying questions. Use when the user wants speed, the repo already explains most things, or the task is urgent and only 3â€“6 targeted questions are justified.",
         "purpose": "Run a short, high-impact clarification flow instead of a full interview.",
         "use_when": [
             "The user wants speed.",
@@ -1528,7 +1528,7 @@ SKILLS: list[dict[str, object]] = [
         ],
         "tools": ["`mission_control_get_event_digest`"],
         "resources": [
-            "`mission-control://projects/{project_id}/orchestrations/{orchestration_id}/status`",
+            "`mission-control://orchestrations/{orchestration_id}/status`",
             "`mission-control://projects/{project_id}/status`",
         ],
         "output": [
@@ -1669,7 +1669,7 @@ SKILLS: list[dict[str, object]] = [
         ],
         "tools": ["`mission_control_pause`", "`mission_control_get_status`"],
         "resources": [
-            "`mission-control://projects/{project_id}/orchestrations/{orchestration_id}/status`",
+            "`mission-control://orchestrations/{orchestration_id}/status`",
             "`mission-control://projects/{project_id}/status`",
         ],
         "output": [
@@ -1706,7 +1706,7 @@ SKILLS: list[dict[str, object]] = [
             "`mission_control_resume`",
         ],
         "resources": [
-            "`mission-control://projects/{project_id}/orchestrations/{orchestration_id}/status`",
+            "`mission-control://orchestrations/{orchestration_id}/status`",
             "`mission-control://projects/{project_id}/pending-decisions`",
             "`mission-control://projects/{project_id}/agents`",
         ],
