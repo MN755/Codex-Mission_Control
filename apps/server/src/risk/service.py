@@ -5,23 +5,10 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from models import Agent, Project, RiskRecord, Task, utc_now
+from models import Project, RiskRecord, utc_now
 
 
 class RiskService:
-    def _validate_related_refs(self, db: Session, project: Project, payload: dict[str, Any]) -> None:
-        owner_agent_id = payload.get("owner_agent_id")
-        if owner_agent_id is not None:
-            agent = db.get(Agent, owner_agent_id)
-            if agent is None or agent.project_id != project.id:
-                raise ValueError("Risk owner agent not found in this project")
-
-        related_task_id = payload.get("related_task_id")
-        if related_task_id is not None:
-            task = db.get(Task, related_task_id)
-            if task is None or task.project_id != project.id:
-                raise ValueError("Risk related task not found in this project")
-
     def list_risks(self, db: Session, project: Project) -> list[RiskRecord]:
         return list(
             db.scalars(
@@ -33,7 +20,6 @@ class RiskService:
 
     def create_risk(self, db: Session, project: Project, payload: dict[str, Any]) -> RiskRecord:
         normalized_title = " ".join(str(payload["title"]).split())
-        self._validate_related_refs(db, project, payload)
         existing = db.scalar(
             select(RiskRecord)
             .where(RiskRecord.project_id == project.id, RiskRecord.title == normalized_title, RiskRecord.status != "closed")
@@ -41,12 +27,7 @@ class RiskService:
         )
         if existing is not None:
             existing.description = str(payload.get("description") or existing.description)
-            existing.severity = str(payload.get("severity") or existing.severity)
-            existing.likelihood = str(payload.get("likelihood") or existing.likelihood)
-            existing.owner_agent_id = payload.get("owner_agent_id", existing.owner_agent_id)
             existing.mitigation = payload.get("mitigation") or existing.mitigation
-            existing.status = str(payload.get("status") or existing.status)
-            existing.related_task_id = payload.get("related_task_id", existing.related_task_id)
             existing.updated_at = utc_now()
             db.flush()
             return existing
@@ -66,14 +47,12 @@ class RiskService:
         db.flush()
         return record
 
-    def update_risk(self, db: Session, risk_id: int, payload: dict[str, Any]) -> RiskRecord:
+    def update_risk(self, db: Session, risk_id: int, payload: dict[str, Any], *, project_id: int | None = None) -> RiskRecord:
         record = db.get(RiskRecord, risk_id)
         if record is None:
             raise ValueError("Risk not found")
-        project = db.get(Project, record.project_id)
-        if project is None:
-            raise ValueError("Project not found")
-        self._validate_related_refs(db, project, payload)
+        if project_id is not None and record.project_id != project_id:
+            raise ValueError("Risk not found")
         for field in [
             "title",
             "description",
