@@ -9,7 +9,9 @@
 1. Prompt: `generate-agents-md-proposal`
 2. Tool: `mission_control_get_codebase_map`
 3. Tool: `mission_control_get_agents_md_status`
-4. Tool: `mission_control_propose_agents_md`
+4. Resource: `mission-control://projects/{project_id}/codebase-map`
+5. Resource: `mission-control://projects/{project_id}/agent-contracts`
+6. Tool: `mission_control_generate_agents_md`
 
 ## Expected Codex Chat Response
 
