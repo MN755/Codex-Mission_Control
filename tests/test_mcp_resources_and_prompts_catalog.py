@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import re
 
 
 ROOT = Path(__file__).resolve().parents[1]
 PLUGIN_MANIFEST = ROOT / "plugins" / "mission-control" / "plugin.json"
 RESOURCES_CATALOG = ROOT / "plugins" / "mission-control" / "mcp" / "resources.json"
 PROMPTS_DIR = ROOT / "plugins" / "mission-control" / "prompts"
+SERVER_PATH = ROOT / "apps" / "mcp-server" / "src" / "mission_control_mcp_server" / "server.py"
 DOC_PATHS = [
     ROOT / "docs" / "MCP_RESOURCES_AND_PROMPTS.md",
     ROOT / "docs" / "MCP_RESOURCES_PROMPTS.md",
@@ -86,3 +88,11 @@ def test_docs_explain_tools_resources_prompts_and_redaction() -> None:
     assert "MCP Resources" in content
     assert "Prompts" in content
     assert "safe summaries" in content or "read-only resource rules" in content
+
+
+def test_codex_plugin_mode_current_mcp_tools_exist_in_server_surface() -> None:
+    content = (ROOT / "docs" / "CODEX_PLUGIN_MODE.md").read_text(encoding="utf-8")
+    server_content = SERVER_PATH.read_text(encoding="utf-8")
+    documented_tools = set(re.findall(r"`(mission_control_[a-z0-9_]+)`", content))
+    implemented_tools = set(re.findall(r'"(mission_control_[a-z0-9_]+)": self\._call_', server_content))
+    assert documented_tools.issubset(implemented_tools)

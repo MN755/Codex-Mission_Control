@@ -69,7 +69,6 @@ The MCP bridge can auto-start the daemon when `GET /api/health` fails and the co
 - `mission_control_pause`
 - `mission_control_resume`
 - `mission_control_get_handoff`
-- `mission_control_open_dashboard`
 
 ## Current MCP resources
 
