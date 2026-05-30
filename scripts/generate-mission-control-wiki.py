@@ -479,15 +479,15 @@ add(
     "Current",
     [
         (
-            "Planned commands",
+            "Current commands",
             """
             Expected commands:
 
             ```powershell
-            .\\scripts\\install-mission-control-plugin.ps1 -HeadlessOnly
+            .\\scripts\\install-mission-control-plugin.ps1
             .\\scripts\\install-mission-control-plugin.ps1 -DryRun
-            .\\scripts\\install-mission-control-plugin.ps1 -Repair
             .\\scripts\\mission-control-headless-health.ps1
+            python .\\scripts\\mission-control-manage.py install --dry-run
             ```
             """,
         ),
