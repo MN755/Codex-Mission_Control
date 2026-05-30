@@ -750,8 +750,11 @@ add(
 
             - `mission-control-install-from-github`
             - `mission-control-autowire-providers`
+            - `mission-control-plan`
+            - `mission-control-pause`
+            - `mission-control-resume-agents`
 
-            If those specific skills are not present yet, treat them as planned wrappers around the documented install/autowire flows.
+            Those bridge-oriented install, autowire, planning, and pause/resume helpers already ship in the repo skill pack.
             """,
         ),
         (
@@ -759,15 +762,25 @@ add(
             """
             Common workflow prompts should cover:
 
-            - attach current workspace
-            - use Mission Control for this repo
-            - import existing codebase
-            - continue orchestration
-            - show pending approvals
-            - review latest handoff
-            - explain current swarm
-            - enable safe mode
-            - generate AGENTS.md proposal
+            - `attach_current_workspace`
+            - `use_mission_control_for_repo`
+            - `import_existing_codebase`
+            - `start_manager_led_task`
+            - `continue_orchestration`
+            - `show_pending_approvals`
+            - `answer_pending_approval`
+            - `review_latest_handoff`
+            - `debug_failed_orchestration`
+            - `use_webwright_for_browser_task`
+            - `pause_orchestration`
+            - `resume_orchestration`
+            - `explain_current_swarm`
+            - `switch_swarm_strategy`
+            - `enable_safe_mode`
+            - `generate_agents_md_proposal`
+            - `install_from_github`
+            - `autowire_providers`
+            - `ask_manager_for_plan`
             """,
         ),
         (
@@ -2272,17 +2285,25 @@ add_reference_page(
     "MCP Prompts Catalog",
     "This page summarizes the prompt workflows packaged for Mission Control bridge mode.",
     [
-        "attach current workspace",
-        "use Mission Control for this repo",
-        "import existing codebase",
-        "start manager-led task",
-        "continue orchestration",
-        "show pending approvals",
-        "answer pending approval",
-        "review latest handoff",
-        "debug failed orchestration",
-        "use Webwright for browser task",
-        "enable safe mode",
+        "`attach_current_workspace`",
+        "`use_mission_control_for_repo`",
+        "`import_existing_codebase`",
+        "`start_manager_led_task`",
+        "`continue_orchestration`",
+        "`show_pending_approvals`",
+        "`answer_pending_approval`",
+        "`review_latest_handoff`",
+        "`debug_failed_orchestration`",
+        "`use_webwright_for_browser_task`",
+        "`pause_orchestration`",
+        "`resume_orchestration`",
+        "`explain_current_swarm`",
+        "`switch_swarm_strategy`",
+        "`enable_safe_mode`",
+        "`generate_agents_md_proposal`",
+        "`install_from_github`",
+        "`autowire_providers`",
+        "`ask_manager_for_plan`",
     ],
     ["MCP-Plugin-Architecture.md", "Skills-and-Prompts.md", "Quick-Start.md"],
 )
