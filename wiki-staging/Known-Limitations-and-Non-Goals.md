@@ -7,7 +7,7 @@ This page captures the current edges of the product so the wiki does not oversel
 ## Reference
 
 - standalone dashboard is optional, not primary
-- some install/autowire surfaces remain planned or partial
+- full readiness still depends on local Python, Codex, and runner availability
 - runner support depth varies by local environment
 - worker orchestration hardening is still in progress
 - plugin packaging may evolve
