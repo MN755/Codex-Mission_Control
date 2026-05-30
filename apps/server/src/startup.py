@@ -270,26 +270,40 @@ class StartupCoordinator:
         )
         by_provider = {item["provider"]: item for item in provider_statuses}
 
+        def provider_status_for(provider_name: str) -> dict[str, Any]:
+            return by_provider.get(
+                provider_name,
+                {
+                    "provider": provider_name,
+                    "runtime_ready": False,
+                    "runtime_summary": "Runtime status unavailable.",
+                    "login_status": "Runtime status unavailable.",
+                    "cli_detected": False,
+                },
+            )
+
+        claude_status = provider_status_for("claude_code")
+
         checks.append(
             self._check(
                 "claude_code",
                 required=False,
                 status=(
                     "failed"
-                    if selected == "claude_code" and not by_provider["claude_code"]["cli_detected"]
+                    if selected == "claude_code" and not claude_status["cli_detected"]
                     else "warning"
                     if selected == "claude_code"
                     else "skipped"
                 ),
-                summary=str(by_provider["claude_code"].get("runtime_summary") or by_provider["claude_code"]["login_status"]),
+                summary=str(claude_status.get("runtime_summary") or claude_status["login_status"]),
                 error=(
                     MissionControlError(code="MC-CLAUDE-CLI-MISSING-001", breakpoint="claude_cli.detect")
-                    if selected == "claude_code" and not by_provider["claude_code"]["cli_detected"]
+                    if selected == "claude_code" and not claude_status["cli_detected"]
                     else MissionControlError(code="MC-CLAUDE-AUTH-UNKNOWN-001", breakpoint="claude_cli.auth_status", severity="warning")
                     if selected == "claude_code"
                     else None
                 ),
-                details=by_provider["claude_code"],
+                details=claude_status,
             )
         )
 
@@ -302,7 +316,7 @@ class StartupCoordinator:
             ("nvidia_nim", "MC-RUNNER-NONE-AVAILABLE-001", "runner.select"),
             ("custom", "MC-RUNNER-NONE-AVAILABLE-001", "runner.select"),
         ):
-            provider_status = by_provider[provider_name]
+            provider_status = provider_status_for(provider_name)
             is_selected = selected == provider_name
             checks.append(
                 self._check(
