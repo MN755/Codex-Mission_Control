@@ -2,7 +2,7 @@
 
 This page documents the ideal user workflow when the user asks Codex chat to install and wire up Mission Control from GitHub.
 
-> Status: Partial / Experimental
+> Status: Current
 
 ## Ideal prompt
 
@@ -41,9 +41,9 @@ Mission Control install summary
 
 ## Current reality
 
-The repo already contains headless docs, plugin package content, MCP catalogs, and daemon start scripts.
+The repo already ships headless install and health entrypoints alongside the plugin package, MCP catalogs, and daemon start scripts.
 
-Full one-shot install and autowire scripts should be treated as partial or planned unless verified in the current repo state.
+Readiness still depends on the local environment, so the install workflow should summarize detected runners, missing prerequisites, and any follow-up user action instead of pretending every machine will be ready in one shot.
 
 ## Related pages
 
