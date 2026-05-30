@@ -60,6 +60,7 @@ EXPECTED_PROMPTS = [
     "generate_agents_md_proposal",
     "install_from_github",
     "autowire_providers",
+    "ask_manager_for_plan",
 ]
 
 
@@ -125,4 +126,5 @@ def test_docs_explain_resources_prompts_and_headless_boundary() -> None:
     assert "mission-control://projects/{project_id}/workspace-tooling" in resources_content
     assert "attach_current_workspace" in prompts_content
     assert "use_webwright_for_browser_task" in prompts_content
+    assert "ask_manager_for_plan" in prompts_content
     assert "Invalid answers are rejected" in pending_content

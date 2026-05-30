@@ -22,6 +22,7 @@ Mission Control MCP prompts are reusable Codex-chat workflows. They describe how
 - `generate_agents_md_proposal`
 - `install_from_github`
 - `autowire_providers`
+- `ask_manager_for_plan`
 
 ## Prompt Rules
 
