@@ -23,11 +23,11 @@ Expected bridge flow:
 
 - `POST /api/headless/attach-workspace`
 - `POST /api/orchestrations`
-- `GET /api/orchestrations/{orchestration_id}/status-summary`
+- `GET /api/projects/{project_id}/orchestrations/{orchestration_id}/status-summary`
 - `GET /api/orchestrations/{orchestration_id}/pending-decisions`
 - `POST /api/decisions/{decision_id}/answer`
-- `GET /api/orchestrations/{orchestration_id}/event-digest`
-- `GET /api/orchestrations/{orchestration_id}/handoff-summary`
+- `GET /api/projects/{project_id}/orchestrations/{orchestration_id}/event-digest`
+- `GET /api/projects/{project_id}/orchestrations/{orchestration_id}/handoff-summary`
 - `POST /api/headless/happy-path-demo`
 
 `/api/orchestrations/attach-workspace` still exists for compatibility, but the headless-first path should use `/api/headless/attach-workspace`.

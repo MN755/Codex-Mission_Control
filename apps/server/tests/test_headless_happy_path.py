@@ -80,9 +80,8 @@ def test_headless_happy_path_acceptance(client) -> None:
     )
 
     status_summary = client.get(
-        f"/api/orchestrations/{orchestration_id}/status-summary",
+        f"/api/projects/{project_id}/orchestrations/{orchestration_id}/status-summary",
         headers=_bridge_headers(),
-        params={"project_id": project_id},
     )
     assert status_summary.status_code == 200, status_summary.text
     status_payload = status_summary.json()
@@ -179,9 +178,9 @@ def test_headless_happy_path_acceptance(client) -> None:
         db.close()
 
     digest = client.get(
-        f"/api/orchestrations/{orchestration_id}/event-digest",
+        f"/api/projects/{project_id}/orchestrations/{orchestration_id}/event-digest",
         headers=_bridge_headers(),
-        params={"window": "since_orchestration_start", "project_id": project_id},
+        params={"window": "since_orchestration_start"},
     )
     assert digest.status_code == 200, digest.text
     digest_payload = digest.json()
@@ -213,9 +212,8 @@ def test_headless_happy_path_acceptance(client) -> None:
     assert handoff_generate.json()["dry_run"] is True
 
     handoff_summary = client.get(
-        f"/api/orchestrations/{orchestration_id}/handoff-summary",
+        f"/api/projects/{project_id}/orchestrations/{orchestration_id}/handoff-summary",
         headers=_bridge_headers(),
-        params={"project_id": project_id},
     )
     assert handoff_summary.status_code == 200, handoff_summary.text
     handoff_payload = handoff_summary.json()
@@ -306,14 +304,14 @@ def test_full_headless_happy_path_approve_flow(client) -> None:
     assert answer_payload["next_status_summary"]["user_action_required"] is False
 
     digest = client.get(
-        f"/api/orchestrations/{orchestration_id}/event-digest",
+        f"/api/projects/{payload['project']['id']}/orchestrations/{orchestration_id}/event-digest",
         headers=_bridge_headers(),
-        params={"window": "since_orchestration_start", "project_id": payload["project"]["id"]},
+        params={"window": "since_orchestration_start"},
     )
     assert digest.status_code == 200, digest.text
     assert "dry run validation simulated" in digest.json()["fallback_markdown"].lower()
 
-    handoff = client.get(f"/api/orchestrations/{orchestration_id}/handoff-summary", headers=_bridge_headers(), params={"project_id": payload["project"]["id"]})
+    handoff = client.get(f"/api/projects/{payload['project']['id']}/orchestrations/{orchestration_id}/handoff-summary", headers=_bridge_headers())
     assert handoff.status_code == 200, handoff.text
     handoff_payload = handoff.json()
     assert "dry-run" in handoff_payload["fallback_markdown"].lower()
@@ -394,7 +392,7 @@ def test_full_headless_happy_path_deny_flow(client) -> None:
     assert answer_payload["decision"]["status"] == "answered"
     assert answer_payload["next_status_summary"]["user_action_required"] is False
 
-    handoff = client.get(f"/api/orchestrations/{orchestration_id}/handoff-summary", headers=_bridge_headers(), params={"project_id": payload["project"]["id"]})
+    handoff = client.get(f"/api/projects/{payload['project']['id']}/orchestrations/{orchestration_id}/handoff-summary", headers=_bridge_headers())
     assert handoff.status_code == 200, handoff.text
     handoff_markdown = handoff.json()["fallback_markdown"].lower()
     assert "dry-run" in handoff_markdown

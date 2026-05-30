@@ -2546,7 +2546,7 @@ add_reference_page(
         "`/api/orchestrations/{id}/status`",
         "`/api/orchestrations/{id}/pending-decisions`",
         "`/api/decisions/{id}/answer`",
-        "`/api/orchestrations/{id}/handoff`",
+        "`/api/projects/{project_id}/orchestrations/{id}/handoff`",
         "`/api/plugin/health`",
         "`/api/projects/{project_id}/webwright`",
         "`/api/projects/{project_id}/operator-snapshot`",

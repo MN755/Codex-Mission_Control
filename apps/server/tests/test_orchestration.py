@@ -476,7 +476,7 @@ def test_orchestration_handoff_returns_not_ready_state(client) -> None:
         json={"project_id": project["id"], "user_request": "Start background orchestration.", "source": "codex_plugin"},
     )
     session_id = orchestration.json()["id"]
-    handoff = client.get(f"/api/orchestrations/{session_id}/handoff", headers=_bridge_headers(), params={"project_id": project["id"]})
+    handoff = client.get(f"/api/projects/{project['id']}/orchestrations/{session_id}/handoff", headers=_bridge_headers())
     assert handoff.status_code == 200, handoff.text
     payload = handoff.json()
     assert payload["ready"] is False

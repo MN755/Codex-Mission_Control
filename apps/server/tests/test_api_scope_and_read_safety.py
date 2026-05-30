@@ -495,7 +495,7 @@ def test_orchestration_status_summary_get_is_read_only_for_support_records(clien
         ("/api/projects/{project_id}/operator-snapshot", False),
         ("/api/projects/{project_id}/instincts/preview", False),
         ("/api/projects/{project_id}/status-summary", False),
-        ("/api/orchestrations/{orchestration_id}/status-summary", True),
+        ("/api/projects/{project_id}/orchestrations/{orchestration_id}/status-summary", True),
     ],
 )
 def test_swarm_read_routes_do_not_persist_launch_simulations(client, bridge_headers, route_template: str, needs_orchestration: bool) -> None:

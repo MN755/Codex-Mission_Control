@@ -30,11 +30,11 @@ This layer is intentionally not the standalone app UI. No dashboard pages, widge
 
 ## Main endpoints
 
-- `GET /api/orchestrations/{orchestration_id}/status-summary`
+- `GET /api/projects/{project_id}/orchestrations/{orchestration_id}/status-summary`
 - `GET /api/projects/{project_id}/status-summary`
-- `GET /api/orchestrations/{orchestration_id}/event-digest`
+- `GET /api/projects/{project_id}/orchestrations/{orchestration_id}/event-digest`
 - `GET /api/projects/{project_id}/event-digest`
-- `GET /api/orchestrations/{orchestration_id}/handoff-summary`
+- `GET /api/projects/{project_id}/orchestrations/{orchestration_id}/handoff-summary`
 - `GET /api/projects/{project_id}/handoff-summary`
 - `GET /api/orchestrations/{orchestration_id}/pending-decisions`
 - `GET /api/projects/{project_id}/pending-decisions`

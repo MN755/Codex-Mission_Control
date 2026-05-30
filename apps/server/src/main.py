@@ -1845,11 +1845,11 @@ def get_orchestration_events(
     return [OrchestrationEventRead(**event) for event in coordinator.list_events(db, session)]
 
 
-@app.get("/api/orchestrations/{orchestration_id}/handoff", response_model=OrchestrationHandoffRead)
+@app.get("/api/projects/{project_id}/orchestrations/{orchestration_id}/handoff", response_model=OrchestrationHandoffRead)
 def get_orchestration_handoff(
+    project_id: int,
     orchestration_id: int,
     request: Request,
-    project_id: int = Query(...),
     db: Session = Depends(get_db),
     _: None = Depends(_require_bridge_token),
 ) -> OrchestrationHandoffRead:
@@ -1931,11 +1931,11 @@ async def answer_pending_decision(
     )
 
 
-@app.get("/api/orchestrations/{orchestration_id}/status-summary", response_model=BridgeMessageRead)
+@app.get("/api/projects/{project_id}/orchestrations/{orchestration_id}/status-summary", response_model=BridgeMessageRead)
 async def get_orchestration_status_summary(
+    project_id: int,
     orchestration_id: int,
     request: Request,
-    project_id: int = Query(...),
     db: Session = Depends(get_db),
     _: None = Depends(_require_bridge_token),
 ) -> BridgeMessageRead:
@@ -1956,11 +1956,11 @@ async def get_project_status_summary(
     return BridgeMessageRead(**(await bridge_runtime_service.get_status_summary(db, project=project)))
 
 
-@app.get("/api/orchestrations/{orchestration_id}/event-digest", response_model=BridgeMessageRead)
+@app.get("/api/projects/{project_id}/orchestrations/{orchestration_id}/event-digest", response_model=BridgeMessageRead)
 def get_orchestration_event_digest(
+    project_id: int,
     orchestration_id: int,
     request: Request,
-    project_id: int = Query(...),
     window: EventDigestWindow = Query(default="last_15_minutes"),
     db: Session = Depends(get_db),
     _: None = Depends(_require_bridge_token),
@@ -1983,11 +1983,11 @@ def get_project_event_digest(
     return BridgeMessageRead(**bridge_runtime_service.get_event_digest(db, project=project, window=window))
 
 
-@app.get("/api/orchestrations/{orchestration_id}/handoff-summary", response_model=BridgeMessageRead)
+@app.get("/api/projects/{project_id}/orchestrations/{orchestration_id}/handoff-summary", response_model=BridgeMessageRead)
 def get_orchestration_handoff_summary(
+    project_id: int,
     orchestration_id: int,
     request: Request,
-    project_id: int = Query(...),
     db: Session = Depends(get_db),
     _: None = Depends(_require_bridge_token),
 ) -> BridgeMessageRead:
