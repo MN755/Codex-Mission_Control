@@ -1,0 +1,20 @@
+{
+  "mission-control": {
+    "command": "python",
+    "args": [
+      "-m",
+      "mission_control_mcp_server"
+    ],
+    "cwd": "apps/mcp-server",
+    "env": {
+      "PYTHONPATH": "src",
+      "MISSION_CONTROL_BACKEND_HOST": "127.0.0.1",
+      "MISSION_CONTROL_BACKEND_PORT": "8010"
+    },
+    "notes": [
+      "This example runs the local MCP bridge directly from the repository without requiring a separate package install.",
+      "The MCP bridge probes localhost health and can auto-start the Mission Control daemon when it is not already running.",
+      "Mission Control workers still run through the backend approval system; the MCP bridge does not execute shell commands directly."
+    ]
+  }
+}
