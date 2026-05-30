@@ -412,7 +412,7 @@ add(
     "Install-From-Codex.md",
     "Install From Codex",
     "This page documents the ideal user workflow when the user asks Codex chat to install and wire up Mission Control from GitHub.",
-    "Partial / Experimental",
+    "Current",
     [
         (
             "Ideal prompt",
@@ -458,9 +458,9 @@ add(
         (
             "Current reality",
             """
-            The repo already contains headless docs, plugin package content, MCP catalogs, and daemon start scripts.
+            The repo already ships headless install and health entrypoints alongside the plugin package, MCP catalogs, and daemon start scripts.
 
-            Full one-shot install and autowire scripts should be treated as partial or planned unless verified in the current repo state.
+            Readiness still depends on the local environment, so the install workflow should summarize detected runners, missing prerequisites, and any follow-up user action instead of pretending every machine will be ready in one shot.
             """,
         ),
         (
@@ -476,7 +476,7 @@ add(
     "Headless-Install-and-Autowire.md",
     "Headless Install and Autowire",
     "This page describes the intended headless bootstrap and repair experience for Mission Control plugin mode.",
-    "Planned / Partial",
+    "Current",
     [
         (
             "Planned commands",
@@ -521,7 +521,7 @@ add(
         (
             "Current status note",
             """
-            The repo currently contains daemon start scripts and plugin package content. If the specific install and health scripts above are not present, treat the command surface as planned while using the documented manual steps from the repo docs.
+            The repo already ships install and health scripts for headless plugin workflows. Use those entrypoints first, then fall back to the manual diagnostics and repair guidance when local prerequisites are missing or degraded.
             """,
         ),
         (
@@ -2605,7 +2605,7 @@ add_reference_page(
     "This page captures the current edges of the product so the wiki does not oversell unfinished systems.",
     [
         "standalone dashboard is optional, not primary",
-        "some install/autowire surfaces remain planned or partial",
+        "full readiness still depends on local Python, Codex, and runner availability",
         "runner support depth varies by local environment",
         "worker orchestration hardening is still in progress",
         "plugin packaging may evolve",
