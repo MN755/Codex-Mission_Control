@@ -26,11 +26,10 @@ Use this skill when the user wants Mission Control to work on an existing codeba
 
 ## Mission Control resources it may read
 
-- `mission-control://projects/current/summary`
-- `mission-control://projects/current/codebase-map`
-- `mission-control://projects/current/codebase-understanding`
-- `mission-control://projects/current/import-safety`
-- `mission-control://projects/current/agents-md/status`
+- `mission-control://projects/{project_id}/status`
+- `mission-control://projects/{project_id}/codebase-map`
+
+Use the explicit `mission_control_get_codebase_understanding`, `mission_control_get_import_safety`, and `mission_control_get_agents_md_status` tools for the other import-only summaries instead of inventing `projects/current/...` resource aliases.
 
 ## Decisions that must be passed to the user
 
