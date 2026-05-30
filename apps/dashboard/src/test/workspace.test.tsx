@@ -734,7 +734,7 @@ describe("project workspace", () => {
     fireEvent.click(screen.getByRole("button", { name: "View logs" }));
 
     await waitFor(() => {
-      expect(apiMock.getAgentLogs).toHaveBeenCalledWith(2);
+      expect(apiMock.getAgentLogs).toHaveBeenCalledWith(7, 2);
     });
     expect(await screen.findByText("latest log line")).toBeInTheDocument();
   });
