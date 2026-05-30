@@ -738,10 +738,6 @@ class ManagerQuestionAnswer(BaseModel):
     selected_text: str
 
 
-class ApprovalResolveRequest(BaseModel):
-    project_id: int
-
-
 class ApprovalRequestRead(BaseModel):
     id: int
     project_id: int

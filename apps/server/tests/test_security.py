@@ -382,7 +382,7 @@ def test_high_risk_cannot_auto_approve_or_allow_for_project(client) -> None:
     finally:
         db.close()
 
-    rejected = client.post(f"/api/approvals/{approval_id}/allow-for-project", json={"project_id": project["id"]})
+    rejected = client.post(f"/api/projects/{project['id']}/approvals/{approval_id}/allow-for-project")
     assert rejected.status_code == 400
     assert "cannot be allowed for the whole project" in rejected.json()["detail"].lower()
 

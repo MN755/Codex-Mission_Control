@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 from sqlalchemy import func, select
 
 from db import SessionLocal, init_db
@@ -54,7 +55,7 @@ def test_workspace_dry_run_loop_and_action_flow(client) -> None:
     action = client.get(f"/api/projects/{project['id']}/action").json()
     assert action["type"] == "command_approval"
 
-    approval = client.post(f"/api/approvals/{approvals[0]['id']}/approve-once", json={"project_id": project["id"]})
+    approval = client.post(f"/api/projects/{project['id']}/approvals/{approvals[0]['id']}/approve-once")
     assert approval.status_code == 200
     assert approval.json()["status"] == "approved_once"
 
@@ -146,7 +147,8 @@ def test_project_metadata_update_refreshes_slug(client) -> None:
     assert payload["idea"] == "Sharper manager-led workspace copy"
 
 
-def test_approval_resolution_is_project_scoped(client) -> None:
+@pytest.mark.parametrize("route_suffix", ["approve-once", "deny", "allow-for-project"])
+def test_approval_resolution_is_project_scoped(client, route_suffix: str) -> None:
     init_db()
     db = SessionLocal()
     try:
@@ -166,7 +168,7 @@ def test_approval_resolution_is_project_scoped(client) -> None:
         )
         db.commit()
 
-        response = client.post(f"/api/approvals/{approval.id}/approve-once", json={"project_id": project_two.id})
+        response = client.post(f"/api/projects/{project_two.id}/approvals/{approval.id}/{route_suffix}")
         assert response.status_code == 404
 
         db.refresh(approval)

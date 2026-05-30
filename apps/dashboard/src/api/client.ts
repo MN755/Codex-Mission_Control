@@ -404,11 +404,11 @@ export const api = {
   autoDecideQuestion: (questionId: number) => request<ManagerQuestion>(`/api/questions/${questionId}/auto-decide`, { method: "POST" }),
   getPendingApprovals: (projectId: number) => request<ApprovalRequest[]>(`/api/projects/${projectId}/approvals/pending`),
   approveOnce: (approvalId: number, projectId: number) =>
-    request<ApprovalRequest>(`/api/approvals/${approvalId}/approve-once`, { method: "POST", body: JSON.stringify({ project_id: projectId }) }),
+    request<ApprovalRequest>(`/api/projects/${projectId}/approvals/${approvalId}/approve-once`, { method: "POST" }),
   denyApproval: (approvalId: number, projectId: number) =>
-    request<ApprovalRequest>(`/api/approvals/${approvalId}/deny`, { method: "POST", body: JSON.stringify({ project_id: projectId }) }),
+    request<ApprovalRequest>(`/api/projects/${projectId}/approvals/${approvalId}/deny`, { method: "POST" }),
   allowApprovalForProject: (approvalId: number, projectId: number) =>
-    request<ApprovalRequest>(`/api/approvals/${approvalId}/allow-for-project`, { method: "POST", body: JSON.stringify({ project_id: projectId }) }),
+    request<ApprovalRequest>(`/api/projects/${projectId}/approvals/${approvalId}/allow-for-project`, { method: "POST" }),
   getManagerQueue: (projectId: number) => request<ManagerQueue>(`/api/projects/${projectId}/manager/queue`),
   updateWorkspaceWidgets: (projectId: number, widgets: string[]) =>
     request<ProjectSettings>(`/api/projects/${projectId}/widgets`, { method: "POST", body: JSON.stringify({ widgets }) }),

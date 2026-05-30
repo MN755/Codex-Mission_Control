@@ -51,7 +51,6 @@ from security.path_validation import PathValidationError, resolve_local_path
 from schemas import (
     ApprovalRequestRead,
     ApprovalAuditLogRead,
-    ApprovalResolveRequest,
     AgentActionResponse,
     AgentContractRead,
     AgentExecutionTraceRead,
@@ -3091,43 +3090,43 @@ def get_pending_approvals(
     return [ApprovalRequestRead(**item) for item in service.list_pending_approvals(db, project)]
 
 
-@app.post("/api/approvals/{approval_id}/approve-once", response_model=ApprovalRequestRead)
+@app.post("/api/projects/{project_id}/approvals/{approval_id}/approve-once", response_model=ApprovalRequestRead)
 def approve_once(
+    project_id: int,
     approval_id: int,
-    payload: ApprovalResolveRequest,
     db: Session = Depends(get_db),
     _: None = Depends(_require_bridge_token),
 ) -> ApprovalRequestRead:
     try:
-        approval = service.approve_once(db, approval_id, project_id=payload.project_id)
+        approval = service.approve_once(db, approval_id, project_id=project_id)
         return ApprovalRequestRead(**service._serialize_approval(approval))
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
-@app.post("/api/approvals/{approval_id}/deny", response_model=ApprovalRequestRead)
+@app.post("/api/projects/{project_id}/approvals/{approval_id}/deny", response_model=ApprovalRequestRead)
 def deny_approval(
+    project_id: int,
     approval_id: int,
-    payload: ApprovalResolveRequest,
     db: Session = Depends(get_db),
     _: None = Depends(_require_bridge_token),
 ) -> ApprovalRequestRead:
     try:
-        approval = service.deny_approval(db, approval_id, project_id=payload.project_id)
+        approval = service.deny_approval(db, approval_id, project_id=project_id)
         return ApprovalRequestRead(**service._serialize_approval(approval))
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
-@app.post("/api/approvals/{approval_id}/allow-for-project", response_model=ApprovalRequestRead)
+@app.post("/api/projects/{project_id}/approvals/{approval_id}/allow-for-project", response_model=ApprovalRequestRead)
 def allow_approval_for_project(
+    project_id: int,
     approval_id: int,
-    payload: ApprovalResolveRequest,
     db: Session = Depends(get_db),
     _: None = Depends(_require_bridge_token),
 ) -> ApprovalRequestRead:
     try:
-        approval = service.allow_approval_for_project(db, approval_id, project_id=payload.project_id)
+        approval = service.allow_approval_for_project(db, approval_id, project_id=project_id)
         return ApprovalRequestRead(**service._serialize_approval(approval))
     except ValueError as exc:
         status_code = 400 if "cannot be allowed for the whole project" in str(exc).lower() else 404
