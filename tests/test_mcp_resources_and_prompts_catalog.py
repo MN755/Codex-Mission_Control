@@ -36,9 +36,32 @@ REQUIRED_PROMPT_ALIASES = [
     {"resume-orchestration", "resume_orchestration"},
 ]
 
+ALIAS_PROMPT_FILES_TO_KEEP_IN_SYNC = {
+    "use-mission-control-for-this-repo",
+    "start-manager-led-task",
+    "answer-pending-approval",
+    "explain-current-swarm",
+    "pause-orchestration",
+    "resume-orchestration",
+}
+
 
 def _load_json(path: Path) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _catalog_prompt_contracts() -> dict[str, dict[str, list[str]]]:
+    prompts_catalog = _load_json(ROOT / "plugins" / "mission-control" / "mcp" / "prompts.json")
+    contracts: dict[str, dict[str, list[str]]] = {}
+    for item in prompts_catalog["prompts"]:
+        names = [item["name"], *item.get("aliases", [])]
+        contract = {
+            "tool_sequence": item.get("tool_sequence", []),
+            "resource_sequence": item.get("resource_sequence", []),
+        }
+        for name in names:
+            contracts[name] = contract
+    return contracts
 
 
 def test_plugin_manifest_contains_required_resource_and_prompt_subsets() -> None:
@@ -86,3 +109,15 @@ def test_docs_explain_tools_resources_prompts_and_redaction() -> None:
     assert "MCP Resources" in content
     assert "Prompts" in content
     assert "safe summaries" in content or "read-only resource rules" in content
+
+
+def test_selected_alias_prompt_files_include_catalog_tool_and_resource_sequences() -> None:
+    contracts = _catalog_prompt_contracts()
+    for prompt_name in ALIAS_PROMPT_FILES_TO_KEEP_IN_SYNC:
+        prompt_path = PROMPTS_DIR / f"{prompt_name}.md"
+        content = prompt_path.read_text(encoding="utf-8")
+        contract = contracts[prompt_name]
+        for tool_name in contract["tool_sequence"]:
+            assert f"`{tool_name}`" in content, f"{prompt_name} is missing tool {tool_name}"
+        for resource_name in contract["resource_sequence"]:
+            assert f"`{resource_name}`" in content, f"{prompt_name} is missing resource {resource_name}"
