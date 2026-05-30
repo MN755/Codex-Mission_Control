@@ -23,7 +23,6 @@ Use this skill when the user wants Codex to work through Mission Control for pla
 - `mission_control_pause`
 - `mission_control_resume`
 - `mission_control_get_handoff`
-- `mission_control_open_dashboard`
 
 ## Mission Control resources it may read
 
@@ -33,7 +32,7 @@ Use this skill when the user wants Codex to work through Mission Control for pla
 - `mission-control://projects/{project_id}/pending-decisions`
 - `mission-control://projects/{project_id}/handoff`
 - `mission-control://projects/{project_id}/codebase-map`
-- `mission-control://orchestrations/{orchestration_id}/status`
+- `mission-control://projects/{project_id}/orchestrations/{orchestration_id}/status`
 
 ## Decisions that must be passed to the user
 

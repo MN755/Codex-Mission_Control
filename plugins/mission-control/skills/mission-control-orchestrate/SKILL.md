@@ -40,7 +40,7 @@ Resources:
 - `mission-control://projects/{project_id}/status`
 - `mission-control://projects/{project_id}/pending-decisions`
 - `mission-control://projects/{project_id}/handoff`
-- `mission-control://orchestrations/{orchestration_id}/status`
+- `mission-control://projects/{project_id}/orchestrations/{orchestration_id}/status`
 
 ## User-facing output
 

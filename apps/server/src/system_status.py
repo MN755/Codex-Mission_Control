@@ -14,7 +14,7 @@ from claude_cli_path import claude_command_path
 from codex_cli_path import codex_command_path
 from config import LAUNCHER_ROOT, REPO_ROOT, RUNTIME_ROOT, get_codex_home, load_launcher_config
 from daemon_state import daemon_identity_snapshot, resolve_backend_binding
-from nvidia_support import detect_nvidia_dynamo_status
+from nvidia_support import detect_nvidia_dynamo_status, detect_nvidia_nim_status
 from provider_adapter_recipes import resolve_adapter_recipe
 from provider_support import normalize_provider, provider_label, provider_uses_adapter, provider_uses_endpoint, supports_app_server
 from webwright_support import detect_webwright_status
@@ -496,28 +496,28 @@ def _runtime_details(
             summary = f"{normalized.replace('_', ' ')} needs both an external API key and a working local adapter command."
         if not key_present:
             runtime_blockers.append("api_key_missing")
-    elif normalized == "nvidia_dynamo":
-        dynamo = detect_nvidia_dynamo_status(provider_endpoint)
-        reachable = bool(dynamo.get("reachable"))
-        auth_required = bool(dynamo.get("auth_required"))
-        api_key_configured = bool(dynamo.get("api_key_configured"))
+    elif normalized in {"nvidia_dynamo", "nvidia_nim"}:
+        runtime = detect_nvidia_dynamo_status(provider_endpoint) if normalized == "nvidia_dynamo" else detect_nvidia_nim_status(provider_endpoint)
+        reachable = bool(runtime.get("reachable"))
+        auth_required = bool(runtime.get("auth_required"))
+        api_key_configured = bool(runtime.get("api_key_configured"))
         ready = reachable and adapter_ready and (not auth_required or api_key_configured)
         if ready:
-            summary = "NVIDIA Dynamo frontend and Mission Control adapter runtime are both ready."
+            summary = f"{provider_label(normalized)} frontend and Mission Control adapter runtime are both ready."
         elif reachable and adapter_ready and auth_required and not api_key_configured:
-            summary = "NVIDIA Dynamo frontend is reachable, but it requires an API key that is not configured in this runtime."
+            summary = f"{provider_label(normalized)} frontend is reachable, but it requires an API key that is not configured in this runtime."
         elif reachable and adapter_ready:
-            summary = "NVIDIA Dynamo frontend is reachable and the adapter runtime is ready, but authentication still needs verification."
+            summary = f"{provider_label(normalized)} frontend is reachable and the adapter runtime is ready, but authentication still needs verification."
         elif reachable:
-            summary = "NVIDIA Dynamo frontend is reachable, but the local Mission Control adapter runtime is missing or unavailable."
+            summary = f"{provider_label(normalized)} frontend is reachable, but the local Mission Control adapter runtime is missing or unavailable."
         elif adapter_ready:
-            summary = "Mission Control adapter runtime is ready, but the NVIDIA Dynamo frontend is not reachable."
+            summary = f"Mission Control adapter runtime is ready, but the {provider_label(normalized)} frontend is not reachable."
         else:
-            summary = "NVIDIA Dynamo needs both a reachable frontend and a working local adapter command."
+            summary = f"{provider_label(normalized)} needs both a reachable frontend and a working local adapter command."
         if not reachable:
-            runtime_blockers.append("dynamo_endpoint_unreachable")
+            runtime_blockers.append("dynamo_endpoint_unreachable" if normalized == "nvidia_dynamo" else "nim_endpoint_unreachable")
         if auth_required and not api_key_configured:
-            runtime_blockers.append("dynamo_api_key_missing")
+            runtime_blockers.append("dynamo_api_key_missing" if normalized == "nvidia_dynamo" else "nim_api_key_missing")
     else:
         ready = adapter_ready
         summary = "Custom adapter runtime is ready." if ready else "Custom provider needs a working adapter command."
@@ -639,6 +639,7 @@ def detect_provider_statuses(
         detect_env_api_status("anthropic_api", env_key="ANTHROPIC_API_KEY", label="Anthropic API"),
         detect_env_api_status("xai_api", env_key="XAI_API_KEY", label="xAI API"),
         detect_nvidia_dynamo_status(provider_endpoint if selected == "nvidia_dynamo" else None),
+        detect_nvidia_nim_status(provider_endpoint if selected == "nvidia_nim" else None),
         detect_claude_code_status(),
         detect_custom_status(adapter_command, adapter_args),
     ]

@@ -8,7 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from capabilities import CAPABILITY_CATEGORIES
 
 
-ProviderId = Literal["codex", "ollama", "openai_api", "anthropic_api", "xai_api", "nvidia_dynamo", "claude_code", "custom"]
+ProviderId = Literal["codex", "ollama", "openai_api", "anthropic_api", "xai_api", "nvidia_dynamo", "nvidia_nim", "claude_code", "custom"]
 StartupProviderChoice = ProviderId
 StartupStartMode = Literal["new_project", "guided_walkthrough"]
 RunnerMode = Literal["auto", "cli", "app_server", "dry_run"]
@@ -1600,6 +1600,32 @@ class NvidiaDynamoStatusRead(BaseModel):
     notes: list[str] = Field(default_factory=list)
 
 
+class NvidiaNimStatusRead(BaseModel):
+    project_id: int
+    project_name: str
+    provider: str = "nvidia_nim"
+    label: str = "NVIDIA NIM"
+    available: bool = False
+    reachable: bool = False
+    endpoint: str
+    endpoint_configured: bool = False
+    api_key_configured: bool = False
+    auth_required: bool = False
+    authenticated: bool = False
+    available_models: list[str] = Field(default_factory=list)
+    runtime_ready: bool = False
+    runtime_status: str = "blocked"
+    runtime_summary: str = ""
+    runtime_blockers: list[str] = Field(default_factory=list)
+    adapter_command_configured: bool = False
+    adapter_command_detected: bool = False
+    adapter_command_path: str | None = None
+    adapter_args: list[str] = Field(default_factory=list)
+    adapter_recipe_source: str | None = None
+    summary: str
+    notes: list[str] = Field(default_factory=list)
+
+
 class NvidiaAiqStatusRead(BaseModel):
     project_id: int
     project_name: str
@@ -1675,6 +1701,64 @@ class NvidiaGpuDiagnosticsRead(BaseModel):
     alerts: list[str] = Field(default_factory=list)
     recommended_fixes: list[str] = Field(default_factory=list)
     queries: dict[str, str] = Field(default_factory=dict)
+
+
+class NvidiaLocalRuntimeStatusRead(BaseModel):
+    project_id: int
+    project_name: str
+    available: bool = False
+    status: str
+    summary: str
+    repo_mode_enabled: bool = False
+    repo_mode: str | None = None
+    detected_tools: list[str] = Field(default_factory=list)
+    missing_required_tools: list[str] = Field(default_factory=list)
+    missing_optional_tools: list[str] = Field(default_factory=list)
+    tool_paths: dict[str, str] = Field(default_factory=dict)
+    gpu_names: list[str] = Field(default_factory=list)
+    driver_version: str | None = None
+    nvcc_version: str | None = None
+    cuda_release: str | None = None
+    cuda_home: str | None = None
+    compute_sanitizer_available: bool = False
+    nsight_systems_available: bool = False
+    nsight_compute_available: bool = False
+    cuda_gdb_available: bool = False
+    container_toolkit_available: bool = False
+    ngc_cli_available: bool = False
+    container_runtime_ready: bool = False
+    docker_available: bool = False
+    recommended_fixes: list[str] = Field(default_factory=list)
+    validation_hints: list[str] = Field(default_factory=list)
+    notes: list[str] = Field(default_factory=list)
+
+
+class NvidiaValidationPlanStepRead(BaseModel):
+    title: str
+    command: str | None = None
+    type: str
+    source: str
+    status: str
+
+
+class NvidiaValidationPlanRead(BaseModel):
+    project_id: int
+    project_name: str
+    available: bool = False
+    status: str
+    summary: str
+    repo_mode_enabled: bool = False
+    repo_mode: str | None = None
+    local_runtime_status: str | None = None
+    gpu_diagnostics_status: str | None = None
+    sanitizer_ready: bool = False
+    profiler_ready: bool = False
+    container_smoke_ready: bool = False
+    ngc_smoke_image: str | None = None
+    steps: list[NvidiaValidationPlanStepRead] = Field(default_factory=list)
+    blockers: list[str] = Field(default_factory=list)
+    recommended_fixes: list[str] = Field(default_factory=list)
+    evidence_targets: list[str] = Field(default_factory=list)
 
 
 class ProjectConfidenceRead(BaseModel):

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import importlib
+import importlib.resources
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -11,8 +13,8 @@ from mission_control_mcp_server.server import MissionControlMcpServer
 
 
 EXPECTED_RESOURCES = {
-    "mission-control://orchestrations/{orchestration_id}/status",
-    "mission-control://orchestrations/{orchestration_id}/events",
+    "mission-control://projects/{project_id}/orchestrations/{orchestration_id}/status",
+    "mission-control://projects/{project_id}/orchestrations/{orchestration_id}/events",
     "mission-control://projects/{project_id}/status",
     "mission-control://projects/{project_id}/agents",
     "mission-control://projects/{project_id}/pending-decisions",
@@ -22,8 +24,11 @@ EXPECTED_RESOURCES = {
     "mission-control://projects/{project_id}/diagnostics",
     "mission-control://projects/{project_id}/webwright",
     "mission-control://projects/{project_id}/nvidia-dynamo",
+    "mission-control://projects/{project_id}/nvidia-nim",
     "mission-control://projects/{project_id}/nvidia-aiq",
     "mission-control://projects/{project_id}/nvidia-gpu-diagnostics",
+    "mission-control://projects/{project_id}/nvidia-local-runtime",
+    "mission-control://projects/{project_id}/nvidia-validation-plan",
     "mission-control://projects/{project_id}/swarm-plan",
     "mission-control://projects/{project_id}/risk-register",
     "mission-control://projects/{project_id}/agent-contracts",
@@ -224,6 +229,29 @@ class FakeClient:
             "notes": ["Optional GPU-backed provider lane."],
         }
 
+    def get_nvidia_nim_status(self, project_id: int):
+        self.calls.append(("get_nvidia_nim_status", {"project_id": project_id}))
+        return {
+            "project_id": project_id,
+            "project_name": "Demo",
+            "provider": "nvidia_nim",
+            "label": "NVIDIA NIM",
+            "available": True,
+            "reachable": True,
+            "endpoint": "https://integrate.api.nvidia.com",
+            "endpoint_configured": True,
+            "api_key_configured": True,
+            "auth_required": True,
+            "authenticated": True,
+            "available_models": ["meta/llama-3.1-8b-instruct"],
+            "runtime_ready": True,
+            "runtime_status": "ready",
+            "runtime_summary": "NVIDIA NIM and adapter runtime are ready.",
+            "runtime_blockers": [],
+            "summary": "NVIDIA NIM endpoint is reachable.",
+            "notes": ["Optional GPU-backed provider lane."],
+        }
+
     def get_nvidia_aiq_status(self, project_id: int):
         self.calls.append(("get_nvidia_aiq_status", {"project_id": project_id}))
         return {
@@ -274,6 +302,55 @@ class FakeClient:
             "metrics": {"average_gpu_util_percent": 42.0},
             "alerts": [],
             "recommended_fixes": [],
+        }
+
+    def get_nvidia_local_runtime_status(self, project_id: int):
+        self.calls.append(("get_nvidia_local_runtime_status", {"project_id": project_id}))
+        return {
+            "project_id": project_id,
+            "project_name": "Demo",
+            "available": True,
+            "status": "partial",
+            "summary": "CUDA repo signals are present, but the local runtime still lacks profiler coverage.",
+            "repo_mode_enabled": True,
+            "repo_mode": "cuda_cpp",
+            "detected_tools": ["nvidia_smi", "nvcc"],
+            "missing_required_tools": [],
+            "missing_optional_tools": ["nsys", "ncu"],
+            "gpu_names": ["NVIDIA RTX PRO 4500"],
+            "driver_version": "555.42",
+            "cuda_release": "13.3",
+            "nsight_systems_available": False,
+            "nsight_compute_available": False,
+            "recommended_fixes": ["Install Nsight if you want profile evidence."],
+            "validation_hints": ["cmake --build build --parallel"],
+            "notes": ["Local runtime surface only."],
+        }
+
+    def get_nvidia_validation_plan(self, project_id: int):
+        self.calls.append(("get_nvidia_validation_plan", {"project_id": project_id}))
+        return {
+            "project_id": project_id,
+            "project_name": "Demo",
+            "available": True,
+            "status": "needs_review",
+            "summary": "Validation path is usable but still missing profiler coverage.",
+            "repo_mode_enabled": True,
+            "repo_mode": "cuda_cpp",
+            "local_runtime_status": "partial",
+            "gpu_diagnostics_status": "ready",
+            "steps": [
+                {
+                    "title": "Verify local GPU visibility",
+                    "command": "nvidia-smi --query-gpu=name,driver_version,memory.total --format=csv,noheader",
+                    "type": "smoke",
+                    "source": "local_runtime",
+                    "status": "pending",
+                }
+            ],
+            "blockers": [],
+            "recommended_fixes": ["Install Nsight if you want profile evidence."],
+            "evidence_targets": ["Capture build and benchmark results."],
         }
 
     def get_swarm_plan(self, project_id: int):
@@ -370,7 +447,7 @@ def test_attach_workspace_tool_calls_daemon_client() -> None:
 def test_get_status_returns_compact_summary() -> None:
     client = FakeClient()
     server = MissionControlMcpServer(client=client)
-    result = server.call_tool("mission_control_get_status", {"orchestration_id": 14})
+    result = server.call_tool("mission_control_get_status", {"project_id": 7, "orchestration_id": 14})
     assert result["structuredContent"]["message_type"] == "blocked"
     assert result["structuredContent"]["user_action_required"] is True
     assert client.calls[0][0] == "get_status_summary"
@@ -387,6 +464,26 @@ def test_answer_decision_sends_answer() -> None:
     assert client.calls[0][0] == "answer_decision"
 
 
+def test_core_orchestration_tools_require_project_scope() -> None:
+    server = MissionControlMcpServer(client=FakeClient())
+
+    for tool_name in [
+        "mission_control_get_status",
+        "mission_control_get_pending_decisions",
+        "mission_control_pause",
+        "mission_control_resume",
+        "mission_control_get_handoff",
+        "mission_control_get_diagnostics",
+        "mission_control_request_recovery_options",
+    ]:
+        try:
+            server.call_tool(tool_name, {"orchestration_id": 14})
+        except RuntimeError as exc:
+            assert "project_id" in str(exc)
+        else:
+            raise AssertionError(f"Expected {tool_name} to require project scope.")
+
+
 def test_new_runtime_tools_dispatch_to_client() -> None:
     client = FakeClient()
     server = MissionControlMcpServer(client=client)
@@ -398,9 +495,12 @@ def test_new_runtime_tools_dispatch_to_client() -> None:
     server.call_tool("mission_control_search_codebase", {"project_id": 7, "pattern": "TODO", "max_matches": 5})
     server.call_tool("mission_control_get_webwright_status", {"project_id": 7})
     server.call_tool("mission_control_get_nvidia_dynamo_status", {"project_id": 7})
+    server.call_tool("mission_control_get_nvidia_nim_status", {"project_id": 7})
     server.call_tool("mission_control_get_nvidia_aiq_status", {"project_id": 7})
     server.call_tool("mission_control_run_nvidia_aiq_research", {"project_id": 7, "query": "Best CUDA testing loop?"})
     server.call_tool("mission_control_get_nvidia_gpu_diagnostics", {"project_id": 7})
+    server.call_tool("mission_control_get_nvidia_local_runtime_status", {"project_id": 7})
+    server.call_tool("mission_control_get_nvidia_validation_plan", {"project_id": 7})
     server.call_tool("mission_control_request_snapshot", {"project_id": 7, "label": "Before edits", "description": "Checkpoint"})
     server.call_tool("mission_control_request_recovery_plan", {"project_id": 7, "trigger_summary": "Workers are stuck."})
 
@@ -412,9 +512,12 @@ def test_new_runtime_tools_dispatch_to_client() -> None:
     assert "search_codebase" in called
     assert "get_webwright_status" in called
     assert "get_nvidia_dynamo_status" in called
+    assert "get_nvidia_nim_status" in called
     assert "get_nvidia_aiq_status" in called
     assert "run_nvidia_aiq_research" in called
     assert "get_nvidia_gpu_diagnostics" in called
+    assert "get_nvidia_local_runtime_status" in called
+    assert "get_nvidia_validation_plan" in called
     assert "create_snapshot" in called
     assert "request_recovery_plan" in called
 
@@ -555,6 +658,24 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
     )
     monkeypatch.setattr(
         client,
+        "get_nvidia_nim_status",
+        lambda project_id: {
+            "project_id": project_id,
+            "project_name": "Demo",
+            "available": True,
+            "reachable": True,
+            "endpoint": "https://integrate.api.nvidia.com",
+            "endpoint_configured": True,
+            "api_key_configured": True,
+            "auth_required": True,
+            "authenticated": True,
+            "available_models": ["meta/llama-3.1-8b-instruct"],
+            "summary": "NVIDIA NIM is reachable.",
+            "notes": ["Optional GPU-backed provider lane."],
+        },
+    )
+    monkeypatch.setattr(
+        client,
         "get_nvidia_aiq_status",
         lambda project_id: {
             "project_id": project_id,
@@ -588,6 +709,47 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
             "recommended_fixes": [],
         },
     )
+    monkeypatch.setattr(
+        client,
+        "get_nvidia_local_runtime_status",
+        lambda project_id: {
+            "project_id": project_id,
+            "project_name": "Demo",
+            "available": True,
+            "status": "partial",
+            "summary": "CUDA repo signals are present, but profiler tooling is still missing.",
+            "repo_mode_enabled": True,
+            "repo_mode": "cuda_cpp",
+            "detected_tools": ["nvidia_smi", "nvcc"],
+            "missing_required_tools": [],
+            "missing_optional_tools": ["nsys", "ncu"],
+            "gpu_names": ["NVIDIA RTX PRO 4500"],
+            "driver_version": "555.42",
+            "cuda_release": "13.3",
+            "recommended_fixes": ["Install Nsight if you want profile evidence."],
+            "validation_hints": ["cmake --build build --parallel"],
+            "notes": ["Local runtime surface only."],
+        },
+    )
+    monkeypatch.setattr(
+        client,
+        "get_nvidia_validation_plan",
+        lambda project_id: {
+            "project_id": project_id,
+            "project_name": "Demo",
+            "available": True,
+            "status": "needs_review",
+            "summary": "Validation path is usable but still missing profiler coverage.",
+            "repo_mode_enabled": True,
+            "repo_mode": "cuda_cpp",
+            "local_runtime_status": "partial",
+            "gpu_diagnostics_status": "ready",
+            "steps": [{"title": "Verify local GPU visibility", "command": "nvidia-smi --query-gpu=name,driver_version,memory.total --format=csv,noheader", "type": "smoke", "source": "local_runtime", "status": "pending"}],
+            "blockers": [],
+            "recommended_fixes": ["Install Nsight if you want profile evidence."],
+            "evidence_targets": ["Capture build and benchmark results."],
+        },
+    )
 
     snapshot = client.read_resource("mission-control://projects/7/operator-snapshot")
     instincts = client.read_resource("mission-control://projects/7/instincts")
@@ -595,8 +757,11 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
     tooling = client.read_resource("mission-control://projects/7/workspace-tooling")
     webwright = client.read_resource("mission-control://projects/7/webwright")
     dynamo = client.read_resource("mission-control://projects/7/nvidia-dynamo")
+    nim = client.read_resource("mission-control://projects/7/nvidia-nim")
     aiq = client.read_resource("mission-control://projects/7/nvidia-aiq")
     gpu = client.read_resource("mission-control://projects/7/nvidia-gpu-diagnostics")
+    local_runtime = client.read_resource("mission-control://projects/7/nvidia-local-runtime")
+    validation_plan = client.read_resource("mission-control://projects/7/nvidia-validation-plan")
 
     assert snapshot["project_name"] == "Demo"
     assert snapshot["recommended_next_action"] == "Run the named pytest lane."
@@ -607,8 +772,11 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
     assert webwright["available"] is True
     assert webwright["launch_command"] == "webwright"
     assert dynamo["reachable"] is True
+    assert nim["reachable"] is True
     assert aiq["install_status"] == "ready"
     assert gpu["status"] == "ready"
+    assert local_runtime["repo_mode"] == "cuda_cpp"
+    assert validation_plan["status"] == "needs_review"
 
 
 def test_daemon_client_auto_start_launches_when_health_fails(monkeypatch, tmp_path: Path) -> None:
@@ -649,6 +817,85 @@ def test_daemon_client_constructs_without_repo_checkout(monkeypatch, tmp_path: P
     assert client._launcher_root == (tmp_path / "app-home" / ".runtime" / "launcher").resolve()
 
 
+def test_daemon_client_project_scoped_orchestration_resources_are_supported(monkeypatch) -> None:
+    client = MissionControlDaemonClient(base_url="http://127.0.0.1:8010", timeout=0.1)
+    monkeypatch.setattr(
+        client,
+        "get_status",
+        lambda **kwargs: {"orchestration_id": kwargs["orchestration_id"], "project_id": kwargs["project_id"], "project_name": "Demo"},
+    )
+    monkeypatch.setattr(
+        client,
+        "get_orchestration_events",
+        lambda orchestration_id, *, project_id=None: [{"event_type": "running", "orchestration_id": orchestration_id, "project_id": project_id}],
+    )
+
+    status = client.read_resource("mission-control://projects/7/orchestrations/14/status")
+    events = client.read_resource("mission-control://projects/7/orchestrations/14/events")
+
+    assert status["project_id"] == 7
+    assert events["event_count"] == 1
+
+
+def test_daemon_client_bare_orchestration_resource_reads_raise_guidance() -> None:
+    client = MissionControlDaemonClient(base_url="http://127.0.0.1:8010", timeout=0.1)
+
+    try:
+        client.read_resource("mission-control://orchestrations/14/status")
+    except RuntimeError as exc:
+        assert "project-scoped URI" in str(exc)
+    else:
+        raise AssertionError("Expected bare orchestration status resource to be rejected.")
+
+    try:
+        client.read_resource("mission-control://orchestrations/14/events")
+    except RuntimeError as exc:
+        assert "project-scoped URI" in str(exc)
+    else:
+        raise AssertionError("Expected bare orchestration events resource to be rejected.")
+
+
+def test_daemon_client_project_status_read_passes_project_scope(monkeypatch) -> None:
+    client = MissionControlDaemonClient(base_url="http://127.0.0.1:8010", timeout=0.1)
+    seen: dict[str, int] = {}
+    monkeypatch.setattr(client, "get_project", lambda project_id: {"id": project_id, "name": "Demo", "status": "active"})
+    monkeypatch.setattr(client, "_maybe_orchestration_id", lambda **kwargs: 14)
+
+    def fake_get_status(**kwargs):
+        seen["project_id"] = kwargs["project_id"]
+        seen["orchestration_id"] = kwargs["orchestration_id"]
+        return {"project_id": kwargs["project_id"], "orchestration_id": kwargs["orchestration_id"]}
+
+    monkeypatch.setattr(client, "get_status", fake_get_status)
+
+    client.read_resource("mission-control://projects/7/status")
+
+    assert seen == {"project_id": 7, "orchestration_id": 14}
+
+
+def test_daemon_client_bridge_auth_protected_reads_include_token(monkeypatch) -> None:
+    client = MissionControlDaemonClient(base_url="http://127.0.0.1:8010", timeout=0.1)
+    calls: list[tuple[str, str, bool]] = []
+
+    def fake_request(method: str, path: str, **kwargs):
+        calls.append((method, path, bool(kwargs.get("requires_token", True))))
+        return {}
+
+    monkeypatch.setattr(client, "_request", fake_request)
+
+    client.daemon_status()
+    client.get_project_handoff(7)
+    client.get_codebase_map(7)
+    client.get_codebase_understanding(7)
+
+    assert calls == [
+        ("GET", "/api/daemon/status", True),
+        ("GET", "/api/projects/7/handoff", True),
+        ("GET", "/api/projects/7/codebase-map", True),
+        ("GET", "/api/projects/7/codebase-understanding", True),
+    ]
+
+
 def test_catalog_uses_bundled_assets_when_repo_is_unavailable(monkeypatch) -> None:
     catalog.load_plugin_manifest.cache_clear()
     catalog.load_resource_catalog.cache_clear()
@@ -662,6 +909,28 @@ def test_catalog_uses_bundled_assets_when_repo_is_unavailable(monkeypatch) -> No
     assert any(entry["uri_template"] == "mission-control://projects/{project_id}/diagnostics" for entry in resources)
     assert any(entry["name"] == "continue_orchestration" for entry in prompts)
     assert manifest["name"] == "mission-control"
+
+
+def test_bundled_plugin_manifest_references_existing_assets() -> None:
+    package_files = importlib.resources.files("mission_control_mcp_server._bundled")
+    manifest = json.loads((package_files / "plugin.json").read_text(encoding="utf-8"))
+    expected_files = [
+        manifest["mcp"]["example_config"].removeprefix("./"),
+        manifest["mcp"]["resources_catalog"].removeprefix("./"),
+        manifest["mcp"]["prompts_catalog"].removeprefix("./"),
+        manifest["claude_code"]["manifest"].removeprefix("./"),
+        manifest["assets"]["icon"].removeprefix("./"),
+    ]
+    expected_dirs = [
+        manifest["mcp"]["chat_templates_dir"].removeprefix("./"),
+        manifest["claude_code"]["commands"].removeprefix("./").rstrip("/"),
+        manifest["claude_code"]["agents"].removeprefix("./").rstrip("/"),
+    ]
+
+    for relative_path in expected_files:
+        assert (package_files / relative_path).is_file(), f"Missing bundled file: {relative_path}"
+    for relative_path in expected_dirs:
+        assert (package_files / relative_path).is_dir(), f"Missing bundled directory: {relative_path}"
 
 
 def test_daemon_client_launches_installed_module_when_repo_script_is_unavailable(monkeypatch, tmp_path: Path) -> None:

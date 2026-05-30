@@ -32,7 +32,7 @@ Tools:
 
 Resources:
 - `mission-control://projects/{project_id}/validation-summary`
-- `mission-control://projects/{project_id}/events`
+- `mission-control://projects/{project_id}/orchestrations/{orchestration_id}/events`
 - `mission-control://projects/{project_id}/handoff`
 
 ## User-facing output

@@ -261,9 +261,12 @@ def test_runtime_and_project_control_routes_require_token(client) -> None:
         assert raw_client.post(f"/api/projects/{project_id}/manager/message", json={"message": "What next?"}).status_code == 401
         assert raw_client.post(f"/api/projects/{project_id}/manager/next-step").status_code == 401
         assert raw_client.get(f"/api/projects/{project_id}/nvidia/dynamo").status_code == 401
+        assert raw_client.get(f"/api/projects/{project_id}/nvidia/nim").status_code == 401
         assert raw_client.get(f"/api/projects/{project_id}/nvidia/aiq").status_code == 401
         assert raw_client.post(f"/api/projects/{project_id}/nvidia/aiq/research", json={"query": "test"}).status_code == 401
         assert raw_client.get(f"/api/projects/{project_id}/nvidia/gpu-diagnostics").status_code == 401
+        assert raw_client.get(f"/api/projects/{project_id}/nvidia/local-runtime").status_code == 401
+        assert raw_client.get(f"/api/projects/{project_id}/nvidia/validation-plan").status_code == 401
         assert raw_client.post("/api/projects/import-folder", json={"folder_path": sample_workspace("auth-import"), "import_mode": "linked"}).status_code == 401
 
 

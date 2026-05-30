@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import os
 import sys
 from fastapi.testclient import TestClient
 from pathlib import Path
@@ -21,6 +22,15 @@ def _load_desktop_app_module():
     root = Path(__file__).resolve().parents[3]
     module_path = root / "apps" / "desktop" / "src" / "mission_control_desktop" / "app.py"
     spec = importlib.util.spec_from_file_location("mission_control_desktop_app_test", module_path)
+    assert spec is not None
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+    return module
+
+
+def _load_module_from_path(module_path: Path, module_name: str):
+    spec = importlib.util.spec_from_file_location(module_name, module_path)
     assert spec is not None
     module = importlib.util.module_from_spec(spec)
     assert spec.loader is not None
@@ -216,3 +226,39 @@ def test_packaged_server_serves_embedded_frontend_when_bundle_is_missing(monkeyp
 
     assert response.status_code == 200
     assert "Codex Mission Control" in response.text
+
+
+def test_installed_desktop_does_not_export_missing_frontend_path(monkeypatch, tmp_path) -> None:
+    root = Path(__file__).resolve().parents[3]
+    source_path = root / "apps" / "desktop" / "src" / "mission_control_desktop" / "app.py"
+    copied_path = tmp_path / "app.py"
+    copied_path.write_text(source_path.read_text(encoding="utf-8"), encoding="utf-8")
+    monkeypatch.delenv("MISSION_CONTROL_FRONTEND_DIST", raising=False)
+    monkeypatch.delenv("MISSION_CONTROL_REPO_ROOT", raising=False)
+    monkeypatch.delenv("MISSION_CONTROL_APP_HOME", raising=False)
+    monkeypatch.setattr(sys, "frozen", False, raising=False)
+    monkeypatch.setattr(sys, "_MEIPASS", str(tmp_path / "bundle-root"), raising=False)
+
+    _load_module_from_path(copied_path, "mission_control_desktop_installed_test")
+
+    assert "MISSION_CONTROL_FRONTEND_DIST" not in os.environ
+
+
+def test_installed_config_uses_launcher_log_dir_from_config(monkeypatch, tmp_path) -> None:
+    root = Path(__file__).resolve().parents[3]
+    source_path = root / "apps" / "server" / "src" / "config.py"
+    copied_path = tmp_path / "config.py"
+    copied_path.write_text(source_path.read_text(encoding="utf-8"), encoding="utf-8")
+    app_home = tmp_path / "app-home"
+    launcher_config = tmp_path / "mission-control.config.json"
+    launcher_config.write_text('{"launcherLogDir": ".runtime/custom-launcher"}', encoding="utf-8")
+    monkeypatch.delenv("MISSION_CONTROL_REPO_ROOT", raising=False)
+    monkeypatch.delenv("MISSION_CONTROL_LAUNCHER_DIR", raising=False)
+    monkeypatch.delenv("MISSION_CONTROL_RUNTIME_ROOT", raising=False)
+    monkeypatch.setenv("MISSION_CONTROL_APP_HOME", str(app_home))
+    monkeypatch.setenv("MISSION_CONTROL_LAUNCHER_CONFIG", str(launcher_config))
+
+    module = _load_module_from_path(copied_path, "mission_control_config_installed_test")
+
+    assert module.SOURCE_REPO_ROOT is None
+    assert module.LAUNCHER_ROOT == (app_home / ".runtime" / "custom-launcher").resolve()

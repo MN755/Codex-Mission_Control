@@ -19,10 +19,10 @@ The canonical machine-readable catalogs live here:
 
 ## Resource Catalog
 
-### Orchestration resources
+### Project-scoped orchestration resources
 
-- `mission-control://orchestrations/{orchestration_id}/status`
-- `mission-control://orchestrations/{orchestration_id}/events`
+- `mission-control://projects/{project_id}/orchestrations/{orchestration_id}/status`
+- `mission-control://projects/{project_id}/orchestrations/{orchestration_id}/events`
 
 ### Project resources
 
@@ -31,11 +31,24 @@ The canonical machine-readable catalogs live here:
 - `mission-control://projects/{project_id}/pending-decisions`
 - `mission-control://projects/{project_id}/handoff`
 - `mission-control://projects/{project_id}/codebase-map`
+- `mission-control://projects/{project_id}/workspace-tooling`
 - `mission-control://projects/{project_id}/diagnostics`
+- `mission-control://projects/{project_id}/webwright`
+- `mission-control://projects/{project_id}/nvidia-dynamo`
+- `mission-control://projects/{project_id}/nvidia-nim`
+- `mission-control://projects/{project_id}/nvidia-aiq`
+- `mission-control://projects/{project_id}/nvidia-gpu-diagnostics`
+- `mission-control://projects/{project_id}/nvidia-local-runtime`
+- `mission-control://projects/{project_id}/nvidia-validation-plan`
 - `mission-control://projects/{project_id}/swarm-plan`
 - `mission-control://projects/{project_id}/risk-register`
 - `mission-control://projects/{project_id}/agent-contracts`
 - `mission-control://projects/{project_id}/validation-summary`
+- `mission-control://projects/{project_id}/decision-ledger`
+- `mission-control://projects/{project_id}/path-locks`
+- `mission-control://projects/{project_id}/operator-snapshot`
+- `mission-control://projects/{project_id}/instincts`
+- `mission-control://projects/{project_id}/verification-brief`
 
 ## Prompt Rules
 
@@ -54,12 +67,16 @@ The canonical machine-readable catalogs live here:
 - `answer-pending-approval`
 - `review-latest-handoff`
 - `debug-failed-orchestration`
+- `use-webwright-for-browser-task`
 - `pause-orchestration`
 - `resume-orchestration`
 - `explain-current-swarm`
 - `switch-swarm-strategy`
 - `enable-safe-mode`
 - `generate-agents-md-proposal`
+- `install-from-github`
+- `autowire-providers`
+- `ask-manager-for-plan`
 
 ## Prompt To Tool Pattern
 
@@ -91,6 +108,7 @@ The prompt catalog also covers:
 - read-only import-first workflows for existing repos
 - `AGENTS.md` proposal generation through Mission Control context
 - safe-mode workflows for stricter approvals and tool posture
+- install and autowire workflows for headless bootstrap and local-first provider setup
 
 ## Dashboard Scope
 

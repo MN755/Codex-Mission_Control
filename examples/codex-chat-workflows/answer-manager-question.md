@@ -8,7 +8,9 @@
 
 1. Prompt: `show-pending-approvals`
 2. Tool: `mission_control_get_pending_decisions`
-3. Tool: `mission_control_answer_decision`
+3. Prompt: `answer-pending-approval`
+4. Tool: `mission_control_answer_decision`
+5. Tool: `mission_control_get_pending_decisions`
 
 ## Expected Codex Chat Response
 

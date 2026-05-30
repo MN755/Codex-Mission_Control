@@ -10,8 +10,10 @@
 2. Tool: `mission_control_get_status`
 3. Tool: `mission_control_get_diagnostics`
 4. Tool: `mission_control_get_pending_decisions`
-5. Tool: `mission_control_get_orchestration_events`
-6. Tool: `mission_control_request_recovery_options`
+5. Tool: `mission_control_get_event_digest`
+6. Tool: `mission_control_request_recovery_plan`
+7. Resource: `mission-control://projects/{project_id}/diagnostics`
+8. Resource: `mission-control://projects/{project_id}/decision-ledger`
 
 ## Expected Codex Chat Response
 

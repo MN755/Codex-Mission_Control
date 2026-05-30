@@ -29,6 +29,8 @@ def test_model_defaults_follow_provider(monkeypatch) -> None:
     assert api_provider_adapter._model() == "claude-3-5-sonnet-latest"
     monkeypatch.setenv("MISSION_CONTROL_PROVIDER", "nvidia_dynamo")
     assert api_provider_adapter._model() == "Qwen/Qwen3-0.6B"
+    monkeypatch.setenv("MISSION_CONTROL_PROVIDER", "nvidia_nim")
+    assert api_provider_adapter._model() == "meta/llama-3.1-8b-instruct"
 
 
 def test_dynamo_endpoint_and_api_key_are_optional(monkeypatch) -> None:
@@ -40,6 +42,18 @@ def test_dynamo_endpoint_and_api_key_are_optional(monkeypatch) -> None:
     assert api_provider_adapter._endpoint() == "http://dynamo.local:8000/v1/chat/completions"
     key_name, key_value = api_provider_adapter._api_key()
     assert key_name == "NVIDIA_DYNAMO_API_KEY"
+    assert key_value == ""
+
+
+def test_nim_endpoint_and_api_key_are_optional(monkeypatch) -> None:
+    monkeypatch.setenv("MISSION_CONTROL_PROVIDER", "nvidia_nim")
+    monkeypatch.setenv("MISSION_CONTROL_PROVIDER_ENDPOINT", "https://integrate.api.nvidia.com/v1")
+    monkeypatch.delenv("NVIDIA_NIM_API_KEY", raising=False)
+    monkeypatch.delenv("MISSION_CONTROL_NVIDIA_NIM_API_KEY", raising=False)
+
+    assert api_provider_adapter._endpoint() == "https://integrate.api.nvidia.com/v1/chat/completions"
+    key_name, key_value = api_provider_adapter._api_key()
+    assert key_name == "NVIDIA_NIM_API_KEY"
     assert key_value == ""
 
 

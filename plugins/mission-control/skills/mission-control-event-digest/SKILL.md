@@ -29,7 +29,7 @@ Tools:
 - `mission_control_get_event_digest`
 
 Resources:
-- `mission-control://orchestrations/{orchestration_id}/status`
+- `mission-control://projects/{project_id}/orchestrations/{orchestration_id}/status`
 - `mission-control://projects/{project_id}/status`
 
 ## User-facing output

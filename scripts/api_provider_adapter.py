@@ -13,6 +13,7 @@ DEFAULT_MODELS = {
     "anthropic_api": "claude-3-5-sonnet-latest",
     "xai_api": "grok-code-fast-1",
     "nvidia_dynamo": "Qwen/Qwen3-0.6B",
+    "nvidia_nim": "meta/llama-3.1-8b-instruct",
 }
 
 DEFAULT_ENDPOINTS = {
@@ -20,6 +21,7 @@ DEFAULT_ENDPOINTS = {
     "anthropic_api": "https://api.anthropic.com/v1/messages",
     "xai_api": "https://api.x.ai/v1/chat/completions",
     "nvidia_dynamo": "http://localhost:8000/v1/chat/completions",
+    "nvidia_nim": "https://integrate.api.nvidia.com/v1/chat/completions",
 }
 
 
@@ -51,6 +53,9 @@ def _api_key() -> tuple[str, str]:
     if provider == "nvidia_dynamo":
         key_value = (os.environ.get("NVIDIA_DYNAMO_API_KEY") or os.environ.get("MISSION_CONTROL_NVIDIA_DYNAMO_API_KEY") or "").strip()
         return "NVIDIA_DYNAMO_API_KEY", key_value
+    if provider == "nvidia_nim":
+        key_value = (os.environ.get("NVIDIA_NIM_API_KEY") or os.environ.get("MISSION_CONTROL_NVIDIA_NIM_API_KEY") or "").strip()
+        return "NVIDIA_NIM_API_KEY", key_value
     key_name = {
         "openai_api": "OPENAI_API_KEY",
         "anthropic_api": "ANTHROPIC_API_KEY",

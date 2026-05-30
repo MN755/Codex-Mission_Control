@@ -18,7 +18,7 @@ from config import (
     DEFAULT_BACKEND_HOST,
     DEFAULT_BACKEND_PORT,
     LAUNCHER_ROOT,
-    REPO_ROOT,
+    SOURCE_REPO_ROOT,
     RUNTIME_ROOT,
     ensure_runtime_dirs,
     load_launcher_config,
@@ -141,7 +141,7 @@ def write_daemon_metadata(
         "pid": pid,
         "started_at": started_at or utc_now().isoformat(),
         "updated_at": utc_now().isoformat(),
-        "repo_root": str(REPO_ROOT),
+        "repo_root": str(SOURCE_REPO_ROOT) if SOURCE_REPO_ROOT is not None else None,
         "runtime_root": str(RUNTIME_ROOT),
         "launcher_root": str(LAUNCHER_ROOT),
     }
@@ -205,7 +205,7 @@ def read_daemon_metadata(*, validate_liveness: bool = True) -> dict[str, Any]:
     payload["port"] = _parse_port(payload.get("port"), default_port)
     payload.setdefault("pid", 0)
     payload.setdefault("started_at", utc_now().isoformat())
-    payload.setdefault("repo_root", str(REPO_ROOT))
+    payload.setdefault("repo_root", str(SOURCE_REPO_ROOT) if SOURCE_REPO_ROOT is not None else None)
     payload.setdefault("runtime_root", str(RUNTIME_ROOT))
     payload.setdefault("launcher_root", str(LAUNCHER_ROOT))
     pid_running = process_is_running(payload.get("pid"))
@@ -307,7 +307,7 @@ def daemon_identity_snapshot() -> dict[str, Any]:
         "port": port,
         "base_url": f"http://{_url_host(host)}:{port}",
         "binding_source": str(binding.get("source") or "unknown"),
-        "repo_root": str(REPO_ROOT),
+        "repo_root": str(SOURCE_REPO_ROOT) if SOURCE_REPO_ROOT is not None else None,
         "runtime_root": str(RUNTIME_ROOT),
         "launcher_root": str(LAUNCHER_ROOT),
         "metadata_status": str(metadata.get("status") or "unknown"),

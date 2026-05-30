@@ -9,6 +9,12 @@ SKILLS_ROOT = ROOT / "plugins" / "mission-control" / "skills"
 INDEX_PATH = ROOT / "plugins" / "mission-control" / "SKILL_INDEX.md"
 DOC_PATH = ROOT / "docs" / "MISSION_CONTROL_SKILL_LIBRARY.md"
 PLUGIN_MANIFEST = ROOT / "plugins" / "mission-control" / "plugin.json"
+COMMANDS_ROOT = ROOT / "plugins" / "mission-control" / "commands"
+SKILL_STALE_MARKERS = [
+    "mission_control_open_dashboard",
+    "mission-control://projects/current/",
+    "mission-control://projects/{project_id}/events",
+]
 
 BRIDGE_STATEMENT = "The Codex chat agent is not the Mission Control Manager. It is the bridge between the user and the Mission Control Manager."
 REQUIRED_SECTIONS = [
@@ -130,6 +136,13 @@ def validate() -> list[str]:
             "plugin.json is missing required Mission Control skills: "
             + ", ".join(missing_manifest_skills)
         )
+    for command_name in ((manifest.get("claude_code") or {}).get("primary_commands") or []):
+        command_path = COMMANDS_ROOT / f"{command_name}.md"
+        if not command_path.exists():
+            errors.append(f"Missing Claude command file: {command_path}")
+    for resource in manifest.get("resources", []):
+        if resource.startswith("mission-control://orchestrations/"):
+            errors.append(f"plugin.json still advertises an unscoped orchestration resource: {resource}")
 
     for skill_name in REQUIRED_SKILLS:
         skill_path = SKILLS_ROOT / skill_name / "SKILL.md"
@@ -144,8 +157,14 @@ def validate() -> list[str]:
         for section in REQUIRED_SECTIONS:
             if section not in content:
                 errors.append(f"Missing section '{section}' in {skill_path}")
+        for marker in SKILL_STALE_MARKERS:
+            if marker in content:
+                errors.append(f"Stale Mission Control reference {marker!r} found in {skill_path}")
         if f"`{skill_name}`" not in index_content:
             errors.append(f"Skill index missing {skill_name}")
+    for marker in SKILL_STALE_MARKERS:
+        if marker in index_content:
+            errors.append(f"Stale Mission Control reference {marker!r} found in {INDEX_PATH}")
 
     return errors
 

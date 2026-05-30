@@ -40,7 +40,8 @@ FRONTEND_DIST = (
 if SERVER_SRC is not None and str(SERVER_SRC) not in sys.path:
     sys.path.insert(0, str(SERVER_SRC))
 
-os.environ.setdefault("MISSION_CONTROL_FRONTEND_DIST", str(FRONTEND_DIST))
+if SOURCE_REPO_ROOT is not None or FRONTEND_DIST.exists():
+    os.environ.setdefault("MISSION_CONTROL_FRONTEND_DIST", str(FRONTEND_DIST))
 if SOURCE_REPO_ROOT is not None:
     os.environ.setdefault("MISSION_CONTROL_REPO_ROOT", str(SOURCE_REPO_ROOT))
 

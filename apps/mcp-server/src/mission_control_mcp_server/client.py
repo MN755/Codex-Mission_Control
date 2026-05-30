@@ -174,7 +174,7 @@ class MissionControlDaemonClient:
     def _daemon_identity(self) -> dict[str, Any] | None:
         try:
             with httpx.Client(timeout=2.0) as client:
-                response = client.get(f"{self.base_url}/api/diagnostics/identity")
+                response = client.get(f"{self.base_url}/api/diagnostics/identity", headers=self._headers(requires_token=True))
             if response.status_code >= 400:
                 return None
             payload = response.json()
@@ -302,7 +302,7 @@ class MissionControlDaemonClient:
         )
 
     def daemon_status(self) -> dict[str, Any]:
-        return self._request("GET", "/api/daemon/status", requires_token=False)
+        return self._request("GET", "/api/daemon/status", requires_token=True)
 
     def plugin_health(self) -> dict[str, Any]:
         return self._request("GET", "/api/orchestrations/plugin-health", requires_token=True)
@@ -359,10 +359,18 @@ class MissionControlDaemonClient:
     def active_project_orchestration(self, project_id: int) -> dict[str, Any] | None:
         return self._request("GET", f"/api/projects/{project_id}/orchestrations/active")
 
-    def get_status(self, *, orchestration_id: int | None = None, project_id: int | None = None) -> dict[str, Any]:
+    def _resolve_orchestration_id(self, *, orchestration_id: int | None = None, project_id: int | None = None, action: str) -> int:
         resolved_id = self._maybe_orchestration_id(orchestration_id=orchestration_id, project_id=project_id)
         if resolved_id is None:
-            raise RuntimeError("Mission Control status requires an orchestration_id or a project with an active orchestration.")
+            raise RuntimeError(f"{action} requires an orchestration_id or a project with an active orchestration.")
+        return resolved_id
+
+    def get_status(self, *, orchestration_id: int | None = None, project_id: int | None = None) -> dict[str, Any]:
+        resolved_id = self._resolve_orchestration_id(
+            orchestration_id=orchestration_id,
+            project_id=project_id,
+            action="Mission Control status",
+        )
         resolved_project_id = self._project_id_for_orchestration(resolved_id, project_id=project_id)
         payload = self._request("GET", f"/api/orchestrations/{resolved_id}/status", params={"project_id": resolved_project_id})
         if isinstance(payload, dict):
@@ -395,18 +403,30 @@ class MissionControlDaemonClient:
             json_body={"option_id": option_id, "selected_text": selected_text, "free_text": free_text},
         )
 
-    def pause(self, orchestration_id: int, *, project_id: int | None = None) -> dict[str, Any]:
-        resolved_project_id = self._project_id_for_orchestration(orchestration_id, project_id=project_id)
-        return self._request("POST", f"/api/orchestrations/{orchestration_id}/pause", params={"project_id": resolved_project_id}, json_body={})
+    def pause(self, orchestration_id: int | None = None, *, project_id: int | None = None) -> dict[str, Any]:
+        resolved_id = self._resolve_orchestration_id(
+            orchestration_id=orchestration_id,
+            project_id=project_id,
+            action="Pause",
+        )
+        resolved_project_id = self._project_id_for_orchestration(resolved_id, project_id=project_id)
+        return self._request("POST", f"/api/orchestrations/{resolved_id}/pause", params={"project_id": resolved_project_id}, json_body={})
 
-    def resume(self, orchestration_id: int, *, project_id: int | None = None) -> dict[str, Any]:
-        resolved_project_id = self._project_id_for_orchestration(orchestration_id, project_id=project_id)
-        return self._request("POST", f"/api/orchestrations/{orchestration_id}/resume", params={"project_id": resolved_project_id}, json_body={})
+    def resume(self, orchestration_id: int | None = None, *, project_id: int | None = None) -> dict[str, Any]:
+        resolved_id = self._resolve_orchestration_id(
+            orchestration_id=orchestration_id,
+            project_id=project_id,
+            action="Resume",
+        )
+        resolved_project_id = self._project_id_for_orchestration(resolved_id, project_id=project_id)
+        return self._request("POST", f"/api/orchestrations/{resolved_id}/resume", params={"project_id": resolved_project_id}, json_body={})
 
     def get_handoff(self, *, orchestration_id: int | None = None, project_id: int | None = None) -> dict[str, Any]:
-        resolved_id = self._maybe_orchestration_id(orchestration_id=orchestration_id, project_id=project_id)
-        if resolved_id is None:
-            raise RuntimeError("Mission Control handoff lookup requires an orchestration_id or a project with an active orchestration.")
+        resolved_id = self._resolve_orchestration_id(
+            orchestration_id=orchestration_id,
+            project_id=project_id,
+            action="Mission Control handoff lookup",
+        )
         resolved_project_id = self._project_id_for_orchestration(resolved_id, project_id=project_id)
         return self._request("GET", f"/api/orchestrations/{resolved_id}/handoff", params={"project_id": resolved_project_id})
 
@@ -434,9 +454,14 @@ class MissionControlDaemonClient:
             raise RuntimeError("Handoff summary requires an orchestration_id or project_id.")
         return self._request("GET", f"/api/projects/{project_id}/handoff-summary")
 
-    def get_orchestration_events(self, orchestration_id: int, *, project_id: int | None = None) -> list[dict[str, Any]]:
-        resolved_project_id = self._project_id_for_orchestration(orchestration_id, project_id=project_id)
-        return self._request("GET", f"/api/orchestrations/{orchestration_id}/events", params={"project_id": resolved_project_id})
+    def get_orchestration_events(self, orchestration_id: int | None = None, *, project_id: int | None = None) -> list[dict[str, Any]]:
+        resolved_id = self._resolve_orchestration_id(
+            orchestration_id=orchestration_id,
+            project_id=project_id,
+            action="Orchestration events",
+        )
+        resolved_project_id = self._project_id_for_orchestration(resolved_id, project_id=project_id)
+        return self._request("GET", f"/api/orchestrations/{resolved_id}/events", params={"project_id": resolved_project_id})
 
     def get_agents(self, project_id: int) -> list[dict[str, Any]]:
         return self._request("GET", f"/api/projects/{project_id}/agents")
@@ -451,7 +476,7 @@ class MissionControlDaemonClient:
         return self._request("GET", f"/api/projects/{project_id}/approvals/pending")
 
     def get_project_handoff(self, project_id: int) -> dict[str, Any]:
-        return self._request("GET", f"/api/projects/{project_id}/handoff", requires_token=False)
+        return self._request("GET", f"/api/projects/{project_id}/handoff", requires_token=True)
 
     def get_decision_ledger(self, project_id: int) -> list[dict[str, Any]]:
         return self._request("GET", f"/api/projects/{project_id}/decision-ledger")
@@ -491,6 +516,9 @@ class MissionControlDaemonClient:
     def get_nvidia_dynamo_status(self, project_id: int) -> dict[str, Any]:
         return self._request("GET", f"/api/projects/{project_id}/nvidia/dynamo")
 
+    def get_nvidia_nim_status(self, project_id: int) -> dict[str, Any]:
+        return self._request("GET", f"/api/projects/{project_id}/nvidia/nim")
+
     def get_nvidia_aiq_status(self, project_id: int) -> dict[str, Any]:
         return self._request("GET", f"/api/projects/{project_id}/nvidia/aiq")
 
@@ -521,11 +549,17 @@ class MissionControlDaemonClient:
     def get_nvidia_gpu_diagnostics(self, project_id: int) -> dict[str, Any]:
         return self._request("GET", f"/api/projects/{project_id}/nvidia/gpu-diagnostics")
 
+    def get_nvidia_local_runtime_status(self, project_id: int) -> dict[str, Any]:
+        return self._request("GET", f"/api/projects/{project_id}/nvidia/local-runtime")
+
+    def get_nvidia_validation_plan(self, project_id: int) -> dict[str, Any]:
+        return self._request("GET", f"/api/projects/{project_id}/nvidia/validation-plan")
+
     def get_codebase_map(self, project_id: int) -> dict[str, Any]:
-        return self._request("GET", f"/api/projects/{project_id}/codebase-map", requires_token=False)
+        return self._request("GET", f"/api/projects/{project_id}/codebase-map", requires_token=True)
 
     def get_codebase_understanding(self, project_id: int) -> dict[str, Any]:
-        return self._request("GET", f"/api/projects/{project_id}/codebase-understanding", requires_token=False)
+        return self._request("GET", f"/api/projects/{project_id}/codebase-understanding", requires_token=True)
 
     def set_import_interview_choice(self, project_id: int, choice: str) -> dict[str, Any]:
         return self._request("POST", f"/api/projects/{project_id}/import/interview-choice", json_body={"choice": choice})
@@ -1023,6 +1057,31 @@ class MissionControlDaemonClient:
             "notes": list(payload.get("notes") or [])[:8],
         }
 
+    def _summarize_nvidia_nim_status(self, project_id: int, payload: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "project_id": project_id,
+            "project_name": payload.get("project_name"),
+            "available": bool(payload.get("available")),
+            "reachable": bool(payload.get("reachable")),
+            "endpoint": payload.get("endpoint"),
+            "endpoint_configured": bool(payload.get("endpoint_configured")),
+            "api_key_configured": bool(payload.get("api_key_configured")),
+            "auth_required": bool(payload.get("auth_required")),
+            "authenticated": bool(payload.get("authenticated")),
+            "available_models": list(payload.get("available_models") or [])[:12],
+            "runtime_ready": bool(payload.get("runtime_ready")),
+            "runtime_status": payload.get("runtime_status"),
+            "runtime_summary": payload.get("runtime_summary"),
+            "runtime_blockers": list(payload.get("runtime_blockers") or [])[:8],
+            "adapter_command_configured": bool(payload.get("adapter_command_configured")),
+            "adapter_command_detected": bool(payload.get("adapter_command_detected")),
+            "adapter_command_path": payload.get("adapter_command_path"),
+            "adapter_args": list(payload.get("adapter_args") or [])[:8],
+            "adapter_recipe_source": payload.get("adapter_recipe_source"),
+            "summary": payload.get("summary"),
+            "notes": list(payload.get("notes") or [])[:8],
+        }
+
     def _summarize_nvidia_aiq_status(self, project_id: int, payload: dict[str, Any]) -> dict[str, Any]:
         return {
             "project_id": project_id,
@@ -1065,6 +1124,53 @@ class MissionControlDaemonClient:
             "metrics": dict(payload.get("metrics") or {}),
             "alerts": list(payload.get("alerts") or [])[:8],
             "recommended_fixes": list(payload.get("recommended_fixes") or [])[:8],
+        }
+
+    def _summarize_nvidia_local_runtime_status(self, project_id: int, payload: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "project_id": project_id,
+            "project_name": payload.get("project_name"),
+            "available": bool(payload.get("available")),
+            "status": payload.get("status"),
+            "summary": payload.get("summary"),
+            "repo_mode_enabled": bool(payload.get("repo_mode_enabled")),
+            "repo_mode": payload.get("repo_mode"),
+            "detected_tools": list(payload.get("detected_tools") or [])[:12],
+            "missing_required_tools": list(payload.get("missing_required_tools") or [])[:8],
+            "missing_optional_tools": list(payload.get("missing_optional_tools") or [])[:8],
+            "gpu_names": list(payload.get("gpu_names") or [])[:8],
+            "driver_version": payload.get("driver_version"),
+            "cuda_release": payload.get("cuda_release"),
+            "compute_sanitizer_available": bool(payload.get("compute_sanitizer_available")),
+            "nsight_systems_available": bool(payload.get("nsight_systems_available")),
+            "nsight_compute_available": bool(payload.get("nsight_compute_available")),
+            "cuda_gdb_available": bool(payload.get("cuda_gdb_available")),
+            "ngc_cli_available": bool(payload.get("ngc_cli_available")),
+            "container_runtime_ready": bool(payload.get("container_runtime_ready")),
+            "recommended_fixes": list(payload.get("recommended_fixes") or [])[:8],
+            "validation_hints": list(payload.get("validation_hints") or [])[:8],
+            "notes": list(payload.get("notes") or [])[:6],
+        }
+
+    def _summarize_nvidia_validation_plan(self, project_id: int, payload: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "project_id": project_id,
+            "project_name": payload.get("project_name"),
+            "available": bool(payload.get("available")),
+            "status": payload.get("status"),
+            "summary": payload.get("summary"),
+            "repo_mode_enabled": bool(payload.get("repo_mode_enabled")),
+            "repo_mode": payload.get("repo_mode"),
+            "local_runtime_status": payload.get("local_runtime_status"),
+            "gpu_diagnostics_status": payload.get("gpu_diagnostics_status"),
+            "sanitizer_ready": bool(payload.get("sanitizer_ready")),
+            "profiler_ready": bool(payload.get("profiler_ready")),
+            "container_smoke_ready": bool(payload.get("container_smoke_ready")),
+            "ngc_smoke_image": payload.get("ngc_smoke_image"),
+            "steps": list(payload.get("steps") or [])[:12],
+            "blockers": list(payload.get("blockers") or [])[:8],
+            "recommended_fixes": list(payload.get("recommended_fixes") or [])[:8],
+            "evidence_targets": list(payload.get("evidence_targets") or [])[:8],
         }
 
     def _summarize_handoff(self, project_id: int, payload: dict[str, Any]) -> dict[str, Any]:
@@ -1247,20 +1353,34 @@ class MissionControlDaemonClient:
         if not uri.startswith("mission-control://"):
             raise RuntimeError("Unsupported Mission Control resource URI.")
         parts = [segment for segment in uri.removeprefix("mission-control://").split("/") if segment]
+        if len(parts) >= 5 and parts[0] == "projects" and parts[2] == "orchestrations":
+            project_id = int(parts[1])
+            orchestration_id = int(parts[3])
+            kind = parts[4]
+            if kind == "status":
+                return self._summarize_status(self.get_status(orchestration_id=orchestration_id, project_id=project_id))
+            if kind == "events":
+                return self._summarize_events(orchestration_id, self.get_orchestration_events(orchestration_id, project_id=project_id))
         if len(parts) >= 3 and parts[0] == "orchestrations":
             orchestration_id = int(parts[1])
             kind = parts[2]
             if kind == "status":
-                return self._summarize_status(self.get_status(orchestration_id=orchestration_id))
+                raise RuntimeError(
+                    "Cold orchestration resource reads require the project-scoped URI "
+                    "`mission-control://projects/{project_id}/orchestrations/{orchestration_id}/status`."
+                )
             if kind == "events":
-                return self._summarize_events(orchestration_id, self.get_orchestration_events(orchestration_id))
+                raise RuntimeError(
+                    "Cold orchestration resource reads require the project-scoped URI "
+                    "`mission-control://projects/{project_id}/orchestrations/{orchestration_id}/events`."
+                )
         if len(parts) >= 3 and parts[0] == "projects":
             project_id = int(parts[1])
             kind = parts[2]
             if kind == "status":
                 project = self.get_project(project_id)
                 orchestration_id = self._maybe_orchestration_id(project_id=project_id)
-                status = self.get_status(orchestration_id=orchestration_id) if orchestration_id is not None else None
+                status = self.get_status(orchestration_id=orchestration_id, project_id=project_id) if orchestration_id is not None else None
                 return self._summarize_project_status(project, status)
             if kind == "agents":
                 return self._summarize_agents(project_id, self.get_agents(project_id))
@@ -1301,8 +1421,14 @@ class MissionControlDaemonClient:
                 return self._summarize_webwright_status(project_id, self.get_webwright_status(project_id))
             if kind == "nvidia-dynamo":
                 return self._summarize_nvidia_dynamo_status(project_id, self.get_nvidia_dynamo_status(project_id))
+            if kind == "nvidia-nim":
+                return self._summarize_nvidia_nim_status(project_id, self.get_nvidia_nim_status(project_id))
             if kind == "nvidia-aiq":
                 return self._summarize_nvidia_aiq_status(project_id, self.get_nvidia_aiq_status(project_id))
             if kind == "nvidia-gpu-diagnostics":
                 return self._summarize_nvidia_gpu_diagnostics(project_id, self.get_nvidia_gpu_diagnostics(project_id))
+            if kind == "nvidia-local-runtime":
+                return self._summarize_nvidia_local_runtime_status(project_id, self.get_nvidia_local_runtime_status(project_id))
+            if kind == "nvidia-validation-plan":
+                return self._summarize_nvidia_validation_plan(project_id, self.get_nvidia_validation_plan(project_id))
         raise RuntimeError("Unsupported Mission Control resource URI.")

@@ -208,6 +208,31 @@ def test_detect_system_status_reports_runtime_blockers_for_selected_provider(mon
         "reachable": False,
         "summary": "Ollama endpoint not reachable.",
     })
+    monkeypatch.setattr("system_status.detect_nvidia_nim_status", lambda endpoint=None: {
+        "provider": "nvidia_nim",
+        "label": "NVIDIA NIM",
+        "cli_detected": False,
+        "cli_path": endpoint or "https://integrate.api.nvidia.com",
+        "cli_path_exists": False,
+        "cli_execution_available": False,
+        "cli_version": None,
+        "login_status": "NVIDIA NIM endpoint is not reachable.",
+        "auth_mode": None,
+        "authenticated": False,
+        "auth_status_detectable": True,
+        "supports_model_override": True,
+        "supports_reasoning_effort": False,
+        "supports_app_server": False,
+        "supports_builtin_auth": False,
+        "available_models": [],
+        "notes": [],
+        "reachable": False,
+        "summary": "offline",
+        "endpoint": endpoint or "https://integrate.api.nvidia.com",
+        "endpoint_configured": False,
+        "api_key_configured": False,
+        "auth_required": True,
+    })
     monkeypatch.setattr("system_status.detect_webwright_status", lambda: {"summary": "not installed"})
     monkeypatch.setattr("system_status.shutil.which", lambda _command: None)
 
@@ -285,6 +310,31 @@ def test_detect_system_status_reports_dynamo_runtime_when_selected(monkeypatch) 
         "notes": [],
         "reachable": False,
         "summary": "missing",
+    })
+    monkeypatch.setattr("system_status.detect_nvidia_nim_status", lambda endpoint=None: {
+        "provider": "nvidia_nim",
+        "label": "NVIDIA NIM",
+        "cli_detected": False,
+        "cli_path": endpoint or "https://integrate.api.nvidia.com",
+        "cli_path_exists": False,
+        "cli_execution_available": False,
+        "cli_version": None,
+        "login_status": "missing",
+        "auth_mode": None,
+        "authenticated": False,
+        "auth_status_detectable": True,
+        "supports_model_override": True,
+        "supports_reasoning_effort": False,
+        "supports_app_server": False,
+        "supports_builtin_auth": False,
+        "available_models": [],
+        "notes": [],
+        "reachable": False,
+        "summary": "missing",
+        "endpoint": endpoint or "https://integrate.api.nvidia.com",
+        "endpoint_configured": False,
+        "api_key_configured": False,
+        "auth_required": True,
     })
     monkeypatch.setattr("system_status.detect_nvidia_dynamo_status", lambda endpoint=None: {
         "provider": "nvidia_dynamo",

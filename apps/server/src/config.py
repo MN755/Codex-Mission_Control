@@ -13,6 +13,16 @@ APP_AUTHOR = "OpenAI"
 APP_DIR = Path(__file__).resolve().parents[1]
 IS_FROZEN = bool(getattr(sys, "frozen", False))
 BUNDLE_ROOT = Path(getattr(sys, "_MEIPASS", APP_DIR))
+DEFAULT_BACKEND_HOST = "127.0.0.1"
+DEFAULT_BACKEND_PORT = 8010
+DEFAULT_FRONTEND_PORT = 5173
+DEFAULT_LAUNCHER_CONFIG = {
+    "host": DEFAULT_BACKEND_HOST,
+    "backendPort": DEFAULT_BACKEND_PORT,
+    "frontendPort": DEFAULT_FRONTEND_PORT,
+    "autoOpenBrowser": True,
+    "launcherLogDir": ".runtime/launcher",
+}
 
 
 def _discover_source_repo_root() -> Path | None:
@@ -46,19 +56,46 @@ RUNTIME_ROOT = Path(
 ).resolve()
 RUNTIME_LOGS_ROOT = RUNTIME_ROOT / "logs"
 WORKTREE_ROOT = RUNTIME_ROOT / "worktrees"
-LAUNCHER_ROOT = Path(
-    os.environ.get("MISSION_CONTROL_LAUNCHER_DIR")
-    or ((SOURCE_REPO_ROOT / ".runtime" / "launcher") if SOURCE_REPO_ROOT else (APP_SUPPORT_ROOT / "launcher"))
-).resolve()
-_bundled_launcher_config = SCRIPTS_ROOT / "mission-control.config.json"
-LAUNCHER_CONFIG_PATH = Path(
-    os.environ.get("MISSION_CONTROL_LAUNCHER_CONFIG")
-    or (
-        (SOURCE_REPO_ROOT / "scripts" / "mission-control.config.json")
-        if SOURCE_REPO_ROOT
-        else (_bundled_launcher_config if _bundled_launcher_config.exists() else (APP_SUPPORT_ROOT / "mission-control.config.json"))
-    )
-).resolve()
+
+
+def _resolve_launcher_config_path() -> Path:
+    explicit = os.environ.get("MISSION_CONTROL_LAUNCHER_CONFIG")
+    if explicit:
+        return Path(explicit).expanduser().resolve()
+    bundled_launcher_config = SCRIPTS_ROOT / "mission-control.config.json"
+    if SOURCE_REPO_ROOT:
+        return (SOURCE_REPO_ROOT / "scripts" / "mission-control.config.json").resolve()
+    if bundled_launcher_config.exists():
+        return bundled_launcher_config.resolve()
+    return (APP_SUPPORT_ROOT / "mission-control.config.json").resolve()
+
+
+def _read_launcher_config_file() -> dict[str, object]:
+    path = _resolve_launcher_config_path()
+    if not path.exists():
+        return {}
+    try:
+        loaded = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return {}
+    return loaded if isinstance(loaded, dict) else {}
+
+
+def _resolve_launcher_root() -> Path:
+    explicit = os.environ.get("MISSION_CONTROL_LAUNCHER_DIR")
+    if explicit:
+        return Path(explicit).expanduser().resolve()
+    launcher_dir = str(_read_launcher_config_file().get("launcherLogDir") or DEFAULT_LAUNCHER_CONFIG["launcherLogDir"])
+    launcher_path = Path(launcher_dir)
+    if launcher_path.is_absolute():
+        return launcher_path.resolve()
+    if SOURCE_REPO_ROOT:
+        return (SOURCE_REPO_ROOT / launcher_path).resolve()
+    return (APP_SUPPORT_ROOT / launcher_path).resolve()
+
+
+LAUNCHER_CONFIG_PATH = _resolve_launcher_config_path()
+LAUNCHER_ROOT = _resolve_launcher_root()
 DB_PATH = RUNTIME_ROOT / "mission_control.sqlite3"
 DAEMON_METADATA_PATH = LAUNCHER_ROOT / "daemon.json"
 DAEMON_TOKEN_PATH = RUNTIME_ROOT / "daemon.token"
@@ -69,9 +106,6 @@ DEFAULT_SANDBOX = "workspace-write"
 DEFAULT_APPROVAL_POLICY = "on-request"
 DEFAULT_CLI_MODEL = "gpt-5.4"
 DEFAULT_REASONING_EFFORT = "medium"
-DEFAULT_BACKEND_HOST = "127.0.0.1"
-DEFAULT_BACKEND_PORT = 8010
-DEFAULT_FRONTEND_PORT = 5173
 
 
 def frontend_dist_root() -> Path:
@@ -81,16 +115,6 @@ def frontend_dist_root() -> Path:
     if SOURCE_REPO_ROOT is not None:
         return (SOURCE_REPO_ROOT / "apps" / "dashboard" / "dist").resolve()
     return (BUNDLE_ROOT / "frontend_dist").resolve()
-
-
-DEFAULT_LAUNCHER_CONFIG = {
-    "host": DEFAULT_BACKEND_HOST,
-    "backendPort": DEFAULT_BACKEND_PORT,
-    "frontendPort": DEFAULT_FRONTEND_PORT,
-    "autoOpenBrowser": True,
-    "launcherLogDir": ".runtime/launcher",
-}
-
 
 def ensure_runtime_dirs() -> None:
     paths = [WORKSPACE_ROOT, RUNTIME_ROOT, RUNTIME_LOGS_ROOT, WORKTREE_ROOT, LAUNCHER_ROOT]
@@ -106,11 +130,5 @@ def get_codex_home() -> Path:
 
 def load_launcher_config() -> dict:
     config = DEFAULT_LAUNCHER_CONFIG.copy()
-    if LAUNCHER_CONFIG_PATH.exists():
-        try:
-            loaded = json.loads(LAUNCHER_CONFIG_PATH.read_text(encoding="utf-8"))
-            if isinstance(loaded, dict):
-                config.update(loaded)
-        except json.JSONDecodeError:
-            pass
+    config.update(_read_launcher_config_file())
     return config

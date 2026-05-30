@@ -51,19 +51,59 @@ def test_search_codebase_uses_ripgrep_when_available(monkeypatch, tmp_path: Path
     project = Project(id=7, name="Demo", workspace_path=str(workspace), source_path=str(workspace))
 
     monkeypatch.setattr("manager.shutil.which", lambda command: "C:/tools/rg.exe" if command == "rg" else None)
+    seen: dict[str, object] = {}
 
     class Result:
         returncode = 0
-        stdout = "src/main.py:3:TODO wire validation lane\nREADME.md:9:TODO add docs\n"
+        stdout = "src/main.py:3:TODO wire validation lane\nREADME.md:9:TODO add docs\nsrc/worker.py:11:TODO add retry path\n"
 
-    monkeypatch.setattr("manager.subprocess.run", lambda *args, **kwargs: Result())
+    def fake_run(*args, **kwargs):
+        seen["args"] = args
+        seen["kwargs"] = kwargs
+        return Result()
+
+    monkeypatch.setattr("manager.subprocess.run", fake_run)
 
     payload = service.search_codebase(project, pattern="TODO", glob="*.py", max_matches=2)
 
     assert payload["search_backend"] == "ripgrep"
     assert payload["match_count"] == 2
     assert payload["matches"][0]["path"] == "src/main.py"
+    assert payload["matches"][1]["path"] == "src/worker.py"
     assert payload["truncated"] is False
+    assert payload["glob"] == "*.py"
+    assert "path glob filter" in " ".join(payload["notes"]).lower()
+    assert seen["args"] == (["C:/tools/rg.exe", "--line-number", "--with-filename", "-f", "-", "."],)
+    assert seen["kwargs"]["input"] == "TODO\n"
+
+
+def test_search_codebase_keeps_user_input_out_of_ripgrep_argv(monkeypatch, tmp_path: Path) -> None:
+    workspace = tmp_path / "repo"
+    workspace.mkdir()
+    project = Project(id=9, name="Safe Search", workspace_path=str(workspace), source_path=str(workspace))
+
+    monkeypatch.setattr("manager.shutil.which", lambda command: "C:/tools/rg.exe" if command == "rg" else None)
+    captured: dict[str, object] = {}
+
+    class Result:
+        returncode = 1
+        stdout = ""
+
+    def fake_run(*args, **kwargs):
+        captured["args"] = args
+        captured["kwargs"] = kwargs
+        return Result()
+
+    monkeypatch.setattr("manager.subprocess.run", fake_run)
+
+    payload = service.search_codebase(project, pattern="--help", glob="--iglob=*", max_matches=5)
+
+    assert payload["search_backend"] == "ripgrep"
+    assert payload["match_count"] == 0
+    assert captured["args"] == (["C:/tools/rg.exe", "--line-number", "--with-filename", "-f", "-", "."],)
+    assert captured["kwargs"]["input"] == "--help\n"
+    assert "--help" not in payload["command"]
+    assert "--iglob=*" not in payload["command"]
 
 
 def test_search_codebase_falls_back_without_ripgrep(monkeypatch, tmp_path: Path) -> None:

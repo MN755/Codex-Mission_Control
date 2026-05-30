@@ -6,8 +6,11 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[3]
 PLUGIN_MANIFEST = ROOT / "plugins" / "mission-control" / "plugin.json"
+CLAUDE_PLUGIN_MANIFEST = ROOT / "plugins" / "mission-control" / ".claude-plugin" / "plugin.json"
 PLUGIN_SKILLS = ROOT / "plugins" / "mission-control" / "skills"
 LOCAL_SKILLS = ROOT / ".codex" / "skills"
+COMMANDS_DIR = ROOT / "plugins" / "mission-control" / "commands"
+AGENTS_DIR = ROOT / "plugins" / "mission-control" / "agents"
 PROMPTS_DIR = ROOT / "plugins" / "mission-control" / "prompts"
 TEMPLATES_DIR = ROOT / "plugins" / "mission-control" / "templates"
 EXAMPLES_DIR = ROOT / "examples" / "codex-chat-workflows"
@@ -88,6 +91,38 @@ def test_prompt_template_files_exist() -> None:
     for prompt_name in manifest["prompts"]:
         prompt_file = PROMPTS_DIR / f"{prompt_name}.md"
         assert prompt_file.exists(), f"Missing prompt file: {prompt_file}"
+
+
+def test_plugin_manifest_command_and_agent_assets_exist() -> None:
+    manifest = json.loads(PLUGIN_MANIFEST.read_text(encoding="utf-8"))
+    claude_manifest = json.loads(CLAUDE_PLUGIN_MANIFEST.read_text(encoding="utf-8"))
+
+    for command_name in manifest["claude_code"]["primary_commands"]:
+        command_file = COMMANDS_DIR / f"{command_name}.md"
+        assert command_file.exists(), f"Missing command file: {command_file}"
+
+    for archetype in manifest["claude_code"]["worker_archetypes"]:
+        agent_file = AGENTS_DIR / f"{archetype}.md"
+        assert agent_file.exists(), f"Missing agent file: {agent_file}"
+
+    assert claude_manifest["name"] == manifest["name"]
+
+
+def test_plugin_skills_and_index_do_not_reference_removed_aliases() -> None:
+    stale_markers = [
+        "mission_control_open_dashboard",
+        "mission-control://projects/current/",
+        "mission-control://projects/{project_id}/events",
+    ]
+    skill_index = (ROOT / "plugins" / "mission-control" / "SKILL_INDEX.md").read_text(encoding="utf-8")
+
+    for marker in stale_markers:
+        assert marker not in skill_index
+
+    for skill_file in PLUGIN_SKILLS.rglob("SKILL.md"):
+        content = skill_file.read_text(encoding="utf-8")
+        for marker in stale_markers:
+            assert marker not in content, f"Unexpected stale marker {marker!r} in {skill_file}"
 
 
 def test_chat_templates_examples_and_docs_exist() -> None:

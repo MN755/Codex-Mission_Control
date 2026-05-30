@@ -23,7 +23,7 @@ The Codex chat agent is not the Mission Control Manager. It is the bridge.
 ## Required Mission Control Tools, Resources, And Prompts
 
 - Tools: `mission_control_get_status`, `mission_control_get_pending_decisions`
-- Resources: `mission-control://orchestrations/{orchestration_id}/status`, `mission-control://projects/{project_id}/agents`, `mission-control://projects/{project_id}/pending-decisions`
+- Resources: `mission-control://projects/{project_id}/orchestrations/{orchestration_id}/status`, `mission-control://projects/{project_id}/agents`, `mission-control://projects/{project_id}/pending-decisions`
 - Prompts: `continue-orchestration`, `show-pending-approvals`
 
 ## Step-By-Step Workflow

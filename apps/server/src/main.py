@@ -133,7 +133,10 @@ from schemas import (
     NvidiaAiqResearchRequest,
     NvidiaAiqStatusRead,
     NvidiaDynamoStatusRead,
+    NvidiaNimStatusRead,
     NvidiaGpuDiagnosticsRead,
+    NvidiaLocalRuntimeStatusRead,
+    NvidiaValidationPlanRead,
     OperationalInstinctPreviewRead,
     OperatorSnapshotRead,
     OpenPathResponse,
@@ -2374,6 +2377,16 @@ def get_project_nvidia_dynamo_status(
     return NvidiaDynamoStatusRead(**service.build_nvidia_dynamo_status(db, project))
 
 
+@app.get("/api/projects/{project_id}/nvidia/nim", response_model=NvidiaNimStatusRead)
+def get_project_nvidia_nim_status(
+    project_id: int,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> NvidiaNimStatusRead:
+    project = _get_project_or_404(db, project_id)
+    return NvidiaNimStatusRead(**service.build_nvidia_nim_status(db, project))
+
+
 @app.get("/api/projects/{project_id}/nvidia/aiq", response_model=NvidiaAiqStatusRead)
 def get_project_nvidia_aiq_status(
     project_id: int,
@@ -2413,6 +2426,26 @@ def get_project_nvidia_gpu_diagnostics(
 ) -> NvidiaGpuDiagnosticsRead:
     project = _get_project_or_404(db, project_id)
     return NvidiaGpuDiagnosticsRead(**service.build_nvidia_gpu_diagnostics(project))
+
+
+@app.get("/api/projects/{project_id}/nvidia/local-runtime", response_model=NvidiaLocalRuntimeStatusRead)
+def get_project_nvidia_local_runtime_status(
+    project_id: int,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> NvidiaLocalRuntimeStatusRead:
+    project = _get_project_or_404(db, project_id)
+    return NvidiaLocalRuntimeStatusRead(**service.build_nvidia_local_runtime_status(project))
+
+
+@app.get("/api/projects/{project_id}/nvidia/validation-plan", response_model=NvidiaValidationPlanRead)
+def get_project_nvidia_validation_plan(
+    project_id: int,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> NvidiaValidationPlanRead:
+    project = _get_project_or_404(db, project_id)
+    return NvidiaValidationPlanRead(**service.build_nvidia_validation_plan(project))
 
 
 @app.get("/api/projects/{project_id}/snapshots", response_model=list[ProjectSnapshotRead])

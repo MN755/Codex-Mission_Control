@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 from nvidia_support import (
+    build_nvidia_validation_plan,
     detect_nvidia_aiq_status,
     detect_nvidia_dynamo_status,
     detect_nvidia_gpu_diagnostics,
+    detect_nvidia_nim_status,
+    detect_nvidia_local_runtime_status,
     detect_project_nvidia_gpu_diagnostics,
     run_nvidia_aiq_research,
 )
@@ -17,10 +20,24 @@ def test_detect_nvidia_dynamo_status_reports_reachable_frontend(monkeypatch) -> 
 
     payload = detect_nvidia_dynamo_status("http://dynamo.local:8000")
 
+    assert payload["available"] is True
     assert payload["reachable"] is True
     assert payload["endpoint"] == "http://dynamo.local:8000"
     assert payload["available_models"] == ["Qwen/Qwen3-0.6B"]
     assert payload["summary"].startswith("NVIDIA Dynamo frontend is reachable")
+
+
+def test_detect_nvidia_nim_status_normalizes_v1_endpoints(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "nvidia_support._json_request",
+        lambda url, **kwargs: {"data": [{"id": "meta/llama-3.1-8b-instruct"}]} if url.endswith("/v1/models") else {},
+    )
+
+    payload = detect_nvidia_nim_status("https://integrate.api.nvidia.com/v1")
+
+    assert payload["available"] is True
+    assert payload["endpoint"] == "https://integrate.api.nvidia.com"
+    assert payload["available_models"] == ["meta/llama-3.1-8b-instruct"]
 
 
 def test_detect_nvidia_aiq_status_reports_ready_stack(monkeypatch) -> None:
@@ -148,3 +165,94 @@ def test_project_gpu_diagnostics_merge_direct_telemetry_with_workspace_health(mo
     assert payload["gpu_memory_saturated"] is True
     assert payload["likely_failure_source"] == "infrastructure"
     assert "Prometheus" in payload["observability_sources"]
+
+
+def test_detect_nvidia_local_runtime_status_surfaces_partial_cuda_runtime(monkeypatch, tmp_path) -> None:
+    workspace = tmp_path / "cuda-runtime"
+    (workspace / "kernels").mkdir(parents=True, exist_ok=True)
+    (workspace / "kernels" / "main.cu").write_text("__global__ void kernel() {}\n", encoding="utf-8")
+    (workspace / "CMakeLists.txt").write_text(
+        "project(cuda_demo LANGUAGES CXX CUDA)\nfind_package(CUDAToolkit REQUIRED)\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(
+        "nvidia_support.shutil.which",
+        lambda command: {
+            "nvidia-smi": "/usr/bin/nvidia-smi",
+            "nvcc": "/usr/local/cuda/bin/nvcc",
+            "compute-sanitizer": "/usr/local/cuda/bin/compute-sanitizer",
+        }.get(command),
+    )
+
+    def fake_run(command: list[str], **kwargs):
+        class Result:
+            def __init__(self, stdout: str, returncode: int = 0) -> None:
+                self.stdout = stdout
+                self.stderr = ""
+                self.returncode = returncode
+
+        if command[-1] == "--version":
+            return Result("Cuda compilation tools, release 13.3, V13.3.0")
+        return Result("NVIDIA RTX PRO 4500, 555.42, 24564 MiB")
+
+    monkeypatch.setattr("nvidia_support.subprocess.run", fake_run)
+
+    payload = detect_nvidia_local_runtime_status(workspace)
+
+    assert payload["available"] is True
+    assert payload["repo_mode_enabled"] is True
+    assert payload["status"] == "partial"
+    assert payload["cuda_release"] == "13.3"
+    assert payload["driver_version"] == "555.42"
+    assert payload["compute_sanitizer_available"] is True
+    assert payload["missing_optional_tools"]
+
+
+def test_build_nvidia_validation_plan_combines_runtime_and_cluster_state(monkeypatch, tmp_path) -> None:
+    workspace = tmp_path / "cuda-plan"
+    (workspace / "kernels").mkdir(parents=True, exist_ok=True)
+    (workspace / "kernels" / "main.cu").write_text("__global__ void kernel() {}\n", encoding="utf-8")
+    (workspace / "CMakeLists.txt").write_text(
+        "project(cuda_demo LANGUAGES CXX CUDA)\nfind_package(CUDAToolkit REQUIRED)\n",
+        encoding="utf-8",
+    )
+    (workspace / ".mission-control" / "gpu").mkdir(parents=True, exist_ok=True)
+    (workspace / ".mission-control" / "gpu" / "summary.txt").write_text("pending_pods: 2\ninsufficient nvidia.com/gpu\n", encoding="utf-8")
+
+    monkeypatch.setattr(
+        "nvidia_support.shutil.which",
+        lambda command: {
+            "nvidia-smi": "/usr/bin/nvidia-smi",
+            "nvcc": "/usr/local/cuda/bin/nvcc",
+            "compute-sanitizer": "/usr/local/cuda/bin/compute-sanitizer",
+            "nsys": "/usr/bin/nsys",
+            "docker": "/usr/bin/docker",
+            "nvidia-ctk": "/usr/bin/nvidia-ctk",
+            "ngc": "/usr/bin/ngc",
+        }.get(command),
+    )
+    monkeypatch.setenv("MISSION_CONTROL_NVIDIA_NGC_SMOKE_IMAGE", "nvcr.io/nvidia/cuda:smoke")
+
+    def fake_run(command: list[str], **kwargs):
+        class Result:
+            def __init__(self, stdout: str) -> None:
+                self.stdout = stdout
+                self.stderr = ""
+                self.returncode = 0
+
+        if command[-1] == "--version":
+            return Result("Cuda compilation tools, release 13.3, V13.3.0")
+        return Result("NVIDIA RTX PRO 4500, 555.42, 24564 MiB")
+
+    monkeypatch.setattr("nvidia_support.subprocess.run", fake_run)
+
+    payload = build_nvidia_validation_plan(workspace)
+
+    assert payload["available"] is True
+    assert payload["repo_mode_enabled"] is True
+    assert payload["status"] == "blocked"
+    assert payload["steps"]
+    assert any(step["type"] == "sanitizer" for step in payload["steps"])
+    assert any(step["type"] == "container_smoke" for step in payload["steps"])
+    assert any("pending" in blocker.lower() for blocker in payload["blockers"])

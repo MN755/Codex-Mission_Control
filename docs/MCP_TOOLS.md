@@ -32,9 +32,12 @@ Mission Control MCP tools are action endpoints for the Codex bridge. They do not
 - `mission_control_search_codebase`
 - `mission_control_get_webwright_status`
 - `mission_control_get_nvidia_dynamo_status`
+- `mission_control_get_nvidia_nim_status`
 - `mission_control_get_nvidia_aiq_status`
 - `mission_control_run_nvidia_aiq_research`
 - `mission_control_get_nvidia_gpu_diagnostics`
+- `mission_control_get_nvidia_local_runtime_status`
+- `mission_control_get_nvidia_validation_plan`
 - `mission_control_get_swarm_plan`
 - `mission_control_update_swarm_preferences`
 - `mission_control_generate_swarm_plan`
@@ -59,4 +62,6 @@ Mission Control MCP tools are action endpoints for the Codex bridge. They do not
 - `mission_control_search_codebase` prefers ripgrep when it is installed and falls back to a slower built-in scan when it is not.
 - NVIDIA AI-Q research stays evidence-oriented and should be treated as research input, not as proof that code changed.
 - NVIDIA GPU diagnostics report both infrastructure pressure and workspace-level CUDA context so the bridge can stop blaming the repo by reflex.
+- NVIDIA local runtime status reports the CUDA/NVIDIA toolchain on the current machine separately from remote cluster health, including Compute Sanitizer, Nsight, CUDA-GDB, and NGC/container readiness, because mixing those up is how people waste an afternoon.
+- NVIDIA validation plans turn CUDA repo signals plus runtime truth into a concrete build/test/profile/sanitizer/container loop instead of improvising one badly.
 - Operator snapshot, instincts, and verification brief stay resource-first on purpose; they are read-only operator surfaces, not imperative tools.

@@ -16,7 +16,15 @@ This page summarizes the prompt workflows packaged for Mission Control bridge mo
 - review latest handoff
 - debug failed orchestration
 - use Webwright for browser task
+- pause orchestration
+- resume orchestration
+- explain current swarm
+- switch swarm strategy
 - enable safe mode
+- generate AGENTS.md proposal
+- install from GitHub
+- autowire providers
+- ask Manager for plan
 
 ## Example
 

@@ -95,7 +95,15 @@ from models import (
     AgentLoadSnapshot,
     utc_now,
 )
-from nvidia_support import detect_nvidia_aiq_status, detect_nvidia_dynamo_status, detect_project_nvidia_gpu_diagnostics, run_nvidia_aiq_research
+from nvidia_support import (
+    build_nvidia_validation_plan as build_workspace_nvidia_validation_plan,
+    detect_nvidia_aiq_status,
+    detect_nvidia_dynamo_status,
+    detect_nvidia_nim_status,
+    detect_nvidia_local_runtime_status,
+    detect_project_nvidia_gpu_diagnostics,
+    run_nvidia_aiq_research,
+)
 from playbooks import playbook_service
 from preferences import preference_service
 from planner import build_plan_markdown
@@ -10870,10 +10878,31 @@ class MissionControlService:
                 "Confirm pending approvals are resolved before promoting the result.",
             ]
         )
+        nvidia_plan = build_workspace_nvidia_validation_plan(project.workspace_path)
+        if nvidia_plan.get("repo_mode_enabled"):
+            required_checks = self._dedupe_strings(
+                [
+                    *required_checks,
+                    *[
+                        str(step.get("command") or step.get("title") or "").strip()
+                        for step in list(nvidia_plan.get("steps") or [])
+                    ],
+                ]
+            )
+            recommended_checks = self._dedupe_strings(
+                [
+                    *recommended_checks,
+                    *[
+                        str(step.get("title") or step.get("command") or "").strip()
+                        for step in list(nvidia_plan.get("steps") or [])
+                    ],
+                ]
+            )
         release_blockers = self._dedupe_strings(
             [
                 *[f"Required review gate not passed: {gate.title} [{gate.status}]" for gate in review_gates if gate.required and gate.status != "passed"],
                 *[f"Pending approval: {item['title']}" for item in pending_approvals[:4]],
+                *[f"NVIDIA validation blocker: {item}" for item in list(nvidia_plan.get("blockers") or [])[:4]],
             ]
         )
         handoff_warnings = self._dedupe_strings(
@@ -10891,6 +10920,7 @@ class MissionControlService:
                     for tool in tooling.get("tools", [])
                     if tool.get("configured") and not tool.get("installed")
                 ],
+                *[f"NVIDIA validation gap: {item}" for item in list(nvidia_plan.get("recommended_fixes") or [])[:4]],
                 *["No validated handoff evidence has been recorded yet." if str(handoff.get("evidence_status") or "") == "missing" else ""],
             ]
         )
@@ -10958,6 +10988,9 @@ class MissionControlService:
         safe_pattern = str(pattern).strip()
         if not safe_pattern:
             raise ValueError("Search pattern must be a non-empty string.")
+        safe_glob = str(glob).strip() if glob is not None else None
+        if "\x00" in safe_pattern or (safe_glob is not None and "\x00" in safe_glob):
+            raise ValueError("Search inputs cannot contain NUL bytes.")
         clamped_max = max(1, min(int(max_matches), 200))
         rg_path = shutil.which("rg")
         matches: list[dict[str, Any]] = []
@@ -10967,19 +11000,18 @@ class MissionControlService:
         notes: list[str] = []
         if rg_path:
             backend = "ripgrep"
-            command_parts = [rg_path, "--line-number", "--with-filename", safe_pattern, "."]
-            if glob:
-                command_parts[1:1] = ["--glob", glob]
+            command_parts = [rg_path, "--line-number", "--with-filename", "-f", "-", "."]
             completed = subprocess.run(
                 command_parts,
                 cwd=root,
                 capture_output=True,
+                input=f"{safe_pattern}\n",
                 text=True,
                 encoding="utf-8",
                 errors="replace",
                 check=False,
             )
-            command = " ".join(command_parts)
+            command = f"{rg_path} --line-number --with-filename -f - ."
             if completed.returncode not in {0, 1}:
                 raise RuntimeError(f"ripgrep search failed with exit code {completed.returncode}.")
             for line in completed.stdout.splitlines():
@@ -10993,9 +11025,12 @@ class MissionControlService:
                     line_number = int(line_number_text)
                 except ValueError:
                     continue
+                relative_path = path_text.replace("\\", "/")
+                if safe_glob and not fnmatch.fnmatch(relative_path, safe_glob):
+                    continue
                 matches.append(
                     {
-                        "path": path_text.replace("\\", "/"),
+                        "path": relative_path,
                         "line_number": line_number,
                         "line_text": line_text.strip(),
                     }
@@ -11004,6 +11039,8 @@ class MissionControlService:
                 matches = matches[:clamped_max]
                 truncated = True
             notes.append("Search used ripgrep for .gitignore-aware repo scanning.")
+            if safe_glob:
+                notes.append("Mission Control applied the path glob filter after ripgrep matched the repo.")
         else:
             command = "python-fallback-search"
             suffixes = {".py", ".ts", ".tsx", ".js", ".jsx", ".md", ".json", ".toml", ".yml", ".yaml", ".go", ".rs"}
@@ -11014,7 +11051,7 @@ class MissionControlService:
                 if not path.is_file() or path.suffix.lower() not in suffixes:
                     continue
                 relative_path = str(path.relative_to(root)).replace("\\", "/")
-                if glob and not fnmatch.fnmatch(relative_path, glob):
+                if safe_glob and not fnmatch.fnmatch(relative_path, safe_glob):
                     continue
                 try:
                     for line_number, line_text in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
@@ -11031,7 +11068,7 @@ class MissionControlService:
             "project_name": project.name,
             "workspace_path": str(root),
             "pattern": safe_pattern,
-            "glob": glob,
+            "glob": safe_glob,
             "match_count": len(matches),
             "truncated": truncated,
             "search_backend": backend,
@@ -11062,6 +11099,33 @@ class MissionControlService:
             "project_id": project.id,
             "project_name": project.name,
             **detect_nvidia_dynamo_status(provider_endpoint),
+            "runtime_ready": bool(provider_runtime.get("runtime_ready")),
+            "runtime_status": str(provider_runtime.get("runtime_status") or "blocked"),
+            "runtime_summary": str(provider_runtime.get("runtime_summary") or ""),
+            "runtime_blockers": list(provider_runtime.get("runtime_blockers") or []),
+            "adapter_command_configured": bool(provider_runtime.get("adapter_command_configured")),
+            "adapter_command_detected": bool(provider_runtime.get("adapter_command_detected")),
+            "adapter_command_path": provider_runtime.get("adapter_command_path"),
+            "adapter_args": list(provider_runtime.get("adapter_args") or []),
+            "adapter_recipe_source": provider_runtime.get("adapter_recipe_source"),
+        }
+
+    def build_nvidia_nim_status(self, db: Session, project: Project) -> dict[str, Any]:
+        settings = self._project_settings(db, project)
+        provider_endpoint = settings.provider_endpoint if normalize_provider(settings.provider) == "nvidia_nim" else None
+        from system_status import detect_provider_statuses
+
+        provider_statuses = detect_provider_statuses(
+            selected_provider="nvidia_nim",
+            adapter_command=settings.adapter_command,
+            provider_endpoint=provider_endpoint,
+            adapter_args=list(settings.adapter_args_json or []),
+        )
+        provider_runtime = next((item for item in provider_statuses if item.get("provider") == "nvidia_nim"), {})
+        return {
+            "project_id": project.id,
+            "project_name": project.name,
+            **detect_nvidia_nim_status(provider_endpoint),
             "runtime_ready": bool(provider_runtime.get("runtime_ready")),
             "runtime_status": str(provider_runtime.get("runtime_status") or "blocked"),
             "runtime_summary": str(provider_runtime.get("runtime_summary") or ""),
@@ -11109,6 +11173,20 @@ class MissionControlService:
             "project_id": project.id,
             "project_name": project.name,
             **detect_project_nvidia_gpu_diagnostics(project.workspace_path),
+        }
+
+    def build_nvidia_local_runtime_status(self, project: Project) -> dict[str, Any]:
+        return {
+            "project_id": project.id,
+            "project_name": project.name,
+            **detect_nvidia_local_runtime_status(project.workspace_path),
+        }
+
+    def build_nvidia_validation_plan(self, project: Project) -> dict[str, Any]:
+        return {
+            "project_id": project.id,
+            "project_name": project.name,
+            **build_workspace_nvidia_validation_plan(project.workspace_path),
         }
 
     def get_tool_catalog(self, db: Session) -> list[dict[str, Any]]:

@@ -17,8 +17,8 @@ PENDING_DOC = ROOT / "docs" / "PENDING_DECISIONS.md"
 
 
 EXPECTED_RESOURCES = [
-    "mission-control://orchestrations/{orchestration_id}/status",
-    "mission-control://orchestrations/{orchestration_id}/events",
+    "mission-control://projects/{project_id}/orchestrations/{orchestration_id}/status",
+    "mission-control://projects/{project_id}/orchestrations/{orchestration_id}/events",
     "mission-control://projects/{project_id}/status",
     "mission-control://projects/{project_id}/agents",
     "mission-control://projects/{project_id}/pending-decisions",
@@ -28,8 +28,11 @@ EXPECTED_RESOURCES = [
     "mission-control://projects/{project_id}/diagnostics",
     "mission-control://projects/{project_id}/webwright",
     "mission-control://projects/{project_id}/nvidia-dynamo",
+    "mission-control://projects/{project_id}/nvidia-nim",
     "mission-control://projects/{project_id}/nvidia-aiq",
     "mission-control://projects/{project_id}/nvidia-gpu-diagnostics",
+    "mission-control://projects/{project_id}/nvidia-local-runtime",
+    "mission-control://projects/{project_id}/nvidia-validation-plan",
     "mission-control://projects/{project_id}/swarm-plan",
     "mission-control://projects/{project_id}/risk-register",
     "mission-control://projects/{project_id}/agent-contracts",
@@ -121,7 +124,9 @@ def test_docs_explain_resources_prompts_and_headless_boundary() -> None:
     assert "mission-control://projects/{project_id}/decision-ledger" in resources_content
     assert "mission-control://projects/{project_id}/operator-snapshot" in resources_content
     assert "mission-control://projects/{project_id}/webwright" in resources_content
+    assert "mission-control://projects/{project_id}/nvidia-nim" in resources_content
     assert "mission-control://projects/{project_id}/nvidia-aiq" in resources_content
+    assert "mission-control://projects/{project_id}/nvidia-validation-plan" in resources_content
     assert "mission-control://projects/{project_id}/workspace-tooling" in resources_content
     assert "attach_current_workspace" in prompts_content
     assert "use_webwright_for_browser_task" in prompts_content

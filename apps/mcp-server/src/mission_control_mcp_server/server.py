@@ -55,9 +55,12 @@ class MissionControlMcpServer:
             "mission_control_search_codebase": self._call_search_codebase,
             "mission_control_get_webwright_status": self._call_get_webwright_status,
             "mission_control_get_nvidia_dynamo_status": self._call_get_nvidia_dynamo_status,
+            "mission_control_get_nvidia_nim_status": self._call_get_nvidia_nim_status,
             "mission_control_get_nvidia_aiq_status": self._call_get_nvidia_aiq_status,
             "mission_control_run_nvidia_aiq_research": self._call_run_nvidia_aiq_research,
             "mission_control_get_nvidia_gpu_diagnostics": self._call_get_nvidia_gpu_diagnostics,
+            "mission_control_get_nvidia_local_runtime_status": self._call_get_nvidia_local_runtime_status,
+            "mission_control_get_nvidia_validation_plan": self._call_get_nvidia_validation_plan,
             "mission_control_get_swarm_plan": self._call_get_swarm_plan,
             "mission_control_update_swarm_preferences": self._call_update_swarm_preferences,
             "mission_control_generate_swarm_plan": self._call_generate_swarm_plan,
@@ -78,7 +81,8 @@ class MissionControlMcpServer:
             {
                 "orchestration_id": {"type": "integer", "minimum": 1},
                 "project_id": {"type": "integer", "minimum": 1},
-            }
+            },
+            required=["project_id"],
         )
         return [
             {
@@ -241,14 +245,14 @@ class MissionControlMcpServer:
                         "related_task_id": {"type": "integer", "minimum": 1},
                         "suggested_actions_json": {"type": "array", "items": {"type": "string"}},
                     },
-                    required=["trigger_summary"],
+                    required=["project_id", "trigger_summary"],
                 ),
                 "outputSchema": GENERIC_OUTPUT_SCHEMA,
             },
             {
                 "name": "mission_control_get_orchestration_events",
                 "description": "Fetch recent safe orchestration events for debugging or progress summaries.",
-                "inputSchema": _object_schema({"orchestration_id": {"type": "integer", "minimum": 1}}, required=["orchestration_id"]),
+                "inputSchema": common_target,
                 "outputSchema": {"type": "array", "items": {"type": "object", "additionalProperties": True}},
             },
             {
@@ -314,6 +318,12 @@ class MissionControlMcpServer:
                 "outputSchema": GENERIC_OUTPUT_SCHEMA,
             },
             {
+                "name": "mission_control_get_nvidia_nim_status",
+                "description": "Fetch the project-scoped NVIDIA NIM readiness summary for hosted or self-hosted GPU-backed Mission Control worker inference.",
+                "inputSchema": _object_schema({"project_id": {"type": "integer", "minimum": 1}}, required=["project_id"]),
+                "outputSchema": GENERIC_OUTPUT_SCHEMA,
+            },
+            {
                 "name": "mission_control_get_nvidia_aiq_status",
                 "description": "Fetch the project-scoped NVIDIA AI-Q readiness summary for deep research delegation.",
                 "inputSchema": _object_schema({"project_id": {"type": "integer", "minimum": 1}}, required=["project_id"]),
@@ -339,6 +349,18 @@ class MissionControlMcpServer:
             {
                 "name": "mission_control_get_nvidia_gpu_diagnostics",
                 "description": "Fetch NVIDIA GPU cluster diagnostics derived from Prometheus and DCGM-exporter metrics when configured.",
+                "inputSchema": _object_schema({"project_id": {"type": "integer", "minimum": 1}}, required=["project_id"]),
+                "outputSchema": GENERIC_OUTPUT_SCHEMA,
+            },
+            {
+                "name": "mission_control_get_nvidia_local_runtime_status",
+                "description": "Fetch local NVIDIA runtime and CUDA toolchain readiness for the current project workspace.",
+                "inputSchema": _object_schema({"project_id": {"type": "integer", "minimum": 1}}, required=["project_id"]),
+                "outputSchema": GENERIC_OUTPUT_SCHEMA,
+            },
+            {
+                "name": "mission_control_get_nvidia_validation_plan",
+                "description": "Fetch the project-scoped NVIDIA validation plan that combines local runtime, CUDA repo mode, and GPU diagnostics.",
                 "inputSchema": _object_schema({"project_id": {"type": "integer", "minimum": 1}}, required=["project_id"]),
                 "outputSchema": GENERIC_OUTPUT_SCHEMA,
             },
@@ -476,7 +498,8 @@ class MissionControlMcpServer:
                         "project_id": {"type": "integer", "minimum": 1},
                         "orchestration_id": {"type": "integer", "minimum": 1},
                         "user_context": {"type": "string"},
-                    }
+                    },
+                    required=["project_id"],
                 ),
                 "outputSchema": GENERIC_OUTPUT_SCHEMA,
             },
@@ -537,9 +560,17 @@ class MissionControlMcpServer:
             raise RuntimeError(f"Argument {key} must be a non-empty string.")
         return value
 
-    def _require_target(self, args: dict[str, Any], *, allow_project_only: bool = True) -> tuple[int | None, int | None]:
+    def _require_target(
+        self,
+        args: dict[str, Any],
+        *,
+        allow_project_only: bool = True,
+        require_project: bool = False,
+    ) -> tuple[int | None, int | None]:
         orchestration_id = self._optional_int(args, "orchestration_id")
         project_id = self._optional_int(args, "project_id")
+        if require_project and project_id is None:
+            raise RuntimeError("Provide project_id.")
         if orchestration_id is None and (project_id is None or not allow_project_only):
             raise RuntimeError("Provide an orchestration_id or project_id.")
         return orchestration_id, project_id
@@ -565,11 +596,11 @@ class MissionControlMcpServer:
         )
 
     def _call_get_status(self, args: dict[str, Any]) -> Any:
-        orchestration_id, project_id = self._require_target(args)
+        orchestration_id, project_id = self._require_target(args, require_project=True)
         return self.client.get_status_summary(orchestration_id=orchestration_id, project_id=project_id)
 
     def _call_get_pending_decisions(self, args: dict[str, Any]) -> Any:
-        orchestration_id, project_id = self._require_target(args)
+        orchestration_id, project_id = self._require_target(args, require_project=True)
         return self.client.get_pending_decisions(orchestration_id=orchestration_id, project_id=project_id)
 
     def _call_answer_decision(self, args: dict[str, Any]) -> Any:
@@ -582,19 +613,15 @@ class MissionControlMcpServer:
         )
 
     def _call_pause(self, args: dict[str, Any]) -> Any:
-        orchestration_id, project_id = self._require_target(args)
-        if orchestration_id is None:
-            raise RuntimeError("Pause requires an orchestration_id.")
+        orchestration_id, project_id = self._require_target(args, require_project=True)
         return self.client.pause(orchestration_id, project_id=project_id)
 
     def _call_resume(self, args: dict[str, Any]) -> Any:
-        orchestration_id, project_id = self._require_target(args)
-        if orchestration_id is None:
-            raise RuntimeError("Resume requires an orchestration_id.")
+        orchestration_id, project_id = self._require_target(args, require_project=True)
         return self.client.resume(orchestration_id, project_id=project_id)
 
     def _call_get_handoff(self, args: dict[str, Any]) -> Any:
-        orchestration_id, project_id = self._require_target(args)
+        orchestration_id, project_id = self._require_target(args, require_project=True)
         return self.client.get_handoff(orchestration_id=orchestration_id, project_id=project_id)
 
     def _call_import_existing_codebase(self, args: dict[str, Any]) -> Any:
@@ -612,7 +639,7 @@ class MissionControlMcpServer:
         return self.client.enable_safe_mode(self._require_int(args, "project_id"))
 
     def _call_get_event_digest(self, args: dict[str, Any]) -> Any:
-        orchestration_id, project_id = self._require_target(args)
+        orchestration_id, project_id = self._require_target(args, require_project=True)
         return self.client.get_event_digest(
             orchestration_id=orchestration_id,
             project_id=project_id,
@@ -620,7 +647,7 @@ class MissionControlMcpServer:
         )
 
     def _call_get_handoff_summary(self, args: dict[str, Any]) -> Any:
-        orchestration_id, project_id = self._require_target(args)
+        orchestration_id, project_id = self._require_target(args, require_project=True)
         return self.client.get_handoff_summary(orchestration_id=orchestration_id, project_id=project_id)
 
     def _call_generate_agents_md(self, args: dict[str, Any]) -> Any:
@@ -636,7 +663,7 @@ class MissionControlMcpServer:
         )
 
     def _call_request_recovery_plan(self, args: dict[str, Any]) -> Any:
-        orchestration_id, project_id = self._require_target(args)
+        orchestration_id, project_id = self._require_target(args, require_project=True)
         return self.client.request_recovery_plan(
             project_id=project_id,
             orchestration_id=orchestration_id,
@@ -648,9 +675,7 @@ class MissionControlMcpServer:
         )
 
     def _call_get_orchestration_events(self, args: dict[str, Any]) -> Any:
-        orchestration_id, project_id = self._require_target(args)
-        if orchestration_id is None:
-            raise RuntimeError("Orchestration events require an orchestration_id.")
+        orchestration_id, project_id = self._require_target(args, require_project=True)
         return self.client.get_orchestration_events(orchestration_id, project_id=project_id)
 
     def _call_get_codebase_map(self, args: dict[str, Any]) -> Any:
@@ -663,7 +688,7 @@ class MissionControlMcpServer:
         return self.client.set_import_interview_choice(self._require_int(args, "project_id"), self._require_string(args, "choice"))
 
     def _call_get_diagnostics(self, args: dict[str, Any]) -> Any:
-        orchestration_id, project_id = self._require_target(args)
+        orchestration_id, project_id = self._require_target(args, require_project=True)
         return self.client.get_diagnostics(orchestration_id=orchestration_id, project_id=project_id)
 
     def _call_get_workspace_tooling(self, args: dict[str, Any]) -> Any:
@@ -683,6 +708,9 @@ class MissionControlMcpServer:
     def _call_get_nvidia_dynamo_status(self, args: dict[str, Any]) -> Any:
         return self.client.get_nvidia_dynamo_status(self._require_int(args, "project_id"))
 
+    def _call_get_nvidia_nim_status(self, args: dict[str, Any]) -> Any:
+        return self.client.get_nvidia_nim_status(self._require_int(args, "project_id"))
+
     def _call_get_nvidia_aiq_status(self, args: dict[str, Any]) -> Any:
         return self.client.get_nvidia_aiq_status(self._require_int(args, "project_id"))
 
@@ -699,6 +727,12 @@ class MissionControlMcpServer:
 
     def _call_get_nvidia_gpu_diagnostics(self, args: dict[str, Any]) -> Any:
         return self.client.get_nvidia_gpu_diagnostics(self._require_int(args, "project_id"))
+
+    def _call_get_nvidia_local_runtime_status(self, args: dict[str, Any]) -> Any:
+        return self.client.get_nvidia_local_runtime_status(self._require_int(args, "project_id"))
+
+    def _call_get_nvidia_validation_plan(self, args: dict[str, Any]) -> Any:
+        return self.client.get_nvidia_validation_plan(self._require_int(args, "project_id"))
 
     def _call_get_swarm_plan(self, args: dict[str, Any]) -> Any:
         return self.client.get_swarm_plan(self._require_int(args, "project_id"))
@@ -756,7 +790,7 @@ class MissionControlMcpServer:
         return self.client.propose_agents_md(self._require_int(args, "project_id"))
 
     def _call_request_recovery_options(self, args: dict[str, Any]) -> Any:
-        orchestration_id, project_id = self._require_target(args)
+        orchestration_id, project_id = self._require_target(args, require_project=True)
         return self.client.request_recovery_options(
             project_id=project_id,
             orchestration_id=orchestration_id,

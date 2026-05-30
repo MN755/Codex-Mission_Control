@@ -11,8 +11,8 @@ Mission Control resources are read-only context surfaces for Codex chat.
 
 ## Resource Catalog
 
-- `mission-control://orchestrations/{orchestration_id}/status`
-- `mission-control://orchestrations/{orchestration_id}/events`
+- `mission-control://projects/{project_id}/orchestrations/{orchestration_id}/status`
+- `mission-control://projects/{project_id}/orchestrations/{orchestration_id}/events`
 - `mission-control://projects/{project_id}/status`
 - `mission-control://projects/{project_id}/agents`
 - `mission-control://projects/{project_id}/pending-decisions`
@@ -22,8 +22,11 @@ Mission Control resources are read-only context surfaces for Codex chat.
 - `mission-control://projects/{project_id}/diagnostics`
 - `mission-control://projects/{project_id}/webwright`
 - `mission-control://projects/{project_id}/nvidia-dynamo`
+- `mission-control://projects/{project_id}/nvidia-nim`
 - `mission-control://projects/{project_id}/nvidia-aiq`
 - `mission-control://projects/{project_id}/nvidia-gpu-diagnostics`
+- `mission-control://projects/{project_id}/nvidia-local-runtime`
+- `mission-control://projects/{project_id}/nvidia-validation-plan`
 - `mission-control://projects/{project_id}/swarm-plan`
 - `mission-control://projects/{project_id}/risk-register`
 - `mission-control://projects/{project_id}/agent-contracts`
@@ -43,7 +46,9 @@ Mission Control resources are read-only context surfaces for Codex chat.
 - workspace tooling tells the bridge which repo-native helper lanes actually exist for intake, validation, and security before it recommends commands like a clown
 - diagnostics, risk register, decision ledger, and path locks support stuck-run debugging without exposing raw internals
 - the Webwright resource tells the bridge whether the local browser-agent runtime is actually ready or whether the user still has setup work to do
-- the NVIDIA resources tell the bridge whether GPU-backed inference, deep research, and Prometheus/DCGM telemetry are actually available before Mission Control leans on them
+- the NVIDIA resources tell the bridge whether GPU-backed inference, deep research, local CUDA tooling, and Prometheus/DCGM telemetry are actually available before Mission Control leans on them
 - `nvidia-gpu-diagnostics` is a merged verdict, not a raw metrics dump
   it combines live Prometheus/DCGM telemetry with repo-local GPU summary files and reports whether the current failure smells like infrastructure, code, mixed, or still unknown
+- `nvidia-local-runtime` tells the bridge whether the local CUDA, Compute Sanitizer, Nsight, CUDA-GDB, NGC CLI, and NVIDIA runtime tools are actually present before somebody blames a missing `nvcc` on the swarm
+- `nvidia-validation-plan` turns repo mode, local runtime, cluster health, Compute Sanitizer, and optional NGC container smoke lanes into an explicit evidence loop for CUDA work
 - operator snapshot, instincts, and verification brief give Codex or Claude chat a higher-signal operator surface for current state, execution rules, and release readiness

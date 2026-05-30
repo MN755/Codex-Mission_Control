@@ -139,3 +139,30 @@ def test_daemon_identity_snapshot_refreshes_current_daemon_metadata(tmp_path, mo
     assert payload["pid_running"] is True
     assert refreshed["status"] == "ok"
     assert refreshed["pid"] == payload["pid"]
+
+
+def test_daemon_identity_snapshot_omits_repo_root_outside_source_checkout(monkeypatch) -> None:
+    monkeypatch.setattr("daemon_state.SOURCE_REPO_ROOT", None)
+    monkeypatch.setattr(
+        "daemon_state.resolve_backend_binding",
+        lambda prefer_live_metadata=False: {
+            "host": "127.0.0.1",
+            "port": 8010,
+            "mode": "daemon",
+            "source": "launcher_config",
+        },
+    )
+    monkeypatch.setattr(
+        "daemon_state.read_daemon_metadata",
+        lambda validate_liveness=True: {
+            "status": "ok",
+            "stored_status": "ok",
+            "pid": 1234,
+            "pid_running": True,
+            "started_at": "2026-05-29T12:00:00+00:00",
+        },
+    )
+
+    payload = daemon_identity_snapshot()
+
+    assert payload["repo_root"] is None

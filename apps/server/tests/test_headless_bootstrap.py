@@ -111,6 +111,18 @@ def test_runner_probe_reports_missing_tools_and_api_billing(monkeypatch) -> None
             "auth_required": False,
         },
     )
+    monkeypatch.setattr(
+        "bootstrap.runner_probe.detect_nvidia_nim_status",
+        lambda endpoint=None: {
+            "reachable": False,
+            "available_models": [],
+            "endpoint": endpoint or "https://integrate.api.nvidia.com",
+            "summary": "offline",
+            "endpoint_configured": False,
+            "api_key_configured": False,
+            "auth_required": True,
+        },
+    )
     monkeypatch.setenv("OPENAI_API_KEY", "sk-proj-super-secret-value")
 
     probes = {probe["runner_id"]: probe for probe in probe_runners()}
@@ -124,6 +136,7 @@ def test_runner_probe_reports_missing_tools_and_api_billing(monkeypatch) -> None
     assert probes["openai_api"]["details_json"]["adapter_recipe_source"] == "builtin"
     assert probes["nvidia_dynamo"]["configured"] is True
     assert probes["nvidia_dynamo"]["install_status"] == "ready"
+    assert probes["nvidia_nim"]["configured"] is False
     assert "custom_api" not in probes
     assert "sk-proj-super-secret-value" not in str(probes["openai_api"])
 
@@ -173,14 +186,34 @@ def test_runner_probe_uses_distinct_dynamo_endpoint(monkeypatch) -> None:
         )[1],
     )
     monkeypatch.setattr(
+        "bootstrap.runner_probe.detect_nvidia_nim_status",
+        lambda endpoint=None: (
+            calls.__setitem__("nim", endpoint),
+            {
+                "reachable": False,
+                "available_models": [],
+                "endpoint": endpoint,
+                "summary": "offline",
+                "endpoint_configured": bool(endpoint),
+                "api_key_configured": False,
+                "auth_required": True,
+            },
+        )[1],
+    )
+    monkeypatch.setattr(
         "bootstrap.runner_probe.detect_claude_code_status",
         lambda: {"cli_detected": False, "cli_version": None, "available_models": [], "login_status": "unknown"},
     )
 
-    probe_runners(ollama_endpoint="http://ollama.local:11434", nvidia_dynamo_endpoint="http://dynamo.local:8000")
+    probe_runners(
+        ollama_endpoint="http://ollama.local:11434",
+        nvidia_dynamo_endpoint="http://dynamo.local:8000",
+        nvidia_nim_endpoint="https://integrate.api.nvidia.com",
+    )
 
     assert calls["ollama"] == "http://ollama.local:11434"
     assert calls["dynamo"] == "http://dynamo.local:8000"
+    assert calls["nim"] == "https://integrate.api.nvidia.com"
 
 
 def test_ollama_probe_reports_running_state(monkeypatch) -> None:
@@ -559,7 +592,7 @@ def test_scripts_and_headless_skills_exist() -> None:
 def test_runner_status_summary_degrades_to_dry_run_only(monkeypatch) -> None:
     monkeypatch.setattr(
         "bootstrap.runner_probe.probe_runners",
-        lambda ollama_endpoint=None, nvidia_dynamo_endpoint=None, adapter_command=None, adapter_args=None: [
+        lambda ollama_endpoint=None, nvidia_dynamo_endpoint=None, nvidia_nim_endpoint=None, adapter_command=None, adapter_args=None: [
             {
                 "runner_id": "dry_run",
                 "label": "Dry-run",

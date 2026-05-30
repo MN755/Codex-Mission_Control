@@ -26,10 +26,12 @@ Use this skill when the user wants Codex to work through Mission Control for pla
 
 ## Mission Control resources it may read
 
-- `mission-control://projects/current/summary`
-- `mission-control://projects/current/workspace`
-- `mission-control://projects/current/actions`
-- `mission-control://projects/current/manager/queue`
+- `mission-control://projects/{project_id}/status`
+- `mission-control://projects/{project_id}/swarm-plan`
+- `mission-control://projects/{project_id}/agents`
+- `mission-control://projects/{project_id}/pending-decisions`
+- `mission-control://projects/{project_id}/handoff`
+- `mission-control://projects/{project_id}/codebase-map`
 
 ## Decisions that must be passed to the user
 

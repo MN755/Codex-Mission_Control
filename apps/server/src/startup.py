@@ -96,6 +96,7 @@ class StartupCoordinator:
             "anthropic_api": {"anthropic_api"},
             "xai_api": {"xai_api"},
             "nvidia_dynamo": {"nvidia_dynamo"},
+            "nvidia_nim": {"nvidia_nim"},
             "custom": {"custom"},
         }
         return mapping.get(normalize_provider(selected_provider), set())
@@ -298,6 +299,7 @@ class StartupCoordinator:
             ("anthropic_api", "MC-API-KEY-MISSING-001", "api_provider.auth_check"),
             ("xai_api", "MC-API-KEY-MISSING-001", "api_provider.auth_check"),
             ("nvidia_dynamo", "MC-RUNNER-NONE-AVAILABLE-001", "runner.select"),
+            ("nvidia_nim", "MC-RUNNER-NONE-AVAILABLE-001", "runner.select"),
             ("custom", "MC-RUNNER-NONE-AVAILABLE-001", "runner.select"),
         ):
             provider_status = by_provider[provider_name]

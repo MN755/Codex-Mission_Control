@@ -22,7 +22,7 @@ The Codex chat agent is not the Mission Control Manager. It is the bridge.
 ## Required Mission Control Tools, Resources, And Prompts
 
 - Tools: `mission_control_get_status`, `mission_control_get_diagnostics`, `mission_control_get_pending_decisions`, `mission_control_get_orchestration_events`, `mission_control_request_recovery_options`
-- Resources: `mission-control://projects/{project_id}/diagnostics`, `mission-control://orchestrations/{orchestration_id}/events`, `mission-control://projects/{project_id}/pending-decisions`
+- Resources: `mission-control://projects/{project_id}/diagnostics`, `mission-control://projects/{project_id}/orchestrations/{orchestration_id}/events`, `mission-control://projects/{project_id}/pending-decisions`
 - Prompts: `debug-failed-orchestration`, `continue-orchestration`
 
 ## Step-By-Step Workflow

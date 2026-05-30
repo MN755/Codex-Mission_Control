@@ -6,6 +6,8 @@ This page summarizes the read-only MCP resources exposed or expected for Mission
 
 ## Reference
 
+- `mission-control://projects/{project_id}/orchestrations/{orchestration_id}/status`
+- `mission-control://projects/{project_id}/orchestrations/{orchestration_id}/events`
 - `mission-control://projects/{project_id}/status`
 - `mission-control://projects/{project_id}/agents`
 - `mission-control://projects/{project_id}/pending-decisions`
@@ -13,6 +15,13 @@ This page summarizes the read-only MCP resources exposed or expected for Mission
 - `mission-control://projects/{project_id}/codebase-map`
 - `mission-control://projects/{project_id}/diagnostics`
 - `mission-control://projects/{project_id}/webwright`
+- `mission-control://projects/{project_id}/nvidia-dynamo`
+- `mission-control://projects/{project_id}/nvidia-nim`
+- `mission-control://projects/{project_id}/nvidia-aiq`
+- `mission-control://projects/{project_id}/nvidia-gpu-diagnostics`
+- `mission-control://projects/{project_id}/nvidia-local-runtime`
+- `mission-control://projects/{project_id}/nvidia-validation-plan`
+- `mission-control://projects/{project_id}/workspace-tooling`
 - `mission-control://projects/{project_id}/swarm-plan`
 - `mission-control://projects/{project_id}/risk-register`
 - `mission-control://projects/{project_id}/agent-contracts`

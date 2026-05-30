@@ -11,7 +11,9 @@ This document maps the example headless Mission Control workflows that live unde
 - [check-status.md](../examples/codex-chat-workflows/check-status.md)
 - [review-handoff.md](../examples/codex-chat-workflows/review-handoff.md)
 - [debug-stuck-orchestration.md](../examples/codex-chat-workflows/debug-stuck-orchestration.md)
+- [empty-folder-new-project.md](../examples/codex-chat-workflows/empty-folder-new-project.md)
 - [enable-safe-mode.md](../examples/codex-chat-workflows/enable-safe-mode.md)
+- [existing-codebase-fix-bug.md](../examples/codex-chat-workflows/existing-codebase-fix-bug.md)
 - [generate-agents-md.md](../examples/codex-chat-workflows/generate-agents-md.md)
 - [continue-later.md](../examples/codex-chat-workflows/continue-later.md)
 

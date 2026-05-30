@@ -7,8 +7,9 @@
 ## Tool, Resource, And Prompt Sequence
 
 1. Prompt: `review-latest-handoff`
-2. Tool: `mission_control_get_handoff`
-3. Resource: `mission-control://projects/{project_id}/validation-summary`
+2. Tool: `mission_control_get_handoff_summary`
+3. Resource: `mission-control://projects/{project_id}/handoff`
+4. Resource: `mission-control://projects/{project_id}/validation-summary`
 
 ## Expected Codex Chat Response
 

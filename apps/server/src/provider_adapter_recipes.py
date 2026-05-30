@@ -22,6 +22,7 @@ _BUILTIN_ADAPTER_SCRIPTS = {
     "anthropic_api": REPO_ROOT / "scripts" / "api_provider_adapter.py",
     "xai_api": REPO_ROOT / "scripts" / "api_provider_adapter.py",
     "nvidia_dynamo": REPO_ROOT / "scripts" / "api_provider_adapter.py",
+    "nvidia_nim": REPO_ROOT / "scripts" / "api_provider_adapter.py",
 }
 
 

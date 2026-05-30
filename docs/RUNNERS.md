@@ -14,6 +14,7 @@ Mission Control uses runners to execute background work. Runner availability dep
 - `anthropic_api`
 - `xai_api`
 - `nvidia_dynamo`
+- `nvidia_nim`
 
 ## Detection model
 
@@ -23,6 +24,7 @@ Mission Control uses runners to execute background work. Runner availability dep
 - `claude_cli` depends on a working local CLI environment
 - API-backed runners use the built-in `scripts/api_provider_adapter.py` recipe, still require secure external API keys, and may incur billing
 - `nvidia_dynamo` uses the built-in OpenAI-compatible adapter recipe and expects a reachable NVIDIA Dynamo frontend; API keys are optional unless the deployment enforces bearer auth
+- `nvidia_nim` uses the built-in OpenAI-compatible adapter recipe and expects a reachable NVIDIA NIM endpoint; hosted or private deployments may require bearer auth
 - Webwright is not a runner type; it is an optional browser-agent companion that Mission Control can detect and route browser tasks toward when the local runtime is ready
 
 ## NVIDIA Dynamo polish
@@ -33,9 +35,18 @@ Mission Control uses runners to execute background work. Runner availability dep
 - if Dynamo is reachable but the adapter command is missing, Mission Control reports that as a runtime blocker instead of pretending the stack is ready
 - if the deployment requires bearer auth, Mission Control reports the missing key directly instead of flattening it into generic degraded status
 
+## NVIDIA validation surfaces
+
+- `nvidia-gpu-diagnostics` covers remote-ish cluster truth: Prometheus, DCGM, pending GPU pods, and memory pressure
+- `nvidia-local-runtime` covers local machine truth: `nvidia-smi`, `nvcc`, Compute Sanitizer, Nsight, CUDA-GDB, NGC CLI, and NVIDIA container runtime posture
+- `nvidia-validation-plan` combines both with CUDA repo detection so Mission Control can generate a sane build/test/profile/sanitizer/container loop instead of making one up on the fly
+- the smoke harness at `scripts/run_nvidia_stack_smoke.py` can run against:
+  - a fake local NVIDIA stack with `--mock-stack`
+  - or real endpoints when you provide explicit Dynamo, NIM, AI-Q, and Prometheus URLs
+
 ## Built-in adapter recipes
 
-- Mission Control now ships first-class default adapter recipes for `ollama`, `openai_api`, `anthropic_api`, `xai_api`, and `nvidia_dynamo`
+- Mission Control now ships first-class default adapter recipes for `ollama`, `openai_api`, `anthropic_api`, `xai_api`, `nvidia_dynamo`, and `nvidia_nim`
 - those recipes use the current Python interpreter plus the repo-local adapter script
 - users can still override the adapter command or args explicitly when they need a custom path
 - `custom` providers stay opt-in and do not get a fake default recipe
@@ -51,5 +62,6 @@ Mission Control uses runners to execute background work. Runner availability dep
 
 - [Autowire Providers](AUTOWIRE_PROVIDERS.md)
 - [Background Health](HEADLESS_HEALTH.md)
+- [NVIDIA Stack Testing](NVIDIA_STACK_TESTING.md)
 - [Webwright](WEBWRIGHT.md)
 - [Troubleshooting](TROUBLESHOOTING.md)

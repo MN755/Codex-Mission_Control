@@ -5,7 +5,14 @@ import shutil
 from typing import Any
 
 from config import REPO_ROOT
-from nvidia_support import detect_nvidia_aiq_status, detect_nvidia_dynamo_status, detect_project_nvidia_gpu_diagnostics
+from nvidia_support import (
+    build_nvidia_validation_plan,
+    detect_nvidia_aiq_status,
+    detect_nvidia_dynamo_status,
+    detect_nvidia_nim_status,
+    detect_nvidia_local_runtime_status,
+    detect_project_nvidia_gpu_diagnostics,
+)
 from webwright_support import detect_webwright_status
 
 
@@ -27,8 +34,11 @@ TOOL_CATALOG: list[dict[str, Any]] = [
     {"id": "test-in-chromium", "name": "Test in Chromium", "category": "Testing tools", "summary": "Run browser checks in Chromium when available.", "risk_level": "low"},
     {"id": "browser-automation-with-webwright", "name": "Browser Automation with Webwright", "category": "Testing tools", "summary": "Use the local Webwright browser-agent harness for multi-step browser work when it is installed.", "risk_level": "medium"},
     {"id": "nvidia-dynamo-inference", "name": "NVIDIA Dynamo Inference", "category": "Infrastructure tools", "summary": "Route Mission Control coding workers through an NVIDIA Dynamo OpenAI-compatible frontend when available.", "risk_level": "high"},
+    {"id": "nvidia-nim-inference", "name": "NVIDIA NIM Inference", "category": "Infrastructure tools", "summary": "Route Mission Control coding workers through an NVIDIA NIM inference microservice when available.", "risk_level": "high"},
     {"id": "nvidia-aiq-deep-research", "name": "NVIDIA AI-Q Deep Research", "category": "Search/research tools", "summary": "Delegate deep cited research to an NVIDIA AI-Q deployment when available.", "risk_level": "medium"},
     {"id": "nvidia-gpu-cluster-diagnostics", "name": "NVIDIA GPU Cluster Diagnostics", "category": "Infrastructure tools", "summary": "Inspect Prometheus and DCGM-backed GPU telemetry before blaming failing coding runs on the repo.", "risk_level": "medium"},
+    {"id": "nvidia-local-runtime", "name": "NVIDIA Local Runtime", "category": "Infrastructure tools", "summary": "Inspect local CUDA, Nsight, and NVIDIA runtime readiness before trusting GPU validation results.", "risk_level": "medium"},
+    {"id": "nvidia-validation-plan", "name": "NVIDIA Validation Plan", "category": "Testing tools", "summary": "Generate a concrete NVIDIA validation loop for CUDA-oriented work instead of improvising one badly.", "risk_level": "medium"},
     {"id": "secret-scan-with-gitleaks", "name": "Secret Scan with Gitleaks", "category": "Testing tools", "summary": "Run a redacted local secret scan before handoff or release.", "risk_level": "medium"},
     {"id": "dependency-audit-with-osv-scanner", "name": "Dependency Audit with OSV-Scanner", "category": "Testing tools", "summary": "Scan repo lockfiles for known dependency vulnerabilities.", "risk_level": "medium"},
     {"id": "python-audit-with-pip-audit", "name": "Python Audit with pip-audit", "category": "Testing tools", "summary": "Audit Python dependencies for known vulnerabilities.", "risk_level": "medium"},
@@ -96,6 +106,10 @@ def _availability(tool_id: str, *, provider: str, connected_accounts: dict[str, 
         status = detect_nvidia_dynamo_status()
         notes.append(str(status.get("summary") or "NVIDIA Dynamo status is unknown."))
         return ("available" if status.get("reachable") else "needs_setup"), notes
+    if tool_id == "nvidia-nim-inference":
+        status = detect_nvidia_nim_status()
+        notes.append(str(status.get("summary") or "NVIDIA NIM status is unknown."))
+        return ("available" if status.get("reachable") else "needs_setup"), notes
     if tool_id == "nvidia-aiq-deep-research":
         status = detect_nvidia_aiq_status()
         notes.append(str(status.get("summary") or "NVIDIA AI-Q status is unknown."))
@@ -106,6 +120,16 @@ def _availability(tool_id: str, *, provider: str, connected_accounts: dict[str, 
         if status.get("available"):
             return "available", notes
         return ("needs_setup" if status.get("status") in {"missing", "unreachable", "unknown"} else "experimental"), notes
+    if tool_id == "nvidia-local-runtime":
+        status = detect_nvidia_local_runtime_status(REPO_ROOT)
+        notes.append(str(status.get("summary") or "NVIDIA local runtime status is unknown."))
+        return ("available" if status.get("available") else "needs_setup"), notes
+    if tool_id == "nvidia-validation-plan":
+        status = build_nvidia_validation_plan(REPO_ROOT)
+        notes.append(str(status.get("summary") or "NVIDIA validation plan status is unknown."))
+        if status.get("status") == "not_applicable":
+            return "experimental", notes
+        return ("available" if status.get("available") else "needs_setup"), notes
     if tool_id == "secret-scan-with-gitleaks":
         return ("available" if shutil.which("gitleaks") else "needs_setup"), ["Redacted secret scanning is the sane default gate before handoff or release."]
     if tool_id == "dependency-audit-with-osv-scanner":
