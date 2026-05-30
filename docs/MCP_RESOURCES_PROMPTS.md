@@ -54,12 +54,14 @@ The canonical machine-readable catalogs live here:
 - `answer-pending-approval`
 - `review-latest-handoff`
 - `debug-failed-orchestration`
+- `use-webwright-for-browser-task`
 - `pause-orchestration`
 - `resume-orchestration`
 - `explain-current-swarm`
 - `switch-swarm-strategy`
 - `enable-safe-mode`
 - `generate-agents-md-proposal`
+- `ask-manager-for-plan`
 
 ## Prompt To Tool Pattern
 
