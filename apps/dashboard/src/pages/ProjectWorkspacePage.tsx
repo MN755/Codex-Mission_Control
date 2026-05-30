@@ -1399,7 +1399,7 @@ export function ProjectWorkspacePage() {
   async function loadAgentLog(agent: Agent) {
     try {
       setAgentLogBusy(agent.id);
-      const nextLog = await api.getAgentLogs(agent.id);
+      const nextLog = await api.getAgentLogs(agent.project_id, agent.id);
       setAgentLog({
         agentId: agent.id,
         agentName: agent.name,
@@ -1424,14 +1424,14 @@ export function ProjectWorkspacePage() {
 
     await runAction(async () => {
       if (control === "start") {
-        await api.startAgent(agent.id);
+        await api.startAgent(agent.project_id, agent.id);
         return;
       }
       if (control === "pause") {
-        await api.pauseAgent(agent.id);
+        await api.pauseAgent(agent.project_id, agent.id);
         return;
       }
-      await api.stopAgent(agent.id);
+      await api.stopAgent(agent.project_id, agent.id);
     }, label);
   }
 
