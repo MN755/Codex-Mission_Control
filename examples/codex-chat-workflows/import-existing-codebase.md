@@ -7,12 +7,11 @@
 ## Tool, Resource, And Prompt Sequence
 
 1. Prompt: `import-existing-codebase`
-2. Tool: `mission_control_attach_workspace`
-3. Tool: `mission_control_get_codebase_map`
-4. Tool: `mission_control_get_codebase_understanding`
-5. Resource: `mission-control://projects/{project_id}/codebase-map`
-6. Tool: `mission_control_set_import_interview_choice`
-7. Tool: `mission_control_start_task`
+2. Tool: `mission_control_import_existing_codebase`
+3. Resource: `mission-control://projects/{project_id}/codebase-map`
+4. Resource: `mission-control://projects/{project_id}/status`
+5. Tool: `mission_control_set_import_interview_choice`
+6. Tool: `mission_control_start_task`
 
 ## Expected Codex Chat Response
 
