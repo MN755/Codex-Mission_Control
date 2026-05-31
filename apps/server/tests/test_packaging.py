@@ -141,6 +141,10 @@ def test_packaged_python_artifact_smoke_script_builds_and_installs_wheels() -> N
 def test_server_pyproject_exports_nvidia_devstack_module() -> None:
     pyproject_text = (Path(__file__).resolve().parents[1] / "pyproject.toml").read_text(encoding="utf-8")
     assert '"nvidia_devstack"' in pyproject_text
+    assert '"tensorflow_support"' in pyproject_text
+    assert '"tensorflow_starters"' in pyproject_text
+    assert '"pytorch_support"' in pyproject_text
+    assert '"pytorch_starters"' in pyproject_text
 
 
 def test_launcher_scripts_use_configured_launcher_dir() -> None:
