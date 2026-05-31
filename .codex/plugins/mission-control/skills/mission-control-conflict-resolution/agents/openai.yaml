@@ -1,0 +1,3 @@
+interface:
+  display_name: "Conflict Resolution"
+  short_description: "Summarize conflicts and route resolution through Mission Control rather than improvising edits."

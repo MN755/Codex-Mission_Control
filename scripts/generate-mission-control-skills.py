@@ -1968,6 +1968,28 @@ def _prune_skill_tree(root: Path, expected_names: set[str]) -> None:
         shutil.rmtree(directory)
 
 
+def _sync_tree_in_place(source: Path, target: Path) -> None:
+    target.mkdir(parents=True, exist_ok=True)
+    expected_rel_paths: set[Path] = set()
+    for path in source.rglob("*"):
+        relative = path.relative_to(source)
+        expected_rel_paths.add(relative)
+        destination = target / relative
+        if path.is_dir():
+            destination.mkdir(parents=True, exist_ok=True)
+            continue
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(path, destination)
+    for path in sorted(target.rglob("*"), reverse=True):
+        relative = path.relative_to(target)
+        if relative in expected_rel_paths:
+            continue
+        if path.is_dir():
+            shutil.rmtree(path)
+        else:
+            path.unlink()
+
+
 def _sync_skill_mirror(expected_names: list[str]) -> None:
     expected_name_set = set(expected_names)
     CODEX_SKILLS_ROOT.mkdir(parents=True, exist_ok=True)
@@ -1976,10 +1998,11 @@ def _sync_skill_mirror(expected_names: list[str]) -> None:
         target = CODEX_SKILLS_ROOT / skill_name
         if not source.exists():
             raise SystemExit(f"Cannot mirror missing plugin skill directory: {source}")
-        if target.exists():
-            shutil.rmtree(target)
-        shutil.copytree(source, target)
-    _prune_skill_tree(CODEX_SKILLS_ROOT, expected_name_set)
+        _sync_tree_in_place(source, target)
+    try:
+        _prune_skill_tree(CODEX_SKILLS_ROOT, expected_name_set)
+    except PermissionError:
+        print("[WARN] Could not prune stale .codex skill directories due to local filesystem permissions. Existing shipped skills were still refreshed.")
 
 
 def _related_skills_for(name: str, group_names: list[str]) -> list[str]:

@@ -45,7 +45,6 @@ def test_plugin_health_ready(monkeypatch, tmp_path) -> None:
             "local_skills": [
                 "mission-control-orchestrate",
                 "mission-control-import-codebase",
-                "mission-control-review-handoff",
             ],
         },
     )
@@ -128,7 +127,6 @@ def test_plugin_health_treats_live_loaded_mcp_as_ready_without_count_metadata(mo
             "local_skills": [
                 "mission-control-orchestrate",
                 "mission-control-import-codebase",
-                "mission-control-review-handoff",
             ],
         },
     )

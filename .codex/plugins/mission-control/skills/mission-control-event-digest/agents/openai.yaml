@@ -1,0 +1,3 @@
+interface:
+  display_name: "Event Digest"
+  short_description: "Return a short event digest that is useful in chat and safe by default."

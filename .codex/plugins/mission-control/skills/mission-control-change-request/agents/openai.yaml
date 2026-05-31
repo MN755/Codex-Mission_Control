@@ -1,0 +1,3 @@
+interface:
+  display_name: "Change Request"
+  short_description: "Create a structured change request path instead of improvising scope changes in chat."

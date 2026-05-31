@@ -8,11 +8,19 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 PLUGIN_MANIFEST = ROOT / "plugins" / "mission-control" / "plugin.json"
 REPO_LOCAL_PLUGIN_MANIFEST = ROOT / ".codex" / "plugins" / "mission-control" / "plugin.json"
+CANONICAL_CODEX_PLUGIN_MANIFEST = ROOT / "plugins" / "mission-control" / ".codex-plugin" / "plugin.json"
+REPO_LOCAL_CODEX_PLUGIN_MANIFEST = ROOT / ".codex" / "plugins" / "mission-control" / ".codex-plugin" / "plugin.json"
 RESOURCES_CATALOG = ROOT / "plugins" / "mission-control" / "mcp" / "resources.json"
 PROMPTS_CATALOG = ROOT / "plugins" / "mission-control" / "mcp" / "prompts.json"
 PROMPTS_DIR = ROOT / "plugins" / "mission-control" / "prompts"
 REPO_LOCAL_PROMPTS_DIR = ROOT / ".codex" / "plugins" / "mission-control" / "prompts"
 REPO_LOCAL_MCP_DIR = ROOT / ".codex" / "plugins" / "mission-control" / "mcp"
+CANONICAL_SKILLS_DIR = ROOT / "plugins" / "mission-control" / "skills"
+REPO_LOCAL_SKILLS_DIR = ROOT / ".codex" / "plugins" / "mission-control" / "skills"
+CANONICAL_README = ROOT / "plugins" / "mission-control" / "README.md"
+REPO_LOCAL_README = ROOT / ".codex" / "plugins" / "mission-control" / "README.md"
+CANONICAL_ASSETS_DIR = ROOT / "plugins" / "mission-control" / "assets"
+REPO_LOCAL_ASSETS_DIR = ROOT / ".codex" / "plugins" / "mission-control" / "assets"
 EXAMPLES_DIR = ROOT / "examples" / "codex-chat-workflows"
 DOC_PATHS = [
     ROOT / "docs" / "MCP_RESOURCES_AND_PROMPTS.md",
@@ -227,6 +235,29 @@ def test_repo_local_plugin_manifest_tracks_canonical_prompts_and_resources() -> 
     assert repo_local_manifest["mcp"]["resources_catalog"] == "./mcp/resources.json"
     assert (REPO_LOCAL_MCP_DIR / "prompts.json").exists()
     assert (REPO_LOCAL_MCP_DIR / "resources.json").exists()
+
+
+def test_repo_local_plugin_bundle_tracks_canonical_skills_docs_and_assets() -> None:
+    canonical_manifest = _load_json(PLUGIN_MANIFEST)
+    repo_local_manifest = _load_json(REPO_LOCAL_PLUGIN_MANIFEST)
+    canonical_skills = {path.name for path in CANONICAL_SKILLS_DIR.iterdir() if path.is_dir()}
+    repo_local_skills = {path.name for path in REPO_LOCAL_SKILLS_DIR.iterdir() if path.is_dir()}
+    canonical_assets = {
+        path.relative_to(CANONICAL_ASSETS_DIR)
+        for path in CANONICAL_ASSETS_DIR.rglob("*")
+        if path.is_file()
+    }
+    repo_local_assets = {
+        path.relative_to(REPO_LOCAL_ASSETS_DIR)
+        for path in REPO_LOCAL_ASSETS_DIR.rglob("*")
+        if path.is_file()
+    }
+
+    assert repo_local_manifest["skills"] == canonical_manifest["skills"]
+    assert repo_local_skills == canonical_skills
+    assert REPO_LOCAL_README.read_text(encoding="utf-8") == CANONICAL_README.read_text(encoding="utf-8")
+    assert _load_json(REPO_LOCAL_CODEX_PLUGIN_MANIFEST) == _load_json(CANONICAL_CODEX_PLUGIN_MANIFEST)
+    assert repo_local_assets == canonical_assets
 
 
 def test_workflow_index_lists_all_shipped_examples() -> None:

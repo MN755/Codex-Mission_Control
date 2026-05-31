@@ -1,0 +1,3 @@
+interface:
+  display_name: "Stop"
+  short_description: "Stop Mission Control work safely while preserving state and partial outputs."

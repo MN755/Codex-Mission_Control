@@ -1,0 +1,3 @@
+interface:
+  display_name: "Restore Plan"
+  short_description: "Describe how rollback would work without executing it."

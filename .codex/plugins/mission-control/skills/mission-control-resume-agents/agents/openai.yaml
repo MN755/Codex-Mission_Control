@@ -1,0 +1,3 @@
+interface:
+  display_name: "Resume Agents"
+  short_description: "Resume paused work only after checking safety and pending approvals."

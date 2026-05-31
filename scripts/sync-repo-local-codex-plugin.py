@@ -7,6 +7,7 @@ def main() -> int:
     result = sync_repo_local_plugin_bundle()
     print("Synced repo-local Mission Control plugin bundle.")
     print(f"- manifest: {result['manifest']}")
+    print(f"- skills: {result['skill_count']}")
     print(f"- prompts: {len(result['prompt_files'])}")
     print(f"- prompts catalog: {result['prompts_catalog']}")
     print(f"- resources catalog: {result['resources_catalog']}")

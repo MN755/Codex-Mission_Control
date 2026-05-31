@@ -1,0 +1,3 @@
+interface:
+  display_name: "Evidence Check"
+  short_description: "Audit evidence quality behind Mission Control claims and handoffs."

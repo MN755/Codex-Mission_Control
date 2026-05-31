@@ -1,0 +1,3 @@
+interface:
+  display_name: "Agents Md"
+  short_description: "Use Mission Control understanding to propose or review AGENTS.md safely."

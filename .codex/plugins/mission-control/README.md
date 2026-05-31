@@ -1,27 +1,45 @@
-# Mission Control Local Plugin Bundle
+# Mission Control Codex Plugin Package
 
-This is the repo-local Codex plugin bundle for Mission Control background orchestration.
+This folder is the repo plugin bundle for using Codex Mission Control from Codex desktop through a thin MCP bridge.
 
-What it includes:
+What is here:
 
-- a repo-local plugin manifest that mirrors the canonical Mission Control prompt and resource catalogs
-- MCP server wiring for the repo-local bridge package
-- a bridge skill entrypoint plus the synced prompt bundle
-- local MCP prompt and resource catalogs for offline repo checks
-- a presentation placeholder for approval-card capable clients
+- `plugin.json`: canonical bundle manifest
+- `.codex-plugin/plugin.json`: Codex plugin metadata
+- `.claude-plugin/plugin.json`: Claude Code plugin metadata
+- `skills/`: Codex-facing bridge skills
+- `commands/`: Claude Code slash-command workflows
+- `agents/`: Claude Code worker archetypes that map to Mission Control lanes
+- `prompts/`: reusable Mission Control bridge prompts
+- `mcp/mission-control-mcp.example.json`: local MCP server wiring example
+- `mcp/resources.json`: safe-summary MCP resource catalog
+- `mcp/prompts.json`: reusable MCP prompt catalog
+- `templates/`: bridge-safe markdown response templates
+- `assets/icon.svg`: SVG icon asset for host compatibility
+- `assets/mission-control-logo.png`: transparent PNG logo for README and plugin surfaces that prefer raster artwork
 
-What it does not do:
+What is not here:
 
-- replace Mission Control Manager
-- execute worker shell commands from MCP
-- require API keys for the normal Codex login path
+- a replacement for the Mission Control daemon
+- a separate manager brain living inside Codex chat
+- raw shell execution hooks from the MCP layer
+- secret-bearing logs or full transcripts
 
-Use this bundle when you want Codex desktop chat to drive Mission Control without making the dashboard mandatory.
+Bridge boundaries:
 
-See:
+- Codex chat is the user-facing relay.
+- Mission Control Manager remains the orchestration authority.
+- The MCP server talks to the localhost daemon only.
+- The daemon owns orchestration state, approvals, and worker coordination.
+- The MCP bridge can auto-start the local daemon when it is missing, because returning a README instead of doing the obvious would be pathetic.
+- Claude Code commands and agents are convenience surfaces; they still route work through Mission Control instead of creating an uncontrolled second manager.
 
-- [../../../docs/CODEX_PLUGIN_MODE.md](../../../docs/CODEX_PLUGIN_MODE.md)
-- [../../../docs/MCP_PLUGIN_BRIDGE.md](../../../docs/MCP_PLUGIN_BRIDGE.md)
-- [../../../docs/SECURITY.md](../../../docs/SECURITY.md)
-- [../../../docs/CODEX_PLUGIN_INSTALL.md](../../../docs/CODEX_PLUGIN_INSTALL.md)
-- [../../../docs/MISSION_CONTROL_SKILL_LIBRARY.md](../../../docs/MISSION_CONTROL_SKILL_LIBRARY.md)
+Built-in capability packs:
+
+- Agent Skills-style packaging: skill creation, metadata, host compatibility, and package validation.
+- Code understanding: graph-style codebase maps, grounded Q&A, diff impact, domain maps, onboarding tours, and docs knowledge maps.
+- Agent engineering: runnable-chain design, retrieval/RAG design, tool registries, evals/observability, memory/state policy, and graph workflows.
+- Practical work surfaces: MCP building, webapp testing, document workflows, brand communications, and creative web artifacts.
+- Browser-agent companion support: project-scoped Webwright readiness, safe install guidance, and browser-task routing through Mission Control instead of random chat improvisation.
+
+See [docs/CODEX_PLUGIN_INSTALL.md](../../docs/CODEX_PLUGIN_INSTALL.md) for setup, [docs/CODEX_PLUGIN_MODE.md](../../docs/CODEX_PLUGIN_MODE.md) for bridge behavior, and [docs/MCP_SECURITY.md](../../docs/MCP_SECURITY.md) for localhost token and redaction rules.
