@@ -31,6 +31,8 @@ where = ["src"]
   "commands/*.md",
   "agents/*.md",
   "assets/*",
+  "skills/*/SKILL.md",
+  "skills/*/agents/*.yaml",
   ".claude-plugin/*.json",
 ]
 

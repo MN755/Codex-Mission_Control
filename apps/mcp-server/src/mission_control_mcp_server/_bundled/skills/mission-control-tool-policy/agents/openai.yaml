@@ -1,0 +1,3 @@
+interface:
+  display_name: "Tool Policy"
+  short_description: "Explain or request tool-policy changes without bypassing the policy itself."

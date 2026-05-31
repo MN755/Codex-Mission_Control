@@ -1,0 +1,3 @@
+interface:
+  display_name: "Generate Runbook"
+  short_description: "Generate or summarize a runbook grounded in Mission Control evidence and repo understanding."

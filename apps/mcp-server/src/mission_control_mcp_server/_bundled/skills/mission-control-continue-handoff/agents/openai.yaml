@@ -1,0 +1,3 @@
+interface:
+  display_name: "Continue Handoff"
+  short_description: "Continue from an existing handoff while preserving evidence and limitations."

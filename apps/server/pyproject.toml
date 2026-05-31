@@ -48,6 +48,7 @@ py-modules = [
   "manager",
   "mission_control_daemon",
   "models",
+  "nvidia_devstack",
   "nvidia_support",
   "orchestration",
   "planner",

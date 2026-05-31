@@ -1,0 +1,3 @@
+interface:
+  display_name: "Refactor Safely"
+  short_description: "Route refactors through Mission Control safety controls before code movement begins."

@@ -1,0 +1,3 @@
+interface:
+  display_name: "Security Review"
+  short_description: "Request or summarize a Mission Control security review without exposing secrets."

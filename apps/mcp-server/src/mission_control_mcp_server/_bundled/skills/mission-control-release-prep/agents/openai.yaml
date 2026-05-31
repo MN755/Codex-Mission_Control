@@ -1,0 +1,3 @@
+interface:
+  display_name: "Release Prep"
+  short_description: "Coordinate release-prep review through Mission Control without skipping evidence or approvals."

@@ -1,0 +1,3 @@
+interface:
+  display_name: "Safe Mode"
+  short_description: "Request or explain Mission Control strict safety mode for the project."

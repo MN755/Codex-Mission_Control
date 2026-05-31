@@ -128,6 +128,11 @@ def test_package_workflow_smoke_tests_editable_installs_and_node24_actions() -> 
     assert "MISSION_CONTROL_DESKTOP_SMOKE_TEST=1 mission-control-desktop" in workflow_text
 
 
+def test_server_pyproject_exports_nvidia_devstack_module() -> None:
+    pyproject_text = (Path(__file__).resolve().parents[1] / "pyproject.toml").read_text(encoding="utf-8")
+    assert '"nvidia_devstack"' in pyproject_text
+
+
 def test_launcher_scripts_use_configured_launcher_dir() -> None:
     root = Path(__file__).resolve().parents[3]
     start_script = (root / "scripts" / "start-mission-control.sh").read_text(encoding="utf-8")

@@ -1,0 +1,3 @@
+interface:
+  display_name: "Model Policy"
+  short_description: "Explain or request model-policy changes while keeping billing and auth boundaries explicit."

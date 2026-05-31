@@ -1,0 +1,3 @@
+interface:
+  display_name: "Recovery Plan"
+  short_description: "Request a structured recovery plan from Mission Control after failure or uncertainty."

@@ -1,0 +1,3 @@
+interface:
+  display_name: "Path Locks"
+  short_description: "Explain path ownership, waiting tasks, and conflicts without touching files directly."

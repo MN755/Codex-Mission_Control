@@ -931,6 +931,10 @@ def test_bundled_plugin_manifest_references_existing_assets() -> None:
         assert (package_files / relative_path).is_file(), f"Missing bundled file: {relative_path}"
     for relative_path in expected_dirs:
         assert (package_files / relative_path).is_dir(), f"Missing bundled directory: {relative_path}"
+    skills_dir = package_files / "skills"
+    assert skills_dir.is_dir(), "Missing bundled skills directory"
+    for skill_name in manifest.get("skills") or []:
+        assert (skills_dir / skill_name / "SKILL.md").is_file(), f"Missing bundled skill: {skill_name}"
 
 
 def test_daemon_client_launches_installed_module_when_repo_script_is_unavailable(monkeypatch, tmp_path: Path) -> None:

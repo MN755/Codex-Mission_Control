@@ -1,0 +1,3 @@
+interface:
+  display_name: "Ollama Mode"
+  short_description: "Check and explain Mission Control Ollama or local-model mode safely."
