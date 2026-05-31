@@ -34,6 +34,7 @@ where = ["src"]
   "skills/*/SKILL.md",
   "skills/*/agents/*.yaml",
   ".claude-plugin/*.json",
+  ".codex-plugin/*.json",
 ]
 
 [tool.pytest.ini_options]

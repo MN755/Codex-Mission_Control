@@ -138,6 +138,7 @@ def test_packaged_python_artifact_smoke_script_builds_and_installs_wheels() -> N
     assert "--target" in script_text
     assert "mission_control_mcp_server" in script_text
     assert "mission_control_desktop.app" in script_text
+    assert ".codex-plugin" in script_text
     assert 'import_module("main")' in script_text
 
 

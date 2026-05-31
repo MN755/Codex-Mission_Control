@@ -60,6 +60,7 @@ def _install_wheels(wheelhouse: Path, target: Path) -> list[Path]:
 def _smoke_packaged_install(target: Path, *, cwd: Path) -> None:
     smoke_code = """
 import importlib
+import importlib.resources
 import os
 from pathlib import Path
 
@@ -71,6 +72,8 @@ prompts = catalog.load_prompt_catalog()
 assert plugin["name"] == "mission-control"
 assert resources["resources"], "Missing bundled resources catalog"
 assert prompts["prompts"], "Missing bundled prompts catalog"
+bundled_files = importlib.resources.files("mission_control_mcp_server._bundled")
+assert (bundled_files / ".codex-plugin" / "plugin.json").is_file(), "Missing bundled Codex plugin manifest"
 
 desktop_app = importlib.import_module("mission_control_desktop.app")
 assert desktop_app.SOURCE_REPO_ROOT is None

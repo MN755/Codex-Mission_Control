@@ -121,6 +121,92 @@ def test_sync_local_plugin_marketplace_creates_discoverable_plugin_entry(tmp_pat
     marketplace = json.loads((agents_home / "plugins" / "marketplace.json").read_text(encoding="utf-8"))
     assert marketplace["name"] == "local"
     assert any(entry["name"] == "mission-control" for entry in marketplace["plugins"])
+    assert payload["plugin_source_exists"] is True
+    assert payload["plugin_destination_exists_after"] is True
+    assert payload["marketplace_path_exists"] is True
+
+
+def test_sync_codex_bundle_requires_codex_plugin_manifest_before_reporting_ready(tmp_path) -> None:
+    module = _load_manage_module()
+    repo_root = tmp_path / "repo"
+    plugin_root = repo_root / "plugins" / "mission-control"
+    codex_home = tmp_path / ".codex-home"
+    stale_cache = codex_home / "plugins" / "cache" / "local" / "mission-control" / "1.2.0"
+
+    plugin_root.mkdir(parents=True, exist_ok=True)
+    (plugin_root / "plugin.json").write_text(
+        json.dumps({"name": "mission-control", "display_name": "Mission Control", "version": "1.3.0-beta.1"}),
+        encoding="utf-8",
+    )
+    stale_cache.mkdir(parents=True, exist_ok=True)
+    (stale_cache / "plugin.json").write_text("{}", encoding="utf-8")
+
+    payload = module.sync_codex_bundle(repo_root, codex_home, dry_run=False)
+
+    assert payload["status"] == "missing"
+    assert payload["plugin_manifest"]["status"] == "missing"
+    assert payload["plugin_source_exists"] is True
+    assert payload["plugin_destination_exists_after"] is False
+    assert payload["plugin_files_copied"] == 0
+    assert payload["cache_sync"]["status"] == "missing"
+    assert payload["cache_sync"]["stale_versions_removed"] == []
+    assert stale_cache.exists()
+
+
+def test_sync_codex_bundle_does_not_report_ready_or_prune_cache_without_plugin_source(tmp_path) -> None:
+    module = _load_manage_module()
+    repo_root = tmp_path / "repo"
+    codex_home = tmp_path / ".codex-home"
+    stale_cache = codex_home / "plugins" / "cache" / "local" / "mission-control" / "1.2.0"
+
+    stale_cache.mkdir(parents=True, exist_ok=True)
+    (stale_cache / "plugin.json").write_text("{}", encoding="utf-8")
+
+    payload = module.sync_codex_bundle(repo_root, codex_home, dry_run=False)
+
+    assert payload["status"] == "missing"
+    assert payload["plugin_manifest"]["status"] == "missing"
+    assert payload["plugin_source_exists"] is False
+    assert payload["cache_sync"]["status"] == "missing"
+    assert payload["cache_sync"]["stale_versions_removed"] == []
+    assert stale_cache.exists()
+
+
+def test_sync_local_plugin_marketplace_requires_plugin_source_before_writing_marketplace(tmp_path) -> None:
+    module = _load_manage_module()
+    repo_root = tmp_path / "repo"
+    agents_home = tmp_path / ".agents"
+
+    payload = module.sync_local_plugin_marketplace(repo_root, agents_home, dry_run=False)
+
+    assert payload["status"] == "missing"
+    assert payload["plugin_manifest"]["status"] == "missing"
+    assert payload["plugin_source_exists"] is False
+    assert payload["plugin_destination_exists_after"] is False
+    assert payload["marketplace_path_exists"] is False
+    assert not (agents_home / "plugins" / "marketplace.json").exists()
+
+
+def test_sync_local_plugin_marketplace_requires_codex_plugin_manifest_before_reporting_ready(tmp_path) -> None:
+    module = _load_manage_module()
+    repo_root = tmp_path / "repo"
+    plugin_root = repo_root / "plugins" / "mission-control"
+    agents_home = tmp_path / ".agents"
+
+    plugin_root.mkdir(parents=True, exist_ok=True)
+    (plugin_root / "plugin.json").write_text(
+        json.dumps({"name": "mission-control", "display_name": "Mission Control", "version": "1.3.0-beta.1"}),
+        encoding="utf-8",
+    )
+
+    payload = module.sync_local_plugin_marketplace(repo_root, agents_home, dry_run=False)
+
+    assert payload["status"] == "missing"
+    assert payload["plugin_manifest"]["status"] == "missing"
+    assert payload["plugin_source_exists"] is True
+    assert payload["plugin_destination_exists_after"] is False
+    assert payload["marketplace_path_exists"] is False
+    assert not (agents_home / "plugins" / "marketplace.json").exists()
 
 
 def test_detect_claude_assets_reports_packaged_commands_and_agents() -> None:

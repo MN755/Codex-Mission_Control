@@ -110,25 +110,31 @@ def _plugin_source_root(repo_root: Path) -> Path:
 
 
 def _read_plugin_manifest(plugin_root: Path) -> dict[str, Any]:
-    manifest_path = plugin_root / ".codex-plugin" / "plugin.json"
-    if not manifest_path.exists():
-        manifest_path = plugin_root / "plugin.json"
-    if not manifest_path.exists():
+    codex_manifest_path = plugin_root / ".codex-plugin" / "plugin.json"
+    catalog_manifest_path = plugin_root / "plugin.json"
+    if not codex_manifest_path.exists():
         return {
             "status": "missing",
-            "manifest_path": str(manifest_path),
+            "manifest_path": str(codex_manifest_path),
+            "catalog_manifest_path": str(catalog_manifest_path),
+            "codex_manifest_required": True,
         }
+    manifest_path = codex_manifest_path
     try:
         payload = json.loads(manifest_path.read_text(encoding="utf-8"))
     except json.JSONDecodeError as exc:
         return {
             "status": "invalid",
             "manifest_path": str(manifest_path),
+            "catalog_manifest_path": str(catalog_manifest_path),
+            "codex_manifest_required": True,
             "error": str(exc),
         }
     return {
         "status": "ready",
         "manifest_path": str(manifest_path),
+        "catalog_manifest_path": str(catalog_manifest_path),
+        "codex_manifest_required": True,
         "name": payload.get("name"),
         "display_name": payload.get("display_name") or ((payload.get("interface") or {}).get("displayName")) or payload.get("name"),
         "version": payload.get("version"),
@@ -155,6 +161,20 @@ def sync_codex_plugin_cache(
     cache_root = _plugin_cache_root(codex_home, plugin_name)
     cache_destination = cache_root / plugin_version
     stale_versions: list[str] = []
+    plugin_source_exists = plugin_source.exists()
+
+    if not plugin_source_exists or plugin_manifest.get("status") != "ready":
+        return {
+            "status": str(plugin_manifest.get("status") or ("missing" if not plugin_source_exists else "invalid")),
+            "cache_root": str(cache_root),
+            "cache_destination": str(cache_destination),
+            "plugin_name": plugin_name,
+            "plugin_version": plugin_version,
+            "plugin_files_copied": 0,
+            "stale_versions_removed": [],
+            "plugin_source_exists": plugin_source_exists,
+            "dry_run": dry_run,
+        }
 
     if cache_root.exists():
         stale_versions = sorted(
@@ -212,11 +232,32 @@ def sync_local_plugin_marketplace(
 ) -> dict[str, Any]:
     plugin_source = _plugin_source_root(repo_root)
     plugin_manifest = _read_plugin_manifest(plugin_source)
+    plugin_source_exists = plugin_source.exists()
     plugin_name = plugin_manifest.get("name") or "mission-control"
     plugin_display_name = plugin_manifest.get("display_name") or "Mission Control"
     plugins_root = agents_home.parent / "plugins"
     plugin_destination = plugins_root / plugin_name
     marketplace_path = agents_home / "plugins" / "marketplace.json"
+    if not plugin_source_exists or plugin_manifest.get("status") != "ready":
+        return {
+            "status": str(plugin_manifest.get("status") or ("missing" if not plugin_source_exists else "invalid")),
+            "agents_home": str(agents_home),
+            "plugins_root": str(plugins_root),
+            "plugin_source": str(plugin_source),
+            "plugin_source_exists": plugin_source_exists,
+            "plugin_destination": str(plugin_destination),
+            "plugin_destination_exists_after": plugin_destination.exists(),
+            "plugin_manifest": plugin_manifest,
+            "plugin_name": plugin_name,
+            "plugin_display_name": plugin_display_name,
+            "plugin_files_copied": 0,
+            "marketplace_path": str(marketplace_path),
+            "marketplace_path_exists": marketplace_path.exists(),
+            "marketplace_name": DEFAULT_MARKETPLACE_NAME,
+            "plugin_id": f"{plugin_name}@{DEFAULT_MARKETPLACE_NAME}",
+            "entry_updated": False,
+            "dry_run": dry_run,
+        }
     existing: dict[str, Any]
     if marketplace_path.exists():
         try:
@@ -255,12 +296,15 @@ def sync_local_plugin_marketplace(
         "agents_home": str(agents_home),
         "plugins_root": str(plugins_root),
         "plugin_source": str(plugin_source),
+        "plugin_source_exists": plugin_source_exists,
         "plugin_destination": str(plugin_destination),
+        "plugin_destination_exists_after": dry_run or plugin_destination.exists(),
         "plugin_manifest": plugin_manifest,
         "plugin_name": plugin_name,
         "plugin_display_name": plugin_display_name,
         "plugin_files_copied": plugin_files_copied,
         "marketplace_path": str(marketplace_path),
+        "marketplace_path_exists": dry_run or marketplace_path.exists(),
         "marketplace_name": marketplace_name,
         "plugin_id": plugin_id,
         "entry_updated": updated,
@@ -321,6 +365,26 @@ def sync_codex_bundle(repo_root: Path, codex_home: Path, *, dry_run: bool = Fals
     skills_destination_root = codex_home / "skills"
     copied_skills: list[str] = []
     plugin_manifest = _read_plugin_manifest(plugin_source)
+    plugin_source_exists = plugin_source.exists()
+
+    if not plugin_source_exists or plugin_manifest.get("status") != "ready":
+        cache_sync = sync_codex_plugin_cache(plugin_source, codex_home, plugin_manifest, dry_run=dry_run)
+        return {
+            "codex_home": str(codex_home),
+            "plugin_source": str(plugin_source),
+            "plugin_source_exists": plugin_source_exists,
+            "plugin_destination": str(plugin_destination),
+            "plugin_destination_exists_after": plugin_destination.exists(),
+            "plugin_files_copied": 0,
+            "plugin_manifest": plugin_manifest,
+            "plugin_name": plugin_manifest.get("name") or "mission-control",
+            "plugin_display_name": plugin_manifest.get("display_name") or "Mission Control",
+            "cache_sync": cache_sync,
+            "skills_copied": [],
+            "skill_count": 0,
+            "status": str(plugin_manifest.get("status") or ("missing" if not plugin_source_exists else "invalid")),
+            "dry_run": dry_run,
+        }
 
     plugin_files_copied = _copy_tree(plugin_source, plugin_destination, dry_run=dry_run)
     cache_sync = sync_codex_plugin_cache(plugin_source, codex_home, plugin_manifest, dry_run=dry_run)
@@ -332,7 +396,9 @@ def sync_codex_bundle(repo_root: Path, codex_home: Path, *, dry_run: bool = Fals
     return {
         "codex_home": str(codex_home),
         "plugin_source": str(plugin_source),
+        "plugin_source_exists": plugin_source_exists,
         "plugin_destination": str(plugin_destination),
+        "plugin_destination_exists_after": dry_run or plugin_destination.exists(),
         "plugin_files_copied": plugin_files_copied,
         "plugin_manifest": plugin_manifest,
         "plugin_name": plugin_manifest.get("name") or "mission-control",

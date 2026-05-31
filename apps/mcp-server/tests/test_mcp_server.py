@@ -1031,6 +1031,7 @@ def test_bundled_plugin_manifest_references_existing_assets() -> None:
         manifest["mcp"]["prompts_catalog"].removeprefix("./"),
         manifest["claude_code"]["manifest"].removeprefix("./"),
         manifest["assets"]["icon"].removeprefix("./"),
+        ".codex-plugin/plugin.json",
     ]
     expected_dirs = [
         manifest["mcp"]["chat_templates_dir"].removeprefix("./"),
