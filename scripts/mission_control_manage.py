@@ -1129,6 +1129,29 @@ def _install_or_update(
     }
 
 
+def _normalize_workflow_status(raw_status: Any) -> str:
+    status = str(raw_status or "degraded")
+    if status == "skipped":
+        return "skipped"
+    if status in {"failed", "error", "invalid"}:
+        return "failed"
+    if status in {"degraded", "missing"}:
+        return "degraded"
+    return "ready"
+
+
+def _combine_management_status(*steps: dict[str, Any]) -> str:
+    statuses = [_normalize_workflow_status(step.get("status")) for step in steps if isinstance(step, dict)]
+    active_statuses = [status for status in statuses if status != "skipped"]
+    if not active_statuses:
+        return "ready"
+    if any(status == "failed" for status in active_statuses):
+        return "failed"
+    if any(status == "degraded" for status in active_statuses):
+        return "degraded"
+    return "ready"
+
+
 def _build_markdown(action: str, payload: dict[str, Any]) -> str:
     reload_info = payload.get("reload_guidance") or {}
     marketplace_sync = payload.get("marketplace_sync") or {}
@@ -1361,11 +1384,13 @@ def run_management_workflow(
             )
         )
         payload["claude_assets"] = detect_claude_assets(repo_root)
-        bootstrap = payload.get("bootstrap") or {}
-        status = str(bootstrap.get("status") or "degraded")
-        if status not in {"ready", "degraded"}:
-            status = "failed"
-        payload["status"] = status
+        payload["status"] = _combine_management_status(
+            payload.get("bootstrap") or {},
+            payload.get("marketplace_sync") or {},
+            payload.get("codex_sync") or {},
+            payload.get("codex_config") or {},
+            payload.get("claude_assets") or {},
+        )
     elif action == "codex-smoke":
         bootstrap = run_bootstrap(
             repo_root,

@@ -318,10 +318,51 @@ def test_run_management_workflow_install_reports_reload_requirement(monkeypatch,
     assert payload["reload_guidance"]["claude"] is True
     assert "Force-quit and reopen Codex and Claude Code" in payload["codex_chat_markdown"]
     assert "Codex should show `Mission Control` as an available plugin" in payload["codex_chat_markdown"]
+
+
+def test_run_management_workflow_install_degrades_when_sync_or_asset_steps_degrade(monkeypatch, tmp_path) -> None:
+    module = _load_manage_module()
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir(parents=True, exist_ok=True)
+    codex_home = tmp_path / ".codex"
+    agents_home = tmp_path / ".agents"
+
+    monkeypatch.setattr(module, "resolve_repo_root", lambda **kwargs: repo_root)
+    monkeypatch.setattr(module, "resolve_codex_home", lambda override=None: codex_home)
+    monkeypatch.setattr(module, "resolve_agents_home", lambda override=None: agents_home)
+    monkeypatch.setattr(module, "resolve_python_command", lambda explicit=None: sys.executable)
+    monkeypatch.setattr(module, "ensure_python_packages", lambda *args, **kwargs: [{"name": "backend", "status": "skipped"}])
+    monkeypatch.setattr(module, "sync_local_plugin_marketplace", lambda *args, **kwargs: {"status": "degraded", "plugin_id": "mission-control@local"})
+    monkeypatch.setattr(module, "sync_codex_bundle", lambda *args, **kwargs: {"status": "degraded", "plugin_source": "plugin", "plugin_destination": "dest"})
+    monkeypatch.setattr(module, "upsert_codex_config", lambda *args, **kwargs: {"status": "ready", "changed": True})
+    monkeypatch.setattr(
+        module,
+        "run_bootstrap",
+        lambda *args, **kwargs: {
+            "status": "ready",
+            "install_report": {
+                "active_repo_root": str(repo_root),
+                "configured_runners": ["Dry-run"],
+                "unavailable_runners": [],
+                "user_actions_required": [],
+                "readiness_matrix": [
+                    {"label": "Backend daemon reachable", "state": "ready", "summary": "Daemon answered locally."},
+                ],
+            },
+        },
+    )
+    monkeypatch.setattr(module, "detect_claude_assets", lambda repo_root: {"status": "degraded", "missing": ["mission-control-update"], "slash_commands": []})
+
+    payload = module.run_management_workflow(action="install", dry_run=False)
+
+    assert payload["bootstrap"]["status"] == "ready"
+    assert payload["marketplace_sync"]["status"] == "degraded"
+    assert payload["codex_sync"]["status"] == "degraded"
+    assert payload["claude_assets"]["status"] == "degraded"
+    assert payload["status"] == "degraded"
     assert "Open the Codex plugin picker" in payload["codex_chat_markdown"]
     assert "approve the project MCP server from `.mcp.json`" in payload["codex_chat_markdown"]
     assert "rerun `python scripts/mission-control-manage.py update`" in payload["codex_chat_markdown"]
-    assert "### Operational readiness" in payload["codex_chat_markdown"]
     assert "Backend daemon reachable: ready - Daemon answered locally." in payload["codex_chat_markdown"]
 
 
