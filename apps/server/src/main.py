@@ -1373,11 +1373,13 @@ def create_project_risk(
 def update_project_risk(
     risk_id: int,
     payload: RiskRecordUpdate,
+    project_id: int = Query(...),
     db: Session = Depends(get_db),
     _: None = Depends(_require_bridge_token),
 ) -> RiskRecordRead:
+    project = _get_project_or_404(db, project_id)
     try:
-        return RiskRecordRead.model_validate(risk_service.update_risk(db, risk_id, payload.model_dump(exclude_none=True)))
+        return RiskRecordRead.model_validate(risk_service.update_risk(db, project, risk_id, payload.model_dump(exclude_none=True)))
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 

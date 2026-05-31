@@ -10,6 +10,8 @@ on:
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+  APPIMAGETOOL_VERSION: "1.9.0"
+  APPIMAGETOOL_SHA256_X86_64: "46FDD785094C7F6E545B61AFCFB0F3D98D8EAB243F644B4B17698C01D06083D1"
 
 permissions:
   contents: read
@@ -70,7 +72,8 @@ jobs:
       - name: Install Linux AppImage tooling
         if: runner.os == 'Linux'
         run: |
-          curl -L https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage -o appimagetool
+          curl -L --fail "https://github.com/AppImage/appimagetool/releases/download/${APPIMAGETOOL_VERSION}/appimagetool-x86_64.AppImage" -o appimagetool
+          echo "${APPIMAGETOOL_SHA256_X86_64}  appimagetool" | sha256sum --check --
           chmod +x appimagetool
           echo "APPIMAGETOOL=${GITHUB_WORKSPACE}/appimagetool" >> "$GITHUB_ENV"
 

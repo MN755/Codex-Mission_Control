@@ -129,6 +129,16 @@ def test_package_workflow_smoke_tests_editable_installs_and_node24_actions() -> 
     assert "python scripts/smoke-packaged-python-artifacts.py" in workflow_text
 
 
+def test_linux_package_workflow_pins_and_verifies_appimagetool() -> None:
+    workflow_path = Path(__file__).resolve().parents[3] / ".github" / "workflows" / "package-desktop.yml"
+    workflow_text = workflow_path.read_text(encoding="utf-8")
+    assert 'APPIMAGETOOL_VERSION: "1.9.0"' in workflow_text
+    assert 'APPIMAGETOOL_SHA256_X86_64: "46FDD785094C7F6E545B61AFCFB0F3D98D8EAB243F644B4B17698C01D06083D1"' in workflow_text
+    assert "github.com/AppImage/appimagetool/releases/download/${APPIMAGETOOL_VERSION}/appimagetool-x86_64.AppImage" in workflow_text
+    assert "sha256sum --check --" in workflow_text
+    assert "continuous/appimagetool-x86_64.AppImage" not in workflow_text
+
+
 def test_packaged_python_artifact_smoke_script_builds_and_installs_wheels() -> None:
     script_text = (Path(__file__).resolve().parents[3] / "scripts" / "smoke-packaged-python-artifacts.py").read_text(encoding="utf-8")
     assert "pip" in script_text and "wheel" in script_text

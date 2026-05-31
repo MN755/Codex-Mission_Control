@@ -1858,6 +1858,32 @@ def _manifest_skill_names() -> list[str]:
     return [str(name) for name in (manifest.get("skills") or [])]
 
 
+def _validate_generator_inventory(manifest_skill_names: list[str]) -> list[str]:
+    manifest_name_set = set(manifest_skill_names)
+    generated_name_set = {str(skill["name"]) for skill in SKILLS}
+    errors: list[str] = []
+
+    unknown_group_entries = sorted(GROUPED_SKILL_NAMES - manifest_name_set)
+    if unknown_group_entries:
+        errors.append(f"Grouped skill list references unknown skills: {unknown_group_entries}")
+
+    missing_from_manifest = sorted(generated_name_set - manifest_name_set)
+    if missing_from_manifest:
+        errors.append(
+            "Generator inventory contains skills missing from plugin.json: "
+            + ", ".join(missing_from_manifest)
+        )
+
+    missing_from_generator = sorted(manifest_name_set - generated_name_set)
+    if missing_from_generator:
+        errors.append(
+            "Generator inventory is stale relative to plugin.json; refusing to rewrite the shipped package while these skills are missing: "
+            + ", ".join(missing_from_generator)
+        )
+
+    return errors
+
+
 RELATED_SKILLS: dict[str, list[str]] = {
     "mission-control-orchestrate": ["mission-control-status", "mission-control-approve", "mission-control-handoff"],
     "mission-control-import-codebase": ["mission-control-explain-codebase", "mission-control-plan", "mission-control-existing-repo-fix"],
@@ -2186,13 +2212,11 @@ def _update_manifest_and_docs() -> None:
 
 def main() -> None:
     manifest_skill_names = _manifest_skill_names()
+    inventory_errors = _validate_generator_inventory(manifest_skill_names)
+    if inventory_errors:
+        raise SystemExit("\n".join(inventory_errors))
     manifest_name_set = set(manifest_skill_names)
-    unknown_group_entries = sorted(GROUPED_SKILL_NAMES - manifest_name_set)
-    if unknown_group_entries:
-        raise SystemExit(f"Grouped skill list references unknown skills: {unknown_group_entries}")
     for skill in SKILLS:
-        if str(skill["name"]) not in manifest_name_set:
-            raise SystemExit(f"Generated skill is missing from plugin.json: {skill['name']}")
         _write_skill_tree(PLUGIN_SKILLS_ROOT, skill)
     _prune_skill_tree(PLUGIN_SKILLS_ROOT, manifest_name_set)
     _sync_skill_mirror(manifest_skill_names)

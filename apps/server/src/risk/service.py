@@ -66,13 +66,12 @@ class RiskService:
         db.flush()
         return record
 
-    def update_risk(self, db: Session, risk_id: int, payload: dict[str, Any]) -> RiskRecord:
+    def update_risk(self, db: Session, project: Project, risk_id: int, payload: dict[str, Any]) -> RiskRecord:
         record = db.get(RiskRecord, risk_id)
         if record is None:
             raise ValueError("Risk not found")
-        project = db.get(Project, record.project_id)
-        if project is None:
-            raise ValueError("Project not found")
+        if record.project_id != project.id:
+            raise ValueError("Risk not found in this project")
         self._validate_related_refs(db, project, payload)
         for field in [
             "title",

@@ -54,6 +54,7 @@ def test_risk_update_rejects_owner_agent_from_another_project(client) -> None:
 
     response = client.patch(
         f"/api/risks/{created.json()['id']}",
+        params={"project_id": project_one["id"]},
         json={"project_id": project_one["id"], "owner_agent_id": foreign_agent_id},
     )
     assert response.status_code == 404
@@ -101,6 +102,7 @@ def test_risk_update_rejects_related_task_from_another_project(client) -> None:
 
     response = client.patch(
         f"/api/risks/{created.json()['id']}",
+        params={"project_id": project_one["id"]},
         json={"project_id": project_one["id"], "related_task_id": foreign_task_id},
     )
     assert response.status_code == 404
@@ -122,6 +124,7 @@ def test_risk_update_rejects_nonexistent_related_refs(client) -> None:
 
     owner_response = client.patch(
         f"/api/risks/{created.json()['id']}",
+        params={"project_id": project["id"]},
         json={"project_id": project["id"], "owner_agent_id": 999_999},
     )
     assert owner_response.status_code == 404
@@ -129,10 +132,35 @@ def test_risk_update_rejects_nonexistent_related_refs(client) -> None:
 
     task_response = client.patch(
         f"/api/risks/{created.json()['id']}",
+        params={"project_id": project["id"]},
         json={"project_id": project["id"], "related_task_id": 999_999},
     )
     assert task_response.status_code == 404
     assert "related task" in task_response.json()["detail"].lower()
+
+
+def test_risk_update_rejects_foreign_project_scope_even_without_related_ref_changes(client) -> None:
+    project_one = _create_project(client, "Scoped Risk Project", "scoped-risk-project")
+    project_two = _create_project(client, "Foreign Scoped Risk Project", "foreign-scoped-risk-project")
+
+    created = client.post(
+        f"/api/projects/{project_one['id']}/risks",
+        json={
+            "title": "Scoped update risk",
+            "description": "Do not let foreign projects update this by global id.",
+            "severity": "medium",
+            "likelihood": "medium",
+        },
+    )
+    assert created.status_code == 200, created.text
+
+    response = client.patch(
+        f"/api/risks/{created.json()['id']}",
+        params={"project_id": project_two["id"]},
+        json={"description": "foreign overwrite attempt"},
+    )
+    assert response.status_code == 404
+    assert "this project" in response.json()["detail"].lower()
 
 
 def test_risk_create_dedupe_updates_mutable_fields(client) -> None:
