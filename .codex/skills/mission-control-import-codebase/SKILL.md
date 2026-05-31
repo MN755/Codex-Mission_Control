@@ -57,7 +57,7 @@ Ask before any write-capable step, import permission change, or interview-skippi
 
 ## Failure and fallback
 
-If import tooling is missing, attach the workspace, explain that import-specific tooling is expected or future, and rely on read-only codebase resources where available.
+If import tooling is missing, attach the workspace, explain that import-specific tooling is expected or future, and rely on read-only codebase resources where available. If Mission Control registered but only partial MCP capabilities exposed, say that exact bridge limitation before falling back.
 
 ## Example invocation
 

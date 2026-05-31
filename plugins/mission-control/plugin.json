@@ -11,6 +11,7 @@
     "If Codex still does not show the Mission Control plugin after reload, rerun `python scripts/mission-control-manage.py update` and restart Codex again before falling back to skills-only troubleshooting."
   ],
   "skills": [
+    "mission-control",
     "mission-control-orchestrate",
     "mission-control-import-codebase",
     "mission-control-status",

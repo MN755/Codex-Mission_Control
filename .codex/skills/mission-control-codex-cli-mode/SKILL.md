@@ -49,7 +49,7 @@ Changing runner mode may affect cost or behavior, so confirm it before requestin
 
 ## Failure and fallback
 
-If Mission Control does not expose Codex CLI status yet, mark it as expected or future and preserve the current runner choice.
+If Mission Control does not expose Codex CLI status yet, mark it as expected or future and preserve the current runner choice. If a partial MCP exposure problem is hiding the Codex CLI surface, say that exact bridge issue instead of inventing a runner failure.
 
 ## Example invocation
 

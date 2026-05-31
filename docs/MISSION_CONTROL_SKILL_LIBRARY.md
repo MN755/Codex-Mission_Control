@@ -54,4 +54,4 @@ The Codex chat agent is not the Mission Control Manager. It is the bridge betwee
 
 ## Index
 
-See `plugins/mission-control/SKILL_INDEX.md` for the grouped index of all 93 skills.
+See `plugins/mission-control/SKILL_INDEX.md` for the grouped index of all 94 skills.

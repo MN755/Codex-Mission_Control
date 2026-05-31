@@ -4,6 +4,7 @@ import os
 import subprocess
 import sys
 import tempfile
+from importlib.util import find_spec
 from pathlib import Path
 
 
@@ -19,10 +20,28 @@ def _run(args: list[str], *, cwd: Path, env: dict[str, str] | None = None) -> No
     subprocess.run(args, cwd=str(cwd), env=env, check=True)
 
 
+def _ensure_build_toolchain() -> None:
+    if find_spec("wheel") is not None:
+        return
+    _run([sys.executable, "-m", "pip", "install", "--no-cache-dir", "wheel"], cwd=ROOT)
+
+
 def _build_wheels(wheelhouse: Path) -> None:
+    _ensure_build_toolchain()
     for package_dir in PACKAGE_DIRS:
         _run(
-            [sys.executable, "-m", "pip", "wheel", "--no-cache-dir", "--no-build-isolation", "--no-deps", "--wheel-dir", str(wheelhouse), str(package_dir)],
+            [
+                sys.executable,
+                "-m",
+                "pip",
+                "wheel",
+                "--no-cache-dir",
+                "--no-build-isolation",
+                "--no-deps",
+                "--wheel-dir",
+                str(wheelhouse),
+                str(package_dir),
+            ],
             cwd=ROOT,
         )
 

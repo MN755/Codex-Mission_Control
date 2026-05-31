@@ -2,12 +2,13 @@
 
 Canonical skill library for Codex chat when it is acting as the Mission Control bridge.
 
-Total indexed skills: 93
+Total indexed skills: 94
 
 ## Core bridge workflows
 
 | Skill name | Purpose | When to use | Primary tools/resources | Related skills |
 | --- | --- | --- | --- | --- |
+| `mission-control` | Keep Codex in the bridge role and route planning, execution, approvals, and handoff through Mission Control instead of improvising a local manager. | The user explicitly wants Mission Control or the bridge boundary itself must be made precise before work starts. | `mission_control_attach_workspace`, `mission_control_start_task`, `mission_control_get_status`, `mission_control_get_pending_decisions` | mission-control-orchestrate, mission-control-status, mission-control-approve |
 | `mission-control-orchestrate` | Use Mission Control as the orchestrator for the current workspace and keep Codex in the bridge role. | The user says to use Mission Control for this repo. | `mission_control_attach_workspace`, `mission_control_start_task`, `mission_control_get_status`, `mission_control_get_pending_decisions` | mission-control-status, mission-control-approve, mission-control-handoff |
 | `mission-control-import-codebase` | Import an existing repo safely and let Mission Control build understanding before execution. | The folder is non-empty and looks like a real codebase. | `mission_control_attach_workspace`, `mission_control_import_existing_codebase`, `mission_control_get_status`, `mission_control_start_task` | mission-control-explain-codebase, mission-control-plan, mission-control-existing-repo-fix |
 | `mission-control-status` | Return a bridge-safe Mission Control status summary. | The user asks for status, progress, blockers, or what happens next. | `mission_control_get_status`, `mission-control://projects/{project_id}/status`, `mission-control://projects/{project_id}/orchestrations/{orchestration_id}/status`, `mission-control://projects/{project_id}/agents` | mission-control-event-digest, mission-control-debug, mission-control-handoff |

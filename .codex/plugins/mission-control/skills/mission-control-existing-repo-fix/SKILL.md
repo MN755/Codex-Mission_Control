@@ -55,7 +55,7 @@ Write permission, risky commands, and scope expansions still need approval when 
 
 ## Failure and fallback
 
-If repo-fix workflow tooling is partial, combine import-codebase, codebase-map, and Manager-led task flows and make the narrow-fix intent explicit.
+If repo-fix workflow tooling is partial, combine import-codebase, codebase-map, and Manager-led task flows and make the narrow-fix intent explicit. If the bridge registered but named tools hidden in this session, say that exact partial state instead of pretending Mission Control disappeared.
 
 ## Example invocation
 

@@ -50,7 +50,7 @@ Health reads are read-only. If the user wants a repair action that changes confi
 
 ## Failure and fallback
 
-If the dedicated health tool is absent, use diagnostics and status resources to produce a best-effort bridge health summary and label missing checks clearly.
+If the dedicated health tool is absent, use diagnostics and status resources to produce a best-effort bridge health summary and label missing checks clearly. If the plugin registered with only partial MCP exposure, say that directly instead of flattening it into a generic outage.
 
 ## Example invocation
 

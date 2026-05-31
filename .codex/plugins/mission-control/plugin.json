@@ -16,6 +16,7 @@
     "prompts_catalog": "./mcp/prompts.json"
   },
   "skills": [
+    "mission-control",
     "mission-control-orchestrate",
     "mission-control-import-codebase",
     "mission-control-status",

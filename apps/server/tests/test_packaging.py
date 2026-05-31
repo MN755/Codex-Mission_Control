@@ -132,6 +132,9 @@ def test_package_workflow_smoke_tests_editable_installs_and_node24_actions() -> 
 def test_packaged_python_artifact_smoke_script_builds_and_installs_wheels() -> None:
     script_text = (Path(__file__).resolve().parents[3] / "scripts" / "smoke-packaged-python-artifacts.py").read_text(encoding="utf-8")
     assert "pip" in script_text and "wheel" in script_text
+    assert 'find_spec("wheel")' in script_text
+    assert '"pip", "install", "--no-cache-dir", "wheel"' in script_text
+    assert "--no-build-isolation" in script_text
     assert "--target" in script_text
     assert "mission_control_mcp_server" in script_text
     assert "mission_control_desktop.app" in script_text
