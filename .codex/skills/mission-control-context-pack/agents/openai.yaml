@@ -1,0 +1,3 @@
+interface:
+  display_name: "Context Pack"
+  short_description: "Explain or request context-pack generation for Mission Control work."

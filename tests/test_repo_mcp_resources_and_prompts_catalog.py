@@ -6,9 +6,12 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 PLUGIN_MANIFEST = ROOT / "plugins" / "mission-control" / "plugin.json"
+REPO_LOCAL_PLUGIN_MANIFEST = ROOT / ".codex" / "plugins" / "mission-control" / "plugin.json"
 RESOURCES_CATALOG = ROOT / "plugins" / "mission-control" / "mcp" / "resources.json"
 PROMPTS_CATALOG = ROOT / "plugins" / "mission-control" / "mcp" / "prompts.json"
 PROMPTS_DIR = ROOT / "plugins" / "mission-control" / "prompts"
+REPO_LOCAL_PROMPTS_DIR = ROOT / ".codex" / "plugins" / "mission-control" / "prompts"
+REPO_LOCAL_MCP_DIR = ROOT / ".codex" / "plugins" / "mission-control" / "mcp"
 EXAMPLES_DIR = ROOT / "examples" / "codex-chat-workflows"
 DOC_PATHS = [
     ROOT / "docs" / "MCP_RESOURCES_AND_PROMPTS.md",
@@ -51,6 +54,18 @@ def _load_json(path: Path) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def _prompt_entries() -> list[dict]:
+    return list(_load_json(PROMPTS_CATALOG)["prompts"])
+
+
+def _expected_prompt_stems() -> set[str]:
+    stems: set[str] = set()
+    for prompt in _prompt_entries():
+        stems.add(str(prompt["name"]))
+        stems.update(str(alias) for alias in list(prompt.get("aliases") or []))
+    return stems
+
+
 def test_plugin_manifest_contains_required_resource_and_prompt_subsets() -> None:
     manifest = _load_json(PLUGIN_MANIFEST)
     assert REQUIRED_RESOURCES.issubset(set(manifest["resources"]))
@@ -87,6 +102,24 @@ def test_required_prompt_files_exist_and_are_nonempty() -> None:
             content = prompt_path.read_text(encoding="utf-8").strip()
             assert content.startswith("# ")
             assert len(content) > 40
+
+
+def test_prompt_directories_match_catalog_exactly() -> None:
+    expected_stems = _expected_prompt_stems()
+    actual_stems = {path.stem for path in PROMPTS_DIR.glob("*.md")}
+    repo_local_stems = {path.stem for path in REPO_LOCAL_PROMPTS_DIR.glob("*.md")}
+    assert actual_stems == expected_stems
+    assert repo_local_stems == expected_stems
+
+
+def test_prompt_alias_markdown_matches_canonical_contracts() -> None:
+    for prompt in _prompt_entries():
+        canonical = (PROMPTS_DIR / f"{prompt['name']}.md").read_text(encoding="utf-8")
+        for alias in list(prompt.get("aliases") or []):
+            alias_text = (PROMPTS_DIR / f"{alias}.md").read_text(encoding="utf-8")
+            assert f"Canonical prompt: `{prompt['name']}`" in alias_text
+            assert f"Invocation name: `{alias}`" in alias_text
+            assert canonical.split("## Tool Sequence", 1)[1] == alias_text.split("## Tool Sequence", 1)[1]
 
 
 def test_docs_explain_tools_resources_prompts_and_redaction() -> None:
@@ -156,6 +189,17 @@ def test_bridge_docs_include_current_tools_and_advanced_resources() -> None:
         assert token in wiki_bridge, f"Missing token in wiki-staging/MCP-Plugin-Architecture.md: {token}"
 
 
+def test_repo_local_plugin_manifest_tracks_canonical_prompts_and_resources() -> None:
+    canonical_manifest = _load_json(PLUGIN_MANIFEST)
+    repo_local_manifest = _load_json(REPO_LOCAL_PLUGIN_MANIFEST)
+    assert repo_local_manifest["prompts"] == canonical_manifest["prompts"]
+    assert repo_local_manifest["resources"] == canonical_manifest["resources"]
+    assert repo_local_manifest["mcp"]["prompts_catalog"] == "./mcp/prompts.json"
+    assert repo_local_manifest["mcp"]["resources_catalog"] == "./mcp/resources.json"
+    assert (REPO_LOCAL_MCP_DIR / "prompts.json").exists()
+    assert (REPO_LOCAL_MCP_DIR / "resources.json").exists()
+
+
 def test_workflow_index_lists_all_shipped_examples() -> None:
     workflow_doc = WORKFLOW_DOC.read_text(encoding="utf-8")
     for example in EXAMPLES_DIR.glob("*.md"):
@@ -205,6 +249,31 @@ def test_examples_match_current_prompt_and_resource_contracts() -> None:
             "continue-orchestration",
             "mission_control_get_event_digest",
             "resume-orchestration",
+        ],
+        "build-your-own-x-catalog.md": [
+            "ask-manager-for-plan",
+            "mission_control_generate_swarm_plan",
+            "mission-control://projects/{project_id}/workspace-tooling",
+        ],
+        "build-web-stack.md": [
+            "mission_control_get_webwright_status",
+            "mission-control://projects/{project_id}/webwright",
+            "mission-control://projects/{project_id}/verification-brief",
+        ],
+        "build-game-or-renderer.md": [
+            "mission_control_get_nvidia_local_runtime_status",
+            "mission_control_get_nvidia_validation_plan",
+            "mission-control://projects/{project_id}/nvidia-validation-plan",
+        ],
+        "build-programming-language-or-shell.md": [
+            "ask-manager-for-plan",
+            "mission-control://projects/{project_id}/agent-contracts",
+            "mission-control://projects/{project_id}/verification-brief",
+        ],
+        "build-low-level-systems.md": [
+            "mission_control_request_snapshot",
+            "mission-control://projects/{project_id}/decision-ledger",
+            "mission-control://projects/{project_id}/verification-brief",
         ],
     }
 

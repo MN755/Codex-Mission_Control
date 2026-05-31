@@ -1,0 +1,3 @@
+interface:
+  display_name: "Import Codebase"
+  short_description: "Import an existing repo safely and let Mission Control build understanding before execution."

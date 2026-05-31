@@ -16,6 +16,15 @@ This document maps the example headless Mission Control workflows that live unde
 - [existing-codebase-fix-bug.md](../examples/codex-chat-workflows/existing-codebase-fix-bug.md)
 - [generate-agents-md.md](../examples/codex-chat-workflows/generate-agents-md.md)
 - [continue-later.md](../examples/codex-chat-workflows/continue-later.md)
+- [build-your-own-x-catalog.md](../examples/codex-chat-workflows/build-your-own-x-catalog.md)
+- [build-command-line-tool.md](../examples/codex-chat-workflows/build-command-line-tool.md)
+- [build-data-and-search-system.md](../examples/codex-chat-workflows/build-data-and-search-system.md)
+- [build-networked-system.md](../examples/codex-chat-workflows/build-networked-system.md)
+- [build-web-stack.md](../examples/codex-chat-workflows/build-web-stack.md)
+- [build-game-or-renderer.md](../examples/codex-chat-workflows/build-game-or-renderer.md)
+- [build-ml-or-vision-system.md](../examples/codex-chat-workflows/build-ml-or-vision-system.md)
+- [build-programming-language-or-shell.md](../examples/codex-chat-workflows/build-programming-language-or-shell.md)
+- [build-low-level-systems.md](../examples/codex-chat-workflows/build-low-level-systems.md)
 
 ## Common Tool Sequence
 
@@ -54,6 +63,20 @@ Most workflows follow a repeatable sequence:
 ### Handoff
 
 - Review handoff
+
+### Build-From-Scratch Showcases
+
+- Build-your-own-x catalog
+- Build command-line tool
+- Build data and search system
+- Build networked system
+- Build web stack
+- Build game or renderer
+- Build ML or vision system
+- Build programming language or shell
+- Build low-level systems
+
+These showcase workflows exist to prove Mission Control is not limited to toy bugfixes. They demonstrate how the bridge can route ambitious greenfield builds like renderers, shells, databases, browsers, game systems, neural networks, or low-level runtime experiments through the same headless orchestration path.
 
 ## Bridge Reminder
 

@@ -1,62 +1,64 @@
 ---
 name: mission-control-import-codebase
-description: Use when Codex should attach an existing repo or folder to Mission Control in read-first import mode.
+description: Import or attach an existing codebase into Mission Control. Use when the workspace already contains a repo and Codex should let Mission Control scan, understand, and classify it before edits.
 ---
 
 # Mission Control Import Codebase
 
 ## Purpose
 
-Safely bring an existing codebase into Mission Control so the manager can understand it before work starts.
+Import an existing repo safely and let Mission Control build understanding before execution.
 
-## Bridge Rule
+The Codex chat agent is not the Mission Control Manager. It is the bridge between the user and the Mission Control Manager.
 
-The Codex chat agent is not the Mission Control Manager. It is the bridge.
+## Use when
 
-## When To Use
+- The folder is non-empty and looks like a real codebase.
+- The user wants Mission Control to take over an existing repo.
+- You need codebase understanding before planning or writing.
 
-- The current folder already contains code
-- The user says `import this repo`
-- The user wants Mission Control to inspect an existing project before edits
+## Workflow
 
-## Required Mission Control Tools, Resources, And Prompts
+1. Attach the current workspace with `mission_control_attach_workspace`.
+2. Use `mission_control_import_existing_codebase` or the import prompt path for non-empty folders.
+3. Request a read-only scan first.
+4. Retrieve the codebase map and understanding summary.
+5. Ask whether to skip interview, quick clarify, full interview, or let the Manager decide.
+6. Start the requested task only after the understanding path is chosen.
 
-- Tools: `mission_control_attach_workspace`, `mission_control_get_codebase_map`, `mission_control_get_codebase_understanding`, `mission_control_set_import_interview_choice`, `mission_control_start_task`
-- Resources: `mission-control://projects/{project_id}/codebase-map`, `mission-control://projects/{project_id}/status`
-- Prompts: `attach-current-workspace`, `import-existing-codebase`, `start-manager-led-task`
+## Mission Control calls
 
-## Step-By-Step Workflow
+Tools:
+- `mission_control_attach_workspace`
+- `mission_control_import_existing_codebase`
+- `mission_control_get_status`
+- `mission_control_start_task`
 
-1. Attach the workspace in existing-codebase mode.
-2. Keep the first scan read-only.
-3. Retrieve the codebase map resource.
-4. Retrieve the codebase understanding summary.
-5. Ask the user whether to skip interview, quick clarify, full interview, or let the manager decide.
-6. Send that choice through `mission_control_set_import_interview_choice`.
-7. Start the requested task through Mission Control.
+Resources:
+- `mission-control://projects/{project_id}/codebase-map`
+- `mission-control://projects/{project_id}/status`
+- `mission-control://projects/{project_id}/pending-decisions`
 
-## What To Show The User In Codex Chat
+## User-facing output
 
-- Imported or reused project ID
-- Read-only scan outcome
-- Compact codebase map summary
-- Compact understanding summary
-- Interview choice options
+- Summarize what Mission Control learned about the stack and entry points.
+- Show the available intake choices: skip, quick clarify, full interview, or Manager decides.
+- Report the project identifier and safest next step.
 
-## Safety And Approval Behavior
+## Approval behavior
 
-- Treat the repo as user-owned until Mission Control says otherwise.
-- Do not expose secrets from config or environment files.
-- Do not start installs, builds, tests, or writes during import unless the user explicitly approves that path.
+Ask before any write-capable step, import permission change, or interview-skipping choice that materially changes assumptions.
 
-## Fallback Behavior If The Daemon Is Unavailable
+## Never do
 
-- Report that import could not be delegated to Mission Control.
-- Do not pretend the read-only scan happened.
-- Offer to debug the bridge or postpone Mission Control usage.
+- Do not run builds, installs, or tests during initial scan unless the user explicitly wants that.
+- Do not expose `.env` contents or secrets.
+- Do not skip understanding and jump into edits.
 
-## What Not To Do
+## Failure and fallback
 
-- Do not skip the read-only pass for an unknown codebase.
-- Do not answer the interview choice on behalf of the user.
-- Do not reinterpret a successful attach as permission to edit.
+If import tooling is missing, attach the workspace, explain that import-specific tooling is expected or future, and rely on read-only codebase resources where available.
+
+## Example invocation
+
+`Attach this existing repo to Mission Control, scan it read-only, and then let the Manager decide how to proceed.`

@@ -29,7 +29,10 @@ REQUIRED_FILES = [
     DOCS / "AUTOWIRE_PROVIDERS.md",
     DOCS / "PENDING_DECISIONS.md",
     DOCS / "HANDOFFS.md",
+    DOCS / "MISSION_CONTROL_SKILL_LIBRARY.md",
+    DOCS / "MISSION_CONTROL_SKILLS.md",
     DOCS / "SECURITY.md",
+    DOCS / "SKILL_PACK.md",
     DOCS / "TROUBLESHOOTING.md",
     DOCS / "PUBLIC_RELEASE_CHECKLIST.md",
 ]
@@ -129,6 +132,25 @@ def check_generated_exports(errors: list[str]) -> None:
         errors.append(message)
 
 
+def check_skill_pack_docs(errors: list[str]) -> None:
+    skills_doc = content(DOCS / "MISSION_CONTROL_SKILLS.md")
+    skill_pack_doc = content(DOCS / "SKILL_PACK.md")
+    library_doc = content(DOCS / "MISSION_CONTROL_SKILL_LIBRARY.md")
+
+    lowered_skills = skills_doc.lower()
+    lowered_pack = skill_pack_doc.lower()
+    if "ten-skill" in lowered_skills and not any(token in lowered_skills for token in ("retired", "stale", "older references")):
+        errors.append("docs/MISSION_CONTROL_SKILLS.md still references the retired ten-skill pack")
+    if "ten-skill" in lowered_pack and not any(token in lowered_pack for token in ("retired", "stale", "older references")):
+        errors.append("docs/SKILL_PACK.md still references the retired ten-skill pack")
+    if "MISSION_CONTROL_SKILL_LIBRARY.md" not in skills_doc:
+        errors.append("docs/MISSION_CONTROL_SKILLS.md must point readers at docs/MISSION_CONTROL_SKILL_LIBRARY.md")
+    if "SKILL_INDEX.md" not in skills_doc or "SKILL_INDEX.md" not in skill_pack_doc:
+        errors.append("Skill compatibility docs must point readers at plugins/mission-control/SKILL_INDEX.md")
+    if "all " not in library_doc or "skills" not in library_doc:
+        errors.append("docs/MISSION_CONTROL_SKILL_LIBRARY.md appears to be missing the current shipped-skill summary")
+
+
 def main() -> int:
     errors: list[str] = []
     check_required_files(errors)
@@ -136,6 +158,7 @@ def main() -> int:
     check_links(errors)
     check_wiki_status_labels(errors)
     check_generated_exports(errors)
+    check_skill_pack_docs(errors)
 
     if errors:
         print("Documentation checks failed:")

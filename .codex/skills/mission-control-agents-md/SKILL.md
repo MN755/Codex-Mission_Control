@@ -1,56 +1,57 @@
 ---
 name: mission-control-agents-md
-description: Use when Codex should generate or review AGENTS.md through Mission Control context and explicit user approval.
+description: Generate or review AGENTS.md from Mission Control understanding. Use when the user wants AGENTS.md proposed from the codebase map, existing instructions reviewed, or a safe draft prepared before writing.
 ---
 
-# Mission Control AGENTS.md
+# Mission Control Agents Md
 
 ## Purpose
 
-Generate or review an `AGENTS.md` proposal based on Mission Control's codebase understanding and project context.
+Use Mission Control understanding to propose or review AGENTS.md safely.
 
-## Bridge Rule
+The Codex chat agent is not the Mission Control Manager. It is the bridge between the user and the Mission Control Manager.
 
-The Codex chat agent is not the Mission Control Manager. It is the bridge.
+## Use when
 
-## When To Use
+- The user asks for AGENTS.md generation or review.
+- A repo needs agent instructions grounded in actual codebase structure.
+- You need to compare existing AGENTS.md guidance against Mission Control understanding.
 
-- The user asks to generate `AGENTS.md`
-- The imported codebase has no agent instructions
-- The user wants Mission Control to review or update existing instructions
+## Workflow
 
-## Required Mission Control Tools, Resources, And Prompts
+1. Read the codebase map resource.
+2. Check AGENTS.md status or proposal tooling.
+3. Call `mission_control_generate_agents_md` or the proposal path when available.
+4. Summarize proposed sections and ask before writing any file changes.
 
-- Tools: `mission_control_get_codebase_map`, `mission_control_get_agents_md_status`, `mission_control_propose_agents_md`
-- Resources: `mission-control://projects/{project_id}/codebase-map`
-- Prompts: `generate-agents-md-proposal`
+## Mission Control calls
 
-## Step-By-Step Workflow
+Tools:
+- `mission_control_generate_agents_md`
 
-1. Read the codebase map.
-2. Check `AGENTS.md` status.
-3. Request an `AGENTS.md` proposal.
-4. Show the proposal to the user before any write step.
-5. Ask whether to accept, revise, or defer the proposal.
+Resources:
+- `mission-control://projects/{project_id}/codebase-map`
+- `mission-control://projects/{project_id}/status`
 
-## What To Show The User In Codex Chat
+## User-facing output
 
-- Whether `AGENTS.md` already exists
-- Recommended path
-- Proposal summary
-- Proposed sections for setup, run, test, build, architecture, style, protected areas, and completion reports
+- Include project overview, setup commands, run commands, test commands, build commands, architecture notes, coding rules, do-not-touch areas, safety rules, and completion report format.
+- Tell the user whether the result is a proposal or a written file.
 
-## Safety And Approval Behavior
+## Approval behavior
 
-- Ask before writing or replacing `AGENTS.md`.
-- Keep the proposal derived from repo context instead of generic boilerplate.
+Always ask before writing or replacing AGENTS.md, even if the proposal looks good.
 
-## Fallback Behavior If The Daemon Is Unavailable
+## Never do
 
-- Say the proposal could not be generated through Mission Control.
-- Do not fabricate that Mission Control reviewed the repo if it did not.
+- Do not invent setup commands that are not backed by the repo or Mission Control understanding.
+- Do not overwrite existing AGENTS.md silently.
+- Do not expose secret paths or tokens.
 
-## What Not To Do
+## Failure and fallback
 
-- Do not overwrite `AGENTS.md` without user approval.
-- Do not invent setup or test commands that are unsupported by the codebase map.
+If AGENTS.md tooling is not available, use the codebase map to produce a bridge-safe draft summary and clearly mark file generation as expected or future.
+
+## Example invocation
+
+`Use Mission Control to propose an AGENTS.md for this repo.`

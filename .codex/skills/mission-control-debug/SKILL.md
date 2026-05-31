@@ -1,61 +1,62 @@
 ---
 name: mission-control-debug
-description: Use when Mission Control orchestration is stuck, failed, degraded, or unclear from Codex chat.
+description: Diagnose stuck or failed Mission Control orchestration. Use when runs are blocked, failing repeatedly, waiting too long, missing evidence, or unclear about the next recovery step.
 ---
 
 # Mission Control Debug
 
 ## Purpose
 
-Explain why Mission Control is stuck and surface the safest recovery path through Codex chat.
+Diagnose stuck or failed orchestration and surface recovery options.
 
-## Bridge Rule
+The Codex chat agent is not the Mission Control Manager. It is the bridge between the user and the Mission Control Manager.
 
-The Codex chat agent is not the Mission Control Manager. It is the bridge.
+## Use when
 
-## When To Use
+- The user says the run is stuck or broken.
+- Status looks stalled.
+- Approvals, diagnostics, or event summaries need to be correlated.
 
-- The run looks stuck
-- The daemon or bridge is unhealthy
-- The user asks why orchestration failed
+## Workflow
 
-## Required Mission Control Tools, Resources, And Prompts
+1. Fetch status with `mission_control_get_status`.
+2. Fetch pending decisions with `mission_control_get_pending_decisions`.
+3. Fetch diagnostics and recent event digest.
+4. Ask Mission Control for a recovery plan if available.
+5. Summarize blocker, likely causes, and next options.
 
-- Tools: `mission_control_get_status`, `mission_control_get_diagnostics`, `mission_control_get_pending_decisions`, `mission_control_get_orchestration_events`, `mission_control_request_recovery_options`
-- Resources: `mission-control://projects/{project_id}/diagnostics`, `mission-control://projects/{project_id}/orchestrations/{orchestration_id}/events`, `mission-control://projects/{project_id}/pending-decisions`
-- Prompts: `debug-failed-orchestration`, `continue-orchestration`
+## Mission Control calls
 
-## Step-By-Step Workflow
+Tools:
+- `mission_control_get_status`
+- `mission_control_get_pending_decisions`
+- `mission_control_get_event_digest`
+- `mission_control_request_recovery_plan`
 
-1. Fetch status.
-2. Fetch diagnostics, including platform profile, performance guardrails, safe debug commands, and the latest support-bundle path if present.
-3. Fetch pending decisions.
-4. Fetch recent orchestration events.
-5. Ask Mission Control for recovery options if the tool is available.
-6. Distinguish user-blocked, runner-blocked, daemon-blocked, and host-app-blocked states explicitly.
-7. Return a concise blocker explanation plus the safest next commands for the detected device.
+Resources:
+- `mission-control://projects/{project_id}/status`
+- `mission-control://projects/{project_id}/diagnostics`
+- `mission-control://projects/{project_id}/pending-decisions`
 
-## What To Show The User In Codex Chat
+## User-facing output
 
-- Current failure or degraded state
-- Detected device family: Windows 10, Windows 11, macOS, or Linux
-- Whether the run is blocked on the user, infrastructure, or manager recovery
-- Relevant recent events
-- Safe next options
-- Support-bundle path when one exists
+- State the main blocker, supporting evidence, pending approvals, and recommended next options.
+- Keep diagnostics summarized; do not paste raw logs by default.
 
-## Safety And Approval Behavior
+## Approval behavior
 
-- Keep raw logs, secrets, and stack traces out of the default summary.
-- Treat retries or resumes as explicit actions, not assumptions.
+If recovery choices may retry commands, widen scope, or restart work, relay the decision to the user before acting.
 
-## Fallback Behavior If The Daemon Is Unavailable
+## Never do
 
-- State that bridge-level diagnostics could not reach Mission Control.
-- Suggest generating the local support bundle first, then verifying the daemon before continuing.
+- Do not freehand a recovery action that Mission Control has not approved.
+- Do not dump raw logs or secrets.
+- Do not say the system is healthy when diagnostics disagree.
 
-## What Not To Do
+## Failure and fallback
 
-- Do not claim a recovery worked without rechecking status.
-- Do not confuse waiting for approval with a crash.
-- Do not invent recovery options that Mission Control did not return.
+If recovery tooling is missing, summarize the failure from status, diagnostics, and events, and clearly mark recovery-plan tooling as expected or future.
+
+## Example invocation
+
+`Mission Control looks stuck. Diagnose it and show my options.`

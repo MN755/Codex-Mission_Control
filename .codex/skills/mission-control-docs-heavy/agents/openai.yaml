@@ -1,0 +1,3 @@
+interface:
+  display_name: "Docs Heavy"
+  short_description: "Bias Mission Control toward documentation-heavy execution without directly spawning doc writers f..."

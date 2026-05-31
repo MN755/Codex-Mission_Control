@@ -1,64 +1,67 @@
 ---
 name: mission-control-orchestrate
-description: Use when Codex should route a workspace task through Mission Control instead of acting like the Manager AI.
+description: Primary Mission Control entrypoint for the current workspace. Use when the user says to use Mission Control, have Mission Control manage the repo, run the task through the Manager, or switch this chat into Mission Control bridge mode.
 ---
 
 # Mission Control Orchestrate
 
 ## Purpose
 
-Start or continue a Mission Control-managed task from Codex chat without turning Codex into the manager.
+Use Mission Control as the orchestrator for the current workspace and keep Codex in the bridge role.
 
-## Bridge Rule
+The Codex chat agent is not the Mission Control Manager. It is the bridge between the user and the Mission Control Manager.
 
-The Codex chat agent is not the Mission Control Manager. It is the bridge.
+## Use when
 
-## When To Use
+- The user says to use Mission Control for this repo.
+- The user wants Manager-led orchestration instead of direct local coding.
+- A new Mission Control task should be attached, started, monitored, and handed back through chat.
 
-- `Use Mission Control for this repo.`
-- `Have Mission Control manage this.`
-- `Run this through Mission Control.`
-- `Use the Manager on this project.`
+## Workflow
 
-## Required Mission Control Tools, Resources, And Prompts
-
-- Tools: `mission_control_attach_workspace`, `mission_control_start_task`, `mission_control_get_status`, `mission_control_get_pending_decisions`, `mission_control_answer_decision`, `mission_control_get_handoff`
-- Resources: `mission-control://projects/{project_id}/status`, `mission-control://projects/{project_id}/pending-decisions`, `mission-control://projects/{project_id}/orchestrations/{orchestration_id}/status`
-- Prompts: `attach-current-workspace`, `use-mission-control-for-this-repo`, `start-manager-led-task`, `continue-orchestration`
-
-## Step-By-Step Workflow
-
-1. Determine the current workspace path.
-2. Call `mission_control_attach_workspace`.
+1. Determine the current workspace path or project reference.
+2. Call `mission_control_attach_workspace` to register or reuse the project.
 3. Call `mission_control_start_task` with the user request.
-4. Return a compact status summary.
-5. Check `mission_control_get_pending_decisions`.
-6. Surface pending approvals or questions in Codex chat.
-7. Poll status only when useful, not on autopilot.
-8. Retrieve `mission_control_get_handoff` when Mission Control reports completion.
+4. Return a compact status summary from the status tool or resource.
+5. Check `mission_control_get_pending_decisions` and relay any approvals or questions.
+6. Poll only when useful instead of spamming status.
+7. Retrieve handoff through `mission_control_get_handoff` or `mission_control_get_handoff_summary` when complete.
 
-## What To Show The User In Codex Chat
+## Mission Control calls
 
-- Attached workspace or reused project/orchestration
-- Current phase, manager status, and next expected action
-- Pending decisions with risk and options
-- Final handoff summary when ready
+Tools:
+- `mission_control_attach_workspace`
+- `mission_control_start_task`
+- `mission_control_get_status`
+- `mission_control_get_pending_decisions`
+- `mission_control_get_handoff`
 
-## Safety And Approval Behavior
+Resources:
+- `mission-control://projects/{project_id}/status`
+- `mission-control://projects/{project_id}/pending-decisions`
+- `mission-control://projects/{project_id}/handoff`
+- `mission-control://projects/{project_id}/orchestrations/{orchestration_id}/status`
 
-- Respect Mission Control approval gates exactly as returned.
-- Pass user answers back through `mission_control_answer_decision`.
-- Treat imported codebases as read-first until Mission Control and the user allow writes.
+## User-facing output
 
-## Fallback Behavior If The Daemon Is Unavailable
+- Report the attached project or orchestration identifier.
+- Show current state, pending decisions, blockers, and next checkpoint.
+- When done, summarize the handoff with evidence level and limitations.
 
-- Say that the Mission Control daemon or MCP bridge is unavailable.
-- Do not fake orchestration progress.
-- Ask whether the user wants to wait, debug the bridge, or fall back to direct Codex work.
+## Approval behavior
 
-## What Not To Do
+Relay every pending approval or Manager question to the user. Do not continue past approval gates with guessed answers.
 
-- Do not independently spawn agents.
-- Do not edit files outside Mission Control mode after the user chose this path.
-- Do not bypass approvals.
-- Do not claim the manager made a decision unless Mission Control returned it.
+## Never do
+
+- Do not act as the Manager directly.
+- Do not independently spawn worker agents.
+- Do not bypass Mission Control approvals or write-permission gates.
+
+## Failure and fallback
+
+If Mission Control tools or the bridge are unavailable, say so clearly, offer the direct local-coding fallback only with user awareness, and avoid pretending orchestration happened.
+
+## Example invocation
+
+`Use Mission Control for this repo and fix the failing tests.`

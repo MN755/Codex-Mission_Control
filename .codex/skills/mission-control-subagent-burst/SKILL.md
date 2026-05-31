@@ -47,7 +47,7 @@ Resources:
 ## User-facing output
 
 - Explain whether Mission Control recommends a burst.
-- Show purpose, count, risk, and the proposed subagent list.
+- Show purpose, count, risk, intensity, and the proposed subagent list.
 - If approved, show spawn instructions and expected report format.
 
 ## Approval behavior

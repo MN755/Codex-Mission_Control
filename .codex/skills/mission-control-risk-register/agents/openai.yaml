@@ -1,0 +1,3 @@
+interface:
+  display_name: "Risk Register"
+  short_description: "Surface the project risk register and related mitigation posture."

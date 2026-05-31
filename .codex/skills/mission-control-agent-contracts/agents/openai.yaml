@@ -1,0 +1,3 @@
+interface:
+  display_name: "Agent Contracts"
+  short_description: "Surface worker contract boundaries so chat can explain them without inventing them."

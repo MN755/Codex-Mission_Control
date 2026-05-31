@@ -1,59 +1,58 @@
 ---
 name: mission-control-handoff
-description: Use when the user wants the final Mission Control handoff, evidence summary, and next steps.
+description: Retrieve and present the final Mission Control handoff. Use when the user asks for the finished result, final summary, what changed, how to run it, evidence, limitations, or next tasks.
 ---
 
 # Mission Control Handoff
 
 ## Purpose
 
-Retrieve the latest Mission Control handoff and present it as a clean Codex chat summary.
+Present the Mission Control handoff as a clean, evidence-aware final summary.
 
-## Bridge Rule
+The Codex chat agent is not the Mission Control Manager. It is the bridge between the user and the Mission Control Manager.
 
-The Codex chat agent is not the Mission Control Manager. It is the bridge.
+## Use when
 
-## When To Use
+- The orchestration is complete or near complete.
+- The user asks for the handoff or final report.
+- You need to verify what changed and what evidence backs it.
 
-- `Show me the handoff`
-- `What's the final output?`
-- `Summarize the result`
+## Workflow
 
-## Required Mission Control Tools, Resources, And Prompts
+1. Call `mission_control_get_handoff` or `mission_control_get_handoff_summary`.
+2. Read the handoff resource for status, evidence level, and limitations.
+3. Summarize what changed, how to run, validation or evidence, important files, and next tasks.
+4. Warn explicitly if the run was dry-run, incomplete, or weakly evidenced.
 
-- Tools: `mission_control_get_handoff`, `mission_control_get_status`
-- Resources: `mission-control://projects/{project_id}/handoff`, `mission-control://projects/{project_id}/validation-summary`
-- Prompts: `review-latest-handoff`
+## Mission Control calls
 
-## Step-By-Step Workflow
+Tools:
+- `mission_control_get_handoff`
+- `mission_control_get_handoff_summary`
 
-1. Retrieve the handoff.
-2. Summarize what changed.
-3. Summarize how to run it.
-4. Summarize validation and evidence.
-5. Summarize limitations and next steps.
-6. Warn if the handoff is dry-run or missing evidence.
+Resources:
+- `mission-control://projects/{project_id}/handoff`
+- `mission-control://projects/{project_id}/status`
 
-## What To Show The User In Codex Chat
+## User-facing output
 
-- What changed
-- Run instructions
-- Validation or evidence posture
-- Known limitations
-- Recommended next steps
+- Show status, confidence or evidence level, what changed, how to run, validation or evidence, known limitations, recommended next tasks, and important files or artifacts.
+- Warn if tests were not run, evidence is missing, the handoff is incomplete, or the run was dry-run.
 
-## Safety And Approval Behavior
+## Approval behavior
 
-- Say clearly when evidence is partial, missing, or simulated.
-- Do not overstate readiness.
+If the handoff requires explicit review or sign-off, relay that approval instead of declaring the work accepted.
 
-## Fallback Behavior If The Daemon Is Unavailable
+## Never do
 
-- Report that the handoff could not be retrieved from Mission Control.
-- Suggest a later retry or `mission-control-debug`.
+- Do not present a partial report as finished.
+- Do not suppress missing evidence.
+- Do not claim Codex performed the work directly.
 
-## What Not To Do
+## Failure and fallback
 
-- Do not pretend Codex produced the handoff itself.
-- Do not hide missing evidence.
-- Do not rewrite a non-ready handoff into a success story.
+If no handoff exists yet, say so directly, provide the current status, and point the user to the blocking approvals or remaining tasks.
+
+## Example invocation
+
+`Get the Mission Control handoff and summarize what changed.`

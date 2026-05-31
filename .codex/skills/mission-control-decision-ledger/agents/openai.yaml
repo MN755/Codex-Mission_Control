@@ -1,0 +1,3 @@
+interface:
+  display_name: "Decision Ledger"
+  short_description: "Summarize the project decision ledger and assumption trail."

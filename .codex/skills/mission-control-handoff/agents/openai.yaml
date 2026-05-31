@@ -1,0 +1,3 @@
+interface:
+  display_name: "Handoff"
+  short_description: "Present the Mission Control handoff as a clean, evidence-aware final summary."

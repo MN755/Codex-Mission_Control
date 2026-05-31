@@ -1,42 +1,68 @@
 ---
 name: mission-control-autowire-providers
-description: Use when Codex should detect and safely autowire local Mission Control runners without enabling unsafe billing paths by default.
+description: Probe and safely autowire local Mission Control runners for headless Codex use.
 ---
 
 # Mission Control Autowire Providers
 
-Use this skill when Mission Control needs a headless runner inventory and safe default runner configuration.
+## Purpose
 
-## Bridge boundary
+Build an honest runner inventory and generate a safe headless configuration without enabling unsafe billing paths by default.
 
-- The Codex chat agent is not the Mission Control Manager.
-- Codex chat inspects and configures the bridge-facing runner layer.
-- Mission Control Manager uses the configured runners later; it does not decide installation.
+The Codex chat agent is not the Mission Control Manager. It is the bridge between the user and the Mission Control Manager.
 
-## When to use
+## Use when
 
 - The user wants Mission Control wired to the current machine.
 - The user asks which runners are usable right now.
-- The user wants a safe headless config generated.
+- The daemon is installed, but runner configuration needs a safe default pass.
 
-## Tool and script sequence
+## Workflow
 
-1. Probe the machine with the backend bootstrap modules under `apps/server/src/bootstrap/`.
-2. Generate or refresh the headless config through `/api/headless/autowire` or `scripts/mission-control-bootstrap.py`.
-3. Report `dry_run`, `codex_cli`, `ollama`, `claude_cli`, and API-backed status honestly.
-4. Keep API-backed runners disabled unless secure external config already exists and the user wants that billing path.
+1. Probe `dry_run`, `codex_cli`, `ollama`, `claude_cli`, and API-backed runners.
+2. Generate or refresh headless config through `/api/headless/autowire` or `scripts/mission-control-bootstrap.py`.
+3. Enable only runners that are safely configured already.
+4. Keep API-backed paths opt-in and billing-aware.
 
-## What to report to the user
+## Mission Control calls
 
-- Ready runners.
-- Missing login steps.
-- Ollama server state and local model visibility when safe.
-- Whether only dry-run is available.
-- The next Codex prompt the user can try immediately.
+Modules:
+- `apps/server/src/bootstrap/environment_probe.py`
+- `apps/server/src/bootstrap/runner_probe.py`
+- `apps/server/src/bootstrap/runner_autowire.py`
 
-## Safety constraints
+Endpoints:
+- `POST /api/headless/autowire`
+- `GET /api/headless/config`
+- `GET /api/runners/status`
 
-- Never store raw API keys.
-- Never require UI interaction.
-- Never force API billing.
-- Never pretend Claude CLI or Codex CLI is authenticated if detection is inconclusive.
+## User-facing output
+
+- Show ready runners and safe defaults.
+- Show missing login or runtime steps.
+- Show billing warnings for API-backed runners.
+- Provide the next Codex prompt the user can try immediately.
+
+## Approval behavior
+
+- Do not enable new paid API paths implicitly.
+- Do not pull Ollama models automatically.
+- Do not ask for secrets that are not actually required for the currently safe path.
+
+## Never do
+
+- Do not require UI interaction.
+- Do not store raw API keys.
+- Do not claim Claude CLI or Codex CLI is authenticated when detection is inconclusive.
+
+Never require UI interaction.
+
+## Failure and fallback
+
+- If no live runner is ready, keep `dry_run` enabled and say that setup is degraded but usable.
+- If a runner is installed but not logged in or not running, show the exact recommended fix instead of vague advice.
+- If only external env config exists, keep the report redacted and billing-aware.
+
+## Example invocation
+
+`Autowire Mission Control providers and tell me which runners are actually usable.`

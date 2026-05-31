@@ -1,56 +1,62 @@
 ---
 name: mission-control-resume
-description: Use when a new Codex chat needs to reconnect to a recent Mission Control orchestration safely.
+description: Resume an existing Mission Control orchestration from a new Codex chat. Use when the user returns later and wants Codex to reattach, find the active or recent orchestration, show state, surface pending decisions, and continue safely.
 ---
 
 # Mission Control Resume
 
 ## Purpose
 
-Reconnect Codex chat to the current workspace's active or recent Mission Control orchestration.
+Reattach Codex chat to an existing Mission Control run and continue safely.
 
-## Bridge Rule
+The Codex chat agent is not the Mission Control Manager. It is the bridge between the user and the Mission Control Manager.
 
-The Codex chat agent is not the Mission Control Manager. It is the bridge.
+## Use when
 
-## When To Use
+- The user returns in a new chat and says to continue Mission Control.
+- An existing workspace already has recent orchestration state.
+- You need to find the last known state before acting.
 
-- The user opens a new Codex chat and wants to continue later
-- The user says `resume Mission Control`
-- The bridge needs to find the last known orchestration
-
-## Required Mission Control Tools, Resources, And Prompts
-
-- Tools: `mission_control_attach_workspace`, `mission_control_get_status`, `mission_control_get_pending_decisions`, `mission_control_resume`
-- Resources: `mission-control://projects/{project_id}/orchestrations/{orchestration_id}/status`, `mission-control://projects/{project_id}/pending-decisions`
-- Prompts: `attach-current-workspace`, `resume-orchestration`, `continue-orchestration`
-
-## Step-By-Step Workflow
+## Workflow
 
 1. Attach the current workspace.
-2. Find the active or reused orchestration from the attach result.
-3. Return the last known state.
-4. Surface pending decisions.
-5. Resume only if Mission Control reports the run is paused and the user asks to continue.
+2. Find the active or recent orchestration from status resources or the attach result.
+3. Return the last known state, active agents, blockers, and pending decisions.
+4. Resume through `mission_control_resume` only if the run is paused and it is safe to do so.
+5. If already running, summarize instead of issuing duplicate resume actions.
 
-## What To Show The User In Codex Chat
+## Mission Control calls
 
-- Reused project or orchestration ID
-- Current status and manager note
-- Pending approvals or questions
-- Whether the run was resumed
+Tools:
+- `mission_control_attach_workspace`
+- `mission_control_get_status`
+- `mission_control_get_pending_decisions`
+- `mission_control_resume`
 
-## Safety And Approval Behavior
+Resources:
+- `mission-control://projects/{project_id}/orchestrations/{orchestration_id}/status`
+- `mission-control://projects/{project_id}/status`
+- `mission-control://projects/{project_id}/pending-decisions`
 
-- Do not auto-resume on attach.
-- Respect any pending decision before continuing execution.
+## User-facing output
 
-## Fallback Behavior If The Daemon Is Unavailable
+- Show the recovered project or orchestration reference, last known phase, pending decisions, and whether a resume action is still needed.
+- If safe to resume, confirm the post-resume state.
 
-- Say the previous orchestration could not be recovered from Mission Control.
-- Offer to debug the bridge or wait until the daemon is back.
+## Approval behavior
 
-## What Not To Do
+Do not resume if pending approvals would immediately block or if the user has not confirmed a risky restart choice.
 
-- Do not create a new plan if a paused orchestration already exists.
-- Do not resume automatically just because an orchestration was found.
+## Never do
+
+- Do not start a new orchestration when a resume is the right path.
+- Do not claim recovery if no prior project can be found.
+- Do not override paused state without checking why it was paused.
+
+## Failure and fallback
+
+If active-or-recent orchestration lookup is limited, attach the workspace, report the latest project status you can find, and ask the user whether to resume manually through the expected Mission Control control surface.
+
+## Example invocation
+
+`Resume the existing Mission Control run for this workspace.`

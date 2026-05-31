@@ -1,0 +1,3 @@
+interface:
+  display_name: "Scope Creep Check"
+  short_description: "Check for scope creep and preserve explicit include-now versus defer decisions."

@@ -1,0 +1,3 @@
+interface:
+  display_name: "Api Provider Mode"
+  short_description: "Explain or request API-provider mode while keeping billing and secret handling explicit."

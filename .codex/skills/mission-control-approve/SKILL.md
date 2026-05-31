@@ -1,60 +1,60 @@
 ---
 name: mission-control-approve
-description: Use when Mission Control needs a user approval or manager-question answer relayed through Codex chat.
+description: Relay Mission Control approvals and questions to the user. Use when there are pending command approvals, tool approvals, write permissions, Manager questions, swarm approvals, recovery decisions, or handoff review gates.
 ---
 
 # Mission Control Approve
 
 ## Purpose
 
-Render pending approvals or questions clearly, collect the user's answer, and send that answer back to Mission Control.
+Present pending Mission Control decisions clearly and relay the user response back safely.
 
-## Bridge Rule
+The Codex chat agent is not the Mission Control Manager. It is the bridge between the user and the Mission Control Manager.
 
-The Codex chat agent is not the Mission Control Manager. It is the bridge.
+## Use when
 
-## When To Use
+- A pending decision blocks progress.
+- The user asks what needs approval.
+- Mission Control is waiting on user input.
 
-- There are pending approvals
-- There are pending manager questions
-- The user asks to approve or deny a Mission Control request
+## Workflow
 
-## Required Mission Control Tools, Resources, And Prompts
+1. Fetch pending decisions with `mission_control_get_pending_decisions` or the pending-decisions resource.
+2. Render the top decision with reason, risk, options, and any relevant scope.
+3. Ask the user to choose when no answer is provided.
+4. Call `mission_control_answer_decision` with the selected answer.
+5. Confirm the updated status.
 
-- Tools: `mission_control_get_pending_decisions`, `mission_control_answer_decision`
-- Resources: `mission-control://projects/{project_id}/pending-decisions`
-- Prompts: `show-pending-approvals`, `answer-pending-approval`
+## Mission Control calls
 
-## Step-By-Step Workflow
+Tools:
+- `mission_control_get_pending_decisions`
+- `mission_control_answer_decision`
 
-1. Call `mission_control_get_pending_decisions`.
-2. Render the top pending decision in Codex chat.
-3. Explain the risk level and available options.
-4. Ask the user to choose.
-5. Call `mission_control_answer_decision`.
-6. Return a confirmation and refreshed decision state.
+Resources:
+- `mission-control://projects/{project_id}/pending-decisions`
+- `mission-control://projects/{project_id}/orchestrations/{orchestration_id}/status`
 
-## What To Show The User In Codex Chat
+## User-facing output
 
-- Decision type
-- Why it is needed
-- Risk level
-- Exact options and recommended option when present
-- Confirmation after the answer is recorded
+- Identify the decision type: command approval, tool approval, write permission, Manager question, swarm approval, snapshot approval, handoff review, recovery decision, or scope change decision.
+- Explain the risk and the likely impact of each option.
+- Confirm whether the decision was accepted, denied, deferred, or still pending.
 
-## Safety And Approval Behavior
+## Approval behavior
 
-- Always ask the user before answering.
-- Preserve one-time versus project-wide approval distinctions.
-- Keep secret-bearing command details redacted unless Mission Control safely exposed them.
+This skill exists to preserve approvals. Never auto-answer a pending decision unless Mission Control explicitly marks it safe and the user already delegated that choice.
 
-## Fallback Behavior If The Daemon Is Unavailable
+## Never do
 
-- Say the decision could not be sent back to Mission Control.
-- Do not imply the approval was recorded.
+- Do not answer on the user's behalf.
+- Do not hide the risk level.
+- Do not bypass write-permission or swarm approval gates.
 
-## What Not To Do
+## Failure and fallback
 
-- Do not approve or deny anything on the user's behalf.
-- Do not bypass Mission Control by running the gated action directly.
-- Do not widen an approval scope unless the user explicitly picked that option.
+If decision-answer tooling is unavailable, present the pending decision textually and tell the user that manual resolution through the expected tool is still required.
+
+## Example invocation
+
+`Show me the pending Mission Control approval and let me choose.`

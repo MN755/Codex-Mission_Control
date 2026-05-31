@@ -1,57 +1,59 @@
 ---
 name: mission-control-safe-mode
-description: Use when the user wants Mission Control to operate in a stricter approval-heavy safety posture.
+description: Put Mission Control into strict safety mode. Use when the user wants maximum approval gating, read-only imports, destructive-action blocking, deployment blocking, or tighter external-tool controls.
 ---
 
 # Mission Control Safe Mode
 
 ## Purpose
 
-Tighten Mission Control safety settings for risky, unfamiliar, or imported workspaces.
+Request or explain Mission Control strict safety mode for the project.
 
-## Bridge Rule
+The Codex chat agent is not the Mission Control Manager. It is the bridge between the user and the Mission Control Manager.
 
-The Codex chat agent is not the Mission Control Manager. It is the bridge.
+## Use when
 
-## When To Use
+- The user wants every command approved.
+- The workspace is risky or unfamiliar.
+- The user wants deployments and external account tools disabled by default.
 
-- The user asks for strict safety
-- The repo is unfamiliar
-- External tools or destructive actions should be gated harder
+## Workflow
 
-## Required Mission Control Tools, Resources, And Prompts
+1. Explain what safe mode changes: strict approvals, destructive-action blocking, deployment blocking, and read-only import behavior.
+2. Call `mission_control_enable_safe_mode` if available.
+3. Re-check status and pending decisions after the mode change.
+4. Confirm which restrictions are active and which remain expected or future.
 
-- Tools: `mission_control_get_project_settings`, `mission_control_update_project_settings`, `mission_control_get_import_safety`, `mission_control_update_import_safety`, `mission_control_get_tool_catalog`, `mission_control_set_tool_permission`
-- Resources: `mission-control://projects/{project_id}/diagnostics`, `mission-control://projects/{project_id}/pending-decisions`
-- Prompts: `enable-safe-mode`
+## Mission Control calls
 
-## Step-By-Step Workflow
+Tools:
+- `mission_control_enable_safe_mode`
+- `mission_control_get_status`
 
-1. Read current settings and import safety state.
-2. Require approvals for commands.
-3. Pause dynamic spawning if supported.
-4. Block destructive actions.
-5. Disable deployment or external-account tools unless explicitly approved.
-6. Enforce read-only scan behavior for imported codebases.
+Resources:
+- `mission-control://projects/{project_id}/status`
+- `mission-control://projects/{project_id}/pending-decisions`
+- `mission-control://projects/{project_id}/swarm-plan`
 
-## What To Show The User In Codex Chat
+## User-facing output
 
-- Which safety knobs were tightened
-- Which tools remain blocked or approval-gated
-- Whether dynamic spawning was paused
+- Show the enabled restrictions and any unsupported controls that are still expected or future.
+- Tell the user how approvals will look different after safe mode.
 
-## Safety And Approval Behavior
+## Approval behavior
 
-- Favor `ask_every_time` or equivalent conservative settings.
-- Preserve Mission Control approval flow instead of replacing it with Codex judgment.
+Treat safe-mode entry or exit as a meaningful policy change and confirm it with the user before changing the project posture.
 
-## Fallback Behavior If The Daemon Is Unavailable
+## Never do
 
-- Say that safe mode changes could not be applied through Mission Control.
-- Do not claim the environment is protected if the policy update did not happen.
+- Do not claim safe mode is active without a backed status change.
+- Do not weaken safety controls silently.
+- Do not keep dynamic spawning active if the user asked to pause it and the backend supports that control.
 
-## What Not To Do
+## Failure and fallback
 
-- Do not silently relax safety later.
-- Do not use safe mode as an excuse to bypass Mission Control.
-- Do not grant project-wide tool access without explicit user approval.
+If full safe-mode tooling is not implemented, document the intended restrictions in chat, mark them as expected or future, and continue operating conservatively.
+
+## Example invocation
+
+`Put this Mission Control project into strict safe mode.`
