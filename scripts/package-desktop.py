@@ -216,6 +216,15 @@ def _write_text(path: Path, content: str) -> None:
     path.write_text(content, encoding="utf-8")
 
 
+def _ensure_linux_packaging_prerequisites(appimagetool: str) -> None:
+    if shutil.which("desktop-file-validate") is not None:
+        return
+    raise RuntimeError(
+        "Linux AppImage packaging requires 'desktop-file-validate' when "
+        f"using {appimagetool}. Install the 'desktop-file-utils' package first."
+    )
+
+
 def _create_linux_appdir(pyinstaller_bundle: Path, release_root: Path) -> Path:
     appdir = release_root / f"{APP_SLUG}.AppDir"
     if appdir.exists():
@@ -263,6 +272,7 @@ def package_linux(pyinstaller_bundle: Path, release_root: Path) -> list[Path]:
 
     appimagetool = os.environ.get("APPIMAGETOOL") or shutil.which("appimagetool")
     if appimagetool:
+        _ensure_linux_packaging_prerequisites(appimagetool)
         appimage_path = release_root / f"{APP_SLUG}.AppImage"
         subprocess.run(
             [appimagetool, str(appdir), str(appimage_path)],

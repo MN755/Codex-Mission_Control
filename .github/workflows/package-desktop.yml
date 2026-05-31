@@ -72,6 +72,8 @@ jobs:
       - name: Install Linux AppImage tooling
         if: runner.os == 'Linux'
         run: |
+          sudo apt-get update
+          sudo apt-get install -y desktop-file-utils
           curl -L --fail "https://github.com/AppImage/appimagetool/releases/download/${APPIMAGETOOL_VERSION}/appimagetool-x86_64.AppImage" -o appimagetool
           echo "${APPIMAGETOOL_SHA256_X86_64}  appimagetool" | sha256sum --check --
           chmod +x appimagetool

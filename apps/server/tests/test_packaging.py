@@ -113,6 +113,19 @@ def test_appimagetool_env_enables_extract_and_run(monkeypatch) -> None:
     assert env["ARCH"] == "x86_64"
 
 
+def test_linux_packaging_prerequisites_raise_clear_error_when_validator_missing(monkeypatch) -> None:
+    module = _load_packaging_module()
+    monkeypatch.setattr(module.shutil, "which", lambda name: None if name == "desktop-file-validate" else "/tmp/tool")
+    try:
+        module._ensure_linux_packaging_prerequisites("/tmp/appimagetool")
+    except RuntimeError as exc:
+        message = str(exc)
+    else:
+        raise AssertionError("Expected RuntimeError when desktop-file-validate is unavailable")
+    assert "desktop-file-validate" in message
+    assert "desktop-file-utils" in message
+
+
 def test_create_linux_appdir_populates_root_and_xdg_entries(tmp_path, monkeypatch) -> None:
     module = _load_packaging_module()
     bundle_root = tmp_path / "bundle"
@@ -174,6 +187,7 @@ def test_linux_package_workflow_pins_and_verifies_appimagetool() -> None:
     workflow_text = workflow_path.read_text(encoding="utf-8")
     assert 'APPIMAGETOOL_VERSION: "1.9.0"' in workflow_text
     assert 'APPIMAGETOOL_SHA256_X86_64: "46FDD785094C7F6E545B61AFCFB0F3D98D8EAB243F644B4B17698C01D06083D1"' in workflow_text
+    assert "sudo apt-get install -y desktop-file-utils" in workflow_text
     assert "github.com/AppImage/appimagetool/releases/download/${APPIMAGETOOL_VERSION}/appimagetool-x86_64.AppImage" in workflow_text
     assert "sha256sum --check --" in workflow_text
     assert "continuous/appimagetool-x86_64.AppImage" not in workflow_text
