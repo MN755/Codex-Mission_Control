@@ -331,3 +331,26 @@ def test_diagnostics_collects_daemon_launcher_logs(monkeypatch, tmp_path) -> Non
     assert "daemon out" in payload
     assert "daemon err" in payload
     assert Path(report["bundle_path"]).exists()
+
+
+def test_diagnostic_reports_preserve_optional_project_scope_metadata(monkeypatch, tmp_path) -> None:
+    report_root = tmp_path / "diagnostics"
+    report_root.mkdir()
+    monkeypatch.setattr(diagnostics, "diagnostics_root", lambda: report_root)
+
+    diagnostics.write_diagnostic_report(
+        startup_status={"mode": "regular", "overall_status": "ready", "checks": []},
+        system_status={},
+        settings_status=None,
+        recent_errors=None,
+        project_id=42,
+        project_name="Scoped Diagnostics",
+        workspace_path="C:/demo/scoped",
+    )
+
+    reports = diagnostics.list_diagnostic_reports()
+
+    assert reports
+    assert reports[0]["project_id"] == 42
+    assert reports[0]["project_name"] == "Scoped Diagnostics"
+    assert reports[0]["workspace_path"] == "C:/demo/scoped"

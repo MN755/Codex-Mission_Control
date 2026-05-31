@@ -6,64 +6,61 @@ This page explains how the plugin package, MCP tools, MCP resources, and MCP pro
 
 ## Why the split exists
 
-The MCP layer should stay thin and predictable.
+The MCP layer should stay thin and predictable:
 
-- Resources are read-only state summaries.
-- Tools perform bridge actions.
-- Prompts guide reusable workflows.
-- The daemon remains the orchestration authority.
+- resources are read-only state summaries
+- tools perform bridge actions
+- prompts provide reusable Codex-chat workflows
+- the daemon remains the orchestration authority
 
-## Expected tools
+## Current MCP tools
 
-Expected tools:
-
-- `mission_control_attach_workspace`
-- `mission_control_start_task`
-- `mission_control_get_status`
-- `mission_control_get_pending_decisions`
 - `mission_control_answer_decision`
-- `mission_control_pause`
-- `mission_control_resume`
-- `mission_control_get_handoff`
-- `mission_control_import_existing_codebase`
-- `mission_control_plugin_health`
+- `mission_control_approve_swarm_plan`
+- `mission_control_attach_workspace`
 - `mission_control_enable_safe_mode`
-- `mission_control_get_event_digest`
-- `mission_control_get_handoff_summary`
 - `mission_control_generate_agents_md`
-- `mission_control_request_snapshot`
-- `mission_control_request_recovery_plan`
-- `mission_control_get_orchestration_events`
+- `mission_control_generate_swarm_plan`
+- `mission_control_get_agents_md_status`
 - `mission_control_get_codebase_map`
 - `mission_control_get_codebase_understanding`
-- `mission_control_set_import_interview_choice`
-- `mission_control_get_workspace_tooling`
-- `mission_control_search_codebase`
-- `mission_control_get_webwright_status`
-- `mission_control_get_nvidia_dynamo_status`
+- `mission_control_get_diagnostics`
+- `mission_control_get_event_digest`
+- `mission_control_get_handoff`
+- `mission_control_get_handoff_summary`
+- `mission_control_get_import_safety`
 - `mission_control_get_nvidia_aiq_status`
-- `mission_control_run_nvidia_aiq_research`
+- `mission_control_get_nvidia_dynamo_status`
 - `mission_control_get_nvidia_gpu_diagnostics`
 - `mission_control_get_nvidia_local_runtime_status`
+- `mission_control_get_nvidia_nim_status`
 - `mission_control_get_nvidia_validation_plan`
-- `mission_control_get_diagnostics`
-- `mission_control_get_swarm_plan`
-- `mission_control_update_swarm_preferences`
-- `mission_control_generate_swarm_plan`
-- `mission_control_approve_swarm_plan`
+- `mission_control_get_orchestration_events`
+- `mission_control_get_pending_decisions`
 - `mission_control_get_project_settings`
-- `mission_control_update_project_settings`
-- `mission_control_get_import_safety`
-- `mission_control_update_import_safety`
+- `mission_control_get_status`
+- `mission_control_get_swarm_plan`
 - `mission_control_get_tool_catalog`
-- `mission_control_set_tool_permission`
-- `mission_control_get_agents_md_status`
+- `mission_control_get_webwright_status`
+- `mission_control_get_workspace_tooling`
+- `mission_control_import_existing_codebase`
+- `mission_control_pause`
+- `mission_control_plugin_health`
 - `mission_control_propose_agents_md`
 - `mission_control_request_recovery_options`
+- `mission_control_request_recovery_plan`
+- `mission_control_request_snapshot`
+- `mission_control_resume`
+- `mission_control_run_nvidia_aiq_research`
+- `mission_control_search_codebase`
+- `mission_control_set_import_interview_choice`
+- `mission_control_set_tool_permission`
+- `mission_control_start_task`
+- `mission_control_update_import_safety`
+- `mission_control_update_project_settings`
+- `mission_control_update_swarm_preferences`
 
-## Expected resources
-
-Expected resources:
+## Current MCP resources
 
 - `mission-control://projects/{project_id}/orchestrations/{orchestration_id}/status`
 - `mission-control://projects/{project_id}/orchestrations/{orchestration_id}/events`
@@ -76,6 +73,7 @@ Expected resources:
 - `mission-control://projects/{project_id}/diagnostics`
 - `mission-control://projects/{project_id}/webwright`
 - `mission-control://projects/{project_id}/nvidia-dynamo`
+- `mission-control://projects/{project_id}/nvidia-nim`
 - `mission-control://projects/{project_id}/nvidia-aiq`
 - `mission-control://projects/{project_id}/nvidia-gpu-diagnostics`
 - `mission-control://projects/{project_id}/nvidia-local-runtime`
@@ -90,17 +88,27 @@ Expected resources:
 - `mission-control://projects/{project_id}/instincts`
 - `mission-control://projects/{project_id}/verification-brief`
 
-## Prompts and plugin package
+## Current MCP prompts
 
-The plugin package should include:
-
-- MCP config example
-- prompt catalog
-- resource catalog
-- skill folders
-- chat-safe markdown templates
-
-Prompts should guide flows such as attach workspace, continue orchestration, review handoff, and answer pending approvals.
+- `attach_current_workspace` (aliases: `attach-current-workspace`)
+- `use_mission_control_for_repo` (aliases: `use-mission-control-for-this-repo`)
+- `import_existing_codebase` (aliases: `import-existing-codebase`)
+- `start_manager_led_task` (aliases: `start-manager-led-task`)
+- `continue_orchestration` (aliases: `continue-orchestration`)
+- `show_pending_approvals` (aliases: `show-pending-approvals`)
+- `answer_pending_approval` (aliases: `answer-pending-approval`)
+- `review_latest_handoff` (aliases: `review-latest-handoff`)
+- `debug_failed_orchestration` (aliases: `debug-failed-orchestration`)
+- `use_webwright_for_browser_task` (aliases: `use-webwright-for-browser-task`)
+- `pause_orchestration` (aliases: `pause-orchestration`)
+- `resume_orchestration` (aliases: `resume-orchestration`)
+- `explain_current_swarm` (aliases: `explain-current-swarm`)
+- `switch_swarm_strategy` (aliases: `switch-swarm-strategy`)
+- `enable_safe_mode` (aliases: `enable-safe-mode`)
+- `generate_agents_md_proposal` (aliases: `generate-agents-md-proposal`)
+- `install_from_github`
+- `autowire_providers`
+- `ask_manager_for_plan` (aliases: `ask-manager-for-plan`)
 
 ## Related pages
 

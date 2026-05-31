@@ -684,12 +684,15 @@ class MissionControlDaemonClient:
 
     def get_diagnostics(self, *, project_id: int | None = None, orchestration_id: int | None = None) -> dict[str, Any]:
         plugin_health = self.plugin_health()
-        reports = self._request("GET", "/api/diagnostics/reports")
-        latest_report = reports[0] if reports else None
         resolved_project_id = project_id
         if resolved_project_id is None and orchestration_id is not None:
             session = self.get_orchestration(orchestration_id, project_id=project_id)
             resolved_project_id = int(session["project_id"])
+        reports_path = "/api/diagnostics/reports"
+        if resolved_project_id is not None:
+            reports_path = f"{reports_path}?project_id={resolved_project_id}"
+        reports = self._request("GET", reports_path)
+        latest_report = reports[0] if reports else None
         status = None
         if resolved_project_id is not None:
             try:
@@ -1175,11 +1178,13 @@ class MissionControlDaemonClient:
 
     def _summarize_handoff(self, project_id: int, payload: dict[str, Any]) -> dict[str, Any]:
         handoff = payload.get("handoff") if "handoff" in payload else payload
+        status = str(payload.get("status", handoff.get("status")) or "not_ready")
+        ready = bool(payload["ready"]) if "ready" in payload else status in {"ready", "needs_review", "handoff_ready"}
         return {
             "project_id": project_id,
             "project_name": handoff.get("project_name"),
-            "status": payload.get("status", handoff.get("status")),
-            "ready": payload.get("ready", True),
+            "status": status,
+            "ready": ready,
             "summary": handoff.get("summary"),
             "run_instructions": handoff.get("run_instructions", []),
             "tests_count": handoff.get("tests_count", 0),

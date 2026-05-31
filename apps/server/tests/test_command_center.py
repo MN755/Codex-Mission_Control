@@ -99,3 +99,5 @@ def test_handoffs_and_tools_and_diagnostics_endpoints(client) -> None:
     reports = client.get("/api/diagnostics/reports").json()
     assert reports
     assert reports[0]["path"].endswith(".md")
+    scoped_reports = client.get(f"/api/diagnostics/reports?project_id={project['id']}").json()
+    assert scoped_reports == []

@@ -2845,6 +2845,9 @@ class DiagnosticReportRead(BaseModel):
     summary: str
     error_code: str | None = None
     recommended_fixes: list[str] = Field(default_factory=list)
+    project_id: int | None = None
+    project_name: str | None = None
+    workspace_path: str | None = None
     platform_profile: dict[str, Any] = Field(default_factory=dict)
     performance_profile: dict[str, Any] = Field(default_factory=dict)
     safe_debug_commands: list[str] = Field(default_factory=list)
@@ -2916,6 +2919,9 @@ class DiagnosticReportListItemRead(BaseModel):
     created_at: datetime
     error_code: str | None = None
     summary: str
+    project_id: int | None = None
+    project_name: str | None = None
+    workspace_path: str | None = None
     platform_profile: dict[str, Any] = Field(default_factory=dict)
     performance_profile: dict[str, Any] = Field(default_factory=dict)
     safe_debug_commands: list[str] = Field(default_factory=list)

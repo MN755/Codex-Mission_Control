@@ -2,44 +2,47 @@
 
 > Status: Current
 
-This page describes the preferred install path for Mission Control: set up the daemon, plugin assets, MCP bridge, and skills for background running without relying on the standalone UI.
+This page documents the shipped headless install path for Mission Control. Codex chat is the bridge, the daemon owns orchestration, and the standalone dashboard is optional.
 
-## What the background install does
-
-- prepares or reuses a local Mission Control checkout
-- syncs plugin and skill assets when supported
-- generates a safe local configuration
-- probes supported runners
-- verifies daemon and MCP bridge health
-- returns a compact install summary for Codex chat
-
-## PowerShell examples
+## Recommended PowerShell entrypoint
 
 ```powershell
-.\scripts\install-mission-control-plugin.ps1 -HeadlessOnly
+.\scripts\install-mission-control-plugin.ps1
 .\scripts\install-mission-control-plugin.ps1 -DryRun
-.\scripts\install-mission-control-plugin.ps1 -Repair
-.\scripts\install-mission-control-plugin.ps1 -HealthCheckOnly
+.\scripts\install-mission-control-plugin.ps1 -InstallDir C:\MissionControl
+.\scripts\install-mission-control-plugin.ps1 -SkipCodexSync -SkipPythonSetup
+.\scripts\install-mission-control-plugin.ps1 -DaemonHost 127.0.0.1 -DaemonPort 8010
 ```
 
-## Default behavior
+The shipped PowerShell wrapper currently supports:
 
-- daemon host defaults to `127.0.0.1`
-- `dry_run` is always available
-- `codex_cli` is preferred when installed and signed in
-- `ollama` uses the built-in local adapter recipe and becomes runnable only when the local endpoint is reachable
-- API-backed runners use built-in adapter recipes but stay non-runnable unless they were configured securely and intentionally
-- requested `install_path` is now treated as real source-of-truth for plugin and skill path reporting instead of cosmetic metadata
+- `-RepoUrl`
+- `-InstallDir`
+- `-CodexHome`
+- `-DryRun`
+- `-SkipCodexSync`
+- `-SkipPythonSetup`
+- `-PythonCommand`
+- `-DaemonHost`
+- `-DaemonPort`
 
-## What is not automatic
+## What the install flow does
 
-- no dashboard requirement
-- no silent API billing
-- no raw API key collection in chat
-- no automatic large model downloads
-- no destructive repair actions without user awareness
+- clones or reuses the Mission Control repo
+- runs the unified install workflow through `scripts/mission-control-manage.py`
+- probes local prerequisites, daemon readiness, and safe runner availability
+- syncs plugin, MCP, prompt, and skill assets into Codex-facing locations unless explicitly skipped
+- returns a compact install summary that stays safe for chat
 
-## Expected install summary
+## Health and repair posture
+
+- `.\scripts\mission-control-headless-health.ps1` is the read-only health lane
+- install and update workflows handle missing asset sync and config reconciliation through the shipped workflow, not fake wrapper flags
+- if you want a non-mutating rehearsal, use `-DryRun`
+
+Unsupported wrapper flags such as `-HeadlessOnly`, `-Repair`, and `-HealthCheckOnly` are not part of the shipped PowerShell installer surface.
+
+## Expected summary
 
 ```text
 Mission Control install summary
@@ -56,5 +59,4 @@ Mission Control install summary
 
 - [Quick Start](QUICK_START.md)
 - [Autowire Providers](AUTOWIRE_PROVIDERS.md)
-- [Background Health](HEADLESS_HEALTH.md)
 - [Troubleshooting](TROUBLESHOOTING.md)

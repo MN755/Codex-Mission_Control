@@ -3210,8 +3210,13 @@ def get_project_handoff(
 
 
 @app.get("/api/diagnostics/reports", response_model=list[DiagnosticReportListItemRead])
-def diagnostics_reports(_: None = Depends(_require_bridge_token)) -> list[DiagnosticReportListItemRead]:
-    return [DiagnosticReportListItemRead(**item) for item in service.recent_diagnostic_reports()]
+def diagnostics_reports(
+    project_id: int | None = Query(default=None),
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> list[DiagnosticReportListItemRead]:
+    project = _get_project_or_404(db, project_id) if project_id is not None else None
+    return [DiagnosticReportListItemRead(**item) for item in service.recent_diagnostic_reports(project)]
 
 
 @app.get("/api/tools", response_model=list[ToolCatalogItemRead])

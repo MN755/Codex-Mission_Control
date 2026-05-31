@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from textwrap import dedent
 import re
@@ -26,6 +27,44 @@ def render_page(title: str, summary: str, status: str, sections: list[tuple[str,
 
 
 PAGES: dict[str, str] = {}
+
+PLUGIN_MANIFEST_PATH = ROOT / "plugins" / "mission-control" / "plugin.json"
+RESOURCE_CATALOG_PATH = ROOT / "plugins" / "mission-control" / "mcp" / "resources.json"
+PROMPT_CATALOG_PATH = ROOT / "plugins" / "mission-control" / "mcp" / "prompts.json"
+MCP_SERVER_PATH = ROOT / "apps" / "mcp-server" / "src" / "mission_control_mcp_server" / "server.py"
+POWERSHELL_INSTALL_SCRIPT = ROOT / "scripts" / "install-mission-control-plugin.ps1"
+
+
+def _load_json(path: Path) -> dict:
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _plugin_manifest() -> dict:
+    return _load_json(PLUGIN_MANIFEST_PATH)
+
+
+def _resource_catalog() -> dict:
+    return _load_json(RESOURCE_CATALOG_PATH)
+
+
+def _prompt_catalog() -> dict:
+    return _load_json(PROMPT_CATALOG_PATH)
+
+
+def _discover_mcp_tools() -> list[str]:
+    tool_names = re.findall(r'"name": "(mission_control_[a-z0-9_]+)"', MCP_SERVER_PATH.read_text(encoding="utf-8"))
+    return sorted(set(tool_names))
+
+
+def _powershell_install_parameters() -> list[str]:
+    script_text = POWERSHELL_INSTALL_SCRIPT.read_text(encoding="utf-8")
+    param_block = script_text.split("Set-StrictMode", 1)[0]
+    names = re.findall(r"\[(?:string|switch|int)\]\$(\w+)", param_block)
+    return names
+
+
+def _markdown_bullets(items: list[str]) -> str:
+    return "\n".join(f"- {item}" for item in items)
 
 
 def add(page: str, title: str, summary: str, status: str, sections: list[tuple[str, str]]) -> None:
@@ -2767,7 +2806,239 @@ def validate_links() -> list[str]:
     return broken
 
 
+def _build_dynamic_install_from_codex_page() -> str:
+    params = [f"`-{name}`" for name in _powershell_install_parameters()]
+    params_block = _markdown_bullets(params)
+    examples_block = "\n".join(
+        [
+            "```powershell",
+            ".\\scripts\\install-mission-control-plugin.ps1",
+            ".\\scripts\\install-mission-control-plugin.ps1 -DryRun",
+            ".\\scripts\\install-mission-control-plugin.ps1 -InstallDir C:\\MissionControl",
+            ".\\scripts\\install-mission-control-plugin.ps1 -SkipCodexSync -SkipPythonSetup",
+            ".\\scripts\\install-mission-control-plugin.ps1 -DaemonHost 127.0.0.1 -DaemonPort 8010",
+            "```",
+        ]
+    )
+    return render_page(
+        "Install From Codex",
+        "This page documents the current Codex-native install workflow when the user asks Codex chat to install and wire up Mission Control from GitHub.",
+        "Current",
+        [
+            (
+                "Recommended prompt",
+                """
+                Ask Codex chat directly:
+
+                ```text
+                Install Mission Control from https://github.com/MN755/Codex-Mission_Control and wire it up for this workspace.
+                ```
+                """,
+            ),
+            (
+                "What the shipped flow does",
+                """
+                The shipped headless install path is real, not aspirational:
+
+                1. Clone or reuse the repository.
+                2. Run the unified install workflow through `scripts/install-mission-control-plugin.ps1` or `scripts/mission-control-manage.py install`.
+                3. Probe local prerequisites, runtime folders, daemon readiness, and safe local runners.
+                4. Sync plugin, MCP, and skill assets into Codex-facing locations unless explicitly skipped.
+                5. Return a compact install summary back into Codex chat without requiring the standalone dashboard.
+                """,
+            ),
+            (
+                "Current PowerShell entrypoint",
+                "The shipped PowerShell installer currently supports these parameters:\n\n"
+                f"{params_block}\n\n"
+                "Practical examples:\n\n"
+                f"{examples_block}",
+            ),
+            (
+                "Expected output",
+                """
+                A healthy run should end with a compact summary such as:
+
+                ```text
+                Mission Control install summary
+
+                - Repo: attached
+                - Daemon: ready on localhost
+                - MCP bridge: configured
+                - Skills: available
+                - Preferred runner: codex_cli
+                - Missing action: none
+                ```
+                """,
+            ),
+            (
+                "Related pages",
+                f"""
+                See {md_link('Headless-Install-and-Autowire.md')}, {md_link('Provider-Autowiring.md')}, and {md_link('Diagnostics-and-Health-Checks.md')}.
+                """,
+            ),
+        ],
+    )
+
+
+def _build_dynamic_headless_install_page() -> str:
+    params = [f"`-{name}`" for name in _powershell_install_parameters()]
+    params_block = _markdown_bullets(params)
+    return render_page(
+        "Headless Install and Autowire",
+        "This page describes the current shipped headless bootstrap and autowire surface for Mission Control plugin mode.",
+        "Current",
+        [
+            (
+                "Current commands",
+                """
+                The shipped headless entrypoints are:
+
+                ```powershell
+                .\\scripts\\install-mission-control-plugin.ps1
+                .\\scripts\\install-mission-control-plugin.ps1 -DryRun
+                .\\scripts\\mission-control-headless-health.ps1
+                ```
+
+                Supporting entrypoints also exist through `scripts/mission-control-manage.py install`, `update`, and `uninstall`.
+                """,
+            ),
+            (
+                "What the installer actually supports",
+                "The PowerShell wrapper forwards the following supported parameters to the unified install workflow:\n\n"
+                f"{params_block}\n\n"
+                "Unsupported fantasy flags such as `-HeadlessOnly`, `-Repair`, and `-HealthCheckOnly` are not part of the shipped command surface.",
+            ),
+            (
+                "What headless install does",
+                """
+                The shipped workflow is headless-first:
+
+                - avoid requiring dashboard startup
+                - probe Python, runtime folders, daemon readiness, and local runners
+                - configure plugin, MCP bridge, prompts, and skills
+                - summarize what is ready, degraded, or blocked for Codex chat
+                - keep repair-like actions explicit instead of pretending they happened
+                """,
+            ),
+            (
+                "Health and repair reality",
+                """
+                `mission-control-headless-health.ps1` is the read-only health lane.
+
+                Install and update workflows handle asset sync and configuration repair implicitly when their shipped options are used. If you need a dry run, use `-DryRun` instead of inventing extra wrapper flags.
+                """,
+            ),
+            (
+                "Related pages",
+                f"""
+                Continue with {md_link('Install-From-Codex.md')}, {md_link('Provider-Autowiring.md')}, and {md_link('Install-Reports-and-Repair-Mode.md')}.
+                """,
+            ),
+        ],
+    )
+
+
+def _build_dynamic_plugin_architecture_page() -> str:
+    tool_names = [f"`{name}`" for name in _discover_mcp_tools()]
+    resource_names = [f"`{entry['uri_template']}`" for entry in _resource_catalog()["resources"]]
+    prompt_lines = []
+    for prompt in _prompt_catalog()["prompts"]:
+        aliases = [str(alias) for alias in list(prompt.get("aliases") or [])]
+        alias_suffix = f" (aliases: {', '.join(f'`{alias}`' for alias in aliases)})" if aliases else ""
+        prompt_lines.append(f"`{prompt['name']}`{alias_suffix}")
+    return render_page(
+        "MCP Plugin Architecture",
+        "This page explains how the plugin package, MCP tools, MCP resources, and MCP prompts work together around the Mission Control daemon.",
+        "Current",
+        [
+            (
+                "Why the split exists",
+                """
+                The MCP layer should stay thin and predictable:
+
+                - resources are read-only state summaries
+                - tools perform bridge actions
+                - prompts provide reusable Codex-chat workflows
+                - the daemon remains the orchestration authority
+                """,
+            ),
+            (
+                "Current MCP tools",
+                _markdown_bullets(tool_names),
+            ),
+            (
+                "Current MCP resources",
+                _markdown_bullets(resource_names),
+            ),
+            (
+                "Current MCP prompts",
+                _markdown_bullets(prompt_lines),
+            ),
+            (
+                "Related pages",
+                f"""
+                Continue with {md_link('Skills-and-Prompts.md')}, {md_link('MCP-Resources-Catalog.md')}, {md_link('MCP-Prompts-Catalog.md')}, and {md_link('MCP-Bridge-Endpoints.md')}.
+                """,
+            ),
+        ],
+    )
+
+
+def _build_dynamic_resources_catalog_page() -> str:
+    lines = [
+        f"`{entry['uri_template']}`: {entry['title']} - {entry['summary']}"
+        for entry in _resource_catalog()["resources"]
+    ]
+    return render_page(
+        "MCP Resources Catalog",
+        "This page summarizes the current read-only MCP resources exposed for Mission Control bridge mode.",
+        "Current",
+        [
+            ("Catalog", _markdown_bullets(lines)),
+            (
+                "Related pages",
+                f"""
+                Continue with {md_link('MCP-Plugin-Architecture.md')}, {md_link('MCP-Prompts-Catalog.md')}, and {md_link('Mission-Control-Daemon.md')}.
+                """,
+            ),
+        ],
+    )
+
+
+def _build_dynamic_prompts_catalog_page() -> str:
+    lines = []
+    for entry in _prompt_catalog()["prompts"]:
+        aliases = [str(alias) for alias in list(entry.get("aliases") or [])]
+        alias_suffix = f"; aliases: {', '.join(f'`{alias}`' for alias in aliases)}" if aliases else ""
+        tools = ", ".join(f"`{name}`" for name in list(entry.get("tool_sequence") or []))
+        lines.append(f"{entry['title']} (`{entry['name']}`{alias_suffix}) - tools: {tools}")
+    return render_page(
+        "MCP Prompts Catalog",
+        "This page summarizes the current prompt workflows packaged for Mission Control bridge mode.",
+        "Current",
+        [
+            ("Catalog", _markdown_bullets(lines)),
+            (
+                "Related pages",
+                f"""
+                Continue with {md_link('MCP-Plugin-Architecture.md')}, {md_link('Skills-and-Prompts.md')}, and {md_link('Quick-Start.md')}.
+                """,
+            ),
+        ],
+    )
+
+
+def _refresh_dynamic_pages() -> None:
+    PAGES["Install-From-Codex.md"] = _build_dynamic_install_from_codex_page()
+    PAGES["Headless-Install-and-Autowire.md"] = _build_dynamic_headless_install_page()
+    PAGES["MCP-Plugin-Architecture.md"] = _build_dynamic_plugin_architecture_page()
+    PAGES["MCP-Resources-Catalog.md"] = _build_dynamic_resources_catalog_page()
+    PAGES["MCP-Prompts-Catalog.md"] = _build_dynamic_prompts_catalog_page()
+
+
 def main() -> None:
+    _refresh_dynamic_pages()
     WIKI_DIR.mkdir(exist_ok=True)
     for existing in WIKI_DIR.glob("*.md"):
         if existing.name not in {"PUSH-TO-GITHUB-WIKI.md"}:

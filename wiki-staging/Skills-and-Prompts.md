@@ -44,14 +44,8 @@ Additional bridge-oriented skills should include:
 
 - `mission-control-install-from-github`
 - `mission-control-autowire-providers`
-- `mission-control-plugin-health`
-- `mission-control-headless-health`
-- `mission-control-event-digest`
-- `mission-control-change-request`
-- `mission-control-pause`
-- `mission-control-stop`
-- `mission-control-existing-repo-fix`
-- `mission-control-webapp-testing`
+
+If those specific skills are not present yet, treat them as planned wrappers around the documented install/autowire flows.
 
 ## Prompts
 
@@ -60,22 +54,12 @@ Common workflow prompts should cover:
 - attach current workspace
 - use Mission Control for this repo
 - import existing codebase
-- start manager-led task
 - continue orchestration
 - show pending approvals
-- answer pending approval
-- debug failed orchestration
-- use Webwright for browser task
-- pause orchestration
-- resume orchestration
-- explain current swarm
-- switch swarm strategy
 - review latest handoff
+- explain current swarm
 - enable safe mode
 - generate AGENTS.md proposal
-- install from GitHub
-- autowire providers
-- ask Manager for plan
 
 ## Related pages
 

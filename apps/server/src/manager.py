@@ -10637,7 +10637,7 @@ class MissionControlService:
         pending_approvals = self.list_pending_approvals(db, project)
         pending_questions = self.list_pending_questions(db, project, mutate=False)
         coverage = validation_coverage_service.coverage_summary(db, project)
-        latest_report = next(iter(self.recent_diagnostic_reports()), None)
+        latest_report = next(iter(self.recent_diagnostic_reports(project)), None)
         latest_orchestration = self._latest_project_orchestration(db, project)
         active_agents = [
             {
@@ -10728,7 +10728,7 @@ class MissionControlService:
         persisted_locks = list(project.path_locks or [])
         preview_locks = persisted_locks or self._preview_path_locks(db, project)
         recent_decisions = list(project.decision_records or []) or self._preview_decision_records(db, project)
-        latest_report = next(iter(self.recent_diagnostic_reports()), None)
+        latest_report = next(iter(self.recent_diagnostic_reports(project)), None)
         performance_profile = latest_report.get("performance_profile") if isinstance(latest_report, dict) else {}
         instincts: list[dict[str, Any]] = []
 
@@ -11279,8 +11279,20 @@ class MissionControlService:
             {"project_id": project.id, "write_permission_status": safety.write_permission_status},
         )
 
-    def recent_diagnostic_reports(self) -> list[dict[str, Any]]:
-        return list_diagnostic_reports()
+    def recent_diagnostic_reports(self, project: Project | None = None) -> list[dict[str, Any]]:
+        reports = list_diagnostic_reports()
+        if project is None:
+            return reports
+        project_workspace = str(project.workspace_path or "").strip()
+        filtered: list[dict[str, Any]] = []
+        for report in reports:
+            if report.get("project_id") == project.id:
+                filtered.append(report)
+                continue
+            report_workspace = str(report.get("workspace_path") or "").strip()
+            if project_workspace and report_workspace and report_workspace == project_workspace:
+                filtered.append(report)
+        return filtered
 
     def create_project(self, db: Session, *, name: str, idea: str, workspace_path: str, provider: str, runner_mode: str, manager_mode: str) -> Project:
         profile = self._app_profile(db)

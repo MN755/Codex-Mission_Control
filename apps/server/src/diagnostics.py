@@ -59,6 +59,9 @@ def _load_report_metadata(json_path: Path) -> dict[str, Any]:
     return {
         "summary": str(startup_status.get("error_summary") or startup_status.get("overall_status") or "Diagnostic report"),
         "error_code": startup_status.get("error_code"),
+        "project_id": payload.get("project_id"),
+        "project_name": payload.get("project_name"),
+        "workspace_path": payload.get("workspace_path"),
         "platform_profile": payload.get("platform_profile") if isinstance(payload.get("platform_profile"), dict) else {},
         "performance_profile": payload.get("performance_profile") if isinstance(payload.get("performance_profile"), dict) else {},
         "safe_debug_commands": list(payload.get("safe_debug_commands") or []),
@@ -73,6 +76,9 @@ def write_diagnostic_report(
     system_status: dict[str, Any],
     settings_status: dict[str, Any] | None,
     recent_errors: dict[str, Any] | None,
+    project_id: int | None = None,
+    project_name: str | None = None,
+    workspace_path: str | None = None,
 ) -> dict[str, Any]:
     timestamp = datetime.now(timezone.utc)
     stamp = timestamp.strftime("%Y%m%d-%H%M%S")
@@ -122,6 +128,9 @@ def write_diagnostic_report(
         "recent_launcher_logs": launcher_logs,
         "recent_runtime_logs": redact_value(runtime_logs),
         "recommended_fixes": recommended_fixes,
+        "project_id": project_id,
+        "project_name": project_name,
+        "workspace_path": workspace_path,
         "platform_profile": device_profile,
         "performance_profile": performance_profile,
         "safe_debug_commands": safe_debug_commands,
@@ -135,6 +144,7 @@ def write_diagnostic_report(
         f"- Startup mode: {startup_status.get('mode')}",
         f"- Overall status: {startup_status.get('overall_status')}",
         f"- Error code: {startup_status.get('error_code') or 'None'}",
+        f"- Project scope: {project_name or workspace_path or 'global app diagnostics'}",
         "",
         "## Failed checks",
         "",
@@ -233,6 +243,9 @@ def write_diagnostic_report(
         "summary": startup_status.get("error_summary") or startup_status.get("overall_status") or "Diagnostic report generated.",
         "error_code": startup_status.get("error_code"),
         "recommended_fixes": recommended_fixes,
+        "project_id": project_id,
+        "project_name": project_name,
+        "workspace_path": workspace_path,
         "platform_profile": device_profile,
         "performance_profile": performance_profile,
         "safe_debug_commands": safe_debug_commands,
@@ -296,6 +309,9 @@ def list_diagnostic_reports() -> list[dict[str, Any]]:
         json_path = path.with_suffix(".json")
         summary = "Diagnostic report"
         error_code: str | None = None
+        project_id: int | None = None
+        project_name: str | None = None
+        workspace_path: str | None = None
         created_at = datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc)
         platform_profile: dict[str, Any] = {}
         performance_profile: dict[str, Any] = {}
@@ -305,6 +321,9 @@ def list_diagnostic_reports() -> list[dict[str, Any]]:
             metadata = _load_report_metadata(json_path)
             summary = str(metadata.get("summary") or summary)
             error_code = metadata.get("error_code")
+            project_id = int(metadata["project_id"]) if isinstance(metadata.get("project_id"), int) else None
+            project_name = str(metadata["project_name"]) if metadata.get("project_name") else None
+            workspace_path = str(metadata["workspace_path"]) if metadata.get("workspace_path") else None
             platform_profile = dict(metadata.get("platform_profile") or {})
             performance_profile = dict(metadata.get("performance_profile") or {})
             safe_debug_commands = [str(item) for item in list(metadata.get("safe_debug_commands") or [])]
@@ -322,6 +341,9 @@ def list_diagnostic_reports() -> list[dict[str, Any]]:
                 "created_at": created_at,
                 "error_code": error_code,
                 "summary": summary,
+                "project_id": project_id,
+                "project_name": project_name,
+                "workspace_path": workspace_path,
                 "bundle_path": bundle_path,
                 "platform_profile": platform_profile,
                 "performance_profile": performance_profile,

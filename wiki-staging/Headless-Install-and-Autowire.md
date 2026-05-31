@@ -1,46 +1,52 @@
 # Headless Install and Autowire
 
-This page describes the intended headless bootstrap and repair experience for Mission Control plugin mode.
+This page describes the current shipped headless bootstrap and autowire surface for Mission Control plugin mode.
 
-> Status: Planned / Partial
+> Status: Current
 
-## Planned commands
+## Current commands
 
-Expected commands:
+The shipped headless entrypoints are:
 
 ```powershell
-.\scripts\install-mission-control-plugin.ps1 -HeadlessOnly
+.\scripts\install-mission-control-plugin.ps1
 .\scripts\install-mission-control-plugin.ps1 -DryRun
-.\scripts\install-mission-control-plugin.ps1 -Repair
 .\scripts\mission-control-headless-health.ps1
 ```
 
-## What headless install should do
+Supporting entrypoints also exist through `scripts/mission-control-manage.py install`, `update`, and `uninstall`.
 
-Headless-only install should:
+## What the installer actually supports
+
+The PowerShell wrapper forwards the following supported parameters to the unified install workflow:
+
+- `-RepoUrl`
+- `-InstallDir`
+- `-CodexHome`
+- `-DryRun`
+- `-SkipCodexSync`
+- `-SkipPythonSetup`
+- `-PythonCommand`
+- `-DaemonHost`
+- `-DaemonPort`
+
+Unsupported fantasy flags such as `-HeadlessOnly`, `-Repair`, and `-HealthCheckOnly` are not part of the shipped command surface.
+
+## What headless install does
+
+The shipped workflow is headless-first:
 
 - avoid requiring dashboard startup
-- probe Python, runtime folders, and daemon readiness
-- configure plugin and MCP bridge files
-- copy or point to skills and prompts
-- detect runners and summarize availability
-- emit an install report suitable for Codex chat
+- probe Python, runtime folders, daemon readiness, and local runners
+- configure plugin, MCP bridge, prompts, and skills
+- summarize what is ready, degraded, or blocked for Codex chat
+- keep repair-like actions explicit instead of pretending they happened
 
-## Repair and health modes
+## Health and repair reality
 
-Repair mode should reconcile missing plugin files, stale configs, and runtime-directory problems.
+`mission-control-headless-health.ps1` is the read-only health lane.
 
-Health mode should stay read-only and report:
-
-- daemon health
-- MCP bridge health
-- runner availability
-- runtime write access
-- missing prerequisites
-
-## Current status note
-
-The repo currently contains daemon start scripts and plugin package content. If the specific install and health scripts above are not present, treat the command surface as planned while using the documented manual steps from the repo docs.
+Install and update workflows handle asset sync and configuration repair implicitly when their shipped options are used. If you need a dry run, use `-DryRun` instead of inventing extra wrapper flags.
 
 ## Related pages
 

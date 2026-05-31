@@ -10,6 +10,7 @@ ROOT = Path(__file__).resolve().parents[1]
 README = ROOT / "README.md"
 DOCS = ROOT / "docs"
 WIKI = ROOT / "wiki-staging"
+INSTALL_SCRIPT = ROOT / "scripts" / "install-mission-control-plugin.ps1"
 
 REQUIRED_FILES = [
     README,
@@ -48,6 +49,7 @@ README_FORBIDDEN = [
 
 STATUS_PREFIX = "> Status:"
 LINK_RE = re.compile(r"\[[^\]]+\]\(([^)]+)\)")
+POWERSHELL_PARAM_RE = re.compile(r"\[(?:string|switch|int)\]\$(\w+)")
 
 
 def content(path: Path) -> str:
@@ -151,6 +153,38 @@ def check_skill_pack_docs(errors: list[str]) -> None:
         errors.append("docs/MISSION_CONTROL_SKILL_LIBRARY.md appears to be missing the current shipped-skill summary")
 
 
+def check_install_docs(errors: list[str]) -> None:
+    install_text = content(INSTALL_SCRIPT)
+    param_block = install_text.split("Set-StrictMode", 1)[0]
+    supported = {f"-{name}" for name in POWERSHELL_PARAM_RE.findall(param_block)}
+    forbidden_commands = [
+        ".\\scripts\\install-mission-control-plugin.ps1 -HeadlessOnly",
+        ".\\scripts\\install-mission-control-plugin.ps1 -Repair",
+        ".\\scripts\\install-mission-control-plugin.ps1 -HealthCheckOnly",
+    ]
+    docs_to_check = [
+        DOCS / "HEADLESS_INSTALL.md",
+        WIKI / "Install-From-Codex.md",
+        WIKI / "Headless-Install-and-Autowire.md",
+    ]
+    for path in docs_to_check:
+        if not path.exists():
+            continue
+        text = content(path)
+        for flag in supported:
+            if path.name != "Install-From-Codex.md" and flag not in text and flag != "-CodexHome":
+                errors.append(f"{path.relative_to(ROOT)} is missing supported installer flag {flag}")
+        for command in forbidden_commands:
+            if command in text:
+                errors.append(f"{path.relative_to(ROOT)} still advertises unsupported installer command {command}")
+    for path in [WIKI / "Install-From-Codex.md", WIKI / "Headless-Install-and-Autowire.md"]:
+        if not path.exists():
+            continue
+        lowered = content(path).lower()
+        if "planned / partial" in lowered or "partial / experimental" in lowered:
+            errors.append(f"{path.relative_to(ROOT)} still describes shipped install flows as planned/partial")
+
+
 def main() -> int:
     errors: list[str] = []
     check_required_files(errors)
@@ -159,6 +193,7 @@ def main() -> int:
     check_wiki_status_labels(errors)
     check_generated_exports(errors)
     check_skill_pack_docs(errors)
+    check_install_docs(errors)
 
     if errors:
         print("Documentation checks failed:")

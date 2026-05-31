@@ -126,6 +126,16 @@ def test_package_workflow_smoke_tests_editable_installs_and_node24_actions() -> 
     assert "actions/upload-artifact@v6" in workflow_text
     assert 'python -c "import mission_control_desktop; import main"' in workflow_text
     assert "MISSION_CONTROL_DESKTOP_SMOKE_TEST=1 mission-control-desktop" in workflow_text
+    assert "python scripts/smoke-packaged-python-artifacts.py" in workflow_text
+
+
+def test_packaged_python_artifact_smoke_script_builds_and_installs_wheels() -> None:
+    script_text = (Path(__file__).resolve().parents[3] / "scripts" / "smoke-packaged-python-artifacts.py").read_text(encoding="utf-8")
+    assert "pip" in script_text and "wheel" in script_text
+    assert "--target" in script_text
+    assert "mission_control_mcp_server" in script_text
+    assert "mission_control_desktop.app" in script_text
+    assert 'import_module("main")' in script_text
 
 
 def test_server_pyproject_exports_nvidia_devstack_module() -> None:

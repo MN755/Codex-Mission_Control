@@ -66,6 +66,40 @@ def test_daemon_client_brackets_ipv6_loopback_urls() -> None:
     assert _base_url("::1", 8010) == "http://[::1]:8010"
 
 
+def test_handoff_summary_infers_ready_from_status() -> None:
+    client = MissionControlDaemonClient(base_url="http://127.0.0.1:8010", timeout=0.1)
+
+    not_ready = client._summarize_handoff(
+        7,
+        {"status": "not_ready", "handoff": {"project_name": "Demo", "summary": "Still cooking."}},
+    )
+    review_ready = client._summarize_handoff(
+        7,
+        {"status": "needs_review", "handoff": {"project_name": "Demo", "summary": "Ready for review."}},
+    )
+
+    assert not_ready["ready"] is False
+    assert review_ready["ready"] is True
+
+
+def test_project_diagnostics_requests_project_scoped_report_history(monkeypatch) -> None:
+    client = MissionControlDaemonClient(base_url="http://127.0.0.1:8010", timeout=0.1)
+    requested_paths: list[str] = []
+
+    monkeypatch.setattr(client, "plugin_health", lambda: {"status": "healthy", "checks": []})
+    monkeypatch.setattr(
+        client,
+        "_request",
+        lambda method, path, **kwargs: requested_paths.append(path) or [],
+    )
+    monkeypatch.setattr(client, "get_status", lambda **kwargs: {"manager_status": "idle", "orchestration_status": "idle"})
+
+    payload = client.get_diagnostics(project_id=7)
+
+    assert payload["recent_reports"] == []
+    assert "/api/diagnostics/reports?project_id=7" in requested_paths
+
+
 def test_daemon_client_rejects_non_local_spawn(monkeypatch) -> None:
     monkeypatch.setenv("MISSION_CONTROL_BACKEND_HOST", "0.0.0.0")
     client = MissionControlDaemonClient(base_url="http://0.0.0.0:8010", timeout=0.1)

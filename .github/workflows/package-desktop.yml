@@ -60,6 +60,9 @@ jobs:
           python -c "import mission_control_desktop; import main"
           MISSION_CONTROL_DESKTOP_SMOKE_TEST=1 mission-control-desktop
 
+      - name: Smoke-test built Python artifacts
+        run: python scripts/smoke-packaged-python-artifacts.py
+
       - name: Run backend tests
         working-directory: apps/server
         run: python -m pytest

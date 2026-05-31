@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 
@@ -25,6 +26,10 @@ WIKI_PLUGIN_ARCH_DOC = ROOT / "wiki-staging" / "MCP-Plugin-Architecture.md"
 WIKI_RESOURCES_DOC = ROOT / "wiki-staging" / "MCP-Resources-Catalog.md"
 WIKI_PROMPTS_DOC = ROOT / "wiki-staging" / "MCP-Prompts-Catalog.md"
 WIKI_SKILLS_PROMPTS_DOC = ROOT / "wiki-staging" / "Skills-and-Prompts.md"
+WIKI_INSTALL_DOC = ROOT / "wiki-staging" / "Install-From-Codex.md"
+WIKI_HEADLESS_INSTALL_DOC = ROOT / "wiki-staging" / "Headless-Install-and-Autowire.md"
+HEADLESS_INSTALL_DOC = ROOT / "docs" / "HEADLESS_INSTALL.md"
+INSTALL_SCRIPT = ROOT / "scripts" / "install-mission-control-plugin.ps1"
 
 REQUIRED_RESOURCES = {
     "mission-control://projects/{project_id}/status",
@@ -56,6 +61,11 @@ def _load_json(path: Path) -> dict:
 
 def _prompt_entries() -> list[dict]:
     return list(_load_json(PROMPTS_CATALOG)["prompts"])
+
+
+def _supported_install_flags() -> set[str]:
+    param_block = INSTALL_SCRIPT.read_text(encoding="utf-8").split("Set-StrictMode", 1)[0]
+    return {f"-{name}" for name in re.findall(r"\[(?:string|switch|int)\]\$(\w+)", param_block)}
 
 
 def _expected_prompt_stems() -> set[str]:
@@ -187,6 +197,25 @@ def test_bridge_docs_include_current_tools_and_advanced_resources() -> None:
         assert token in plugin_mode or token in plugin_bridge
         assert token in plugin_bridge, f"Missing token in docs/MCP_PLUGIN_BRIDGE.md: {token}"
         assert token in wiki_bridge, f"Missing token in wiki-staging/MCP-Plugin-Architecture.md: {token}"
+
+
+def test_install_docs_track_shipped_headless_entrypoints() -> None:
+    supported_flags = _supported_install_flags()
+    docs = {
+        "docs/HEADLESS_INSTALL.md": HEADLESS_INSTALL_DOC.read_text(encoding="utf-8"),
+        "wiki-staging/Install-From-Codex.md": WIKI_INSTALL_DOC.read_text(encoding="utf-8"),
+        "wiki-staging/Headless-Install-and-Autowire.md": WIKI_HEADLESS_INSTALL_DOC.read_text(encoding="utf-8"),
+    }
+    for label, text in docs.items():
+        lowered = text.lower()
+        assert "planned / partial" not in lowered
+        assert "partial / experimental" not in lowered
+        assert ".\\scripts\\install-mission-control-plugin.ps1 -HeadlessOnly" not in text
+        assert ".\\scripts\\install-mission-control-plugin.ps1 -Repair" not in text
+        assert ".\\scripts\\install-mission-control-plugin.ps1 -HealthCheckOnly" not in text
+    for flag in supported_flags:
+        assert flag in docs["docs/HEADLESS_INSTALL.md"], f"Missing supported installer flag in docs/HEADLESS_INSTALL.md: {flag}"
+        assert flag in docs["wiki-staging/Headless-Install-and-Autowire.md"], f"Missing supported installer flag in wiki-staging/Headless-Install-and-Autowire.md: {flag}"
 
 
 def test_repo_local_plugin_manifest_tracks_canonical_prompts_and_resources() -> None:
