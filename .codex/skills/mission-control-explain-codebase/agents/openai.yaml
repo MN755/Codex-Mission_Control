@@ -1,0 +1,3 @@
+interface:
+  display_name: "Explain Codebase"
+  short_description: "Explain the codebase from Mission Control resources without doing ad hoc repo archaeology first."

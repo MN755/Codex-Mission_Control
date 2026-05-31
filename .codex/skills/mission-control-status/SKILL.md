@@ -1,59 +1,60 @@
 ---
 name: mission-control-status
-description: Use when the user wants a compact Mission Control status summary, blocker report, or agent activity check.
+description: Give a clean Mission Control status update. Use when the user asks for current progress, blockers, active agents, pending decisions, next step, or handoff readiness without wanting raw logs.
 ---
 
 # Mission Control Status
 
 ## Purpose
 
-Report what Mission Control is doing without pretending that status and completion are the same thing.
+Return a bridge-safe Mission Control status summary.
 
-## Bridge Rule
+The Codex chat agent is not the Mission Control Manager. It is the bridge between the user and the Mission Control Manager.
 
-The Codex chat agent is not the Mission Control Manager. It is the bridge.
+## Use when
 
-## When To Use
+- The user asks for status, progress, blockers, or what happens next.
+- A long-running orchestration needs a concise checkpoint.
+- The user wants a summary without opening dashboard UI or logs.
 
-- `What is Mission Control doing?`
-- `What's the status?`
-- `Are agents working?`
-- `What's blocked?`
+## Workflow
 
-## Required Mission Control Tools, Resources, And Prompts
+1. Call `mission_control_get_status` or read the project or orchestration status resource.
+2. Read active agents and pending decisions resources.
+3. Identify Manager state, blockers, next expected step, and handoff readiness.
+4. Return a concise summary without event spam or raw logs.
 
-- Tools: `mission_control_get_status`, `mission_control_get_pending_decisions`
-- Resources: `mission-control://projects/{project_id}/orchestrations/{orchestration_id}/status`, `mission-control://projects/{project_id}/agents`, `mission-control://projects/{project_id}/pending-decisions`
-- Prompts: `continue-orchestration`, `show-pending-approvals`
+## Mission Control calls
 
-## Step-By-Step Workflow
+Tools:
+- `mission_control_get_status`
 
-1. Read the orchestration status resource first.
-2. Read the agents resource.
-3. Read the pending decisions resource.
-4. Return a compact markdown status summary.
-5. If the run is complete, point the user to handoff retrieval.
+Resources:
+- `mission-control://projects/{project_id}/status`
+- `mission-control://projects/{project_id}/orchestrations/{orchestration_id}/status`
+- `mission-control://projects/{project_id}/agents`
+- `mission-control://projects/{project_id}/pending-decisions`
+- `mission-control://projects/{project_id}/handoff`
 
-## What To Show The User In Codex Chat
+## User-facing output
 
-- Orchestration status and current phase
-- Manager status and next expected action
-- Active agent count and notable agent states
-- Pending decision count
-- Current blockers and handoff readiness
+- Include project, orchestration state, Manager state, active agents, pending decisions, blockers, next step, and handoff readiness.
+- Keep the summary short enough for chat and safe enough for copy-paste.
 
-## Safety And Approval Behavior
+## Approval behavior
 
-- Surface unresolved approvals and questions before implying work can continue.
-- Keep the summary compact and safe; do not dump raw logs.
+Status reads should be read-only. If the user asks to act on the status, switch to the matching approval, pause, resume, or stop skill.
 
-## Fallback Behavior If The Daemon Is Unavailable
+## Never do
 
-- Report that live status could not be read from Mission Control.
-- Suggest `mission-control-debug` instead of inventing a status update.
+- Do not dump raw logs.
+- Do not invent progress if the backend is stale.
+- Do not hide blockers to sound smoother.
 
-## What Not To Do
+## Failure and fallback
 
-- Do not say `done` unless handoff is actually ready.
-- Do not blur blocked and active states together.
-- Do not fabricate agent activity.
+If only partial resources are available, say which pieces are missing and summarize only what is backed by the resource or tool output.
+
+## Example invocation
+
+`Give me a Mission Control status update for this workspace.`

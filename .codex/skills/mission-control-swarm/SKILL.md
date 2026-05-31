@@ -1,60 +1,60 @@
 ---
 name: mission-control-swarm
-description: Use when the user wants to inspect or adjust Mission Control swarm strategy from Codex chat.
+description: Inspect or adjust Mission Control swarm behavior. Use when the user wants to show the swarm plan, explain agent roles, scale up or down, change strategy, pause dynamic spawning, resume dynamic spawning, or inspect active agents.
 ---
 
 # Mission Control Swarm
 
 ## Purpose
 
-Inspect, explain, or adjust Mission Control swarm behavior without bypassing manager approval rules.
+Inspect the swarm plan and route any swarm changes through Mission Control.
 
-## Bridge Rule
+The Codex chat agent is not the Mission Control Manager. It is the bridge between the user and the Mission Control Manager.
 
-The Codex chat agent is not the Mission Control Manager. It is the bridge.
+## Use when
 
-## When To Use
+- The user asks how the swarm is organized.
+- The user wants to scale up, scale down, or switch swarm strategy.
+- Agent activity needs a coordinated explanation.
 
-- `Show swarm plan`
-- `Explain the swarm`
-- `Scale up`
-- `Scale down`
-- `Switch to high_quality`
-- `Pause dynamic spawning`
+## Workflow
 
-## Required Mission Control Tools, Resources, And Prompts
+1. Read the swarm plan and active agents resources.
+2. Explain current swarm shape, role assignments, ownership boundaries, and approvals.
+3. If the user requests a change, route it through Mission Control tools or prompts.
+4. Require explicit approval before scaling above the configured threshold or changing risk posture.
 
-- Tools: `mission_control_get_swarm_plan`, `mission_control_update_swarm_preferences`, `mission_control_generate_swarm_plan`, `mission_control_approve_swarm_plan`
-- Resources: `mission-control://projects/{project_id}/swarm-plan`, `mission-control://projects/{project_id}/agents`, `mission-control://projects/{project_id}/risk-register`
-- Prompts: `explain-current-swarm`, `switch-swarm-strategy`
+## Mission Control calls
 
-## Step-By-Step Workflow
+Tools:
+- `mission_control_get_status`
+- `mission_control_start_task` (for swarm-change requests)
+- `mission_control_pause` and `mission_control_resume` when pausing or resuming swarm activity is supported
 
-1. Read the current swarm plan.
-2. Explain the current mode, size, risks, and approval posture.
-3. If the user asks for a change, update swarm preferences or request a new plan.
-4. Respect approval requirements before changing plan scale or risk posture.
-5. Return the revised plan summary.
+Resources:
+- `mission-control://projects/{project_id}/swarm-plan`
+- `mission-control://projects/{project_id}/agents`
+- `mission-control://projects/{project_id}/pending-decisions`
 
-## What To Show The User In Codex Chat
+## User-facing output
 
-- Current swarm mode
-- Agent count and expected bottlenecks
-- Dynamic spawning state
-- Risk and approval implications of any requested change
+- Show swarm plan, active agents, ownership boundaries, approval state, and any scaling warnings.
+- If change is requested, explain what Mission Control will need from the user next.
 
-## Safety And Approval Behavior
+## Approval behavior
 
-- Do not change swarm size or aggression outside Mission Control policy.
-- Surface any approval threshold crossing before applying it.
+Never scale above threshold, broaden write scope, or change dynamic spawning policy without user approval or an explicit Mission Control approval record.
 
-## Fallback Behavior If The Daemon Is Unavailable
+## Never do
 
-- Report that swarm planning could not be read or changed through Mission Control.
-- Do not invent a replacement swarm plan in chat.
+- Do not invent your own swarm topology.
+- Do not spawn workers outside Mission Control.
+- Do not bypass swarm approvals.
 
-## What Not To Do
+## Failure and fallback
 
-- Do not scale or respawn agents directly from Codex chat.
-- Do not promise performance gains that Mission Control did not project.
-- Do not treat a draft plan as approved.
+If direct swarm controls are not exposed yet, explain the current swarm from resources and treat any adjustment as an expected or future Mission Control task request.
+
+## Example invocation
+
+`Show the swarm plan and explain whether we should scale up.`

@@ -1,0 +1,3 @@
+interface:
+  display_name: "Status"
+  short_description: "Return a bridge-safe Mission Control status summary."

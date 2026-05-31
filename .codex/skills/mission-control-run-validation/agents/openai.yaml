@@ -1,0 +1,3 @@
+interface:
+  display_name: "Run Validation"
+  short_description: "Run or plan validation through Mission Control without bypassing approval policy."

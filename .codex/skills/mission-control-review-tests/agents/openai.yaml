@@ -1,0 +1,3 @@
+interface:
+  display_name: "Review Tests"
+  short_description: "Summarize test coverage and validation status from Mission Control evidence."

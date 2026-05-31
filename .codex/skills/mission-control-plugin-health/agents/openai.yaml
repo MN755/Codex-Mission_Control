@@ -1,0 +1,3 @@
+interface:
+  display_name: "Plugin Health"
+  short_description: "Check the health of the Mission Control bridge surfaces that Codex depends on."

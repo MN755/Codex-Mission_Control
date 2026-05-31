@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 from datetime import datetime, timezone
 from pathlib import Path
@@ -28,16 +29,11 @@ REQUIRED_PLUGIN_FILES = [
     PLUGIN_ROOT / "README.md",
     PLUGIN_ROOT / "mcp" / "mission-control-mcp.example.json",
 ]
-REQUIRED_PLUGIN_SKILLS = [
-    PLUGIN_ROOT / "skills" / "mission-control-orchestrate" / "SKILL.md",
-    PLUGIN_ROOT / "skills" / "mission-control-import-codebase" / "SKILL.md",
-    PLUGIN_ROOT / "skills" / "mission-control-review-handoff" / "SKILL.md",
-]
-REQUIRED_LOCAL_SKILLS = [
-    LOCAL_SKILLS_ROOT / "mission-control-orchestrate" / "SKILL.md",
-    LOCAL_SKILLS_ROOT / "mission-control-import-codebase" / "SKILL.md",
-    LOCAL_SKILLS_ROOT / "mission-control-review-handoff" / "SKILL.md",
-]
+CRITICAL_BRIDGE_SKILL_NAMES = (
+    "mission-control-orchestrate",
+    "mission-control-import-codebase",
+    "mission-control-handoff",
+)
 LOCAL_HOSTS = {"127.0.0.1", "localhost", "::1"}
 PASSING_MCP_STATUSES = {"connected", "running", "healthy", "ok", "ready"}
 FAILING_MCP_STATUSES = {"error", "disconnected", "failed", "broken", "unreachable"}
@@ -139,6 +135,19 @@ def _component_state(checks: list[dict[str, Any]], keys: list[str]) -> str:
     if any(check.get("status") in {"degraded", "unknown"} for check in relevant):
         return "degraded"
     return "ready"
+
+
+def _manifest_skill_names() -> list[str]:
+    manifest_path = PLUGIN_ROOT / "plugin.json"
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return []
+    return [str(name) for name in list(manifest.get("skills") or [])]
+
+
+def _required_skill_paths(root: Path, skill_names: list[str]) -> list[Path]:
+    return [root / skill_name / "SKILL.md" for skill_name in skill_names]
 
 
 async def mission_control_plugin_health() -> dict[str, Any]:
@@ -386,12 +395,20 @@ async def mission_control_plugin_health() -> dict[str, Any]:
         )
     )
 
-    missing_skill_files = [str(path.relative_to(REPO_ROOT)) for path in [*REQUIRED_PLUGIN_SKILLS, *REQUIRED_LOCAL_SKILLS] if not path.exists()]
+    manifest_skill_names = _manifest_skill_names()
+    required_skill_names = [name for name in CRITICAL_BRIDGE_SKILL_NAMES if name in manifest_skill_names]
+    required_plugin_skills = _required_skill_paths(PLUGIN_ROOT / "skills", required_skill_names)
+    required_local_skills = _required_skill_paths(LOCAL_SKILLS_ROOT, required_skill_names)
+    missing_skill_files = [
+        str(path.relative_to(REPO_ROOT))
+        for path in [*required_plugin_skills, *required_local_skills]
+        if not path.exists()
+    ]
     skill_error = (
         MissionControlError(
             code="MC-PLUGIN-SKILL-MISSING-001",
             breakpoint="plugin.skill_discovery",
-            safe_details={"missing_files": missing_skill_files},
+            safe_details={"missing_files": missing_skill_files, "required_skill_names": required_skill_names},
         )
         if missing_skill_files
         else None
@@ -407,7 +424,11 @@ async def mission_control_plugin_health() -> dict[str, Any]:
             critical=True,
             fix=None if skill_error is None else skill_error.recommended_fix,
             commands=[_list_command(".codex/skills"), _list_command("plugins/mission-control/skills", recursive=True)],
-            details={"missing_files": missing_skill_files},
+            details={
+                "manifest_skill_count": len(manifest_skill_names),
+                "required_skill_names": required_skill_names,
+                "missing_files": missing_skill_files,
+            },
             error=skill_error,
         )
     )

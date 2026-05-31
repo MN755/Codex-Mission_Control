@@ -1,0 +1,3 @@
+interface:
+  display_name: "Resume"
+  short_description: "Reattach Codex chat to an existing Mission Control run and continue safely."

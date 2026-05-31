@@ -1,0 +1,3 @@
+interface:
+  display_name: "Agent Stuck"
+  short_description: "Diagnose a stuck agent and surface recovery options through Mission Control."

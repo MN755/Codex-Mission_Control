@@ -1,0 +1,3 @@
+interface:
+  display_name: "Approve"
+  short_description: "Present pending Mission Control decisions clearly and relay the user response back safely."

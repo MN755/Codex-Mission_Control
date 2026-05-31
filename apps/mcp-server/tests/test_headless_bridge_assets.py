@@ -15,19 +15,6 @@ PROMPTS_DIR = ROOT / "plugins" / "mission-control" / "prompts"
 TEMPLATES_DIR = ROOT / "plugins" / "mission-control" / "templates"
 EXAMPLES_DIR = ROOT / "examples" / "codex-chat-workflows"
 
-EXPECTED_SKILLS = [
-    "mission-control-orchestrate",
-    "mission-control-import-codebase",
-    "mission-control-status",
-    "mission-control-approve",
-    "mission-control-handoff",
-    "mission-control-debug",
-    "mission-control-swarm",
-    "mission-control-safe-mode",
-    "mission-control-resume",
-    "mission-control-agents-md",
-]
-
 EXPECTED_TEMPLATES = [
     "status_summary.md",
     "pending_decision.md",
@@ -53,6 +40,15 @@ EXPECTED_EXAMPLES = [
     "enable-safe-mode.md",
     "generate-agents-md.md",
     "continue-later.md",
+    "build-your-own-x-catalog.md",
+    "build-command-line-tool.md",
+    "build-data-and-search-system.md",
+    "build-networked-system.md",
+    "build-web-stack.md",
+    "build-game-or-renderer.md",
+    "build-ml-or-vision-system.md",
+    "build-programming-language-or-shell.md",
+    "build-low-level-systems.md",
 ]
 
 EXPECTED_DOCS = [
@@ -67,15 +63,26 @@ EXPECTED_DOCS = [
     ROOT / "docs" / "PENDING_DECISIONS.md",
 ]
 
+CRITICAL_SKILLS = [
+    "mission-control-orchestrate",
+    "mission-control-import-codebase",
+    "mission-control-status",
+    "mission-control-approve",
+    "mission-control-handoff",
+    "mission-control-debug",
+]
+
 
 def test_plugin_manifest_lists_expected_headless_skills() -> None:
     manifest = json.loads(PLUGIN_MANIFEST.read_text(encoding="utf-8"))
-    assert all(skill in manifest["skills"] for skill in EXPECTED_SKILLS)
+    manifest_skills = set(manifest["skills"])
+    shipped_skills = {path.name for path in PLUGIN_SKILLS.iterdir() if path.is_dir()}
+    assert manifest_skills == shipped_skills
 
 
 def test_bridge_skills_exist_in_plugin_and_local_layouts() -> None:
     bridge_statement = "The Codex chat agent is not the Mission Control Manager."
-    for skill in EXPECTED_SKILLS:
+    for skill in CRITICAL_SKILLS:
         for root in (PLUGIN_SKILLS, LOCAL_SKILLS):
             skill_file = root / skill / "SKILL.md"
             assert skill_file.exists(), f"Missing skill file: {skill_file}"
@@ -88,9 +95,21 @@ def test_bridge_skills_exist_in_plugin_and_local_layouts() -> None:
 
 def test_prompt_template_files_exist() -> None:
     manifest = json.loads(PLUGIN_MANIFEST.read_text(encoding="utf-8"))
+    catalog = json.loads((ROOT / "plugins" / "mission-control" / "mcp" / "prompts.json").read_text(encoding="utf-8"))
+    expected_prompt_files = {
+        f"{prompt['name']}.md"
+        for prompt in catalog["prompts"]
+    } | {
+        f"{alias}.md"
+        for prompt in catalog["prompts"]
+        for alias in prompt.get("aliases", [])
+    }
+    actual_prompt_files = {path.name for path in PROMPTS_DIR.glob("*.md")}
+    assert actual_prompt_files == expected_prompt_files
+
     for prompt_name in manifest["prompts"]:
         prompt_file = PROMPTS_DIR / f"{prompt_name}.md"
-        assert prompt_file.exists(), f"Missing prompt file: {prompt_file}"
+        assert prompt_file.exists(), f"Missing canonical prompt file: {prompt_file}"
 
 
 def test_plugin_manifest_command_and_agent_assets_exist() -> None:

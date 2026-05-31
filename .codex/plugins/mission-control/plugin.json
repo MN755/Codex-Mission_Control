@@ -11,8 +11,8 @@
   ],
   "mcp": {
     "example_config": "./mcp/mission-control-mcp.local.json",
-    "resources_catalog": "../../../plugins/mission-control/mcp/resources.json",
-    "prompts_catalog": "../../../plugins/mission-control/mcp/prompts.json"
+    "resources_catalog": "./mcp/resources.json",
+    "prompts_catalog": "./mcp/prompts.json"
   },
   "skills": [
     "mission-control-bridge",
@@ -36,6 +36,7 @@
     "answer_pending_approval",
     "review_latest_handoff",
     "debug_failed_orchestration",
+    "use_webwright_for_browser_task",
     "pause_orchestration",
     "resume_orchestration",
     "explain_current_swarm",
@@ -43,23 +44,35 @@
     "enable_safe_mode",
     "generate_agents_md_proposal",
     "install_from_github",
-    "autowire_providers"
+    "autowire_providers",
+    "ask_manager_for_plan"
   ],
   "resources": [
-    "mission-control://orchestrations/{orchestration_id}/status",
-    "mission-control://orchestrations/{orchestration_id}/events",
+    "mission-control://projects/{project_id}/orchestrations/{orchestration_id}/status",
+    "mission-control://projects/{project_id}/orchestrations/{orchestration_id}/events",
     "mission-control://projects/{project_id}/status",
     "mission-control://projects/{project_id}/agents",
     "mission-control://projects/{project_id}/pending-decisions",
     "mission-control://projects/{project_id}/handoff",
     "mission-control://projects/{project_id}/codebase-map",
+    "mission-control://projects/{project_id}/workspace-tooling",
     "mission-control://projects/{project_id}/diagnostics",
+    "mission-control://projects/{project_id}/webwright",
+    "mission-control://projects/{project_id}/nvidia-dynamo",
+    "mission-control://projects/{project_id}/nvidia-nim",
+    "mission-control://projects/{project_id}/nvidia-aiq",
+    "mission-control://projects/{project_id}/nvidia-gpu-diagnostics",
+    "mission-control://projects/{project_id}/nvidia-local-runtime",
+    "mission-control://projects/{project_id}/nvidia-validation-plan",
     "mission-control://projects/{project_id}/swarm-plan",
     "mission-control://projects/{project_id}/risk-register",
     "mission-control://projects/{project_id}/agent-contracts",
     "mission-control://projects/{project_id}/validation-summary",
     "mission-control://projects/{project_id}/decision-ledger",
-    "mission-control://projects/{project_id}/path-locks"
+    "mission-control://projects/{project_id}/path-locks",
+    "mission-control://projects/{project_id}/operator-snapshot",
+    "mission-control://projects/{project_id}/instincts",
+    "mission-control://projects/{project_id}/verification-brief"
   ],
   "assets": {
     "approval_card_placeholder": "./assets/approval-card-placeholder.json"
