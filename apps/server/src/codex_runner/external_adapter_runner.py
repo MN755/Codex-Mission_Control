@@ -11,16 +11,17 @@ from typing import Any
 
 from codex_runner.base import BaseCodexRunner, RunnerContext, RunnerHandle, RunnerSettings
 from config import RUNTIME_LOGS_ROOT
-from prompts import WORKER_REPORT_SCHEMA, worker_task_prompt
+from prompts import RUNNER_RESULT_ENVELOPE_SCHEMA, WORKER_REPORT_SCHEMA, worker_task_prompt
 from provider_support import default_label
 
 
 ADAPTER_EDIT_RESPONSE_SCHEMA = {
-    "report": WORKER_REPORT_SCHEMA,
+    **RUNNER_RESULT_ENVELOPE_SCHEMA,
     "edits": [
         {
             "path": "relative/path/from/workspace",
             "content": "full updated file content",
+            "summary": "why this edit exists",
         }
     ],
 }
@@ -271,12 +272,48 @@ class ExternalAdapterRunner(BaseCodexRunner):
                 candidate = inner
                 repaired = repaired or repaired_inner
         if self._is_worker_report_payload(candidate):
-            return {"report": candidate, "edits": []}, repaired
+            return {
+                "status": "completed" if candidate.get("status") == "done" else "failed",
+                "runner_type": self.runner_type,
+                "lane": "implementation",
+                "summary": str(candidate.get("summary") or "Adapter completed."),
+                "report": candidate,
+                "files_changed": list(candidate.get("files_changed") or []),
+                "tests_run": list(candidate.get("tests_run") or []),
+                "commands_attempted": [],
+                "evidence": [],
+                "risks": list(candidate.get("risks") or []),
+                "blockers": list(candidate.get("blockers") or []),
+                "diagnostics": [],
+                "approvals_requested": [],
+                "recovery_plan": [],
+                "edits": [],
+                "failure_classification": None,
+                "needs_approval": False,
+                "metadata_json": {},
+            }, repaired
         if isinstance(candidate, dict) and self._is_worker_report_payload(candidate.get("report")):
             edits = candidate.get("edits")
             if not isinstance(edits, list):
                 edits = []
-            return {"report": candidate["report"], "edits": edits}, repaired
+            normalized = dict(candidate)
+            normalized["edits"] = edits
+            normalized.setdefault("runner_type", self.runner_type)
+            normalized.setdefault("lane", "implementation")
+            normalized.setdefault("summary", str(candidate["report"].get("summary") or "Adapter completed."))
+            normalized.setdefault("status", "completed" if candidate["report"].get("status") == "done" else "failed")
+            normalized.setdefault("files_changed", list(candidate["report"].get("files_changed") or []))
+            normalized.setdefault("tests_run", list(candidate["report"].get("tests_run") or []))
+            normalized.setdefault("commands_attempted", [])
+            normalized.setdefault("evidence", [])
+            normalized.setdefault("risks", list(candidate["report"].get("risks") or []))
+            normalized.setdefault("blockers", list(candidate["report"].get("blockers") or []))
+            normalized.setdefault("diagnostics", [])
+            normalized.setdefault("approvals_requested", [])
+            normalized.setdefault("recovery_plan", [])
+            normalized.setdefault("needs_approval", False)
+            normalized.setdefault("metadata_json", {})
+            return normalized, repaired
         return None, repaired
 
     @staticmethod
@@ -414,23 +451,33 @@ class ExternalAdapterRunner(BaseCodexRunner):
             stdout_text = stdout_bytes.decode("utf-8", errors="ignore").strip()
             stderr_text = stderr_bytes.decode("utf-8", errors="ignore").strip()
             parsed, repaired = self._normalize_adapter_payload(stdout_text)
+            envelope_payload: dict[str, Any] | None = None
             report_payload: dict[str, Any] | None = None
             if parsed:
-                report_payload = dict(parsed.get("report") or {})
-                edits = [item for item in (parsed.get("edits") or []) if isinstance(item, dict)]
+                envelope_payload = dict(parsed)
+                report_payload = dict(envelope_payload.get("report") or {})
+                edits = [item for item in (envelope_payload.get("edits") or []) if isinstance(item, dict)]
                 applied, issues = self._apply_adapter_edits(state, edits)
                 state.applied_edits = applied
                 state.edit_issues = issues
                 report_payload["files_changed"] = applied if applied or edits else list(report_payload.get("files_changed") or [])
+                envelope_payload["files_changed"] = list(report_payload.get("files_changed") or [])
                 if issues:
                     report_payload["risks"] = list(report_payload.get("risks") or []) + issues
                     if report_payload.get("status") == "done":
                         report_payload["status"] = "needs_review"
+                    if envelope_payload.get("status") == "completed":
+                        envelope_payload["status"] = "needs_review"
                     report_payload["summary"] = (
                         f"{report_payload.get('summary') or 'Adapter run completed.'} "
                         "Mission Control rejected or could not apply one or more proposed edits."
                     ).strip()
-                state.final_text = json.dumps(report_payload)
+                envelope_payload["summary"] = str(report_payload.get("summary") or envelope_payload.get("summary") or "Adapter run completed.")
+                envelope_payload["report"] = report_payload
+                envelope_payload["risks"] = list(report_payload.get("risks") or [])
+                envelope_payload["blockers"] = list(report_payload.get("blockers") or [])
+                envelope_payload["tests_run"] = list(report_payload.get("tests_run") or [])
+                state.final_text = json.dumps(envelope_payload)
             else:
                 state.final_text = stdout_text or stderr_text or "External adapter returned no output."
             state.status = "done" if state.exit_code == 0 else "error"

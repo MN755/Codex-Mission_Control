@@ -7,9 +7,9 @@ from conftest import sample_workspace
 from db import SessionLocal
 from main import service as app_service
 from manager import MissionControlService
-from models import Agent, AgentRun, Project, Task
+from models import Agent, AgentExecutionTrace, AgentRun, Project, RecoveryPlan, Task
 from project_settings import get_or_create_project_settings, resolve_manager_settings, resolve_worker_settings
-from schemas import ManagerDocFile, ManagerDocUpdate, WorkerReport
+from schemas import ManagerDocFile, ManagerDocUpdate, RunnerResultEnvelope, WorkerReport
 
 
 def test_manager_doc_generation_uses_deterministic_for_dry_run(client) -> None:
@@ -808,5 +808,156 @@ def test_duplicate_worker_report_is_rejected() -> None:
             assert False, "Expected duplicate worker report rejection"
         except ValueError as exc:
             assert "already recorded" in str(exc).lower()
+    finally:
+        db.close()
+
+
+def test_finalize_run_rejects_missing_runner_result_envelope() -> None:
+    service = MissionControlService()
+    from db import SessionLocal, init_db
+
+    init_db()
+    db = SessionLocal()
+    try:
+        project = Project(name="Strict Envelope", idea="Reject legacy worker payloads.", workspace_path=sample_workspace("strict-envelope"), status="building", runner_mode="dry_run", manager_mode="deterministic")
+        db.add(project)
+        db.flush()
+        manager_agent = Agent(project_id=project.id, name="Manager AI", role="Project orchestration", kind="manager", status="idle", workspace_path=project.workspace_path)
+        worker = Agent(project_id=project.id, name="Builder Agent A", role="Primary implementation", kind="worker", status="working", workspace_path=project.workspace_path)
+        task = Task(
+            project_id=project.id,
+            assigned_agent_id=worker.id,
+            title="Vertical slice",
+            goal="Build the thing.",
+            scope="Stay narrow.",
+            agent_role="Primary implementation",
+            milestone="Milestone 1",
+            allowed_paths_json=["src"],
+            forbidden_paths_json=[],
+            validation_steps_json=["pytest -q"],
+            success_criteria_json=["done"],
+            estimated_complexity="small",
+            dependencies_json=[],
+            status="working",
+            priority=10,
+        )
+        db.add_all([manager_agent, worker, task])
+        db.flush()
+        run = AgentRun(
+            agent_id=worker.id,
+            task_id=task.id,
+            runner_type="dry_run",
+            process_ref="dry-test",
+            status="working",
+            report_json={
+                "agent": worker.name,
+                "task_id": str(task.id),
+                "status": "done",
+                "summary": "Legacy report without an envelope.",
+                "files_changed": [],
+                "tests_run": [],
+                "blockers": [],
+                "risks": [],
+                "recommended_next_task": "",
+            },
+        )
+        db.add(run)
+        db.commit()
+
+        asyncio.run(service._finalize_run(db, project, worker, run, "done"))
+
+        db.refresh(run)
+        db.refresh(task)
+        db.refresh(worker)
+        recovery_plans = db.query(RecoveryPlan).filter(RecoveryPlan.project_id == project.id).all()
+        traces = db.query(AgentExecutionTrace).filter(AgentExecutionTrace.run_id == run.id).all()
+
+        assert run.status == "error"
+        assert run.failure_classification == "runner_bug"
+        assert task.status == "needs_review"
+        assert "envelope validation failed" in (task.waiting_reason or "").lower()
+        assert worker.current_task_id is None
+        assert recovery_plans
+        assert traces == []
+    finally:
+        db.close()
+
+
+def test_ingest_worker_report_persists_envelope_and_span_tree() -> None:
+    service = MissionControlService()
+    from db import SessionLocal, init_db
+
+    init_db()
+    db = SessionLocal()
+    try:
+        project = Project(name="Span Tree", idea="Persist typed runner traces.", workspace_path=sample_workspace("span-tree"), status="building", runner_mode="dry_run", manager_mode="deterministic")
+        db.add(project)
+        db.flush()
+        manager_agent = Agent(project_id=project.id, name="Manager AI", role="Project orchestration", kind="manager", status="idle", workspace_path=project.workspace_path)
+        worker = Agent(project_id=project.id, name="Validation Agent", role="Validation", kind="worker", status="working", workspace_path=project.workspace_path)
+        task = Task(
+            project_id=project.id,
+            assigned_agent_id=worker.id,
+            title="Run focused validation",
+            goal="Execute targeted pytest validation.",
+            scope="Do not edit code.",
+            agent_role="Validation",
+            milestone="Milestone 2",
+            allowed_paths_json=["apps/server/tests"],
+            forbidden_paths_json=[],
+            validation_steps_json=["python -m pytest apps/server/tests/test_manager.py -q"],
+            success_criteria_json=["The failure is isolated"],
+            estimated_complexity="small",
+            dependencies_json=[],
+            status="working",
+            priority=10,
+        )
+        db.add_all([manager_agent, worker, task])
+        db.flush()
+        run = AgentRun(agent_id=worker.id, task_id=task.id, runner_type="dry_run", process_ref="dry-test", status="working")
+        db.add(run)
+        db.flush()
+        report = WorkerReport(
+            agent=worker.name,
+            task_id=str(task.id),
+            status="blocked",
+            summary="Cluster GPU memory is saturated; validation cannot start.",
+            files_changed=[],
+            tests_run=["python -m pytest apps/server/tests/test_manager.py -q"],
+            blockers=["GPU memory is saturated."],
+            risks=["This looks like an infrastructure blocker."],
+            recommended_next_task="Wait for cluster capacity.",
+        )
+        envelope = RunnerResultEnvelope(
+            status="blocked",
+            runner_type="dry_run",
+            lane="test_execution",
+            summary=report.summary,
+            report=report,
+            files_changed=[],
+            tests_run=list(report.tests_run),
+            commands_attempted=list(report.tests_run),
+            evidence=[],
+            risks=list(report.risks),
+            blockers=list(report.blockers),
+            diagnostics=["dcgm memory saturation"],
+            approvals_requested=[],
+            recovery_plan=["Retry once cluster pressure drops."],
+            edits=[],
+            failure_classification="infra_blocker",
+            needs_approval=False,
+            metadata_json={},
+        )
+
+        asyncio.run(service.ingest_worker_report(db, run, report, envelope=envelope))
+
+        db.refresh(run)
+        traces = db.query(AgentExecutionTrace).filter(AgentExecutionTrace.run_id == run.id).order_by(AgentExecutionTrace.id.asc()).all()
+        assert run.result_envelope_json is not None
+        assert run.failure_classification == "infra_blocker"
+        assert len(traces) == 3
+        assert {trace.span_kind for trace in traces} == {"run", "test_execution", "validation"}
+        assert all(trace.trace_id == f"run-{run.id}" for trace in traces)
+        assert any(trace.failure_classification == "infra_blocker" for trace in traces)
     finally:
         db.close()

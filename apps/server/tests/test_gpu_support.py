@@ -48,6 +48,17 @@ def test_detect_cuda_repo_mode_does_not_treat_readme_marketing_as_cuda_repo() ->
     assert payload["mode"] is None
 
 
+def test_detect_cuda_repo_mode_handles_deleted_workspace_gracefully() -> None:
+    workspace = Path(sample_workspace("cuda-deleted-workspace"))
+    workspace.mkdir(parents=True, exist_ok=True)
+    workspace.rmdir()
+
+    payload = detect_cuda_repo_mode(workspace)
+
+    assert payload["enabled"] is False
+    assert payload["mode"] is None
+
+
 def test_gpu_cluster_health_flags_pending_pods_and_memory_pressure() -> None:
     workspace = Path(sample_workspace("gpu-health-blocked"))
     workspace.mkdir(parents=True, exist_ok=True)

@@ -138,6 +138,21 @@ class BaseCodexRunner(ABC):
                 return None, True
 
     @classmethod
-    def try_parse_report(cls, text: str | None) -> dict[str, Any] | None:
+    def try_parse_result_envelope(cls, text: str | None) -> dict[str, Any] | None:
         payload, _ = cls.try_parse_json_payload(text)
-        return payload
+        if not isinstance(payload, dict):
+            return None
+        report = payload.get("report")
+        if isinstance(report, dict) and "status" in payload and "runner_type" in payload:
+            return payload
+        return None
+
+    @classmethod
+    def try_parse_report(cls, text: str | None) -> dict[str, Any] | None:
+        envelope = cls.try_parse_result_envelope(text)
+        if isinstance(envelope, dict) and isinstance(envelope.get("report"), dict):
+            return envelope["report"]
+        payload, _ = cls.try_parse_json_payload(text)
+        if isinstance(payload, dict) and "status" in payload and "summary" in payload:
+            return payload
+        return None

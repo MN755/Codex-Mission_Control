@@ -61,10 +61,65 @@ def test_background_retries_are_tracked_and_shutdown_cancels() -> None:
         snapshot = coordinator._background_runtime_snapshot(999999)
         assert snapshot["retry_scheduled"] is True
         assert snapshot["delay_seconds"] == 30.0
+        assert snapshot["failure_classification"] == "transient"
         await coordinator.on_shutdown()
         assert coordinator._background_runtime_snapshot(999999)["retry_scheduled"] is False
 
     asyncio.run(run_test())
+
+
+def test_background_turn_does_not_retry_user_action_required_failures(client, monkeypatch) -> None:
+    from db import SessionLocal
+    from models import OrchestrationSession, Project
+    from orchestration import coordinator
+
+    workspace = _fresh_workspace("user-action-required-background-failure")
+
+    async def fake_manager_ask_next(db, project):
+        raise RuntimeError("Auth token missing for provider login.")
+
+    monkeypatch.setattr("orchestration.service.manager_ask_next", fake_manager_ask_next)
+
+    db = SessionLocal()
+    try:
+        project = Project(
+            name="Auth Required Runtime",
+            idea="Do not auto-retry auth failures forever.",
+            workspace_path=workspace.as_posix(),
+            status="building",
+            runner_mode="dry_run",
+            manager_mode="auto",
+        )
+        db.add(project)
+        db.flush()
+        session = OrchestrationSession(
+            project_id=project.id,
+            workspace_path=workspace.as_posix(),
+            source="test",
+            user_request="Continue planning.",
+            status="planning",
+            manager_status="Running.",
+            metadata_json={},
+        )
+        db.add(session)
+        db.commit()
+        orchestration_id = session.id
+    finally:
+        db.close()
+
+    asyncio.run(coordinator._run_background_turn(orchestration_id, "retry_after_error"))
+
+    db = SessionLocal()
+    try:
+        refreshed = coordinator.get_session(db, orchestration_id)
+        assert refreshed is not None
+        assert refreshed.status == "paused"
+        assert refreshed.metadata_json["last_background_failure_classification"] == "user_action_required"
+        assert coordinator._background_runtime_snapshot(orchestration_id, metadata=refreshed.metadata_json)["retry_scheduled"] is False
+        events = coordinator.list_events(db, refreshed)
+        assert any(event["payload_json"].get("failure_classification") == "user_action_required" for event in events if event["event_type"] == "orchestration_failed")
+    finally:
+        db.close()
 
 
 def test_background_turn_does_not_resume_paused_project(client, monkeypatch) -> None:

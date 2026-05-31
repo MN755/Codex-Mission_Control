@@ -5,6 +5,7 @@ from pathlib import Path
 from db import SessionLocal
 from models import (
     Agent,
+    AgentRun,
     DecisionRecord,
     EvidenceBasedHandoff,
     HandoffEvidence,
@@ -144,6 +145,57 @@ def _seed_operator_project() -> int:
             )
         )
         db.add(
+            AgentRun(
+                agent_id=worker.id,
+                task_id=task.id,
+                runner_type="dry_run",
+                process_ref="operator-trace",
+                status="blocked",
+                report_json={
+                    "agent": worker.name,
+                    "task_id": str(task.id),
+                    "status": "blocked",
+                    "summary": "Browser automation target is unavailable and the validation lane is blocked.",
+                    "files_changed": [],
+                    "tests_run": ["python -m pytest apps/server/tests/test_operator_surfaces.py -q"],
+                    "blockers": ["Browser automation target is unavailable."],
+                    "risks": ["Validation evidence is incomplete."],
+                    "recommended_next_task": "Restore the target and retry validation.",
+                },
+                result_envelope_json={
+                    "status": "blocked",
+                    "runner_type": "dry_run",
+                    "lane": "browser_automation",
+                    "summary": "Browser automation target is unavailable and the validation lane is blocked.",
+                    "report": {
+                        "agent": worker.name,
+                        "task_id": str(task.id),
+                        "status": "blocked",
+                        "summary": "Browser automation target is unavailable and the validation lane is blocked.",
+                        "files_changed": [],
+                        "tests_run": ["python -m pytest apps/server/tests/test_operator_surfaces.py -q"],
+                        "blockers": ["Browser automation target is unavailable."],
+                        "risks": ["Validation evidence is incomplete."],
+                        "recommended_next_task": "Restore the target and retry validation.",
+                    },
+                    "files_changed": [],
+                    "tests_run": ["python -m pytest apps/server/tests/test_operator_surfaces.py -q"],
+                    "commands_attempted": ["python -m pytest apps/server/tests/test_operator_surfaces.py -q"],
+                    "evidence": [],
+                    "risks": ["Validation evidence is incomplete."],
+                    "blockers": ["Browser automation target is unavailable."],
+                    "diagnostics": ["Target host returned unavailable."],
+                    "approvals_requested": [],
+                    "recovery_plan": ["Restore the browser target and retry validation."],
+                    "edits": [],
+                    "failure_classification": "transient",
+                    "needs_approval": False,
+                    "metadata_json": {},
+                },
+                failure_classification="transient",
+            )
+        )
+        db.add(
             ReviewGate(
                 project_id=project.id,
                 gate_type="validation",
@@ -207,8 +259,10 @@ def test_operator_snapshot_endpoint_returns_compact_project_state(client, bridge
     assert payload["project_name"] == "Operator Surfaces Project"
     assert payload["active_agent_count"] >= 1
     assert payload["pending_approvals_count"] >= 0
+    assert payload["trace_spans"]
+    assert payload["evidence_items"]
     assert "## Mission Control Operator Snapshot" in payload["snapshot_markdown"]
-    assert any("Blocked Worker" in item for item in payload["current_focus"])
+    assert any("browser_automation" in item or "Fix backend validation" in item for item in payload["current_focus"])
 
 
 def test_instincts_preview_endpoint_derives_reusable_rules(client, bridge_headers) -> None:

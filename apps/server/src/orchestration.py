@@ -135,6 +135,25 @@ class OrchestrationCoordinator:
         except PathValidationError:
             return False
 
+    @staticmethod
+    def _classify_background_failure(exc: Exception) -> str:
+        message = f"{type(exc).__name__}: {exc}".lower()
+        if "approval denied" in message or "denied" in message and "approval" in message:
+            return "approval_denied"
+        if any(token in message for token in ("auth", "api key", "login", "token", "credential")):
+            return "user_action_required"
+        if any(token in message for token in ("database is locked", "timeout", "temporar", "connection", "network", "rate limit")):
+            return "transient"
+        if any(token in message for token in ("invalid", "schema", "json", "parse", "pathvalidationerror", "not found", "workspace")):
+            return "input_error"
+        if any(token in message for token in ("gpu", "cluster", "kubernetes", "pod pending", "infra", "resource unavailable")):
+            return "infra_blocker"
+        return "runner_bug"
+
+    @staticmethod
+    def _retryable_failure_classification(classification: str) -> bool:
+        return classification in {"transient", "infra_blocker"}
+
     def _workspace_projects(self, db: Session, workspace: Path) -> list[Project]:
         candidates = list(
             db.scalars(
@@ -1117,12 +1136,13 @@ class OrchestrationCoordinator:
         await asyncio.sleep(0.1)
         await self._run_background_turn(orchestration_id, reason)
 
-    def _schedule_background_retry(self, orchestration_id: int, reason: str, delay: float) -> None:
+    def _schedule_background_retry(self, orchestration_id: int, reason: str, delay: float, *, failure_classification: str = "transient") -> None:
         self._task_metadata[orchestration_id] = {
             "reason": reason,
             "scheduled_at": utc_now().isoformat(),
             "retry_scheduled": True,
             "delay_seconds": delay,
+            "failure_classification": failure_classification,
         }
         task = asyncio.create_task(self._run_background_turn_retry_deferred(orchestration_id, reason, delay))
         task.add_done_callback(lambda completed, orchestration_id=orchestration_id: self._background_task_done(orchestration_id, completed))
@@ -1149,6 +1169,7 @@ class OrchestrationCoordinator:
             "reason": task_meta.get("reason"),
             "scheduled_at": task_meta.get("scheduled_at"),
             "delay_seconds": task_meta.get("delay_seconds"),
+            "failure_classification": task_meta.get("failure_classification"),
             "failure_count": int(session_meta.get("background_failure_count") or 0),
             "last_error": session_meta.get("last_background_error"),
         }
@@ -1236,12 +1257,15 @@ class OrchestrationCoordinator:
             db.rollback()
             session = db.get(OrchestrationSession, orchestration_id)
             if session is not None:
+                failure_classification = self._classify_background_failure(exc)
                 metadata = dict(session.metadata_json or {})
                 failure_count = int(metadata.get("background_failure_count") or 0) + 1
                 metadata["background_failure_count"] = failure_count
                 metadata["last_background_error"] = f"{type(exc).__name__}: {exc}"[:500]
+                metadata["last_background_failure_classification"] = failure_classification
                 session.metadata_json = metadata
-                if failure_count < MAX_BACKGROUND_FAILURES:
+                retryable = self._retryable_failure_classification(failure_classification)
+                if retryable and failure_count < MAX_BACKGROUND_FAILURES:
                     self._update_session_status(
                         db,
                         session,
@@ -1255,13 +1279,38 @@ class OrchestrationCoordinator:
                         db,
                         session,
                         "background_turn_retry_scheduled",
-                        {"reason": str(exc), "failure_count": failure_count, "max_failures": MAX_BACKGROUND_FAILURES},
+                        {
+                            "reason": str(exc),
+                            "failure_count": failure_count,
+                            "max_failures": MAX_BACKGROUND_FAILURES,
+                            "failure_classification": failure_classification,
+                        },
                     )
                     db.commit()
-                    self._schedule_background_retry(orchestration_id, "retry_after_error", min(2.0 * failure_count, 5.0))
+                    self._schedule_background_retry(
+                        orchestration_id,
+                        "retry_after_error",
+                        min(2.0 * failure_count, 5.0),
+                        failure_classification=failure_classification,
+                    )
                 else:
-                    self._update_session_status(db, session, status="failed", manager_status=f"Mission Control background turn failed: {exc}")
-                    self._record_event(db, session, "orchestration_failed", {"reason": str(exc), "failure_count": failure_count})
+                    terminal_status = "paused" if failure_classification in {"approval_denied", "user_action_required"} else "failed"
+                    self._update_session_status(
+                        db,
+                        session,
+                        status=terminal_status,
+                        manager_status=f"Mission Control background turn failed [{failure_classification}]: {exc}",
+                    )
+                    self._record_event(
+                        db,
+                        session,
+                        "orchestration_failed",
+                        {
+                            "reason": str(exc),
+                            "failure_count": failure_count,
+                            "failure_classification": failure_classification,
+                        },
+                    )
                     db.commit()
         finally:
             db.close()

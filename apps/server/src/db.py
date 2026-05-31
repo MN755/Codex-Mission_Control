@@ -97,6 +97,8 @@ def _apply_sqlite_migrations() -> None:
         _ensure_column("agent_runs", "exit_code", "exit_code INTEGER")
         _ensure_column("agent_runs", "manager_action", "manager_action VARCHAR(80)")
         _ensure_column("agent_runs", "effective_settings_json", "effective_settings_json JSON")
+        _ensure_column("agent_runs", "result_envelope_json", "result_envelope_json JSON")
+        _ensure_column("agent_runs", "failure_classification", "failure_classification VARCHAR(40)")
     if "project_settings" in tables:
         _ensure_column("project_settings", "provider", "provider VARCHAR(40) NOT NULL DEFAULT 'codex'")
         _ensure_column("project_settings", "provider_endpoint", "provider_endpoint TEXT")
@@ -273,6 +275,18 @@ def _apply_sqlite_migrations() -> None:
         _ensure_column("app_profile", "last_opened_at", "last_opened_at DATETIME")
     if "orchestration_sessions" in tables:
         _ensure_column("orchestration_sessions", "mode", "mode VARCHAR(30) NOT NULL DEFAULT 'unknown'")
+    if "agent_execution_traces" in tables:
+        _ensure_column("agent_execution_traces", "trace_id", "trace_id VARCHAR(120) NOT NULL DEFAULT ''")
+        _ensure_column("agent_execution_traces", "span_id", "span_id VARCHAR(120) NOT NULL DEFAULT ''")
+        _ensure_column("agent_execution_traces", "parent_span_id", "parent_span_id VARCHAR(120)")
+        _ensure_column("agent_execution_traces", "span_kind", "span_kind VARCHAR(60) NOT NULL DEFAULT 'run'")
+        _ensure_column("agent_execution_traces", "attempt_number", "attempt_number INTEGER NOT NULL DEFAULT 1")
+        _ensure_column("agent_execution_traces", "outcome", "outcome VARCHAR(40) NOT NULL DEFAULT 'unknown'")
+        _ensure_column("agent_execution_traces", "failure_classification", "failure_classification VARCHAR(40)")
+        _ensure_column("agent_execution_traces", "evidence_ids_json", "evidence_ids_json JSON NOT NULL DEFAULT '[]'")
+        _ensure_column("agent_execution_traces", "metadata_json", "metadata_json JSON NOT NULL DEFAULT '{}'")
+        _ensure_column("agent_execution_traces", "started_at", "started_at DATETIME")
+        _ensure_column("agent_execution_traces", "finished_at", "finished_at DATETIME")
 
 
 def init_db() -> None:

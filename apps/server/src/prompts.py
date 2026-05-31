@@ -19,6 +19,36 @@ WORKER_REPORT_SCHEMA = {
     "recommended_next_task": "string",
 }
 
+RUNNER_RESULT_ENVELOPE_SCHEMA = {
+    "status": "completed|blocked|needs_review|failed",
+    "runner_type": "string",
+    "lane": "implementation|browser_automation|test_execution|repo_analysis|manager_turn",
+    "summary": "string",
+    "report": WORKER_REPORT_SCHEMA,
+    "files_changed": ["string"],
+    "tests_run": ["string"],
+    "commands_attempted": ["string"],
+    "evidence": [
+        {
+            "kind": "command_output|test_result|build_result|file_change|artifact|screenshot|report|manual_note",
+            "summary": "string",
+            "status": "passed|failed|not_run|unknown",
+            "source_path": "string|null",
+            "command": "string|null",
+            "metadata_json": {},
+        }
+    ],
+    "risks": ["string"],
+    "blockers": ["string"],
+    "diagnostics": ["string"],
+    "approvals_requested": [{}],
+    "recovery_plan": ["string"],
+    "edits": [{"path": "string", "content": "string|null", "summary": "string|null"}],
+    "failure_classification": "transient|user_action_required|input_error|runner_bug|infra_blocker|approval_denied|null",
+    "needs_approval": False,
+    "metadata_json": {},
+}
+
 MANAGER_DOC_UPDATE_SCHEMA = {
     "summary_markdown": "string",
     "files": [{"filename": "string", "content": "string"}],
@@ -480,10 +510,17 @@ Project-state biases:
 Validation steps:
 {json.dumps(task.validation_steps_json, indent=2)}
 
-Completion report JSON schema:
-{json.dumps(WORKER_REPORT_SCHEMA, indent=2)}
+Completion envelope JSON schema:
+{json.dumps(RUNNER_RESULT_ENVELOPE_SCHEMA, indent=2)}
 
-Return only a JSON object matching the schema as your final answer.
+Rules for the completion envelope:
+- The outer result envelope is mandatory.
+- Keep report.agent and report.task_id aligned with this task.
+- Put the human-readable summary in both summary and report.summary when they differ only in detail.
+- If you ran tests, benchmarks, profiling, browser steps, or repo analysis commands, record them in tests_run, commands_attempted, and evidence.
+- If you need approval or hit a runner/tooling problem, classify it with failure_classification instead of hiding it in prose.
+
+Return only a JSON object matching the envelope schema as your final answer.
 """
 
 

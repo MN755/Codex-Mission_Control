@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import asyncio
 import fnmatch
 import hashlib
@@ -44,6 +45,7 @@ from models import (
     Agent,
     AgentArchetype,
     AgentRun,
+    AgentPerformanceRecord,
     AgentInstructionsStatus,
     AppProfile,
     AppEvent,
@@ -52,6 +54,7 @@ from models import (
     AgentExecutionTrace,
     AgentStuckSignal,
     ChangeRequest,
+    CapabilityBenchmark,
     ConflictRecord,
     DecisionRecord,
     CodebaseMap,
@@ -134,7 +137,7 @@ from prompts import (
 from provider_support import default_label, normalize_provider, provider_label, provider_uses_adapter
 from risk import risk_service
 from security import redact_text, redact_value, security_service
-from security.path_validation import resolve_local_path, resolve_relative_to_root
+from security.path_validation import PathValidationError, resolve_local_path, resolve_relative_to_root
 from schemas import (
     AppProfileUpdate,
     ManagerDocFile,
@@ -145,6 +148,7 @@ from schemas import (
     ManagerTaskItem,
     ManagerWorkerDecision,
     ProjectSettingsUpdate,
+    RunnerResultEnvelope,
     SwarmPreferencesUpdate,
     WorkerReport,
 )
@@ -571,6 +575,315 @@ class MissionControlService:
         if changed_paths and not report.files_changed and self._task_expects_file_changes(task):
             report = report.model_copy(update={"files_changed": changed_paths[:20]})
         return report
+
+    @staticmethod
+    def _runner_status_from_report_status(status: str) -> str:
+        return {
+            "done": "completed",
+            "blocked": "blocked",
+            "needs_review": "needs_review",
+            "error": "failed",
+        }.get(str(status or "").strip().lower(), "failed")
+
+    @staticmethod
+    def _report_status_from_runner_status(status: str) -> str:
+        return {
+            "completed": "done",
+            "blocked": "blocked",
+            "needs_review": "needs_review",
+            "failed": "error",
+        }.get(str(status or "").strip().lower(), "error")
+
+    def _classify_runner_lane(self, task: Task | None, report: WorkerReport | None = None, commands_attempted: list[str] | None = None) -> str:
+        commands = " ".join(str(item or "") for item in list(commands_attempted or []))
+        report_tests = " ".join(str(item or "") for item in list((report.tests_run if report else []) or []))
+        haystack = " ".join(
+            filter(
+                None,
+                [
+                    task.title if task else None,
+                    task.goal if task else None,
+                    task.scope if task else None,
+                    commands,
+                    report_tests,
+                    report.summary if report else None,
+                ],
+            )
+        ).lower()
+        if any(token in haystack for token in ("playwright", "browser", "ui test", "webapp", "screenshot", "page.")):
+            return "browser_automation"
+        if any(token in haystack for token in ("pytest", "test ", "benchmark", "profile", "nsight", "validate", "validation")):
+            return "test_execution"
+        if any(token in haystack for token in ("codebase", "intake", "inventory", "repo map", "repository analysis", "scan the repo", "survey the repo")):
+            return "repo_analysis"
+        return "implementation"
+
+    def _classify_failure(self, *, summary: str, blockers: list[str], risks: list[str], diagnostics: list[str], report_status: str) -> str | None:
+        if str(report_status or "").strip().lower() == "done":
+            return None
+        haystack = " ".join([summary, *blockers, *risks, *diagnostics]).lower()
+        if "approval denied" in haystack or "user denied" in haystack:
+            return "approval_denied"
+        if any(token in haystack for token in ("auth", "api key", "login", "token expired", "credential", "permission required")):
+            return "user_action_required"
+        if any(token in haystack for token in ("schema", "invalid json", "malformed", "parse", "task_id does not match", "outside allowed paths")):
+            return "runner_bug" if "schema" in haystack or "json" in haystack or "parse" in haystack else "input_error"
+        if any(token in haystack for token in ("timeout", "temporar", "database is locked", "rate limit", "connection reset", "network")):
+            return "transient"
+        if any(token in haystack for token in ("gpu", "cluster", "pod pending", "infra", "kubernetes", "disk full", "resource unavailable")):
+            return "infra_blocker"
+        return "runner_bug" if report_status == "error" else "input_error"
+
+    def _build_runner_result_envelope_from_report(self, run: AgentRun, task: Task | None, report: WorkerReport) -> RunnerResultEnvelope:
+        commands_attempted = list(report.tests_run or [])
+        lane = self._classify_runner_lane(task, report, commands_attempted)
+        failure_classification = self._classify_failure(
+            summary=report.summary,
+            blockers=list(report.blockers or []),
+            risks=list(report.risks or []),
+            diagnostics=[],
+            report_status=report.status,
+        )
+        evidence = []
+        for test_name in list(report.tests_run or []):
+            evidence.append(
+                {
+                    "kind": "test_result",
+                    "summary": test_name,
+                    "status": "passed" if report.status == "done" else "unknown",
+                    "source_path": run.logs_path or run.event_log_path,
+                    "command": test_name,
+                    "metadata_json": {"run_id": run.id},
+                }
+            )
+        return RunnerResultEnvelope(
+            status=self._runner_status_from_report_status(report.status),
+            runner_type=run.runner_type,
+            lane=lane,
+            summary=report.summary,
+            report=report,
+            files_changed=list(report.files_changed or []),
+            tests_run=list(report.tests_run or []),
+            commands_attempted=commands_attempted,
+            evidence=evidence,
+            risks=list(report.risks or []),
+            blockers=list(report.blockers or []),
+            diagnostics=[],
+            approvals_requested=[],
+            recovery_plan=[],
+            edits=[],
+            failure_classification=failure_classification,
+            needs_approval=False,
+            metadata_json={"legacy_report_payload": run.result_envelope_json is None},
+        )
+
+    def _normalize_runner_result_envelope(self, run: AgentRun, task: Task | None, raw_payload: dict[str, Any] | None) -> RunnerResultEnvelope:
+        if not isinstance(raw_payload, dict):
+            raise ValueError("Runner completion did not return a JSON object.")
+        if isinstance(raw_payload.get("report"), dict):
+            envelope = _validate_model(RunnerResultEnvelope, raw_payload)
+        else:
+            raise ValueError("Runner completion envelope is missing the required report object.")
+        report = envelope.report
+        envelope = envelope.model_copy(
+            update={
+                "lane": self._classify_runner_lane(task, report, list(envelope.commands_attempted or [])),
+                "status": envelope.status,
+                "files_changed": list(envelope.files_changed or report.files_changed or []),
+                "tests_run": list(envelope.tests_run or report.tests_run or []),
+                "risks": list(envelope.risks or report.risks or []),
+                "blockers": list(envelope.blockers or report.blockers or []),
+                "failure_classification": envelope.failure_classification
+                or self._classify_failure(
+                    summary=envelope.summary or report.summary,
+                    blockers=list(envelope.blockers or report.blockers or []),
+                    risks=list(envelope.risks or report.risks or []),
+                    diagnostics=list(envelope.diagnostics or []),
+                    report_status=report.status,
+                ),
+            }
+        )
+        return envelope
+
+    @staticmethod
+    def _trace_outcome_from_report_status(status: str) -> str:
+        return {
+            "done": "success",
+            "needs_review": "needs_review",
+            "blocked": "blocked",
+            "error": "failed",
+        }.get(str(status or "").strip().lower(), "unknown")
+
+    def _trace_evidence_ids_for_run(self, db: Session, project: Project, run: AgentRun) -> list[int]:
+        evidence_ids: list[int] = []
+        entries = db.scalars(
+            select(HandoffEvidence)
+            .where(HandoffEvidence.project_id == project.id)
+            .order_by(HandoffEvidence.id.asc())
+        )
+        for entry in entries:
+            metadata = entry.metadata_json or {}
+            if metadata.get("run_id") == run.id:
+                evidence_ids.append(entry.id)
+        return evidence_ids
+
+    def _persist_run_trace_spans(
+        self,
+        db: Session,
+        project: Project,
+        agent: Agent,
+        task: Task | None,
+        run: AgentRun,
+        envelope: RunnerResultEnvelope,
+    ) -> list[AgentExecutionTrace]:
+        existing = list(
+            db.scalars(
+                select(AgentExecutionTrace)
+                .where(AgentExecutionTrace.run_id == run.id)
+                .order_by(AgentExecutionTrace.id.asc())
+            )
+        )
+        if existing:
+            return existing
+        report = envelope.report
+        prompt_bits = [agent.mission if agent.mission else None, task.goal if task else None, task.scope if task else None]
+        prompt_summary = " | ".join(bit for bit in prompt_bits if bit) or f"{agent.name} executed a recorded run."
+        response_summary = str(envelope.summary or report.summary or run.status or "Run completed.")
+        evidence_ids = self._trace_evidence_ids_for_run(db, project, run)
+        trace_id = f"run-{run.id}"
+        root_span_id = f"{trace_id}:root"
+        attempt_span_id = f"{trace_id}:attempt:1"
+        validation_span_id = f"{trace_id}:validation:1"
+        started_at = self._normalize_report_datetime(run.started_at)
+        finished_at = self._normalize_report_datetime(run.finished_at)
+        outcome = self._trace_outcome_from_report_status(report.status)
+        base_payload = {
+            "project_id": project.id,
+            "agent_id": run.agent_id,
+            "task_id": run.task_id,
+            "run_id": run.id,
+            "trace_id": trace_id,
+            "prompt_summary": prompt_summary[:1000],
+            "prompt_path": run.logs_path or run.event_log_path,
+            "response_summary": response_summary[:1000],
+            "report_json": _dump_model(envelope),
+            "files_changed_json": list(envelope.files_changed or [])[:40],
+            "approvals_requested_json": list(envelope.approvals_requested or [])[:20],
+            "commands_attempted_json": list(envelope.commands_attempted or [])[:20],
+            "evidence_ids_json": evidence_ids[:20],
+            "manager_decision_after": run.manager_action,
+            "redaction_status": "redacted_summary",
+            "started_at": started_at,
+            "finished_at": finished_at,
+            "outcome": outcome,
+            "failure_classification": envelope.failure_classification,
+        }
+        spans = [
+            AgentExecutionTrace(
+                **base_payload,
+                span_id=root_span_id,
+                parent_span_id=None,
+                span_kind="run",
+                attempt_number=1,
+                metadata_json={
+                    "runner_type": run.runner_type,
+                    "lane": envelope.lane,
+                    "needs_approval": envelope.needs_approval,
+                },
+            ),
+            AgentExecutionTrace(
+                **base_payload,
+                span_id=attempt_span_id,
+                parent_span_id=root_span_id,
+                span_kind=envelope.lane if envelope.lane in {"browser_automation", "test_execution", "repo_analysis"} else "runner_attempt",
+                attempt_number=1,
+                metadata_json={
+                    "runner_type": run.runner_type,
+                    "lane": envelope.lane,
+                    "exit_code": run.exit_code,
+                },
+            ),
+            AgentExecutionTrace(
+                **base_payload,
+                span_id=validation_span_id,
+                parent_span_id=attempt_span_id,
+                span_kind="validation",
+                attempt_number=1,
+                metadata_json={
+                    "tests_run": list(envelope.tests_run or [])[:20],
+                    "diagnostics": list(envelope.diagnostics or [])[:20],
+                },
+            ),
+        ]
+        for span in spans:
+            db.add(span)
+        db.flush()
+        return spans
+
+    def _reject_runner_completion(
+        self,
+        db: Session,
+        project: Project,
+        agent: Agent,
+        task: Task | None,
+        run: AgentRun,
+        *,
+        status: str,
+        reason: str,
+        raw_payload: dict[str, Any] | None,
+    ) -> None:
+        now = utc_now()
+        run.status = "error"
+        run.finished_at = run.finished_at or now
+        run.failure_classification = "runner_bug"
+        run.result_envelope_json = raw_payload if isinstance(raw_payload, dict) else None
+        run.report_json = {
+            "agent": agent.name,
+            "task_id": str(task.id if task else run.task_id or "unknown"),
+            "status": "error",
+            "summary": reason,
+            "files_changed": [],
+            "tests_run": [],
+            "blockers": [],
+            "risks": [reason],
+            "recommended_next_task": "",
+        }
+        agent.failure_count += 1
+        agent.current_task_id = None
+        agent.current_action = None
+        agent.last_report_summary = reason
+        agent.status = "waiting"
+        if task is not None:
+            task.failure_count += 1
+            task.status = "needs_review"
+            task.waiting_reason = reason
+        self._release_reservations(db, project.id, task_id=task.id if task else None, agent_id=agent.id)
+        plan = RecoveryPlan(
+            project_id=project.id,
+            trigger_type="runner_result_schema_failure",
+            trigger_summary=reason[:500],
+            suggested_actions_json=[
+                "Inspect the runner output and logs for malformed JSON or missing envelope fields.",
+                "Retry only after the runner returns a valid RunnerResultEnvelope.",
+                "Treat this as a runner bug, not proof that the task completed.",
+            ],
+            related_agent_id=agent.id,
+            related_task_id=task.id if task else None,
+            status="proposed",
+        )
+        db.add(plan)
+        self.events.publish(
+            db,
+            project.id,
+            "worker.report.rejected",
+            {
+                "run_id": run.id,
+                "task_id": run.task_id,
+                "status": status,
+                "reason": reason,
+                "failure_classification": "runner_bug",
+            },
+        )
 
     def _ensure_project_workspace(self, project: Project) -> Path:
         docs_dir = self._project_docs_dir(project)
@@ -2145,87 +2458,24 @@ class MissionControlService:
         }
         agents_by_id = {agent.id: agent for agent in db.scalars(select(Agent).where(Agent.project_id == project.id))}
         tasks_by_id = {task.id: task for task in db.scalars(select(Task).where(Task.project_id == project.id))}
-        specs = list(db.scalars(select(SwarmAgentSpec).where(SwarmAgentSpec.project_id == project.id)))
-        specs_by_identity: dict[tuple[int | None, str], SwarmAgentSpec] = {}
-        for spec in specs:
-            specs_by_identity[(spec.swarm_plan_id, spec.name)] = spec
-            specs_by_identity[(spec.swarm_plan_id, spec.archetype)] = spec
         for run in runs:
             if run.id in existing_run_ids:
                 continue
             agent = agents_by_id.get(run.agent_id)
+            if agent is None:
+                continue
             task = tasks_by_id.get(run.task_id) if run.task_id is not None else None
-            raw_report = self._redact_payload(run.report_json or {})
-            gpu_mode = detect_cuda_repo_mode(project.workspace_path)
-            gpu_health = self._gpu_cluster_health(project)
-            matched_spec = None
-            if agent is not None:
-                matched_spec = specs_by_identity.get((agent.swarm_plan_id, agent.name))
-                if matched_spec is None and agent.archetype:
-                    matched_spec = specs_by_identity.get((agent.swarm_plan_id, agent.archetype))
-            files_changed = [str(item) for item in (raw_report.get("files_changed") or []) if str(item).strip()]
-            tests_run = [str(item) for item in (raw_report.get("tests_run") or []) if str(item).strip()]
-            approvals = [
-                self._serialize_approval(entry)
-                for entry in db.scalars(
-                    select(ApprovalRequest)
-                    .where(
-                        ApprovalRequest.project_id == project.id,
-                        ApprovalRequest.requesting_agent_id == run.agent_id,
-                        ApprovalRequest.task_id == run.task_id,
-                    )
-                    .order_by(ApprovalRequest.created_at.desc(), ApprovalRequest.id.desc())
-                )
-            ][:5]
-            prompt_bits = [agent.mission if agent and agent.mission else None, task.goal if task else None, task.scope if task else None]
-            prompt_summary = " | ".join(bit for bit in prompt_bits if bit) or f"{agent.name if agent else 'Worker'} executed a recorded run."
-            response_summary = str(raw_report.get("summary") or run.status or "Run completed.")
-            commands_attempted = []
-            if run.runner_type:
-                commands_attempted.append(f"runner:{run.runner_type}")
-            commands_attempted.extend(tests_run[:3])
-            loop_haystack = " ".join(
-                str(item or "")
-                for item in [
-                    task.title if task else None,
-                    task.goal if task else None,
-                    agent.name if agent else None,
-                    agent.mission if agent else None,
-                ]
-            ).lower()
-            loop_kind = (
-                "optimization"
-                if any(token in loop_haystack for token in ("optimiz", "benchmark", "profile", "autotune", "tile"))
-                else "review"
-                if any(token in loop_haystack for token in ("review", "correctness", "audit"))
-                else "codegen"
-                if gpu_mode.get("enabled")
-                else None
-            )
-            if loop_kind:
-                raw_report["evaluation_trace"] = {
-                    "loop_kind": loop_kind,
-                    "iteration_budget": matched_spec.iteration_budget if matched_spec is not None else 1,
-                    "repo_mode": gpu_mode.get("mode"),
-                    "failure_verdict": gpu_health.get("likely_failure_source"),
-                    "cluster_usable": gpu_health.get("cluster_usable"),
-                }
-            trace = AgentExecutionTrace(
-                project_id=project.id,
-                agent_id=run.agent_id,
-                task_id=run.task_id,
-                run_id=run.id,
-                prompt_summary=prompt_summary[:1000],
-                prompt_path=run.logs_path or run.event_log_path,
-                response_summary=response_summary[:1000],
-                report_json=raw_report if isinstance(raw_report, dict) else {},
-                files_changed_json=files_changed[:40],
-                approvals_requested_json=approvals,
-                commands_attempted_json=commands_attempted[:20],
-                manager_decision_after=run.manager_action,
-                redaction_status="redacted_summary",
-            )
-            db.add(trace)
+            try:
+                envelope = self._normalize_runner_result_envelope(run, task, run.result_envelope_json or {})
+            except ValueError:
+                if not isinstance(run.report_json, dict):
+                    continue
+                try:
+                    report = _validate_model(WorkerReport, run.report_json)
+                except ValidationError:
+                    continue
+                envelope = self._build_runner_result_envelope_from_report(run, task, report)
+            self._persist_run_trace_spans(db, project, agent, task, run, envelope)
         db.flush()
         return list(
             db.scalars(
@@ -3454,11 +3704,15 @@ class MissionControlService:
         for run in runs:
             agent = agents_by_id.get(run.agent_id)
             task = tasks_by_id.get(run.task_id) if run.task_id is not None else None
-            raw_report = self._redact_payload(run.report_json or {})
-            files_changed = [str(item) for item in (raw_report.get("files_changed") or []) if str(item).strip()]
-            tests_run = [str(item) for item in (raw_report.get("tests_run") or []) if str(item).strip()]
-            prompt_bits = [agent.mission if agent and agent.mission else None, task.goal if task else None, task.scope if task else None]
-            prompt_summary = " | ".join(bit for bit in prompt_bits if bit) or f"{agent.name if agent else 'Worker'} executed a recorded run."
+            if agent is None or not isinstance(run.report_json, dict):
+                continue
+            try:
+                report = _validate_model(WorkerReport, run.report_json)
+            except ValidationError:
+                continue
+            envelope = self._build_runner_result_envelope_from_report(run, task, report)
+            prompt_bits = [agent.mission if agent.mission else None, task.goal if task else None, task.scope if task else None]
+            prompt_summary = " | ".join(bit for bit in prompt_bits if bit) or f"{agent.name} executed a recorded run."
             preview_rows.append(
                 {
                     "id": None,
@@ -3466,12 +3720,25 @@ class MissionControlService:
                     "agent_id": run.agent_id,
                     "task_id": run.task_id,
                     "run_id": run.id,
+                    "trace_id": f"run-{run.id}",
+                    "span_id": f"run-{run.id}:root",
+                    "parent_span_id": None,
+                    "span_kind": "run",
+                    "attempt_number": 1,
+                    "outcome": self._trace_outcome_from_report_status(report.status),
+                    "failure_classification": envelope.failure_classification,
                     "prompt_summary": prompt_summary[:1000],
-                    "response_summary": str(raw_report.get("summary") or run.status or "Run completed.")[:1000],
-                    "files_changed_json": files_changed[:40],
-                    "commands_attempted_json": ([f"runner:{run.runner_type}"] if run.runner_type else []) + tests_run[:3],
+                    "response_summary": str(envelope.summary or report.summary or run.status or "Run completed.")[:1000],
+                    "report_json": _dump_model(envelope),
+                    "files_changed_json": list(envelope.files_changed or [])[:40],
+                    "approvals_requested_json": list(envelope.approvals_requested or [])[:20],
+                    "commands_attempted_json": list(envelope.commands_attempted or [])[:20],
+                    "evidence_ids_json": [],
+                    "metadata_json": {"source": "computed_preview", "lane": envelope.lane},
                     "manager_decision_after": run.manager_action,
                     "redaction_status": "redacted_summary",
+                    "started_at": run.started_at,
+                    "finished_at": run.finished_at,
                     "created_at": run.started_at or run.finished_at or utc_now(),
                     "source": "computed",
                 }
@@ -10639,6 +10906,14 @@ class MissionControlService:
         coverage = validation_coverage_service.coverage_summary(db, project)
         latest_report = next(iter(self.recent_diagnostic_reports(project)), None)
         latest_orchestration = self._latest_project_orchestration(db, project)
+        traces = self.list_agent_traces(db, project)
+        evidence_rows = list(
+            db.scalars(
+                select(HandoffEvidence)
+                .where(HandoffEvidence.project_id == project.id)
+                .order_by(HandoffEvidence.created_at.desc(), HandoffEvidence.id.desc())
+            )
+        )
         active_agents = [
             {
                 "id": int(agent["id"]),
@@ -10650,20 +10925,79 @@ class MissionControlService:
             for agent in self._sorted_workspace_agents(db, project.id)
             if str(agent.get("display_status") or "") in {"working", "blocked", "waiting", "error"}
         ]
-        timeline = self.list_timeline_events(db, project)[:6]
         swarm_plan = self.get_swarm_plan(db, project)
+        typed_traces = [
+            {
+                "trace_id": str(trace.trace_id or f"run-{trace.run_id or trace.id}"),
+                "span_id": str(trace.span_id or f"trace-{trace.id}"),
+                "parent_span_id": trace.parent_span_id,
+                "span_kind": str(trace.span_kind or "run"),
+                "outcome": str(trace.outcome or "unknown"),
+                "summary": str(trace.response_summary or trace.prompt_summary or "Recorded trace span."),
+                "failure_classification": trace.failure_classification,
+                "started_at": trace.started_at,
+                "finished_at": trace.finished_at,
+            }
+            for trace in traces[:8]
+        ]
+        evidence_items = [
+            {
+                "id": entry.id,
+                "evidence_type": entry.evidence_type,
+                "status": entry.status,
+                "summary": entry.summary,
+                "source_path": entry.source_path,
+                "command": entry.command,
+            }
+            for entry in evidence_rows[:6]
+        ]
+        active_task_titles = [
+            task.title
+            for task in tasks
+            if task.status in {"working", "blocked", "needs_review"}
+        ]
         current_focus = self._dedupe_strings(
             [
-                *(f"{agent['name']}: {agent.get('current_action') or agent['display_status']}" for agent in active_agents[:4]),
-                str(current_action.get("title") or ""),
-                str(current_action.get("message") or ""),
+                *active_task_titles[:4],
+                *[
+                    f"{trace['span_kind']}: {trace['summary']}"
+                    for trace in typed_traces
+                    if trace["outcome"] in {"failed", "blocked", "needs_review"}
+                ][:4],
+                *[
+                    f"{entry['evidence_type']}: {entry['summary']}"
+                    for entry in evidence_items
+                    if entry["status"] in {"failed", "not_run", "unknown", "pending"}
+                ][:3],
             ]
         )[:6]
         top_risks = self._dedupe_strings(
-            [*list(health.get("top_risks") or []), *list(health.get("reasons") or [])]
+            [
+                *[
+                    f"{trace['span_kind']} {trace['outcome']}: {trace['failure_classification'] or trace['summary']}"
+                    for trace in typed_traces
+                    if trace["outcome"] in {"failed", "blocked", "needs_review"}
+                ],
+                *[
+                    f"Evidence {entry['evidence_type']} is {entry['status']}: {entry['summary']}"
+                    for entry in evidence_items
+                    if entry["status"] in {"failed", "not_run", "unknown", "pending"}
+                ],
+                *list(health.get("top_risks") or []),
+                *list(health.get("reasons") or []),
+            ]
         )[:6]
         recent_events = self._dedupe_strings(
-            [f"{event.title}: {event.summary}" for event in timeline]
+            [
+                *[
+                    f"{trace['span_kind']}: {trace['summary']}"
+                    for trace in typed_traces[:4]
+                ],
+                *[
+                    f"{entry['evidence_type']}: {entry['status']} - {entry['summary']}"
+                    for entry in evidence_items[:3]
+                ],
+            ]
         )[:6]
         diagnostics_summary = str(latest_report.get("summary") or "").strip() if isinstance(latest_report, dict) else None
         diagnostics_bundle_path = str(latest_report.get("bundle_path") or "").strip() or None if isinstance(latest_report, dict) else None
@@ -10694,6 +11028,24 @@ class MissionControlService:
                 "",
                 "### Recent events",
                 self._markdown_list(recent_events or ["No recent timeline events are recorded yet."]),
+                "",
+                "### Typed traces",
+                self._markdown_list(
+                    [
+                        f"{trace['span_kind']} -> {trace['outcome']}: {trace['summary']}"
+                        for trace in typed_traces[:4]
+                    ]
+                    or ["No typed trace spans are recorded yet."]
+                ),
+                "",
+                "### Evidence ledger",
+                self._markdown_list(
+                    [
+                        f"{entry['evidence_type']} [{entry['status']}]: {entry['summary']}"
+                        for entry in evidence_items[:4]
+                    ]
+                    or ["No evidence entries are recorded yet."]
+                ),
             ]
         )
         return {
@@ -10708,6 +11060,8 @@ class MissionControlService:
             "pending_questions_count": len(pending_questions),
             "active_agent_count": len(active_agents),
             "active_agents": active_agents[:6],
+            "trace_spans": typed_traces,
+            "evidence_items": evidence_items,
             "current_focus": current_focus,
             "top_risks": top_risks,
             "recent_events": recent_events,
@@ -10975,6 +11329,869 @@ class MissionControlService:
             "project_name": project.name,
             **payload,
         }
+
+    def _capability_section(
+        self,
+        *,
+        key: str,
+        title: str,
+        status: str,
+        summary: str,
+        details: list[str] | None = None,
+        commands: list[str] | None = None,
+        artifacts: list[str] | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        return {
+            "key": key,
+            "title": title,
+            "status": status,
+            "summary": summary,
+            "details": self._dedupe_strings(list(details or []))[:8],
+            "commands": self._dedupe_strings(list(commands or []))[:8],
+            "artifacts": self._dedupe_strings(list(artifacts or []))[:8],
+            "metadata_json": metadata or {},
+        }
+
+    def _safe_workspace_root(self, project: Project) -> Path | None:
+        try:
+            return resolve_local_path(project.source_path or project.workspace_path, must_exist=True, must_be_dir=True)
+        except PathValidationError:
+            return None
+
+    def _provider_runtime_status(self, settings: ProjectSettings) -> dict[str, Any]:
+        provider = normalize_provider(settings.provider)
+        try:
+            from system_status import detect_provider_statuses
+
+            provider_statuses = detect_provider_statuses(
+                selected_provider=provider,
+                adapter_command=settings.adapter_command,
+                provider_endpoint=settings.provider_endpoint,
+                adapter_args=list(settings.adapter_args_json or []),
+            )
+        except Exception as exc:
+            return {
+                "provider": provider,
+                "runtime_ready": False,
+                "runtime_status": "unknown",
+                "runtime_summary": f"Provider runtime probing failed: {type(exc).__name__}.",
+                "runtime_blockers": [str(exc)],
+            }
+        return next((item for item in provider_statuses if item.get("provider") == provider), {"provider": provider})
+
+    def _python_module_name(self, root: Path, path: Path) -> str | None:
+        try:
+            relative = path.relative_to(root)
+        except ValueError:
+            return None
+        parts = list(relative.with_suffix("").parts)
+        if parts and parts[-1] == "__init__":
+            parts = parts[:-1]
+        return ".".join(parts) if parts else None
+
+    def _match_python_workspace_module(self, module_name: str, module_index: dict[str, str]) -> str | None:
+        candidate = module_name.strip(".")
+        if not candidate:
+            return None
+        parts = candidate.split(".")
+        while parts:
+            joined = ".".join(parts)
+            if joined in module_index:
+                return joined
+            parts.pop()
+        return None
+
+    def _resolve_python_relative_import(
+        self,
+        *,
+        current_module: str | None,
+        module: str | None,
+        level: int,
+        module_index: dict[str, str],
+    ) -> str | None:
+        if current_module is None:
+            return None
+        current_parts = current_module.split(".")
+        if level > len(current_parts):
+            return None
+        anchor_parts = current_parts[:-level]
+        if module:
+            anchor_parts.extend(part for part in module.split(".") if part)
+        return self._match_python_workspace_module(".".join(anchor_parts), module_index)
+
+    def _extract_python_semantics(
+        self,
+        *,
+        root: Path,
+        path: Path,
+        module_index: dict[str, str],
+    ) -> tuple[list[str], list[str]]:
+        try:
+            text = path.read_text(encoding="utf-8")
+            tree = ast.parse(text)
+        except (OSError, SyntaxError, UnicodeDecodeError):
+            return [], []
+        symbols: list[str] = []
+        imports: list[str] = []
+        current_module = self._python_module_name(root, path)
+        for node in ast.iter_child_nodes(tree):
+            if isinstance(node, ast.ClassDef):
+                symbols.append(f"class {node.name}")
+            elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                symbols.append(f"def {node.name}")
+            elif isinstance(node, ast.Import):
+                for alias in node.names:
+                    matched = self._match_python_workspace_module(alias.name, module_index)
+                    if matched and matched not in imports:
+                        imports.append(matched)
+            elif isinstance(node, ast.ImportFrom):
+                matched = self._resolve_python_relative_import(
+                    current_module=current_module,
+                    module=node.module,
+                    level=node.level,
+                    module_index=module_index,
+                )
+                if matched and matched not in imports:
+                    imports.append(matched)
+            if len(symbols) >= 8:
+                symbols = symbols[:8]
+        return symbols[:8], imports
+
+    def _build_python_semantic_index(self, root: Path) -> dict[str, Any]:
+        ignored = {"__pycache__", ".git", "node_modules", ".venv", "venv", "mission-control"}
+        module_index: dict[str, str] = {}
+        file_paths: dict[str, Path] = {}
+        for path in sorted(root.rglob("*.py")):
+            if any(part in ignored for part in path.parts):
+                continue
+            relative = path.relative_to(root).as_posix()
+            module_name = self._python_module_name(root, path)
+            if not module_name:
+                continue
+            module_index[module_name] = relative
+            file_paths[relative] = path
+            if len(module_index) >= 400:
+                break
+        symbols_by_file: dict[str, list[str]] = {}
+        imports_by_file: dict[str, list[str]] = {}
+        for module_name, relative in module_index.items():
+            path = file_paths[relative]
+            symbols, imported_modules = self._extract_python_semantics(root=root, path=path, module_index=module_index)
+            if symbols:
+                symbols_by_file[relative] = symbols
+            resolved_imports = [
+                module_index[target]
+                for target in imported_modules
+                if target in module_index and module_index[target] != relative
+            ]
+            if resolved_imports:
+                imports_by_file[relative] = self._dedupe_strings(resolved_imports)
+        dependents_by_file: dict[str, list[str]] = {}
+        for relative, imports in imports_by_file.items():
+            for imported_relative in imports:
+                dependents_by_file.setdefault(imported_relative, [])
+                if relative not in dependents_by_file[imported_relative]:
+                    dependents_by_file[imported_relative].append(relative)
+        return {
+            "module_index": module_index,
+            "symbols_by_file": symbols_by_file,
+            "imports_by_file": imports_by_file,
+            "dependents_by_file": dependents_by_file,
+        }
+
+    def _extract_symbols(self, path: Path) -> list[str]:
+        try:
+            text = path.read_text(encoding="utf-8")
+        except OSError:
+            return []
+        patterns: list[tuple[str, str]] = []
+        suffix = path.suffix.lower()
+        if suffix == ".py":
+            patterns = [
+                ("def", r"^\s*(?:async\s+def|def)\s+([A-Za-z_]\w*)\s*\("),
+                ("class", r"^\s*class\s+([A-Za-z_]\w*)\b"),
+            ]
+        elif suffix in {".js", ".jsx", ".ts", ".tsx"}:
+            patterns = [
+                ("function", r"^\s*(?:export\s+)?(?:async\s+)?function\s+([A-Za-z_]\w*)\s*\("),
+                ("class", r"^\s*(?:export\s+)?class\s+([A-Za-z_]\w*)\b"),
+                ("const", r"^\s*(?:export\s+)?const\s+([A-Za-z_]\w*)\s*=\s*(?:async\s*)?\("),
+            ]
+        elif suffix == ".rs":
+            patterns = [("fn", r"^\s*(?:pub\s+)?fn\s+([A-Za-z_]\w*)\s*\(")]
+        elif suffix == ".go":
+            patterns = [("func", r"^\s*func\s+(?:\([^)]+\)\s*)?([A-Za-z_]\w*)\s*\(")]
+        elif suffix in {".cpp", ".cc", ".cxx", ".c", ".cu", ".cuh", ".h", ".hpp"}:
+            patterns = [
+                ("class", r"^\s*class\s+([A-Za-z_]\w*)\b"),
+                ("function", r"^\s*(?:template<[^>]+>\s*)?(?:[\w:<>~*&]+\s+)+([A-Za-z_]\w*)\s*\([^;]*\)\s*(?:const)?\s*\{"),
+            ]
+        symbols: list[str] = []
+        for kind, pattern in patterns:
+            for match in re.finditer(pattern, text, flags=re.MULTILINE):
+                symbols.append(f"{kind} {match.group(1)}")
+                if len(symbols) >= 8:
+                    return symbols
+        return symbols
+
+    def _tree_sitter_binary(self, tooling: dict[str, Any]) -> str | None:
+        for tool in tooling.get("tools", []):
+            if tool.get("id") != "tree-sitter":
+                continue
+            binary_path = str(tool.get("binary_path") or "").strip()
+            if binary_path:
+                return binary_path
+        return shutil.which("tree-sitter")
+
+    def _extract_tree_sitter_tags(self, tree_sitter_binary: str, path: Path) -> list[str]:
+        try:
+            completed = subprocess.run(
+                [tree_sitter_binary, "tags", str(path)],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                check=False,
+            )
+        except OSError:
+            return []
+        if completed.returncode != 0:
+            return []
+        symbols: list[str] = []
+        for line in completed.stdout.splitlines():
+            stripped = line.strip()
+            if not stripped or stripped == str(path) or "|" not in line:
+                continue
+            name_part, _, remainder = line.partition("|")
+            columns = remainder.strip().split()
+            if len(columns) < 2:
+                continue
+            name = name_part.strip()
+            kind = columns[0].strip()
+            role = columns[1].strip()
+            if not name or role != "def":
+                continue
+            symbols.append(f"{kind} {name}")
+            if len(symbols) >= 8:
+                break
+        return symbols
+
+    def _likely_test_paths_for_file(self, root: Path, file_path: Path) -> list[str]:
+        stem = file_path.stem.replace("_test", "").replace("test_", "")
+        search_roots = [candidate for candidate in [root / "tests", root / "test", root / "spec"] if candidate.exists() and candidate.is_dir()]
+        candidates = search_roots or [root]
+        matches: list[str] = []
+        for base in candidates:
+            for test_candidate in sorted(base.rglob(f"*{stem}*")):
+                if not test_candidate.is_file():
+                    continue
+                relative_test = test_candidate.relative_to(root).as_posix()
+                lowered = relative_test.lower()
+                if "test" not in lowered and "spec" not in lowered:
+                    continue
+                if relative_test not in matches:
+                    matches.append(relative_test)
+                if len(matches) >= 6:
+                    return matches
+        return matches
+
+    def _build_repo_capability_detection(
+        self,
+        project: Project,
+        tooling: dict[str, Any],
+        *,
+        workspace_root: Path | None,
+    ) -> dict[str, Any]:
+        repo_profile = dict(tooling.get("repo_profile") or {})
+        cuda_mode = detect_cuda_repo_mode(project.workspace_path or project.source_path) if workspace_root else {"enabled": False}
+        files = {path.name.lower() for path in workspace_root.iterdir()} if workspace_root is not None else set()
+        capabilities: list[str] = []
+        if repo_profile.get("python_repo"):
+            capabilities.append("Python")
+        if repo_profile.get("node_repo"):
+            capabilities.append("Node")
+        if repo_profile.get("rust_repo"):
+            capabilities.append("Rust")
+        if repo_profile.get("go_repo"):
+            capabilities.append("Go")
+        if cuda_mode.get("enabled"):
+            capabilities.append(f"CUDA mode: {cuda_mode.get('mode')}")
+        if "turbo.json" in files or "pnpm-workspace.yaml" in files:
+            capabilities.append("Monorepo")
+        if any(path in files for path in {"playwright.config.ts", "playwright.config.js", "playwright.config.mjs", "playwright.config.cjs"}):
+            capabilities.append("Browser validation")
+        if workspace_root is not None and (workspace_root / ".github" / "workflows").exists():
+            capabilities.append("CI configured")
+        details = [
+            f"Detected capability: {item}" for item in capabilities
+        ] + [
+            f"Lockfiles: {', '.join(repo_profile.get('lockfiles') or [])}" if list(repo_profile.get("lockfiles") or []) else "",
+            tooling.get("summary") or "",
+        ]
+        return self._capability_section(
+            key="repo_capability_auto_detection",
+            title="Repo capability auto-detection",
+            status="ready" if capabilities else "partial",
+            summary="Mission Control now classifies the attached workspace and adjusts execution lanes around real repo signals.",
+            details=details,
+            commands=list(tooling.get("intake_commands") or [])[:4],
+            metadata={
+                "repo_profile": repo_profile,
+                "cuda_repo": bool(cuda_mode.get("enabled")),
+                "cuda_mode": cuda_mode.get("mode"),
+                "capabilities": capabilities,
+            },
+        )
+
+    def _build_execution_profiles(
+        self,
+        project: Project,
+        tooling: dict[str, Any],
+        verification: dict[str, Any],
+        *,
+        browser_ready: bool,
+        cuda_mode: dict[str, Any],
+    ) -> dict[str, Any]:
+        profiles = [
+            "bugfix: narrow file scope, run targeted validation, capture evidence",
+            "feature: add tests/docs gates before handoff",
+            "security_review: prefer read-only analysis, run secret and dependency scans",
+            "release_readiness: check docs, tests, packaging, and unresolved blockers",
+        ]
+        if browser_ready:
+            profiles.append("browser_validation: collect screenshots, traces, and failure evidence")
+        if cuda_mode.get("enabled"):
+            profiles.append("cuda_optimization: separate infra blockers from kernel validation and profiling")
+        return self._capability_section(
+            key="issue_to_execution_profiles",
+            title="Issue-to-execution profiles",
+            status="ready",
+            summary="Mission Control generates reusable issue execution lanes instead of improvising the same workflow badly every time.",
+            details=profiles,
+            commands=self._dedupe_strings(
+                list(tooling.get("validation_commands") or [])[:3]
+                + list(tooling.get("security_commands") or [])[:2]
+                + list(verification.get("required_checks") or [])[:2]
+            ),
+            metadata={"profile_count": len(profiles)},
+        )
+
+    def _build_code_impact_map(self, db: Session, project: Project, tooling: dict[str, Any]) -> dict[str, Any]:
+        root = self._safe_workspace_root(project)
+        candidate_paths: list[str] = []
+        candidate_paths.extend(
+            str(path_lock.path_pattern)
+            for path_lock in list(db.scalars(select(PathLock).where(PathLock.project_id == project.id).order_by(PathLock.id.desc())))[:6]
+        )
+        tasks = list(db.scalars(select(Task).where(Task.project_id == project.id).order_by(Task.priority.asc(), Task.id.asc())))[:6]
+        for task in tasks:
+            candidate_paths.extend(str(item) for item in list(task.allowed_paths_json or [])[:3])
+        for pack in context_pack_service.list_context_packs(db, project)[:2]:
+            candidate_paths.extend(str(item) for item in list(pack.get("included_files_json") or [])[:3])
+        for evidence in self.list_handoff_evidence(db, project)[:6]:
+            if evidence.source_path:
+                candidate_paths.append(str(evidence.source_path))
+        candidate_files: list[Path] = []
+        if root is not None:
+            for raw_path in self._dedupe_strings(candidate_paths):
+                if raw_path in {".", "*", "src"}:
+                    continue
+                candidate = root / raw_path
+                if candidate.is_file():
+                    candidate_files.append(candidate)
+                elif candidate.is_dir():
+                    candidate_files.extend(
+                        path
+                        for path in sorted(candidate.rglob("*"))
+                        if path.is_file() and path.suffix.lower() in {".py", ".ts", ".tsx", ".js", ".jsx", ".rs", ".go", ".cu", ".cpp", ".h"}
+                    )
+                if len(candidate_files) >= 6:
+                    break
+        deduped_files: list[Path] = []
+        seen_files: set[str] = set()
+        for candidate in candidate_files:
+            key = str(candidate.resolve())
+            if key in seen_files:
+                continue
+            seen_files.add(key)
+            deduped_files.append(candidate)
+        impacted_files: list[str] = []
+        symbols_by_file: dict[str, list[str]] = {}
+        likely_tests: list[str] = []
+        dependent_files: dict[str, list[str]] = {}
+        needs_python_graph = any(path.suffix.lower() == ".py" for path in deduped_files[:6])
+        semantic_index = self._build_python_semantic_index(root) if root is not None and needs_python_graph else {}
+        parser_graph_used_files: list[str] = []
+        parser_backends_by_file: dict[str, str] = {}
+        tree_sitter_binary = self._tree_sitter_binary(tooling)
+        if root is not None:
+            for file_path in deduped_files[:6]:
+                relative = file_path.relative_to(root).as_posix()
+                impacted_files.append(relative)
+                symbols = list(semantic_index.get("symbols_by_file", {}).get(relative) or [])
+                if symbols:
+                    parser_graph_used_files.append(relative)
+                    parser_backends_by_file[relative] = "python-ast-graph"
+                elif tree_sitter_binary and file_path.suffix.lower() in {".js", ".jsx", ".ts", ".tsx", ".rs", ".go", ".c", ".cc", ".cpp", ".cxx", ".cu", ".cuh", ".h", ".hpp"}:
+                    symbols = self._extract_tree_sitter_tags(tree_sitter_binary, file_path)
+                    if symbols:
+                        parser_graph_used_files.append(relative)
+                        parser_backends_by_file[relative] = "tree-sitter-tags"
+                if not symbols:
+                    symbols = self._extract_symbols(file_path)
+                if symbols:
+                    symbols_by_file[relative] = symbols[:6]
+                dependents = list(semantic_index.get("dependents_by_file", {}).get(relative) or [])
+                if dependents:
+                    dependent_files[relative] = dependents[:6]
+                    parser_graph_used_files.append(relative)
+                    likely_tests.extend(
+                        item
+                        for item in dependents
+                        if ("test" in item.lower() or "spec" in item.lower()) and item not in likely_tests
+                    )
+                likely_tests.extend(item for item in self._likely_test_paths_for_file(root, file_path) if item not in likely_tests)
+                if len(likely_tests) >= 6:
+                    likely_tests = likely_tests[:6]
+                    break
+        details = [f"{path}: {', '.join(symbols_by_file.get(path, [])) or 'No obvious symbols extracted'}" for path in impacted_files[:6]]
+        for path, dependents in list(dependent_files.items())[:4]:
+            details.append(f"{path}: parsed dependents -> {', '.join(dependents[:4])}")
+        if likely_tests:
+            details.append(f"Likely affected tests: {', '.join(likely_tests[:4])}")
+        semantic_backend = "regex-fallback"
+        used_backends = set(parser_backends_by_file.values())
+        if used_backends == {"python-ast-graph"}:
+            semantic_backend = "python-ast-graph"
+        elif used_backends == {"tree-sitter-tags"}:
+            semantic_backend = "tree-sitter-tags"
+        elif used_backends:
+            semantic_backend = "mixed-parser"
+        return self._capability_section(
+            key="semantic_code_impact_mapping",
+            title="Semantic code impact mapping",
+            status="ready" if impacted_files else "partial",
+            summary="Mission Control now maps likely impacted files, symbols, and tests instead of treating every change like a blind text diff.",
+            details=details or ["No high-signal scoped files were available yet; attach tasks, context packs, or path locks for sharper impact mapping."],
+            commands=list(tooling.get("intake_commands") or [])[:3],
+            metadata={
+                "semantic_backend": semantic_backend,
+                "tree_sitter_cli_available": any(tool.get("id") == "tree-sitter" and tool.get("installed") for tool in tooling.get("tools", [])),
+                "impacted_files": impacted_files[:8],
+                "symbols_by_file": symbols_by_file,
+                "dependent_files": dependent_files,
+                "likely_tests": likely_tests[:8],
+                "parser_graph_used_files": self._dedupe_strings(parser_graph_used_files)[:8],
+                "parser_backends_by_file": parser_backends_by_file,
+            },
+        )
+
+    def _build_validation_evidence_ledger(self, db: Session, project: Project) -> dict[str, Any]:
+        evidence = self.list_handoff_evidence(db, project)[:25]
+        traces = self.list_agent_traces(db, project)[:10]
+        status_counts = Counter(str(item.status) for item in evidence)
+        detail_lines = [f"Evidence {status}: {count}" for status, count in status_counts.items()]
+        detail_lines.extend(
+            f"{item.evidence_type}: {item.command or item.source_path or item.summary}"
+            for item in evidence[:6]
+        )
+        command_samples = self._dedupe_strings(
+            [str(item.command or "").strip() for item in evidence if item.command]
+            + [str(command).strip() for trace in traces for command in list(trace.commands_attempted_json or [])]
+        )
+        return self._capability_section(
+            key="validation_evidence_ledger",
+            title="Validation evidence ledger",
+            status="ready" if evidence or traces else "gathering",
+            summary="Mission Control records validation claims, commands, and trace evidence so handoffs stop relying on vibes.",
+            details=detail_lines or ["No persisted validation evidence exists yet."],
+            commands=command_samples[:6],
+            artifacts=self._dedupe_strings([str(item.source_path or "") for item in evidence if item.source_path])[:6],
+            metadata={
+                "stored_evidence_count": len(evidence),
+                "trace_count": len(traces),
+                "status_counts": dict(status_counts),
+            },
+        )
+
+    def _build_security_review_profile(self, project: Project, tooling: dict[str, Any]) -> dict[str, Any]:
+        commands = list(tooling.get("security_commands") or [])
+        missing = [
+            tool.get("label")
+            for tool in tooling.get("tools", [])
+            if tool.get("category") == "security" and not tool.get("installed")
+        ]
+        details = [
+            "Default mode: read-only analysis before any fixing.",
+            "Require explicit approval for dependency upgrades, suppressions, or risky config edits.",
+        ]
+        if missing:
+            details.append(f"Missing security helpers: {', '.join(str(item) for item in missing[:4])}")
+        return self._capability_section(
+            key="security_review_profile",
+            title="First-class security review profile",
+            status="ready" if commands else "needs_setup",
+            summary="Mission Control can now stage a dedicated security review lane with secret scanning, dependency auditing, and approval-aware fixes.",
+            details=details,
+            commands=commands[:6],
+            metadata={
+                "default_mode": "read_only",
+                "requires_approval_for": ["dependency_upgrade", "finding_suppression", "config_change"],
+                "available_tools": [tool.get("id") for tool in tooling.get("tools", []) if tool.get("category") == "security" and tool.get("installed")],
+            },
+        )
+
+    def _build_tool_bootstrap_plan(self, tooling: dict[str, Any]) -> dict[str, Any]:
+        install_commands_by_tool = {
+            "uv": ["python -m pip install uv"],
+            "ruff": ["uv tool install ruff", "python -m pip install ruff"],
+            "pre-commit": ["uv tool install pre-commit", "python -m pip install pre-commit"],
+            "nox": ["uv tool install nox", "python -m pip install nox"],
+            "playwright": ["npm install -D @playwright/test", "npx playwright install"],
+            "gitleaks": ["winget install gitleaks.gitleaks"],
+            "trufflehog": ["python -m pip install trufflehog"],
+            "osv-scanner": ["winget install Google.OSV-Scanner"],
+            "pip-audit": ["uv tool install pip-audit", "python -m pip install pip-audit"],
+            "tree-sitter": ["npm install -D tree-sitter-cli"],
+        }
+        steps: list[str] = []
+        commands: list[str] = []
+        for tool in tooling.get("tools", []):
+            if tool.get("configured") and not tool.get("installed"):
+                steps.append(f"Install {tool.get('label')} because the workspace already references it.")
+                commands.extend(install_commands_by_tool.get(str(tool.get("id")), []))
+        if not steps:
+            steps.append("No repo-signaled tools are missing right now.")
+        return self._capability_section(
+            key="workspace_tool_installer_bootstrap",
+            title="Workspace tool installer and bootstrap plan",
+            status="needs_setup" if commands else "ready",
+            summary="Mission Control can now tell the operator which missing repo-native tools are worth installing and exactly how to bootstrap them.",
+            details=steps,
+            commands=self._dedupe_strings(commands)[:8],
+            metadata={"recommended_next_steps": list(tooling.get("recommended_next_steps") or [])[:6]},
+        )
+
+    def _build_failure_replay_pack(self, db: Session, project: Project, snapshot: dict[str, Any]) -> dict[str, Any]:
+        traces = self.list_agent_traces(db, project)[:5]
+        diagnostics = [
+            report
+            for report in list_diagnostic_reports()
+            if report.get("project_id") == project.id or (project.workspace_path and report.get("workspace_path") == project.workspace_path)
+        ][:3]
+        detail_lines = self._dedupe_strings(
+            [f"Focus: {item}" for item in list(snapshot.get("current_focus") or [])[:3]]
+            + [f"Risk: {item}" for item in list(snapshot.get("top_risks") or [])[:3]]
+            + [f"Recent event: {item}" for item in list(snapshot.get("recent_events") or [])[:3]]
+        )
+        artifact_paths = [
+            str(report.get("path") or "")
+            for report in diagnostics
+            if report.get("path")
+        ]
+        commands = self._dedupe_strings(
+            [str(command) for report in diagnostics for command in list(report.get("safe_debug_commands") or [])]
+            + [str(command).strip() for trace in traces for command in list(trace.commands_attempted_json or [])]
+        )
+        return self._capability_section(
+            key="failure_replay_pack",
+            title="Failure replay packs",
+            status="ready" if traces or diagnostics else "gathering",
+            summary="Mission Control can now package the latest blockers, traces, diagnostics, and replay commands for the next debugging pass.",
+            details=detail_lines or ["No failure replay evidence has been accumulated yet."],
+            commands=commands[:6],
+            artifacts=artifact_paths[:6],
+            metadata={"trace_count": len(traces), "diagnostic_count": len(diagnostics)},
+        )
+
+    def _build_agent_analytics(self, db: Session, project: Project) -> dict[str, Any]:
+        records = list(
+            db.scalars(
+                select(AgentPerformanceRecord)
+                .where((AgentPerformanceRecord.project_id == project.id) | (AgentPerformanceRecord.project_id.is_(None)))
+                .order_by(AgentPerformanceRecord.created_at.desc(), AgentPerformanceRecord.id.desc())
+            )
+        )[:80]
+        benchmarks = list(
+            db.scalars(
+                select(CapabilityBenchmark).order_by(CapabilityBenchmark.updated_at.desc(), CapabilityBenchmark.id.desc())
+            )
+        )[:40]
+        per_archetype: dict[str, dict[str, Any]] = {}
+        for record in records:
+            bucket = per_archetype.setdefault(record.agent_archetype, {"total": 0, "success": 0, "tests_passed": 0, "review_passed": 0, "failures": Counter()})
+            bucket["total"] += 1
+            if str(record.outcome).lower() in {"success", "passed", "done"}:
+                bucket["success"] += 1
+            if record.tests_passed:
+                bucket["tests_passed"] += 1
+            if record.review_passed:
+                bucket["review_passed"] += 1
+            if record.failure_summary:
+                bucket["failures"][record.failure_summary] += 1
+        details = []
+        for archetype, bucket in sorted(per_archetype.items()):
+            total = max(int(bucket["total"]), 1)
+            details.append(
+                f"{archetype}: success {int(round((bucket['success'] / total) * 100))}% over {total} runs, tests passed {bucket['tests_passed']}, review passed {bucket['review_passed']}"
+            )
+        for benchmark in benchmarks[:3]:
+            details.append(
+                f"Benchmark {benchmark.provider}/{benchmark.model} [{benchmark.category}] scored {benchmark.score} with sample size {benchmark.sample_size}"
+            )
+        return self._capability_section(
+            key="agent_performance_analytics",
+            title="Agent performance analytics",
+            status="ready" if records or benchmarks else "gathering",
+            summary="Mission Control now aggregates which agent archetypes, models, and runners actually perform instead of pretending all worker choices are equal.",
+            details=details or ["No performance records or capability benchmarks have been recorded yet."],
+            metadata={
+                "record_count": len(records),
+                "benchmark_count": len(benchmarks),
+                "archetypes": sorted(per_archetype.keys()),
+            },
+        )
+
+    def _build_approval_policy_engine(self, db: Session, project: Project) -> dict[str, Any]:
+        settings = self._project_settings(db, project)
+        details = [
+            f"Approval policy: {settings.approval_policy}",
+            f"Sandbox mode: {settings.sandbox_mode}",
+            "High-risk and destructive changes stay explicitly approval-gated.",
+            "Imported or unfamiliar codebases should keep write and command approvals narrow.",
+        ]
+        return self._capability_section(
+            key="approval_policy_engine",
+            title="Approval policy engine",
+            status="ready",
+            summary="Mission Control can now summarize the effective approval contract so fixes, upgrades, and releases stop guessing about policy.",
+            details=details,
+            metadata={
+                "approval_policy": settings.approval_policy,
+                "sandbox_mode": settings.sandbox_mode,
+                "provider": settings.provider,
+                "runner_mode": settings.runner_mode,
+            },
+        )
+
+    def _build_release_readiness_mode(self, verification: dict[str, Any]) -> dict[str, Any]:
+        details = [
+            f"Readiness: {verification.get('readiness')}",
+            *[f"Blocker: {item}" for item in list(verification.get("release_blockers") or [])[:4]],
+            *[f"Evidence gap: {item}" for item in list(verification.get("evidence_gaps") or [])[:4]],
+        ]
+        return self._capability_section(
+            key="release_readiness_mode",
+            title="Release readiness mode",
+            status=str(verification.get("readiness") or "needs_review"),
+            summary="Mission Control now turns release readiness into an explicit mode with checks, blockers, and evidence posture instead of a last-minute panic ritual.",
+            details=details,
+            commands=list(verification.get("required_checks") or [])[:6],
+            metadata={
+                "required_checks": len(list(verification.get("required_checks") or [])),
+                "recommended_checks": len(list(verification.get("recommended_checks") or [])),
+            },
+        )
+
+    def _build_context_pack_diff(self, db: Session, project: Project) -> dict[str, Any]:
+        packs = context_pack_service.list_context_packs(db, project)[:2]
+        if len(packs) < 2:
+            return self._capability_section(
+                key="context_pack_diffing",
+                title="Context pack diffing",
+                status="awaiting_second_pack",
+                summary="Mission Control can diff context packs, but this project needs at least two packs before the comparison becomes interesting.",
+                details=["Create a second context pack after scope or strategy changes to get a useful diff."],
+            )
+        newest, previous = packs[0], packs[1]
+        added_files = sorted(set(newest.get("included_files_json") or []) - set(previous.get("included_files_json") or []))
+        removed_files = sorted(set(previous.get("included_files_json") or []) - set(newest.get("included_files_json") or []))
+        added_docs = sorted(set(newest.get("included_docs_json") or []) - set(previous.get("included_docs_json") or []))
+        removed_docs = sorted(set(previous.get("included_docs_json") or []) - set(newest.get("included_docs_json") or []))
+        details = [
+            f"Newest pack: {newest.get('title')}",
+            f"Previous pack: {previous.get('title')}",
+            f"Added files: {', '.join(added_files[:4])}" if added_files else "Added files: none",
+            f"Removed files: {', '.join(removed_files[:4])}" if removed_files else "Removed files: none",
+            f"Added docs: {', '.join(added_docs[:4])}" if added_docs else "Added docs: none",
+            f"Removed docs: {', '.join(removed_docs[:4])}" if removed_docs else "Removed docs: none",
+        ]
+        return self._capability_section(
+            key="context_pack_diffing",
+            title="Context pack diffing",
+            status="ready",
+            summary="Mission Control now compares the latest context packs so scope, file selection, and validation drift stop hiding in plain sight.",
+            details=details,
+            metadata={
+                "newest_pack_id": newest.get("id"),
+                "previous_pack_id": previous.get("id"),
+                "added_files": added_files,
+                "removed_files": removed_files,
+                "added_docs": added_docs,
+                "removed_docs": removed_docs,
+            },
+        )
+
+    def _build_swarm_role_templates(self, project: Project) -> dict[str, Any]:
+        workspace_root = self._safe_workspace_root(project)
+        cuda_mode = detect_cuda_repo_mode(workspace_root) if workspace_root is not None else {"enabled": False}
+        templates = [
+            "bugfix: manager + coder + tester + reviewer",
+            "security_review: manager + security + tester + release",
+            "release_hardening: manager + docs + tester + release",
+            "browser_validation: manager + browser + tester",
+            "docs_sync: manager + docs + reviewer",
+        ]
+        if cuda_mode.get("enabled"):
+            templates.append("cuda_optimization: manager + coder + performance + tester")
+        return self._capability_section(
+            key="swarm_role_templates",
+            title="Swarm role templates",
+            status="ready",
+            summary="Mission Control now exposes reusable swarm compositions so the manager can pick a lane instead of assembling random agent theater from scratch.",
+            details=templates,
+            metadata={"cuda_specialization_available": bool(cuda_mode.get("enabled"))},
+        )
+
+    def _build_runner_budget(self, db: Session, project: Project) -> dict[str, Any]:
+        settings = self._project_settings(db, project)
+        provider = normalize_provider(settings.provider)
+        selected = self._provider_runtime_status(settings)
+        cost_map = {
+            "codex": "local_or_subscription",
+            "claude_code": "paid_api_or_cli",
+            "ollama": "local",
+            "openai": "paid_api",
+            "anthropic": "paid_api",
+            "xai": "paid_api",
+            "nvidia_dynamo": "cluster",
+            "nvidia_nim": "cluster",
+            "custom": "unknown",
+        }
+        detail_lines = [
+            f"Provider: {provider}",
+            f"Runtime status: {selected.get('runtime_status') or 'unknown'}",
+            f"Runtime summary: {selected.get('runtime_summary') or 'No provider runtime summary is recorded.'}",
+            *[f"Runtime blocker: {item}" for item in list(selected.get("runtime_blockers") or [])[:3]],
+        ]
+        return self._capability_section(
+            key="runner_cost_latency_awareness",
+            title="Runner cost and latency awareness",
+            status="ready",
+            summary="Mission Control now surfaces the cost and runtime posture of the selected runner so local-first routing stops being a slogan.",
+            details=detail_lines,
+            metadata={
+                "provider": provider,
+                "runner_mode": settings.runner_mode,
+                "estimated_cost_class": cost_map.get(provider, "unknown"),
+                "runtime_ready": bool(selected.get("runtime_ready")),
+            },
+        )
+
+    def _build_browser_evidence_pipeline(self, project: Project, tooling: dict[str, Any], *, webwright: dict[str, Any]) -> dict[str, Any]:
+        playwright_tool = next((tool for tool in tooling.get("tools", []) if tool.get("id") == "playwright"), {})
+        ready = bool(webwright.get("available")) or bool(playwright_tool.get("installed"))
+        details = [
+            f"Webwright status: {webwright.get('install_status') or 'missing'}",
+            f"Playwright configured: {bool(playwright_tool.get('configured'))}",
+            "Capture screenshots, traces, console failures, and DOM assertions as handoff evidence.",
+        ]
+        commands = ["playwright test", "npx playwright show-trace <trace.zip>"] if ready else list(playwright_tool.get("recommended_commands") or [])
+        return self._capability_section(
+            key="browser_evidence_pipeline",
+            title="Browser evidence pipeline",
+            status="ready" if ready else "needs_setup",
+            summary="Mission Control now treats browser validation as an evidence pipeline with traces and screenshots instead of a vague 'I clicked around' claim.",
+            details=details,
+            commands=commands[:4],
+            artifacts=["trace.zip", "screenshot.png", "console-errors.txt", "dom-assertions.json"],
+            metadata={"webwright_available": bool(webwright.get("available")), "playwright_installed": bool(playwright_tool.get("installed"))},
+        )
+
+    def _build_repo_contract_audit(self, project: Project, tooling: dict[str, Any], *, workspace_root: Path | None) -> dict[str, Any]:
+        repo_profile = dict(tooling.get("repo_profile") or {})
+        findings: list[str] = []
+        if workspace_root is None:
+            findings.append("Workspace path is unresolved, so contract auditing is partial.")
+        else:
+            if not (workspace_root / "README.md").exists():
+                findings.append("Missing README.md for operator-facing repo context.")
+            if repo_profile.get("python_repo") and not (workspace_root / "tests").exists():
+                findings.append("Python repo detected without a top-level tests/ directory.")
+            if repo_profile.get("node_repo") and not list(repo_profile.get("lockfiles") or []):
+                findings.append("Node repo detected without a lockfile.")
+            if not (workspace_root / ".github" / "workflows").exists():
+                findings.append("No .github/workflows directory detected, so CI contract coverage is unclear.")
+        for tool in tooling.get("tools", []):
+            if tool.get("configured") and not tool.get("installed"):
+                findings.append(f"{tool.get('label')} is configured by the repo but missing from the runtime.")
+        return self._capability_section(
+            key="repo_drift_and_contract_audit",
+            title="Repo drift and contract audit",
+            status="warning" if findings else "clean",
+            summary="Mission Control now audits basic repo contracts so docs, tests, CI, and packaged helper expectations can drift loudly instead of silently.",
+            details=findings or ["No obvious repo contract drift was detected from the current workspace signals."],
+            metadata={"finding_count": len(findings)},
+        )
+
+    def build_project_capability_report(self, db: Session, project: Project) -> dict[str, Any]:
+        tooling = self.build_workspace_tooling_status(project)
+        verification = self.build_verification_brief(db, project)
+        snapshot = self.build_operator_snapshot(db, project)
+        workspace_root = self._safe_workspace_root(project)
+        cuda_mode = detect_cuda_repo_mode(project.workspace_path or project.source_path) if workspace_root is not None else {"enabled": False}
+        webwright = self.build_webwright_status(project)
+        browser_ready = bool(webwright.get("available")) or any(
+            tool.get("id") == "playwright" and tool.get("configured")
+            for tool in tooling.get("tools", [])
+        )
+        sections = [
+            self._build_execution_profiles(project, tooling, verification, browser_ready=browser_ready, cuda_mode=cuda_mode),
+            self._build_repo_capability_detection(project, tooling, workspace_root=workspace_root),
+            self._build_code_impact_map(db, project, tooling),
+            self._build_validation_evidence_ledger(db, project),
+            self._build_security_review_profile(project, tooling),
+            self._build_tool_bootstrap_plan(tooling),
+            self._build_failure_replay_pack(db, project, snapshot),
+            self._build_agent_analytics(db, project),
+            self._build_approval_policy_engine(db, project),
+            self._build_release_readiness_mode(verification),
+            self._build_context_pack_diff(db, project),
+            self._build_swarm_role_templates(project),
+            self._build_runner_budget(db, project),
+            self._build_browser_evidence_pipeline(project, tooling, webwright=webwright),
+            self._build_repo_contract_audit(project, tooling, workspace_root=workspace_root),
+        ]
+        report_markdown = "\n".join(
+            [
+                "## Mission Control Capability Report",
+                "",
+                f"- Project: **{project.name}**",
+                f"- Sections: `{len(sections)}`",
+                "",
+                *[
+                    f"- **{section['title']}** [`{section['status']}`]: {section['summary']}"
+                    for section in sections
+                ],
+            ]
+        )
+        return {
+            "project_id": project.id,
+            "project_name": project.name,
+            "section_count": len(sections),
+            "sections": sections,
+            "report_markdown": report_markdown,
+            "generated_at": utc_now(),
+        }
+
+    def build_project_capability_section(self, db: Session, project: Project, section_key: str) -> dict[str, Any]:
+        report = self.build_project_capability_report(db, project)
+        for section in report["sections"]:
+            if section.get("key") == section_key:
+                return section
+        available = ", ".join(section.get("key", "") for section in report["sections"])
+        raise ValueError(f"Unknown capability report section '{section_key}'. Available sections: {available}")
 
     def search_codebase(
         self,
@@ -12599,9 +13816,16 @@ class MissionControlService:
                             agent.active_runner_type = run.runner_type
                         item = event.get("item")
                         if isinstance(item, dict) and item.get("type") == "agent_message":
-                            report = runner.try_parse_report(item.get("text"))
-                            if report:
-                                run.report_json = report
+                            envelope = runner.try_parse_result_envelope(item.get("text"))
+                            if envelope:
+                                run.result_envelope_json = envelope
+                                report = envelope.get("report")
+                                if isinstance(report, dict):
+                                    run.report_json = report
+                            else:
+                                report = runner.try_parse_report(item.get("text"))
+                                if report:
+                                    run.report_json = report
                         if event.get("type") in {"turn.completed", "turn.failed", "error"}:
                             run.status = await runner.get_status(run.process_ref or "")
                     status = await runner.get_status(run.process_ref or "")
@@ -12619,9 +13843,44 @@ class MissionControlService:
     async def _finalize_run(self, db: Session, project: Project, agent: Agent, run: AgentRun, status: str) -> None:
         task = db.get(Task, run.task_id) if run.task_id else None
         if task:
-            report = self._build_synthetic_worker_report(agent, task, status, run.report_json)
+            try:
+                envelope = self._normalize_runner_result_envelope(run, task, run.result_envelope_json or {})
+            except (ValidationError, ValueError) as exc:
+                reason = f"Runner completion envelope validation failed: {exc}"
+                self.run_input_snapshots.pop(run.id, None)
+                self._reject_runner_completion(
+                    db,
+                    project,
+                    agent,
+                    task,
+                    run,
+                    status=status,
+                    reason=reason,
+                    raw_payload=run.result_envelope_json or run.report_json,
+                )
+                return
+            report = envelope.report
             report = self._verify_worker_report_evidence(project, task, report, self.run_input_snapshots.pop(run.id, None))
-            await self.ingest_worker_report(db, run, report)
+            envelope = envelope.model_copy(
+                update={
+                    "report": report,
+                    "summary": report.summary,
+                    "files_changed": list(report.files_changed or []),
+                    "tests_run": list(report.tests_run or []),
+                    "risks": list(report.risks or []),
+                    "blockers": list(report.blockers or []),
+                    "status": self._runner_status_from_report_status(report.status),
+                    "failure_classification": envelope.failure_classification
+                    or self._classify_failure(
+                        summary=report.summary,
+                        blockers=list(report.blockers or []),
+                        risks=list(report.risks or []),
+                        diagnostics=list(envelope.diagnostics or []),
+                        report_status=report.status,
+                    ),
+                }
+            )
+            await self.ingest_worker_report(db, run, report, envelope=envelope)
             return
         self.run_input_snapshots.pop(run.id, None)
         agent.status = "waiting"
@@ -12629,7 +13888,14 @@ class MissionControlService:
         run.status = status
         self.events.publish(db, project.id, "agent.finished", {"agent_id": agent.id, "task_id": run.task_id, "status": status})
 
-    async def ingest_worker_report(self, db: Session, run: AgentRun, report: WorkerReport) -> ManagerWorkerDecision:
+    async def ingest_worker_report(
+        self,
+        db: Session,
+        run: AgentRun,
+        report: WorkerReport,
+        *,
+        envelope: RunnerResultEnvelope | None = None,
+    ) -> ManagerWorkerDecision:
         if run.finished_at is not None and run.report_json:
             raise ValueError("Worker report already recorded for this run.")
         agent = db.get(Agent, run.agent_id)
@@ -12648,7 +13914,10 @@ class MissionControlService:
                 raise ValueError("Worker report task_id does not match the run task.") from exc
             if reported_task_id != task.id:
                 raise ValueError("Worker report task_id does not match the run task.")
+        normalized_envelope = envelope or self._build_runner_result_envelope_from_report(run, task, report)
         run.report_json = _dump_model(report)
+        run.result_envelope_json = _dump_model(normalized_envelope)
+        run.failure_classification = normalized_envelope.failure_classification
         run.status = report.status
         run.finished_at = run.finished_at or utc_now()
         agent.current_task_id = None
@@ -12721,6 +13990,7 @@ class MissionControlService:
                 },
             )
         validation_coverage_service.recompute(db, project)
+        self._persist_run_trace_spans(db, project, agent, task, run, normalized_envelope)
         self.events.publish(db, project.id, "worker.report.received", {"run_id": run.id, "task_id": run.task_id, "status": report.status, "summary": report.summary})
         decision, manager_mode_used = await self._resolve_manager_model(
             db,

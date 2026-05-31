@@ -25,6 +25,9 @@ TaskStatus = Literal["backlog", "assigned", "working", "waiting_on_paths", "need
 PlanAction = Literal["approve_build", "simplify", "ambitious", "usability", "quality", "rewrite", "feature_delta"]
 TaskComplexity = Literal["small", "medium", "large"]
 WorkerReportStatus = Literal["done", "blocked", "needs_review", "error"]
+FailureClassification = Literal["transient", "user_action_required", "input_error", "runner_bug", "infra_blocker", "approval_denied"]
+RunnerResultStatus = Literal["completed", "blocked", "needs_review", "failed"]
+RunnerLaneType = Literal["implementation", "browser_automation", "test_execution", "repo_analysis", "manager_turn"]
 WorkerDecisionType = Literal["assign_next_task", "request_fix", "mark_done", "mark_blocked", "retire_agent", "escalate_to_user", "wait"]
 ReasoningEffort = Literal["minimal", "low", "medium", "high"]
 SandboxMode = Literal["workspace-write", "read-only"]
@@ -177,6 +180,18 @@ SubagentSpawnMethod = Literal["codex_chat_bridge", "codex_cli", "manual_prompt"]
 SubagentTaskType = Literal["codebase_exploration", "review", "planning", "handoff_audit", "failure_diagnosis"]
 SubagentBatchStatus = Literal["proposed", "approved", "running", "completed", "failed", "cancelled"]
 SubagentEstimatedIntensity = Literal["low", "medium", "high"]
+TraceSpanKind = Literal[
+    "run",
+    "manager_planning",
+    "worker_assignment",
+    "runner_attempt",
+    "validation",
+    "approval",
+    "handoff",
+    "browser_automation",
+    "test_execution",
+    "repo_analysis",
+]
 
 
 class ProjectCreate(BaseModel):
@@ -419,6 +434,42 @@ class WorkerReport(BaseModel):
     blockers: list[str] = Field(default_factory=list)
     risks: list[str] = Field(default_factory=list)
     recommended_next_task: str = ""
+
+
+class RunnerResultEdit(BaseModel):
+    path: str
+    content: str | None = None
+    summary: str | None = None
+
+
+class RunnerResultEvidence(BaseModel):
+    kind: EvidenceType | str
+    summary: str
+    status: EvidenceStatus | str = "unknown"
+    source_path: str | None = None
+    command: str | None = None
+    metadata_json: dict[str, Any] = Field(default_factory=dict)
+
+
+class RunnerResultEnvelope(BaseModel):
+    status: RunnerResultStatus
+    runner_type: str
+    lane: RunnerLaneType = "implementation"
+    summary: str
+    report: WorkerReport
+    files_changed: list[str] = Field(default_factory=list)
+    tests_run: list[str] = Field(default_factory=list)
+    commands_attempted: list[str] = Field(default_factory=list)
+    evidence: list[RunnerResultEvidence] = Field(default_factory=list)
+    risks: list[str] = Field(default_factory=list)
+    blockers: list[str] = Field(default_factory=list)
+    diagnostics: list[str] = Field(default_factory=list)
+    approvals_requested: list[dict[str, Any]] = Field(default_factory=list)
+    recovery_plan: list[str] = Field(default_factory=list)
+    edits: list[RunnerResultEdit] = Field(default_factory=list)
+    failure_classification: FailureClassification | None = None
+    needs_approval: bool = False
+    metadata_json: dict[str, Any] = Field(default_factory=dict)
 
 
 class AgentRead(BaseModel):
@@ -1430,6 +1481,27 @@ class OperatorSnapshotAgentRead(BaseModel):
     current_action: str | None = None
 
 
+class OperatorSnapshotTraceRead(BaseModel):
+    trace_id: str
+    span_id: str
+    parent_span_id: str | None = None
+    span_kind: TraceSpanKind | str
+    outcome: str
+    summary: str
+    failure_classification: FailureClassification | None = None
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+
+
+class OperatorSnapshotEvidenceRead(BaseModel):
+    id: int
+    evidence_type: str
+    status: str
+    summary: str
+    source_path: str | None = None
+    command: str | None = None
+
+
 class OperatorSnapshotRead(BaseModel):
     project_id: int
     project_name: str
@@ -1442,6 +1514,8 @@ class OperatorSnapshotRead(BaseModel):
     pending_questions_count: int = 0
     active_agent_count: int = 0
     active_agents: list[OperatorSnapshotAgentRead] = Field(default_factory=list)
+    trace_spans: list[OperatorSnapshotTraceRead] = Field(default_factory=list)
+    evidence_items: list[OperatorSnapshotEvidenceRead] = Field(default_factory=list)
     current_focus: list[str] = Field(default_factory=list)
     top_risks: list[str] = Field(default_factory=list)
     recent_events: list[str] = Field(default_factory=list)
@@ -1483,6 +1557,26 @@ class VerificationBriefRead(BaseModel):
     handoff_warnings: list[str] = Field(default_factory=list)
     loop_strategy: list[str] = Field(default_factory=list)
     brief_markdown: str
+    generated_at: datetime
+
+
+class CapabilitySectionRead(BaseModel):
+    key: str
+    title: str
+    status: str
+    summary: str
+    details: list[str] = Field(default_factory=list)
+    commands: list[str] = Field(default_factory=list)
+    artifacts: list[str] = Field(default_factory=list)
+    metadata_json: dict[str, Any] = Field(default_factory=dict)
+
+
+class ProjectCapabilityReportRead(BaseModel):
+    project_id: int
+    project_name: str
+    section_count: int = 0
+    sections: list[CapabilitySectionRead] = Field(default_factory=list)
+    report_markdown: str
     generated_at: datetime
 
 
@@ -2240,6 +2334,13 @@ class AgentExecutionTraceRead(BaseModel):
     agent_id: int | None = None
     task_id: int | None = None
     run_id: int | None = None
+    trace_id: str
+    span_id: str
+    parent_span_id: str | None = None
+    span_kind: TraceSpanKind | str
+    attempt_number: int = 1
+    outcome: str = "unknown"
+    failure_classification: FailureClassification | None = None
     prompt_summary: str
     prompt_path: str | None = None
     response_summary: str
@@ -2247,8 +2348,12 @@ class AgentExecutionTraceRead(BaseModel):
     files_changed_json: list[str] = Field(default_factory=list)
     approvals_requested_json: list[dict[str, Any]] = Field(default_factory=list)
     commands_attempted_json: list[str] = Field(default_factory=list)
+    evidence_ids_json: list[int] = Field(default_factory=list)
+    metadata_json: dict[str, Any] = Field(default_factory=dict)
     manager_decision_after: str | None = None
     redaction_status: str
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
     created_at: datetime
 
     model_config = ConfigDict(from_attributes=True)

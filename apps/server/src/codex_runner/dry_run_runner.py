@@ -142,7 +142,36 @@ class DryRunRunner(BaseCodexRunner):
             "risks": ["Simulated result only"],
             "recommended_next_task": "Move the next backlog item into working state.",
         }
-        state.final_text = json.dumps(report)
+        envelope = {
+            "status": "completed",
+            "runner_type": self.runner_type,
+            "lane": "implementation",
+            "summary": report["summary"],
+            "report": report,
+            "files_changed": [],
+            "tests_run": ["dry-run simulation"],
+            "commands_attempted": ["dry-run simulation"],
+            "evidence": [
+                {
+                    "kind": "report",
+                    "summary": "Simulated dry-run completion only.",
+                    "status": "unknown",
+                    "source_path": None,
+                    "command": "dry-run simulation",
+                    "metadata_json": {"simulated": True},
+                }
+            ],
+            "risks": ["Simulated result only"],
+            "blockers": [],
+            "diagnostics": [],
+            "approvals_requested": [],
+            "recovery_plan": [],
+            "edits": [],
+            "failure_classification": None,
+            "needs_approval": False,
+            "metadata_json": {"simulated": True},
+        }
+        state.final_text = json.dumps(envelope)
         state.status = "done"
         state.exit_code = 0
         state.events.append({"type": "item.completed", "item": {"type": "agent_message", "text": state.final_text}})

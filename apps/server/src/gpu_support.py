@@ -46,7 +46,22 @@ CODE_PATTERNS: list[tuple[str, str]] = [
 
 
 def _scan_files(root: Path) -> list[Path]:
-    return [path for path in root.rglob("*") if path.is_file()][:MAX_SCANNED_FILES]
+    if not root.exists():
+        return []
+    files: list[Path] = []
+    try:
+        iterator = root.rglob("*")
+        for path in iterator:
+            try:
+                if path.is_file():
+                    files.append(path)
+            except OSError:
+                continue
+            if len(files) >= MAX_SCANNED_FILES:
+                break
+    except OSError:
+        return []
+    return files
 
 
 def _safe_read_text(path: Path) -> str:
