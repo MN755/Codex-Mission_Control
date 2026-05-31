@@ -87,6 +87,13 @@ def _expected_prompt_stems() -> set[str]:
     return stems
 
 
+def _extract_markdown_code_list(content: str, heading: str) -> list[str]:
+    marker = f"## {heading}"
+    after_heading = content.split(marker, 1)[1]
+    body = after_heading.split("\n## ", 1)[0]
+    return re.findall(r"^-\s+`([^`]+)`", body, flags=re.MULTILINE)
+
+
 def test_plugin_manifest_contains_required_resource_and_prompt_subsets() -> None:
     manifest = _load_json(PLUGIN_MANIFEST)
     assert REQUIRED_RESOURCES.issubset(set(manifest["resources"]))
@@ -143,6 +150,15 @@ def test_prompt_alias_markdown_matches_canonical_contracts() -> None:
             assert canonical.split("## Tool Sequence", 1)[1] == alias_text.split("## Tool Sequence", 1)[1]
 
 
+def test_canonical_prompt_markdown_tracks_catalog_sequences_exactly() -> None:
+    for prompt in _prompt_entries():
+        content = (PROMPTS_DIR / f"{prompt['name']}.md").read_text(encoding="utf-8")
+        assert _extract_markdown_code_list(content, "Tool Sequence") == list(prompt["tool_sequence"])
+        assert _extract_markdown_code_list(content, "Resource Sequence") == list(prompt["resource_sequence"])
+        assert prompt["safety_notes"] in content
+        assert prompt["prompt_text"] in content
+
+
 def test_docs_explain_tools_resources_prompts_and_redaction() -> None:
     existing_docs = [path for path in DOC_PATHS if path.exists()]
     assert existing_docs, "No MCP resources/prompts documentation files found."
@@ -186,6 +202,8 @@ def test_prompt_docs_include_current_canonical_prompts_and_aliases() -> None:
 
     assert "mission-control-install-from-github" in wiki_skills_doc
     assert "mission-control-autowire-providers" in wiki_skills_doc
+    assert "ask_manager_for_plan" in prompts_doc
+    assert "use-webwright-for-browser-task" in resources_prompts_doc
 
 
 def test_bridge_docs_include_current_tools_and_advanced_resources() -> None:
@@ -299,19 +317,23 @@ def test_examples_match_current_prompt_and_resource_contracts() -> None:
         "review-handoff.md": [
             "mission_control_get_handoff_summary",
             "mission-control://projects/{project_id}/handoff",
+            "mission-control://projects/{project_id}/validation-summary",
         ],
         "approve-command.md": [
-            "answer-pending-approval",
+            "Prompt: `answer-pending-approval`",
             "mission_control_get_pending_decisions",
+            "mission_control_answer_decision",
         ],
         "answer-manager-question.md": [
-            "answer-pending-approval",
+            "Prompt: `answer-pending-approval`",
             "mission_control_get_pending_decisions",
+            "mission_control_answer_decision",
         ],
         "continue-later.md": [
             "continue-orchestration",
             "mission_control_get_event_digest",
-            "resume-orchestration",
+            "mission_control_resume",
+            "resume-orchestration` only if the run is paused",
         ],
         "build-your-own-x-catalog.md": [
             "ask-manager-for-plan",
@@ -344,3 +366,14 @@ def test_examples_match_current_prompt_and_resource_contracts() -> None:
         content = (EXAMPLES_DIR / filename).read_text(encoding="utf-8")
         for token in required_tokens:
             assert token in content, f"Missing token in {filename}: {token}"
+
+
+def test_prompt_and_workflow_docs_cover_current_aliases_and_examples() -> None:
+    prompts_doc = PROMPTS_DOC.read_text(encoding="utf-8")
+    resources_prompts_doc = (ROOT / "docs" / "MCP_RESOURCES_PROMPTS.md").read_text(encoding="utf-8")
+    workflow_doc = WORKFLOW_DOC.read_text(encoding="utf-8")
+
+    assert "ask_manager_for_plan" in prompts_doc
+    assert "use-webwright-for-browser-task" in resources_prompts_doc
+    assert "empty-folder-new-project.md" in workflow_doc
+    assert "existing-codebase-fix-bug.md" in workflow_doc
