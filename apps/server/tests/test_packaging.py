@@ -106,8 +106,48 @@ def test_macos_iconset_root_uses_required_extension() -> None:
 def test_appimagetool_env_enables_extract_and_run(monkeypatch) -> None:
     module = _load_packaging_module()
     monkeypatch.delenv("APPIMAGE_EXTRACT_AND_RUN", raising=False)
+    monkeypatch.delenv("ARCH", raising=False)
+    monkeypatch.setattr(module.platform, "machine", lambda: "AMD64")
     env = module.appimagetool_env()
     assert env["APPIMAGE_EXTRACT_AND_RUN"] == "1"
+    assert env["ARCH"] == "x86_64"
+
+
+def test_create_linux_appdir_populates_root_and_xdg_entries(tmp_path, monkeypatch) -> None:
+    module = _load_packaging_module()
+    bundle_root = tmp_path / "bundle"
+    bundle_root.mkdir()
+    (bundle_root / module.APP_SLUG).write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+
+    icon_path = tmp_path / "codex-mission-control.png"
+    icon_path.write_bytes(b"fake-png")
+    desktop_entry = tmp_path / "codex-mission-control.desktop"
+    desktop_entry.write_text(
+        "\n".join(
+            [
+                "[Desktop Entry]",
+                "Type=Application",
+                f"Name={module.DISPLAY_NAME}",
+                f"Exec={module.APP_SLUG}",
+                "Icon=codex-mission-control",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(module, "LINUX_ICON_PNG", icon_path)
+    monkeypatch.setattr(module, "DESKTOP_ENTRY_PATH", desktop_entry)
+
+    appdir = module._create_linux_appdir(bundle_root, tmp_path / "release")
+
+    assert (appdir / ".DirIcon").exists()
+    assert (appdir / "codex-mission-control.png").exists()
+    assert (appdir / "codex-mission-control.desktop").exists()
+    assert (appdir / "usr" / "lib" / module.APP_SLUG / module.APP_SLUG).exists()
+    assert (appdir / "usr" / "share" / "applications" / "codex-mission-control.desktop").exists()
+    assert (appdir / "usr" / "share" / "icons" / "hicolor" / "512x512" / "apps" / "codex-mission-control.png").exists()
+    assert (appdir / "AppRun").exists()
 
 
 def test_package_workflow_declares_read_only_permissions() -> None:

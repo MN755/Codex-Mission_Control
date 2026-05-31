@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import os
+import platform
 import shutil
 import stat
 import subprocess
@@ -49,9 +50,31 @@ def macos_iconset_root() -> Path:
     return OUTPUT_ROOT / "macos" / "mission-control.iconset"
 
 
+def appimage_architecture() -> str | None:
+    machine = (os.environ.get("ARCH") or platform.machine()).strip().lower()
+    if not machine:
+        return None
+    aliases = {
+        "amd64": "x86_64",
+        "x64": "x86_64",
+        "x86-64": "x86_64",
+        "x86_64": "x86_64",
+        "arm64": "aarch64",
+        "aarch64": "aarch64",
+        "armv7l": "armhf",
+        "armhf": "armhf",
+        "i386": "i686",
+        "i686": "i686",
+    }
+    return aliases.get(machine, machine)
+
+
 def appimagetool_env() -> dict[str, str]:
     env = os.environ.copy()
     env.setdefault("APPIMAGE_EXTRACT_AND_RUN", "1")
+    arch = appimage_architecture()
+    if arch:
+        env.setdefault("ARCH", arch)
     return env
 
 
@@ -202,9 +225,16 @@ def _create_linux_appdir(pyinstaller_bundle: Path, release_root: Path) -> Path:
     payload_root = appdir / "usr" / "lib" / APP_SLUG
     _copy_tree(pyinstaller_bundle, payload_root)
 
+    xdg_applications_root = appdir / "usr" / "share" / "applications"
+    xdg_icons_root = appdir / "usr" / "share" / "icons" / "hicolor" / "512x512" / "apps"
+    xdg_applications_root.mkdir(parents=True, exist_ok=True)
+    xdg_icons_root.mkdir(parents=True, exist_ok=True)
+
     shutil.copy2(LINUX_ICON_PNG, appdir / ".DirIcon")
     shutil.copy2(LINUX_ICON_PNG, appdir / "codex-mission-control.png")
     shutil.copy2(DESKTOP_ENTRY_PATH, appdir / "codex-mission-control.desktop")
+    shutil.copy2(LINUX_ICON_PNG, xdg_icons_root / "codex-mission-control.png")
+    shutil.copy2(DESKTOP_ENTRY_PATH, xdg_applications_root / "codex-mission-control.desktop")
 
     apprun = appdir / "AppRun"
     _write_text(
