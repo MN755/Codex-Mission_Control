@@ -51,6 +51,8 @@ class MissionControlMcpServer:
             "mission_control_get_codebase_understanding": self._call_get_codebase_understanding,
             "mission_control_set_import_interview_choice": self._call_set_import_interview_choice,
             "mission_control_get_diagnostics": self._call_get_diagnostics,
+            "mission_control_get_capability_report": self._call_get_capability_report,
+            "mission_control_get_capability_section": self._call_get_capability_section,
             "mission_control_get_workspace_tooling": self._call_get_workspace_tooling,
             "mission_control_search_codebase": self._call_search_codebase,
             "mission_control_get_webwright_status": self._call_get_webwright_status,
@@ -283,6 +285,24 @@ class MissionControlMcpServer:
                 "name": "mission_control_get_diagnostics",
                 "description": "Fetch bridge-safe diagnostics and plugin-health context for a Mission Control project or orchestration.",
                 "inputSchema": common_target,
+                "outputSchema": GENERIC_OUTPUT_SCHEMA,
+            },
+            {
+                "name": "mission_control_get_capability_report",
+                "description": "Fetch the full project capability report across execution, validation, security, runner, browser, and repo-contract lanes.",
+                "inputSchema": _object_schema({"project_id": {"type": "integer", "minimum": 1}}, required=["project_id"]),
+                "outputSchema": GENERIC_OUTPUT_SCHEMA,
+            },
+            {
+                "name": "mission_control_get_capability_section",
+                "description": "Fetch one named capability-report section without loading the whole project capability report.",
+                "inputSchema": _object_schema(
+                    {
+                        "project_id": {"type": "integer", "minimum": 1},
+                        "section_key": {"type": "string", "minLength": 1},
+                    },
+                    required=["project_id", "section_key"],
+                ),
                 "outputSchema": GENERIC_OUTPUT_SCHEMA,
             },
             {
@@ -690,6 +710,15 @@ class MissionControlMcpServer:
     def _call_get_diagnostics(self, args: dict[str, Any]) -> Any:
         orchestration_id, project_id = self._require_target(args, require_project=True)
         return self.client.get_diagnostics(orchestration_id=orchestration_id, project_id=project_id)
+
+    def _call_get_capability_report(self, args: dict[str, Any]) -> Any:
+        return self.client.get_capability_report(self._require_int(args, "project_id"))
+
+    def _call_get_capability_section(self, args: dict[str, Any]) -> Any:
+        return self.client.get_capability_section(
+            self._require_int(args, "project_id"),
+            self._require_string(args, "section_key"),
+        )
 
     def _call_get_workspace_tooling(self, args: dict[str, Any]) -> Any:
         return self.client.get_workspace_tooling(self._require_int(args, "project_id"))

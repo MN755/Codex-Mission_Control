@@ -13,6 +13,12 @@ from nvidia_support import (
     detect_nvidia_local_runtime_status,
     detect_project_nvidia_gpu_diagnostics,
 )
+from pytorch_support import (
+    build_pytorch_validation_plan,
+    detect_pytorch_repo_mode,
+    detect_pytorch_runtime_status,
+)
+from tensorflow_support import build_tensorflow_validation_plan, detect_tensorflow_repo_mode
 from webwright_support import detect_webwright_status
 
 
@@ -39,6 +45,17 @@ TOOL_CATALOG: list[dict[str, Any]] = [
     {"id": "nvidia-gpu-cluster-diagnostics", "name": "NVIDIA GPU Cluster Diagnostics", "category": "Infrastructure tools", "summary": "Inspect Prometheus and DCGM-backed GPU telemetry before blaming failing coding runs on the repo.", "risk_level": "medium"},
     {"id": "nvidia-local-runtime", "name": "NVIDIA Local Runtime", "category": "Infrastructure tools", "summary": "Inspect local CUDA, Nsight, and NVIDIA runtime readiness before trusting GPU validation results.", "risk_level": "medium"},
     {"id": "nvidia-validation-plan", "name": "NVIDIA Validation Plan", "category": "Testing tools", "summary": "Generate a concrete NVIDIA validation loop for CUDA-oriented work instead of improvising one badly.", "risk_level": "medium"},
+    {"id": "tensorflow-project-scaffolding", "name": "TensorFlow Project Scaffolding", "category": "Core tools", "summary": "Plan Keras-first TensorFlow app structure and validation instead of hand-writing another doomed notebook maze.", "risk_level": "medium"},
+    {"id": "tensorboard-observability", "name": "TensorBoard Observability", "category": "Testing tools", "summary": "Inspect TensorBoard-backed training evidence before trusting training or tuning claims.", "risk_level": "medium"},
+    {"id": "tensorflow-serving-export", "name": "TensorFlow Serving Export", "category": "Deployment tools", "summary": "Inspect SavedModel and serving-export readiness before calling a model product-ready.", "risk_level": "medium"},
+    {"id": "tfx-pipeline-validation", "name": "TFX Pipeline Validation", "category": "Deployment tools", "summary": "Surface TFX production-pipeline signals so product work does not stop at the trainer script.", "risk_level": "medium"},
+    {"id": "tensorflow-lite-export", "name": "TensorFlow Lite Export", "category": "Deployment tools", "summary": "Check whether the repo can credibly ship TensorFlow Lite artifacts for edge targets.", "risk_level": "medium"},
+    {"id": "pytorch-project-scaffolding", "name": "PyTorch Project Scaffolding", "category": "Core tools", "summary": "Plan a real PyTorch training and inference lane instead of another notebook graveyard with tensors in it.", "risk_level": "medium"},
+    {"id": "pytorch-runtime-readiness", "name": "PyTorch Runtime Readiness", "category": "Infrastructure tools", "summary": "Check whether the local PyTorch runtime can actually run the repo before Mission Control starts making claims.", "risk_level": "medium"},
+    {"id": "pytorch-profiler-observability", "name": "PyTorch Profiler Observability", "category": "Testing tools", "summary": "Inspect profiler and training-observability evidence instead of trusting performance folklore.", "risk_level": "medium"},
+    {"id": "pytorch-checkpoint-validation", "name": "PyTorch Checkpoint Validation", "category": "Testing tools", "summary": "Verify checkpoint save, load, and resume behavior before pretending a model is reproducible.", "risk_level": "medium"},
+    {"id": "pytorch-distributed-readiness", "name": "PyTorch Distributed Readiness", "category": "Infrastructure tools", "summary": "Surface torchrun, Accelerate, DeepSpeed, and rank-handling risks before distributed runs waste everyone's afternoon.", "risk_level": "high"},
+    {"id": "pytorch-export-validation", "name": "PyTorch Export Validation", "category": "Deployment tools", "summary": "Check TorchScript or ONNX export readiness before calling a PyTorch repo product-ready.", "risk_level": "medium"},
     {"id": "secret-scan-with-gitleaks", "name": "Secret Scan with Gitleaks", "category": "Testing tools", "summary": "Run a redacted local secret scan before handoff or release.", "risk_level": "medium"},
     {"id": "dependency-audit-with-osv-scanner", "name": "Dependency Audit with OSV-Scanner", "category": "Testing tools", "summary": "Scan repo lockfiles for known dependency vulnerabilities.", "risk_level": "medium"},
     {"id": "python-audit-with-pip-audit", "name": "Python Audit with pip-audit", "category": "Testing tools", "summary": "Audit Python dependencies for known vulnerabilities.", "risk_level": "medium"},
@@ -130,6 +147,87 @@ def _availability(tool_id: str, *, provider: str, connected_accounts: dict[str, 
         if status.get("status") == "not_applicable":
             return "experimental", notes
         return ("available" if status.get("available") else "needs_setup"), notes
+    if tool_id == "tensorflow-project-scaffolding":
+        mode = detect_tensorflow_repo_mode(REPO_ROOT)
+        validation = build_tensorflow_validation_plan(REPO_ROOT)
+        if mode.get("enabled"):
+            notes.append(f"Detected TensorFlow mode `{mode.get('mode')}` with frameworks: {', '.join(list(mode.get('frameworks') or [])[:4])}.")
+            notes.append(str(validation.get("summary") or "TensorFlow validation planning is available."))
+            return "available", notes
+        notes.append("No TensorFlow or Keras repo signals were detected in the current workspace.")
+        return "needs_setup", notes
+    if tool_id == "tensorboard-observability":
+        mode = detect_tensorflow_repo_mode(REPO_ROOT)
+        if not mode.get("enabled"):
+            notes.append("TensorBoard only matters when the repo actually signals TensorFlow or Keras work.")
+            return "experimental", notes
+        tensorboard_path = shutil.which("tensorboard")
+        notes.append("Use TensorBoard to prove training behavior with logs and curves instead of optimistic narration.")
+        return ("available" if tensorboard_path else "needs_setup"), notes
+    if tool_id == "tensorflow-serving-export":
+        mode = detect_tensorflow_repo_mode(REPO_ROOT)
+        notes.append("SavedModel export checks keep training artifacts and serving artifacts from being treated like the same thing.")
+        if "SavedModel / Serving" not in list(mode.get("frameworks") or []):
+            return "experimental", notes
+        return ("available" if shutil.which("saved_model_cli") else "needs_setup"), notes
+    if tool_id == "tfx-pipeline-validation":
+        mode = detect_tensorflow_repo_mode(REPO_ROOT)
+        notes.append("TFX validation is only interesting when the repo actually carries production-pipeline signals.")
+        if "TFX" not in list(mode.get("frameworks") or []):
+            return "experimental", notes
+        return ("available" if shutil.which("tfx") else "needs_setup"), notes
+    if tool_id == "tensorflow-lite-export":
+        mode = detect_tensorflow_repo_mode(REPO_ROOT)
+        notes.append("Lite export checks matter for edge or mobile targets, not every model repo under the sun.")
+        if "TensorFlow Lite" not in list(mode.get("frameworks") or []):
+            return "experimental", notes
+        return ("available" if shutil.which("tflite_convert") else "needs_setup"), notes
+    if tool_id == "pytorch-project-scaffolding":
+        mode = detect_pytorch_repo_mode(REPO_ROOT)
+        validation = build_pytorch_validation_plan(REPO_ROOT)
+        if mode.get("enabled"):
+            notes.append(f"Detected PyTorch mode `{mode.get('mode')}` with frameworks: {', '.join(list(mode.get('frameworks') or [])[:4])}.")
+            notes.append(str(validation.get("summary") or "PyTorch validation planning is available."))
+            return "available", notes
+        notes.append("No PyTorch repo signals were detected in the current workspace.")
+        return "needs_setup", notes
+    if tool_id == "pytorch-runtime-readiness":
+        runtime = detect_pytorch_runtime_status(REPO_ROOT)
+        notes.append(str(runtime.get("summary") or "PyTorch runtime status is unknown."))
+        if runtime.get("status") == "not_applicable":
+            return "experimental", notes
+        return ("available" if runtime.get("status") == "ready" else "needs_setup"), notes
+    if tool_id == "pytorch-profiler-observability":
+        mode = detect_pytorch_repo_mode(REPO_ROOT)
+        notes.append("Profiler evidence matters more than performance storytelling for PyTorch work.")
+        if not mode.get("enabled"):
+            return "experimental", notes
+        if "training_observability" not in list(mode.get("product_workflows") or []):
+            return "available", notes
+        return ("available" if shutil.which("tensorboard") else "needs_setup"), notes
+    if tool_id == "pytorch-checkpoint-validation":
+        mode = detect_pytorch_repo_mode(REPO_ROOT)
+        notes.append("Checkpoint validation keeps resume claims attached to reality instead of wishful config files.")
+        if not mode.get("enabled"):
+            return "experimental", notes
+        return ("available" if mode.get("checkpoint_paths") or mode.get("training_commands") else "needs_setup"), notes
+    if tool_id == "pytorch-distributed-readiness":
+        mode = detect_pytorch_repo_mode(REPO_ROOT)
+        runtime = detect_pytorch_runtime_status(REPO_ROOT)
+        notes.append("Distributed readiness checks should prove launcher and device assumptions before torchrun starts acting expensive.")
+        if "distributed_training" not in list(mode.get("product_workflows") or []):
+            return "experimental", notes
+        if runtime.get("status") == "not_applicable":
+            return "needs_setup", notes
+        return ("available" if shutil.which("torchrun") or runtime.get("cuda_available") else "needs_setup"), notes
+    if tool_id == "pytorch-export-validation":
+        mode = detect_pytorch_repo_mode(REPO_ROOT)
+        notes.append("Export checks matter when TorchScript or ONNX artifacts are part of the product path.")
+        if not mode.get("enabled"):
+            return "experimental", notes
+        if "model_export" not in list(mode.get("product_workflows") or []) and not mode.get("export_commands"):
+            return "experimental", notes
+        return ("available" if shutil.which("python") else "needs_setup"), notes
     if tool_id == "secret-scan-with-gitleaks":
         return ("available" if shutil.which("gitleaks") else "needs_setup"), ["Redacted secret scanning is the sane default gate before handoff or release."]
     if tool_id == "dependency-audit-with-osv-scanner":

@@ -58,6 +58,7 @@ Use one of the repo-local examples at:
 - [plugins/mission-control/mcp/mission-control-mcp.example.json](../plugins/mission-control/mcp/mission-control-mcp.example.json)
 - [.codex/plugins/mission-control/mcp/mission-control-mcp.local.json](../.codex/plugins/mission-control/mcp/mission-control-mcp.local.json)
 - Resource catalog: [plugins/mission-control/mcp/resources.json](../plugins/mission-control/mcp/resources.json)
+- Prompt catalog: [plugins/mission-control/mcp/prompts.json](../plugins/mission-control/mcp/prompts.json)
 
 Expected shape:
 
@@ -71,32 +72,45 @@ The bridge probes `GET /api/health`, auto-starts the daemon when needed, reads t
 
 Current state:
 
-- `plugins/mission-control/` contains the package skeleton.
-- `.codex/plugins/mission-control/` contains a repo-local Codex plugin bundle with MCP config and bridge docs.
+- `plugins/mission-control/` contains the canonical package skeleton.
+- `.codex/plugins/mission-control/` contains the repo-local Codex plugin bundle mirror.
 - `.codex/skills/` contains compatible local skill copies for direct Codex skill loading where supported.
 
-Fastest repo-local install on Windows:
+Recommended repo-local install on Windows:
 
 ```powershell
-.\scripts\install-mission-control-plugin.ps1 -HeadlessOnly
+.\scripts\install-mission-control-plugin.ps1
+.\scripts\install-mission-control-plugin.ps1 -DryRun
 ```
+
+Supported PowerShell installer flags currently include:
+
+- `-RepoUrl`
+- `-InstallDir`
+- `-CodexHome`
+- `-DryRun`
+- `-SkipCodexSync`
+- `-SkipPythonSetup`
+- `-PythonCommand`
+- `-DaemonHost`
+- `-DaemonPort`
+
+Unsupported wrapper flags such as `-HeadlessOnly`, `-Repair`, and `-HealthCheckOnly` are not part of the shipped installer surface.
 
 Suggested install flow:
 
-1. Copy or link `.codex/plugins/mission-control/` into the Codex plugin location if your Codex install does not read repo-local plugin bundles directly.
-2. Copy or link these skill folders into the Codex skills directory if plugin-bundled skill discovery is not available yet:
-   - `.codex/skills/mission-control-orchestrate`
-   - `.codex/skills/mission-control-import-codebase`
-   - `.codex/skills/mission-control-status`
-   - `.codex/skills/mission-control-approve`
-   - `.codex/skills/mission-control-handoff`
-   - `.codex/skills/mission-control-debug`
-   - `.codex/skills/mission-control-swarm`
-   - `.codex/skills/mission-control-safe-mode`
-   - `.codex/skills/mission-control-resume`
-   - `.codex/skills/mission-control-agents-md`
-3. Review [docs/CODEX_CHAT_MODE.md](./CODEX_CHAT_MODE.md), [docs/MISSION_CONTROL_SKILLS.md](./MISSION_CONTROL_SKILLS.md), and [docs/MCP_RESOURCES_PROMPTS.md](./MCP_RESOURCES_PROMPTS.md).
-4. Reload Codex configuration.
+1. Run the shipped installer so the repo-local plugin bundle, MCP catalogs, and skills are synced instead of hand-copying a random subset.
+2. If your Codex install does not read repo-local plugin bundles directly, copy or link `.codex/plugins/mission-control/` into the Codex plugin location.
+3. If plugin-bundled skill discovery is unavailable, mirror `.codex/skills/` into the Codex skills directory or sync it with `python scripts/sync-repo-local-codex-plugin.py`.
+4. Review [docs/CODEX_CHAT_MODE.md](./CODEX_CHAT_MODE.md), [docs/MISSION_CONTROL_SKILL_LIBRARY.md](./MISSION_CONTROL_SKILL_LIBRARY.md), and [docs/MCP_RESOURCES_PROMPTS.md](./MCP_RESOURCES_PROMPTS.md).
+5. Reload Codex configuration.
+
+Current shipped inventory references:
+
+- [plugins/mission-control/plugin.json](../plugins/mission-control/plugin.json)
+- [plugins/mission-control/SKILL_INDEX.md](../plugins/mission-control/SKILL_INDEX.md)
+- [plugins/mission-control/mcp/prompts.json](../plugins/mission-control/mcp/prompts.json)
+- [plugins/mission-control/mcp/resources.json](../plugins/mission-control/mcp/resources.json)
 
 ## Manual fallback
 
@@ -117,6 +131,11 @@ If plugin installation support is incomplete, use the prompt templates directly:
 - [switch-swarm-strategy](../plugins/mission-control/prompts/switch-swarm-strategy.md)
 - [enable-safe-mode](../plugins/mission-control/prompts/enable-safe-mode.md)
 - [generate-agents-md-proposal](../plugins/mission-control/prompts/generate-agents-md-proposal.md)
+- [install-from-github](../plugins/mission-control/prompts/install_from_github.md)
+- [autowire-providers](../plugins/mission-control/prompts/autowire_providers.md)
+- [ask-manager-for-plan](../plugins/mission-control/prompts/ask-manager-for-plan.md)
+- [review-project-capabilities](../plugins/mission-control/prompts/review-project-capabilities.md)
+- [review-project-capability-section](../plugins/mission-control/prompts/review-project-capability-section.md)
 
 In that mode, Codex still acts as the bridge and Mission Control still acts as the manager.
 
@@ -166,4 +185,4 @@ For the grouped Codex skill library, see [docs/MISSION_CONTROL_SKILL_LIBRARY.md]
 ### Existing repo import starts editing too early
 
 - The intended flow is read-only understanding first.
-- If the bridge skips that step, treat it as a bug, not as “close enough.”
+- If the bridge skips that step, treat it as a bug, not as "close enough."

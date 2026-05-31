@@ -235,6 +235,8 @@ def test_runtime_and_project_control_routes_require_token(client) -> None:
         assert raw_client.post(f"/api/projects/{project_id}/change-requests", json={"request_text": "Make it better"}).status_code == 401
         assert raw_client.get(f"/api/projects/{project_id}/context-packs").status_code == 401
         assert raw_client.get(f"/api/projects/{project_id}/workspace-tooling").status_code == 401
+        assert raw_client.get(f"/api/projects/{project_id}/tensorflow/features").status_code == 401
+        assert raw_client.get(f"/api/projects/{project_id}/pytorch/features").status_code == 401
         assert raw_client.post(f"/api/projects/{project_id}/codebase/search", json={"pattern": "TODO"}).status_code == 401
         assert raw_client.get("/api/context-packs/1", params={"project_id": project_id}).status_code == 401
         assert raw_client.get(f"/api/projects/{project_id}/risks").status_code == 401
@@ -267,6 +269,8 @@ def test_runtime_and_project_control_routes_require_token(client) -> None:
         assert raw_client.get(f"/api/projects/{project_id}/nvidia/gpu-diagnostics").status_code == 401
         assert raw_client.get(f"/api/projects/{project_id}/nvidia/local-runtime").status_code == 401
         assert raw_client.get(f"/api/projects/{project_id}/nvidia/validation-plan").status_code == 401
+        assert raw_client.get(f"/api/projects/{project_id}/capability-report").status_code == 401
+        assert raw_client.get(f"/api/projects/{project_id}/capability-report/semantic_code_impact_mapping").status_code == 401
         assert raw_client.post("/api/projects/import-folder", json={"folder_path": sample_workspace("auth-import"), "import_mode": "linked"}).status_code == 401
 
 

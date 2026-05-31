@@ -7,7 +7,7 @@ This page captures the current edges of the product so the wiki does not oversel
 ## Reference
 
 - standalone dashboard is optional, not primary
-- some install/autowire surfaces remain planned or partial
+- the shipped install and autowire flows exist, but local runner readiness still depends on the machine and provider setup
 - runner support depth varies by local environment
 - worker orchestration hardening is still in progress
 - plugin packaging may evolve

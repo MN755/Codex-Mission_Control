@@ -493,6 +493,12 @@ class MissionControlDaemonClient:
     def get_verification_brief(self, project_id: int) -> dict[str, Any]:
         return self._request("GET", f"/api/projects/{project_id}/verification-brief")
 
+    def get_capability_report(self, project_id: int) -> dict[str, Any]:
+        return self._request("GET", f"/api/projects/{project_id}/capability-report")
+
+    def get_capability_section(self, project_id: int, section_key: str) -> dict[str, Any]:
+        return self._request("GET", f"/api/projects/{project_id}/capability-report/{section_key}")
+
     def get_workspace_tooling(self, project_id: int) -> dict[str, Any]:
         return self._request("GET", f"/api/projects/{project_id}/workspace-tooling")
 
@@ -1019,6 +1025,30 @@ class MissionControlDaemonClient:
             "tools": list(payload.get("tools") or [])[:12],
         }
 
+    def _summarize_capability_report(self, project_id: int, payload: dict[str, Any]) -> dict[str, Any]:
+        sections = list(payload.get("sections") or [])
+        return {
+            "project_id": project_id,
+            "project_name": payload.get("project_name"),
+            "section_count": int(payload.get("section_count") or len(sections)),
+            "sections": sections[:15],
+            "report_markdown": payload.get("report_markdown"),
+            "generated_at": payload.get("generated_at"),
+        }
+
+    def _summarize_capability_section(self, project_id: int, section_key: str, payload: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "project_id": project_id,
+            "section_key": section_key,
+            "title": payload.get("title"),
+            "status": payload.get("status"),
+            "summary": payload.get("summary"),
+            "details": list(payload.get("details") or [])[:10],
+            "commands": list(payload.get("commands") or [])[:8],
+            "artifacts": list(payload.get("artifacts") or [])[:8],
+            "metadata_json": dict(payload.get("metadata_json") or {}),
+        }
+
     def _summarize_webwright_status(self, project_id: int, payload: dict[str, Any]) -> dict[str, Any]:
         return {
             "project_id": project_id,
@@ -1420,6 +1450,15 @@ class MissionControlDaemonClient:
                 return self._summarize_instincts_preview(project_id, self.get_instincts_preview(project_id))
             if kind == "verification-brief":
                 return self._summarize_verification_brief(project_id, self.get_verification_brief(project_id))
+            if kind == "capability-report":
+                if len(parts) == 4:
+                    section_key = parts[3]
+                    return self._summarize_capability_section(
+                        project_id,
+                        section_key,
+                        self.get_capability_section(project_id, section_key),
+                    )
+                return self._summarize_capability_report(project_id, self.get_capability_report(project_id))
             if kind == "workspace-tooling":
                 return self._summarize_workspace_tooling(project_id, self.get_workspace_tooling(project_id))
             if kind == "webwright":

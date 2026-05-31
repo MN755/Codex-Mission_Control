@@ -120,3 +120,101 @@ def test_search_codebase_falls_back_without_ripgrep(monkeypatch, tmp_path: Path)
     assert payload["match_count"] == 1
     assert payload["matches"][0]["path"] == "app.py"
     assert "fell back" in " ".join(payload["notes"]).lower()
+
+
+def test_detect_workspace_tooling_surfaces_tensorflow_product_pack(tmp_path: Path, monkeypatch) -> None:
+    (tmp_path / "pyproject.toml").write_text(
+        "[project]\nname='tf-demo'\ndependencies=['tensorflow','tensorboard','tfx']\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "train.py").write_text("import tensorflow as tf\n", encoding="utf-8")
+    (tmp_path / "export.py").write_text("import tensorflow as tf\n", encoding="utf-8")
+    monkeypatch.setattr(
+        "workspace_tooling._which",
+        lambda command: f"C:/tools/{command}.exe" if command in {"tensorboard", "saved_model_cli", "tfx"} else None,
+    )
+    monkeypatch.setattr(
+        "tensorflow_support.shutil.which",
+        lambda command: f"C:/tools/{command}.exe" if command in {"tensorboard", "saved_model_cli", "tfx"} else None,
+    )
+
+    payload = detect_workspace_tooling(tmp_path, project_name="TensorFlow Demo")
+
+    assert payload["repo_profile"]["tensorflow_repo"] is True
+    assert payload["tensorflow_repo"]["enabled"] is True
+    assert payload["tensorflow_validation_plan"]["available"] is True
+    tools = {tool["id"]: tool for tool in payload["tools"]}
+    assert tools["tensorboard"]["configured"] is True
+    assert tools["tensorboard"]["installed"] is True
+    assert tools["tfx"]["configured"] is True
+    packs = {pack["id"]: pack for pack in payload["packs"]}
+    assert packs["tensorflow_product_pack"]["status"] == "ready"
+    assert "tensorboard --logdir logs" in payload["validation_commands"]
+
+
+def test_detect_workspace_tooling_surfaces_pytorch_training_pack(tmp_path: Path, monkeypatch) -> None:
+    (tmp_path / "pyproject.toml").write_text(
+        "[project]\nname='torch-demo'\ndependencies=['torch','torchvision','accelerate','transformers','onnx']\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "train.py").write_text("import torch\n", encoding="utf-8")
+    (tmp_path / "export.py").write_text("import torch\n", encoding="utf-8")
+    (tmp_path / "checkpoints").mkdir()
+    (tmp_path / "checkpoints" / "model.pt").write_text("weights\n", encoding="utf-8")
+    monkeypatch.setattr(
+        "workspace_tooling._which",
+        lambda command: f"C:/tools/{command}.exe" if command in {"torchrun", "tensorboard"} else None,
+    )
+    monkeypatch.setattr(
+        "pytorch_support.shutil.which",
+        lambda command: f"C:/tools/{command}.exe" if command in {"python", "torchrun"} else None,
+    )
+    monkeypatch.setattr(
+        "pytorch_support.detect_pytorch_runtime_status",
+        lambda _workspace: {
+            "available": True,
+            "status": "ready",
+            "summary": "PyTorch runtime is ready.",
+            "torch_installed": True,
+            "cuda_available": True,
+            "mps_available": False,
+            "device_count": 1,
+            "torch_version": "2.7.0",
+            "cuda_version": "12.4",
+            "cudnn_available": True,
+            "distributed_backends": ["nccl", "gloo"],
+            "blockers": [],
+            "recommended_fixes": [],
+        },
+    )
+    monkeypatch.setattr(
+        "workspace_tooling.detect_pytorch_runtime_status",
+        lambda _workspace: {
+            "available": True,
+            "status": "ready",
+            "summary": "PyTorch runtime is ready.",
+            "torch_installed": True,
+            "cuda_available": True,
+            "mps_available": False,
+            "device_count": 1,
+            "torch_version": "2.7.0",
+            "cuda_version": "12.4",
+            "cudnn_available": True,
+            "distributed_backends": ["nccl", "gloo"],
+            "blockers": [],
+            "recommended_fixes": [],
+        },
+    )
+
+    payload = detect_workspace_tooling(tmp_path, project_name="PyTorch Demo")
+
+    assert payload["repo_profile"]["pytorch_repo"] is True
+    assert payload["pytorch_repo"]["enabled"] is True
+    assert payload["pytorch_runtime_status"]["status"] == "ready"
+    assert payload["pytorch_validation_plan"]["available"] is True
+    tools = {tool["id"]: tool for tool in payload["tools"]}
+    assert tools["torchrun"]["configured"] is True
+    assert tools["torchrun"]["installed"] is True
+    packs = {pack["id"]: pack for pack in payload["packs"]}
+    assert packs["pytorch_training_pack"]["status"] == "ready"
+    assert any(command.startswith("python train.py") for command in payload["validation_commands"])

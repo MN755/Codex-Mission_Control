@@ -789,8 +789,15 @@ add(
 
             - `mission-control-install-from-github`
             - `mission-control-autowire-providers`
+            - `mission-control-plugin-health`
+            - `mission-control-knowledge-base-map`
 
-            If those specific skills are not present yet, treat them as planned wrappers around the documented install/autowire flows.
+            Specialized shipped lanes include:
+
+            - NVIDIA/CUDA skills such as `mission-control-cuda-kernel-generation`, `mission-control-cuda-tile-refactor`, and `mission-control-nsight-profiling`
+            - TensorFlow skills such as `mission-control-tensorflow-scaffolding`, `mission-control-tf-data-pipelines`, `mission-control-tensorflow-serving`, and `mission-control-tflite-deployment`
+
+            These are shipped skills, not imaginary roadmap stickers.
             """,
         ),
         (
@@ -807,6 +814,9 @@ add(
             - explain current swarm
             - enable safe mode
             - generate AGENTS.md proposal
+            - review project capabilities
+            - review one named capability section
+            - ask Manager for a fresh plan
             """,
         ),
         (
@@ -2562,37 +2572,21 @@ add_reference_page(
         "docs/HEADLESS_ARCHITECTURE.md",
         "docs/CODEX_PLUGIN_INSTALL.md",
         "docs/CODEX_PLUGIN_MODE.md",
+        "docs/MCP_PLUGIN_BRIDGE.md",
         "docs/MCP_TOOLS.md",
         "docs/MCP_RESOURCES.md",
         "docs/MCP_PROMPTS.md",
+        "docs/MCP_RESOURCES_PROMPTS.md",
+        "docs/MISSION_CONTROL_SKILL_LIBRARY.md",
         "docs/PENDING_DECISIONS.md",
         "docs/PLUGIN_HEALTH_DOCTOR.md",
         "docs/SECURITY_MODEL.md",
         "docs/WEBWRIGHT.md",
+        "plugins/mission-control/mcp/*.json",
+        "plugins/mission-control/prompts/*.md",
         "plugins/mission-control/*",
     ],
     ["Development-Guide.md", "Home.md", "Mission-Control-Daemon.md"],
-)
-
-add_reference_page(
-    "MCP-Bridge-Endpoints.md",
-    "MCP Bridge Endpoints",
-    "This page lists the main backend endpoints that support bridge mode and what each one is for.",
-    [
-        "`/api/health`",
-        "`/api/orchestrations/attach-workspace`",
-        "`/api/orchestrations`",
-        "`/api/orchestrations/{id}/status`",
-        "`/api/orchestrations/{id}/pending-decisions`",
-        "`/api/decisions/{id}/answer`",
-        "`/api/orchestrations/{id}/handoff`",
-        "`/api/plugin/health`",
-        "`/api/projects/{project_id}/webwright`",
-        "`/api/projects/{project_id}/operator-snapshot`",
-        "`/api/projects/{project_id}/instincts/preview`",
-        "`/api/projects/{project_id}/verification-brief`",
-    ],
-    ["MCP-Plugin-Architecture.md", "Mission-Control-Daemon.md", "Diagnostics-and-Health-Checks.md"],
 )
 
 add_reference_page(
@@ -2644,7 +2638,7 @@ add_reference_page(
     "This page captures the current edges of the product so the wiki does not oversell unfinished systems.",
     [
         "standalone dashboard is optional, not primary",
-        "some install/autowire surfaces remain planned or partial",
+        "the shipped install and autowire flows exist, but local runner readiness still depends on the machine and provider setup",
         "runner support depth varies by local environment",
         "worker orchestration hardening is still in progress",
         "plugin packaging may evolve",
@@ -3029,12 +3023,60 @@ def _build_dynamic_prompts_catalog_page() -> str:
     )
 
 
+def _build_dynamic_bridge_endpoints_page() -> str:
+    resource_endpoints: list[str] = []
+    for entry in _resource_catalog()["resources"]:
+        source_hint = dict(entry.get("source_hint") or {})
+        for endpoint in list(source_hint.get("rest_endpoints") or []):
+            if endpoint not in resource_endpoints:
+                resource_endpoints.append(str(endpoint))
+
+    core_action_endpoints = [
+        "`/api/health`",
+        "`/api/plugin/health`",
+        "`/api/orchestrations/attach-workspace`",
+        "`/api/orchestrations`",
+        "`/api/orchestrations/{orchestration_id}/status`",
+        "`/api/orchestrations/{orchestration_id}/events`",
+        "`/api/orchestrations/{orchestration_id}/pending-decisions`",
+        "`/api/decisions/{decision_id}/answer`",
+        "`/api/projects/{project_id}/codebase/search`",
+    ]
+    project_intelligence_endpoints = [f"`{endpoint}`" for endpoint in resource_endpoints]
+    backend_only_endpoints = [
+        "`/api/projects/{project_id}/tensorflow/features`",
+        "`/api/projects/{project_id}/tensorflow/features/{feature_id}`",
+    ]
+    return render_page(
+        "MCP Bridge Endpoints",
+        "This page lists the main backend endpoints that support bridge mode and calls out which ones are MCP-backed versus daemon-only.",
+        "Current",
+        [
+            ("Core action endpoints", _markdown_bullets(core_action_endpoints)),
+            ("Project intelligence endpoints", _markdown_bullets(project_intelligence_endpoints)),
+            (
+                "Backend-only project APIs",
+                _markdown_bullets(backend_only_endpoints)
+                + "\n\n"
+                + "These TensorFlow starter endpoints are real project-scoped backend APIs, but they are not currently exposed as MCP resources or tools. Treat them as daemon API surfaces, not plugin-catalog surfaces.",
+            ),
+            (
+                "Related pages",
+                f"""
+                Continue with {md_link('MCP-Plugin-Architecture.md')}, {md_link('MCP-Resources-Catalog.md')}, and {md_link('Diagnostics-and-Health-Checks.md')}.
+                """,
+            ),
+        ],
+    )
+
+
 def _refresh_dynamic_pages() -> None:
     PAGES["Install-From-Codex.md"] = _build_dynamic_install_from_codex_page()
     PAGES["Headless-Install-and-Autowire.md"] = _build_dynamic_headless_install_page()
     PAGES["MCP-Plugin-Architecture.md"] = _build_dynamic_plugin_architecture_page()
     PAGES["MCP-Resources-Catalog.md"] = _build_dynamic_resources_catalog_page()
     PAGES["MCP-Prompts-Catalog.md"] = _build_dynamic_prompts_catalog_page()
+    PAGES["MCP-Bridge-Endpoints.md"] = _build_dynamic_bridge_endpoints_page()
 
 
 def main() -> None:

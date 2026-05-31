@@ -192,6 +192,52 @@ def _gpu_mode_block(project: Project) -> str:
     return "\n".join(lines)
 
 
+def _tensorflow_mode_block(project: Project) -> str:
+    from tensorflow_support import build_tensorflow_validation_plan, detect_tensorflow_repo_mode
+
+    mode = detect_tensorflow_repo_mode(project.workspace_path)
+    if not mode.get("enabled"):
+        return ""
+    validation = build_tensorflow_validation_plan(project.workspace_path)
+    lines = [
+        "TensorFlow product mode:",
+        f"- Detected TensorFlow repo mode: {mode.get('mode')}.",
+        "- Treat data pipelines, training, evaluation, export, and serving checks as separate work, not one blurry Python blob.",
+        "- Prefer Keras-first implementation, explicit tf.data handling, and evidence-backed TensorBoard or test outputs after model changes.",
+        "- When the repo signals TFX, TensorFlow Lite, or serving/export paths, keep those product lanes in the validation plan instead of stopping at training.",
+    ]
+    if mode.get("frameworks"):
+        lines.append(f"- Detected TensorFlow stack: {', '.join(str(item) for item in list(mode.get('frameworks') or [])[:5])}.")
+    if mode.get("product_workflows"):
+        lines.append(f"- Expected product workflows: {', '.join(str(item) for item in list(mode.get('product_workflows') or [])[:6])}.")
+    if validation.get("recommended_fixes"):
+        lines.append(f"- Current TensorFlow validation gaps: {' '.join(str(item) for item in list(validation.get('recommended_fixes') or [])[:3])}")
+    return "\n".join(lines)
+
+
+def _pytorch_mode_block(project: Project) -> str:
+    from pytorch_support import build_pytorch_validation_plan, detect_pytorch_repo_mode
+
+    mode = detect_pytorch_repo_mode(project.workspace_path)
+    if not mode.get("enabled"):
+        return ""
+    validation = build_pytorch_validation_plan(project.workspace_path)
+    lines = [
+        "PyTorch product mode:",
+        f"- Detected PyTorch repo mode: {mode.get('mode')}.",
+        "- Treat dataloaders, training, evaluation, checkpoints, and export as separate validation lanes instead of one giant tensor-shaped shrug.",
+        "- Record the actual device, precision, and batch size used after model edits so PyTorch evidence does not turn into folklore.",
+        "- When the repo signals distributed, profiler, or export workflows, keep those lanes explicit instead of pretending one pytest run told the whole truth.",
+    ]
+    if mode.get("frameworks"):
+        lines.append(f"- Detected PyTorch stack: {', '.join(str(item) for item in list(mode.get('frameworks') or [])[:5])}.")
+    if mode.get("product_workflows"):
+        lines.append(f"- Expected product workflows: {', '.join(str(item) for item in list(mode.get('product_workflows') or [])[:6])}.")
+    if validation.get("recommended_fixes"):
+        lines.append(f"- Current PyTorch validation gaps: {' '.join(str(item) for item in list(validation.get('recommended_fixes') or [])[:3])}")
+    return "\n".join(lines)
+
+
 def build_prompt_profile(*, provider: str | None = None, model: str | None = None, reasoning_effort: str | None = None) -> PromptProfile:
     provider_text = (provider or "").strip().lower()
     model_text = (model or "").strip().lower()
@@ -413,6 +459,8 @@ def _worker_task_biases(task: Task, profile: PromptProfile) -> tuple[str, ...]:
 def manager_system_prompt(project: Project, *, provider: str | None = None, model: str | None = None, reasoning_effort: str | None = None) -> str:
     profile_block = prompt_profile_block(provider=provider, model=model, reasoning_effort=reasoning_effort, audience="manager")
     gpu_block = _gpu_mode_block(project)
+    tensorflow_block = _tensorflow_mode_block(project)
+    pytorch_block = _pytorch_mode_block(project)
     return f"""You are the Manager AI for Codex Mission Control.
 
 Project name: {project.name}
@@ -434,6 +482,9 @@ Responsibilities:
 {profile_block}
 
 {gpu_block}
+
+{tensorflow_block}
+{pytorch_block}
 
 When you reply with structured content, keep it concise and machine-friendly.
 """
@@ -467,6 +518,8 @@ def worker_task_prompt(
     profile = build_prompt_profile(provider=provider, model=model, reasoning_effort=reasoning_effort)
     profile_block = prompt_profile_block(provider=provider, model=model, reasoning_effort=reasoning_effort, audience="worker")
     gpu_block = _gpu_mode_block(project)
+    tensorflow_block = _tensorflow_mode_block(project)
+    pytorch_block = _pytorch_mode_block(project)
     worker_bias_block = "\n".join(f"- {rule}" for rule in _worker_task_biases(task, profile))
     state_bias_block = "\n".join(f"- {rule}" for rule in _project_state_biases(project, task=task))
     return f"""You are a Codex worker agent operating under Codex Mission Control.
@@ -500,6 +553,9 @@ Requirements:
 {profile_block}
 
 {gpu_block}
+
+{tensorflow_block}
+{pytorch_block}
 
 Task-specific execution biases:
 {worker_bias_block}
@@ -536,6 +592,8 @@ def manager_message_prompt(
 ) -> str:
     profile_block = prompt_profile_block(provider=provider, model=model, reasoning_effort=reasoning_effort, audience="manager")
     gpu_block = _gpu_mode_block(project)
+    tensorflow_block = _tensorflow_mode_block(project)
+    pytorch_block = _pytorch_mode_block(project)
     return f"""You are the Manager AI for the project "{project.name}".
 
 Project docs live at: {docs_path}
@@ -547,6 +605,9 @@ The user sent this message:
 {profile_block}
 
 {gpu_block}
+
+{tensorflow_block}
+{pytorch_block}
 
 Respond as the manager coordinating the project. If the message requests changes, outline the next step clearly.
 """
@@ -570,6 +631,8 @@ def manager_action_prompt(
     profile = build_prompt_profile(provider=provider, model=model, reasoning_effort=reasoning_effort)
     profile_block = prompt_profile_block(provider=provider, model=model, reasoning_effort=reasoning_effort, audience="manager")
     gpu_block = _gpu_mode_block(project)
+    tensorflow_block = _tensorflow_mode_block(project)
+    pytorch_block = _pytorch_mode_block(project)
     action_biases = _manager_action_biases(action, profile)
     state_biases = _project_state_biases(project, action=action)
     action_bias_block = "\n".join(f"- {rule}" for rule in [*action_biases, *state_biases])
@@ -587,7 +650,10 @@ Input payload:
 
 {profile_block}
 
-{gpu_block}{task_bias_section}
+{gpu_block}
+
+{tensorflow_block}
+{pytorch_block}{task_bias_section}
 
 Response rules:
 - Return only valid JSON.
@@ -617,6 +683,8 @@ def manager_interview_prompt(
     profile = build_prompt_profile(provider=provider, model=model, reasoning_effort=reasoning_effort)
     profile_block = prompt_profile_block(provider=provider, model=model, reasoning_effort=reasoning_effort, audience="manager")
     gpu_block = _gpu_mode_block(project)
+    tensorflow_block = _tensorflow_mode_block(project)
+    pytorch_block = _pytorch_mode_block(project)
     action_bias_block = "\n".join(f"- {rule}" for rule in [*_manager_action_biases(action, profile), *_project_state_biases(project, action=action)])
     task_bias_section = f"\nTask-specific decision biases:\n{action_bias_block}" if action_bias_block else ""
     return f"""You are the Manager AI for Codex Mission Control.
@@ -633,7 +701,10 @@ Preferred user name: {user_name or project.created_by or "Operator"}
 
 {profile_block}
 
-{gpu_block}{task_bias_section}
+{gpu_block}
+
+{tensorflow_block}
+{pytorch_block}{task_bias_section}
 
 Interview requirements:
 - You are interviewing the user to gather project-specific requirements.
@@ -667,6 +738,8 @@ def manager_swarm_prompt(
     profile = build_prompt_profile(provider=provider, model=model, reasoning_effort=reasoning_effort)
     profile_block = prompt_profile_block(provider=provider, model=model, reasoning_effort=reasoning_effort, audience="manager")
     gpu_block = _gpu_mode_block(project)
+    tensorflow_block = _tensorflow_mode_block(project)
+    pytorch_block = _pytorch_mode_block(project)
     action_bias_block = "\n".join(f"- {rule}" for rule in [*_manager_action_biases("swarm.plan", profile), *_project_state_biases(project, action="swarm.plan")])
     task_bias_section = f"\nTask-specific decision biases:\n{action_bias_block}" if action_bias_block else ""
     return f"""You are the Manager AI for Codex Mission Control.
@@ -679,7 +752,10 @@ Preferred user name: {user_name or project.created_by or "Operator"}
 
 {profile_block}
 
-{gpu_block}{task_bias_section}
+{gpu_block}
+
+{tensorflow_block}
+{pytorch_block}{task_bias_section}
 
 You are producing an adaptive swarm plan for this specific project.
 

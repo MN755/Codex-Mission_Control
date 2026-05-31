@@ -42,6 +42,8 @@ EXPECTED_RESOURCES = [
     "mission-control://projects/{project_id}/operator-snapshot",
     "mission-control://projects/{project_id}/instincts",
     "mission-control://projects/{project_id}/verification-brief",
+    "mission-control://projects/{project_id}/capability-report",
+    "mission-control://projects/{project_id}/capability-report/{section_key}",
 ]
 
 EXPECTED_PROMPTS = [
@@ -63,6 +65,8 @@ EXPECTED_PROMPTS = [
     "generate_agents_md_proposal",
     "install_from_github",
     "autowire_providers",
+    "review_project_capabilities",
+    "review_project_capability_section",
 ]
 
 
@@ -123,6 +127,8 @@ def test_docs_explain_resources_prompts_and_headless_boundary() -> None:
     assert "mission_control_attach_workspace" in tools_content
     assert "mission-control://projects/{project_id}/decision-ledger" in resources_content
     assert "mission-control://projects/{project_id}/operator-snapshot" in resources_content
+    assert "mission-control://projects/{project_id}/capability-report" in resources_content
+    assert "mission-control://projects/{project_id}/capability-report/{section_key}" in resources_content
     assert "mission-control://projects/{project_id}/webwright" in resources_content
     assert "mission-control://projects/{project_id}/nvidia-nim" in resources_content
     assert "mission-control://projects/{project_id}/nvidia-aiq" in resources_content
@@ -130,4 +136,5 @@ def test_docs_explain_resources_prompts_and_headless_boundary() -> None:
     assert "mission-control://projects/{project_id}/workspace-tooling" in resources_content
     assert "attach_current_workspace" in prompts_content
     assert "use_webwright_for_browser_task" in prompts_content
+    assert "review_project_capability_section" in prompts_content
     assert "Invalid answers are rejected" in pending_content

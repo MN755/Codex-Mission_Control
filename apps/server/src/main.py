@@ -26,6 +26,7 @@ from imported_codebase import import_service
 from intelligence import reputation_service, scope_creep_service
 from manager import service
 from plugin_health import mission_control_plugin_health
+from pytorch_starters import generate_pytorch_feature_bundle, get_pytorch_feature_catalog_entry, pytorch_feature_catalog
 from models import (
     Agent,
     AgentRun,
@@ -70,6 +71,7 @@ from schemas import (
     CapabilityBenchmarkCreate,
     CapabilityBenchmarkRead,
     CapabilityMatrixEntryRead,
+    CapabilitySectionRead,
     ChatGptLoginRequest,
     CompleteFirstRunRequest,
     ConflictRecordRead,
@@ -155,6 +157,9 @@ from schemas import (
     PendingDecisionAnswerRequest,
     PendingDecisionAnswerResultRead,
     PendingDecisionRead,
+    PyTorchFeatureBundleRead,
+    PyTorchFeatureCatalogEntryRead,
+    ProjectCapabilityReportRead,
     ProjectPlaybookApplyRequest,
     ProjectPlaybookRead,
     ProjectPlaybookSuggestionRead,
@@ -223,6 +228,8 @@ from schemas import (
     ToolPermissionRead,
     ToolPermissionUpdate,
     TargetedCodebaseScanRequest,
+    TensorFlowFeatureBundleRead,
+    TensorFlowFeatureCatalogEntryRead,
     UserPreferenceRead,
     UserPreferenceUpsert,
     ValidationCoverageAreaRead,
@@ -245,6 +252,7 @@ from schemas import (
     BridgeMessageRead,
 )
 from startup import startup_service
+from tensorflow_starters import generate_tensorflow_feature_bundle, get_tensorflow_feature_catalog_entry, tensorflow_feature_catalog
 from subagent_planner import subagent_planner_service
 from task_board import can_assign_task
 from simulation import simulation_service
@@ -2329,6 +2337,30 @@ def get_project_verification_brief(
     return VerificationBriefRead(**service.build_verification_brief(db, project))
 
 
+@app.get("/api/projects/{project_id}/capability-report", response_model=ProjectCapabilityReportRead)
+def get_project_capability_report(
+    project_id: int,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> ProjectCapabilityReportRead:
+    project = _get_project_or_404(db, project_id)
+    return ProjectCapabilityReportRead(**service.build_project_capability_report(db, project))
+
+
+@app.get("/api/projects/{project_id}/capability-report/{section_key}", response_model=CapabilitySectionRead)
+def get_project_capability_section(
+    project_id: int,
+    section_key: str,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> CapabilitySectionRead:
+    project = _get_project_or_404(db, project_id)
+    try:
+        return CapabilitySectionRead(**service.build_project_capability_section(db, project, section_key))
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
 @app.get("/api/projects/{project_id}/workspace-tooling", response_model=WorkspaceToolingStatusRead)
 def get_project_workspace_tooling_status(
     project_id: int,
@@ -2337,6 +2369,64 @@ def get_project_workspace_tooling_status(
 ) -> WorkspaceToolingStatusRead:
     project = _get_project_or_404(db, project_id)
     return WorkspaceToolingStatusRead(**service.build_workspace_tooling_status(project))
+
+
+@app.get("/api/projects/{project_id}/tensorflow/features", response_model=list[TensorFlowFeatureCatalogEntryRead])
+def list_project_tensorflow_features(
+    project_id: int,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> list[TensorFlowFeatureCatalogEntryRead]:
+    _get_project_or_404(db, project_id)
+    return [TensorFlowFeatureCatalogEntryRead(**entry) for entry in tensorflow_feature_catalog()]
+
+
+@app.get("/api/projects/{project_id}/tensorflow/features/{feature_id}", response_model=TensorFlowFeatureBundleRead)
+def get_project_tensorflow_feature_bundle(
+    project_id: int,
+    feature_id: str,
+    variant: str | None = Query(default=None),
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> TensorFlowFeatureBundleRead:
+    _get_project_or_404(db, project_id)
+    try:
+        get_tensorflow_feature_catalog_entry(feature_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    try:
+        return TensorFlowFeatureBundleRead(**generate_tensorflow_feature_bundle(feature_id, variant=variant))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/api/projects/{project_id}/pytorch/features", response_model=list[PyTorchFeatureCatalogEntryRead])
+def list_project_pytorch_features(
+    project_id: int,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> list[PyTorchFeatureCatalogEntryRead]:
+    _get_project_or_404(db, project_id)
+    return [PyTorchFeatureCatalogEntryRead(**entry) for entry in pytorch_feature_catalog()]
+
+
+@app.get("/api/projects/{project_id}/pytorch/features/{feature_id}", response_model=PyTorchFeatureBundleRead)
+def get_project_pytorch_feature_bundle(
+    project_id: int,
+    feature_id: str,
+    variant: str | None = Query(default=None),
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> PyTorchFeatureBundleRead:
+    _get_project_or_404(db, project_id)
+    try:
+        get_pytorch_feature_catalog_entry(feature_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    try:
+        return PyTorchFeatureBundleRead(**generate_pytorch_feature_bundle(feature_id, variant=variant))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @app.post("/api/projects/{project_id}/codebase/search", response_model=CodebaseSearchRead)

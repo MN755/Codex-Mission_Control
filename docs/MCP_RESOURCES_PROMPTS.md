@@ -49,6 +49,8 @@ The canonical machine-readable catalogs live here:
 - `mission-control://projects/{project_id}/operator-snapshot`
 - `mission-control://projects/{project_id}/instincts`
 - `mission-control://projects/{project_id}/verification-brief`
+- `mission-control://projects/{project_id}/capability-report`
+- `mission-control://projects/{project_id}/capability-report/{section_key}`
 
 ## Prompt Rules
 
@@ -76,7 +78,9 @@ The canonical machine-readable catalogs live here:
 - `generate-agents-md-proposal`
 - `install-from-github`
 - `autowire-providers`
+- `review-project-capabilities`
 - `ask-manager-for-plan`
+- `review-project-capability-section`
 
 ## Prompt To Tool Pattern
 
@@ -115,3 +119,12 @@ The prompt catalog also covers:
 The dashboard is optional and not part of this focus.
 
 These resources and prompts are designed to make Mission Control usable from Codex chat alone.
+
+## Backend-only note
+
+Mission Control also exposes real project-scoped backend APIs that are not in the MCP resource or prompt catalogs yet, including:
+
+- `GET /api/projects/{project_id}/tensorflow/features`
+- `GET /api/projects/{project_id}/tensorflow/features/{feature_id}?variant=...`
+
+Those TensorFlow starter routes are daemon APIs today. The docs should describe them accurately instead of quietly pretending the plugin already exposes them.

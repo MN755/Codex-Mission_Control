@@ -25,6 +25,8 @@ This page summarizes the current prompt workflows packaged for Mission Control b
 - Install from GitHub (`install_from_github`) - tools: `mission_control_plugin_health`
 - Autowire providers (`autowire_providers`) - tools: `mission_control_plugin_health`
 - Ask Manager for plan (`ask_manager_for_plan`; aliases: `ask-manager-for-plan`) - tools: `mission_control_start_task`, `mission_control_get_status`, `mission_control_get_pending_decisions`
+- Review project capabilities (`review_project_capabilities`; aliases: `review-project-capabilities`) - tools: `mission_control_get_capability_report`
+- Review project capability section (`review_project_capability_section`; aliases: `review-project-capability-section`) - tools: `mission_control_get_capability_section`
 
 ## Related pages
 

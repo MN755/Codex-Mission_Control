@@ -41,6 +41,8 @@ from intelligence import planning_intelligence_service, reputation_service, scop
 from interview import INTERVIEW_CATEGORIES, select_fallback_questions
 from diagnostics import list_diagnostic_reports
 from imported_codebase import import_service
+from pytorch_support import detect_pytorch_repo_mode
+from tensorflow_support import detect_tensorflow_repo_mode
 from models import (
     Agent,
     AgentArchetype,
@@ -486,6 +488,7 @@ class MissionControlService:
         self.runners = RunnerRegistry()
         self.active_monitors: dict[int, asyncio.Task] = {}
         self.run_input_snapshots: dict[int, dict[str, str]] = {}
+        self.workspace_semantic_index_cache: dict[str, dict[str, Any]] = {}
 
     async def on_shutdown(self) -> None:
         active = list(self.active_monitors.values())
@@ -1357,6 +1360,8 @@ class MissionControlService:
         manifest = self._workspace_manifest_summary(project)
         status = await self.get_system_status(db, project)
         cuda_mode = detect_cuda_repo_mode(project.workspace_path)
+        tensorflow_mode = detect_tensorflow_repo_mode(project.workspace_path)
+        pytorch_mode = detect_pytorch_repo_mode(project.workspace_path)
         gpu_cluster_health = self._gpu_cluster_health(project)
         current_agents = [
             {
@@ -1390,6 +1395,8 @@ class MissionControlService:
             "docs_summary": self._project_docs_summary(project),
             "repo_summary": manifest,
             "gpu_programming": cuda_mode,
+            "tensorflow_product_mode": tensorflow_mode,
+            "pytorch_product_mode": pytorch_mode,
             "gpu_cluster_health": gpu_cluster_health,
             "plan_summary": latest_plan.summary_json if latest_plan else None,
             "available_tools": [
@@ -1457,6 +1464,10 @@ class MissionControlService:
             return preferences.optimization_mode
         if detect_cuda_repo_mode(project.workspace_path).get("enabled"):
             return "gpu_programming"
+        if detect_tensorflow_repo_mode(project.workspace_path).get("enabled"):
+            return "research_planning"
+        if detect_pytorch_repo_mode(project.workspace_path).get("enabled"):
+            return "research_planning"
         idea = f"{project.name}\n{project.idea}".lower()
         unknowns = len(understanding.unknowns_json or {})
         if preferences.docs_depth in {"detailed", "publishable"} or any(token in idea for token in {"docs", "documentation", "guide", "developer portal"}):
@@ -1559,6 +1570,8 @@ class MissionControlService:
             "Record what was actually tested, reviewed, or deferred.",
         ]
         gpu_mode = intelligence_context.get("gpu_programming") or detect_cuda_repo_mode(project.workspace_path)
+        tensorflow_mode = intelligence_context.get("tensorflow_product_mode") or detect_tensorflow_repo_mode(project.workspace_path)
+        pytorch_mode = intelligence_context.get("pytorch_product_mode") or detect_pytorch_repo_mode(project.workspace_path)
         gpu_health = intelligence_context.get("gpu_cluster_health") or self._gpu_cluster_health(project)
 
         def add(spec: ManagerSwarmSpecPayload) -> None:
@@ -1580,6 +1593,11 @@ class MissionControlService:
 
         def test_paths() -> list[str]:
             return buckets["tests"] or ["tests"]
+
+        if tensorflow_mode.get("enabled"):
+            validation_strategy.append("For TensorFlow work, keep data, training, export, and deployment validation explicit instead of letting everything blur into a single Python task.")
+        if pytorch_mode.get("enabled"):
+            validation_strategy.append("For PyTorch work, keep training, checkpoint, distributed, profiler, and export validation explicit instead of pretending one test command proved the whole model path.")
 
         if mode == "gpu_programming":
             gpu_paths = list(gpu_mode.get("important_paths") or []) or backend_paths() or frontend_paths()
@@ -5255,6 +5273,8 @@ class MissionControlService:
             repo.test_commands_json,
             preferences.testing_depth,
             gpu_mode=detect_cuda_repo_mode(project.workspace_path),
+            tensorflow_mode=detect_tensorflow_repo_mode(project.workspace_path),
+            pytorch_mode=detect_pytorch_repo_mode(project.workspace_path),
         )
         recipe.status = "active"
         db.flush()
@@ -5267,6 +5287,8 @@ class MissionControlService:
         testing_depth: str,
         *,
         gpu_mode: dict[str, Any] | None = None,
+        tensorflow_mode: dict[str, Any] | None = None,
+        pytorch_mode: dict[str, Any] | None = None,
     ) -> list[dict[str, Any]]:
         steps: list[dict[str, Any]] = []
         for command in list(build_commands or [])[:1]:
@@ -5314,6 +5336,71 @@ class MissionControlService:
                     "guidance": list(gpu_mode.get("autotune_notes") or []),
                 }
             )
+        if tensorflow_mode and tensorflow_mode.get("enabled"):
+            steps.append(
+                {
+                    "title": "Run the TensorFlow training or pipeline entry point",
+                    "command": next(iter(tensorflow_mode.get("training_commands") or []), None),
+                    "type": "train",
+                    "requires_approval": True,
+                    "status": "pending",
+                }
+            )
+            steps.append(
+                {
+                    "title": "Review TensorFlow observability evidence",
+                    "command": next(iter(tensorflow_mode.get("observability_commands") or []), None),
+                    "type": "observability",
+                    "requires_approval": False,
+                    "status": "pending",
+                }
+            )
+            steps.append(
+                {
+                    "title": "Validate TensorFlow export or serving artifacts",
+                    "command": next(iter(tensorflow_mode.get("export_commands") or []), None),
+                    "type": "export",
+                    "requires_approval": True,
+                    "status": "pending",
+                }
+            )
+        if pytorch_mode and pytorch_mode.get("enabled"):
+            steps.append(
+                {
+                    "title": "Run the PyTorch training entry point",
+                    "command": next(iter(pytorch_mode.get("training_commands") or []), None),
+                    "type": "train",
+                    "requires_approval": True,
+                    "status": "pending",
+                }
+            )
+            steps.append(
+                {
+                    "title": "Review PyTorch profiler or observability evidence",
+                    "command": next(iter(pytorch_mode.get("observability_commands") or []), None),
+                    "type": "observability",
+                    "requires_approval": False,
+                    "status": "pending",
+                }
+            )
+            steps.append(
+                {
+                    "title": "Validate PyTorch checkpoint or resume behavior",
+                    "command": next(iter(pytorch_mode.get("training_commands") or []), None),
+                    "type": "checkpoint",
+                    "requires_approval": True,
+                    "status": "pending",
+                }
+            )
+            steps.append(
+                {
+                    "title": "Validate PyTorch export artifacts",
+                    "command": next(iter(pytorch_mode.get("export_commands") or []), None),
+                    "type": "export",
+                    "requires_approval": True,
+                    "status": "pending",
+                }
+            )
         if testing_depth != "minimal":
             steps.append({"title": "Run smoke validation", "command": None, "type": "smoke", "requires_approval": False, "status": "pending"})
         steps.append({"title": "Review docs and handoff notes", "command": None, "type": "docs", "requires_approval": False, "status": "pending"})
@@ -5338,6 +5425,8 @@ class MissionControlService:
             repo_payload.get("test_commands_json"),
             preferences.testing_depth,
             gpu_mode=detect_cuda_repo_mode(project.workspace_path),
+            tensorflow_mode=detect_tensorflow_repo_mode(project.workspace_path),
+            pytorch_mode=detect_pytorch_repo_mode(project.workspace_path),
         )
         recipe.status = "active"
         return recipe
@@ -9825,6 +9914,8 @@ class MissionControlService:
             for category in CAPABILITY_CATEGORIES
         }
         intelligence_context["gpu_programming"] = detect_cuda_repo_mode(project.workspace_path)
+        intelligence_context["tensorflow_product_mode"] = detect_tensorflow_repo_mode(project.workspace_path)
+        intelligence_context["pytorch_product_mode"] = detect_pytorch_repo_mode(project.workspace_path)
         intelligence_context["gpu_cluster_health"] = self._gpu_cluster_health(project)
         fallback_payload = self._deterministic_swarm_plan(
             project,
@@ -11458,6 +11549,68 @@ class MissionControlService:
                 symbols = symbols[:8]
         return symbols[:8], imports
 
+    def _extract_python_call_targets(
+        self,
+        *,
+        root: Path,
+        path: Path,
+        module_index: dict[str, str],
+    ) -> list[str]:
+        try:
+            text = path.read_text(encoding="utf-8")
+            tree = ast.parse(text)
+        except (OSError, SyntaxError, UnicodeDecodeError):
+            return []
+        current_relative = self._workspace_relative_path(root, path)
+        current_module = self._python_module_name(root, path)
+        alias_targets: dict[str, str] = {}
+        imported_symbol_targets: dict[str, str] = {}
+        for node in ast.iter_child_nodes(tree):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    matched = self._match_python_workspace_module(alias.name, module_index)
+                    if not matched:
+                        continue
+                    relative = module_index.get(matched)
+                    binding = alias.asname or alias.name.split(".")[0]
+                    if relative and binding:
+                        alias_targets[binding] = relative
+            elif isinstance(node, ast.ImportFrom):
+                matched = self._resolve_python_relative_import(
+                    current_module=current_module,
+                    module=node.module,
+                    level=node.level,
+                    module_index=module_index,
+                )
+                if not matched:
+                    continue
+                relative = module_index.get(matched)
+                if not relative:
+                    continue
+                for alias in node.names:
+                    binding = alias.asname or alias.name
+                    if binding:
+                        imported_symbol_targets[binding] = relative
+        call_targets: list[str] = []
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            target_relative: str | None = None
+            if isinstance(node.func, ast.Name):
+                target_relative = imported_symbol_targets.get(node.func.id)
+            elif isinstance(node.func, ast.Attribute):
+                root_name: str | None = None
+                current: ast.expr = node.func
+                while isinstance(current, ast.Attribute):
+                    current = current.value
+                if isinstance(current, ast.Name):
+                    root_name = current.id
+                if root_name:
+                    target_relative = alias_targets.get(root_name)
+            if target_relative and target_relative != current_relative and target_relative not in call_targets:
+                call_targets.append(target_relative)
+        return call_targets
+
     def _build_python_semantic_index(self, root: Path) -> dict[str, Any]:
         ignored = {"__pycache__", ".git", "node_modules", ".venv", "venv", "mission-control"}
         module_index: dict[str, str] = {}
@@ -11487,6 +11640,11 @@ class MissionControlService:
             ]
             if resolved_imports:
                 imports_by_file[relative] = self._dedupe_strings(resolved_imports)
+        call_targets_by_file: dict[str, list[str]] = {}
+        for relative, path in file_paths.items():
+            targets = self._extract_python_call_targets(root=root, path=path, module_index=module_index)
+            if targets:
+                call_targets_by_file[relative] = self._dedupe_strings(targets)
         dependents_by_file: dict[str, list[str]] = {}
         for relative, imports in imports_by_file.items():
             for imported_relative in imports:
@@ -11498,7 +11656,1274 @@ class MissionControlService:
             "symbols_by_file": symbols_by_file,
             "imports_by_file": imports_by_file,
             "dependents_by_file": dependents_by_file,
+            "call_targets_by_file": call_targets_by_file,
         }
+
+    def _read_workspace_text(self, path: Path) -> str:
+        try:
+            return path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            return ""
+
+    def _workspace_relative_path(self, root: Path, path: Path) -> str | None:
+        try:
+            return path.resolve().relative_to(root.resolve()).as_posix()
+        except (OSError, ValueError):
+            try:
+                return path.relative_to(root).as_posix()
+            except ValueError:
+                return None
+
+    def _specifier_path_parts(self, specifier: str) -> tuple[str, ...]:
+        normalized = specifier.replace("\\", "/").strip()
+        return tuple(part for part in normalized.split("/") if part and part != ".")
+
+    def _nearest_workspace_marker(self, root: Path, path: Path, markers: tuple[str, ...]) -> Path | None:
+        try:
+            workspace_root = root.resolve()
+            current = (path if path.is_dir() else path.parent).resolve()
+        except OSError:
+            return None
+        while True:
+            if any((current / marker).is_file() for marker in markers):
+                return current
+            if current == workspace_root or current == current.parent:
+                break
+            current = current.parent
+        if any((workspace_root / marker).is_file() for marker in markers):
+            return workspace_root
+        return None
+
+    def _load_json_file(self, path: Path) -> dict[str, Any]:
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            return {}
+        return payload if isinstance(payload, dict) else {}
+
+    def _detect_generated_source_reasons(self, path: Path) -> list[str]:
+        reasons: list[str] = []
+        normalized_parts = [part.lower() for part in path.parts]
+        generated_markers = {
+            "generated",
+            "generated-sources",
+            "generated_src",
+            "generatedsrc",
+            "autogen",
+            "gen",
+            ".gen",
+            "_generated",
+            "__generated__",
+            "codegen",
+            "proto",
+        }
+        if any(part in generated_markers for part in normalized_parts):
+            reasons.append("generated-path")
+        header = "\n".join(self._read_workspace_text(path).splitlines()[:6]).lower()
+        header_markers = [
+            "generated",
+            "auto-generated",
+            "autogenerated",
+            "code generated",
+            "do not edit",
+            "@generated",
+        ]
+        if header and any(marker in header for marker in header_markers):
+            reasons.append("generated-header")
+        return reasons
+
+    def _build_generated_source_index(self, root: Path, files: list[Path]) -> dict[str, list[str]]:
+        generated_index: dict[str, list[str]] = {}
+        for path in files:
+            reasons = self._detect_generated_source_reasons(path)
+            if not reasons:
+                continue
+            relative = self._workspace_relative_path(root, path)
+            if not relative:
+                continue
+            keys = {
+                Path(relative).stem.lower(),
+                Path(relative).with_suffix("").as_posix().lower(),
+                "/".join(Path(relative).with_suffix("").parts[-2:]).lower(),
+            }
+            for key in keys:
+                if not key:
+                    continue
+                generated_index.setdefault(key, [])
+                if relative not in generated_index[key]:
+                    generated_index[key].append(relative)
+        return generated_index
+
+    def _resolve_generated_source_candidate(
+        self,
+        *,
+        specifier: str,
+        suffixes: tuple[str, ...],
+        generated_index: dict[str, list[str]],
+    ) -> str | None:
+        normalized = specifier.replace("\\", "/").strip().lstrip("./")
+        if not normalized:
+            return None
+        candidate_keys = [
+            normalized.lower(),
+            Path(normalized).stem.lower(),
+            "/".join(Path(normalized).parts[-2:]).lower() if len(Path(normalized).parts) >= 2 else "",
+        ]
+        normalized_suffixes = {suffix.lower() for suffix in suffixes}
+        for key in candidate_keys:
+            if not key:
+                continue
+            for relative in generated_index.get(key, []):
+                if Path(relative).suffix.lower() in normalized_suffixes:
+                    return relative
+        return None
+
+    def _module_source_root_candidates(self, module_kind: str) -> tuple[str, ...]:
+        if module_kind in {"cargo", "rust"}:
+            return ("src", "tests", "examples", "benches")
+        if module_kind in {"go", "go-module"}:
+            return ("cmd", "pkg", "internal", "api", "lib", "tests")
+        if module_kind in {"package-json", "typescript", "javascript"}:
+            return ("src", "lib", "app", "tests")
+        if module_kind in {"cmake", "c-family"}:
+            return ("src", "include", "native", "kernels", "tests")
+        if module_kind in {"composer", "php"}:
+            return ("src", "app", "lib", "tests")
+        if module_kind in {"bundler", "ruby"}:
+            return ("lib", "app", "spec", "test")
+        if module_kind in {"maven", "gradle", "jvm"}:
+            return ("src/main/java", "src/main/kotlin", "src/test/java", "src/test/kotlin")
+        if module_kind in {"dotnet", "csproj"}:
+            return ("src", "test", "tests", "Generated")
+        return ("src", "lib", "app", "tests")
+
+    def _build_workspace_build_context(self, root: Path, files: list[Path]) -> dict[str, Any]:
+        ignored = {"node_modules", ".git", ".venv", "venv", "__pycache__"}
+        module_candidates: list[tuple[str, Path]] = []
+        marker_map = [
+            ("cargo", "Cargo.toml"),
+            ("go", "go.mod"),
+            ("typescript", "tsconfig.json"),
+            ("javascript", "jsconfig.json"),
+            ("package-json", "package.json"),
+            ("cmake", "CMakeLists.txt"),
+            ("composer", "composer.json"),
+            ("bundler", "Gemfile"),
+            ("maven", "pom.xml"),
+            ("gradle", "build.gradle"),
+            ("gradle", "build.gradle.kts"),
+            ("dotnet", "*.csproj"),
+            ("dotnet", "*.sln"),
+        ]
+        for module_kind, marker in marker_map:
+            if "*" in marker:
+                iterator = root.rglob(marker)
+            else:
+                iterator = root.rglob(marker)
+            for candidate in iterator:
+                if any(part in ignored for part in candidate.parts):
+                    continue
+                module_root = candidate.parent
+                module_candidates.append((module_kind, module_root))
+                if len(module_candidates) >= 120:
+                    break
+        seen_modules: set[tuple[str, str]] = set()
+        modules: list[dict[str, Any]] = []
+        source_root_entries: list[dict[str, str]] = []
+        generated_root_entries: list[dict[str, str]] = []
+        for module_kind, module_root in module_candidates:
+            relative_root = self._workspace_relative_path(root, module_root)
+            if not relative_root:
+                continue
+            key = (module_kind, relative_root)
+            if key in seen_modules:
+                continue
+            seen_modules.add(key)
+            source_roots: list[str] = []
+            generated_roots: list[str] = []
+            for candidate_name in self._module_source_root_candidates(module_kind):
+                candidate_path = module_root / candidate_name
+                if candidate_path.exists() and candidate_path.is_dir():
+                    relative_candidate = self._workspace_relative_path(root, candidate_path)
+                    if relative_candidate and relative_candidate not in source_roots:
+                        source_roots.append(relative_candidate)
+            if not source_roots:
+                source_roots.append(relative_root)
+            for candidate_path in module_root.rglob("*"):
+                if not candidate_path.is_dir():
+                    continue
+                reasons = self._detect_generated_source_reasons(candidate_path)
+                if not reasons:
+                    continue
+                relative_candidate = self._workspace_relative_path(root, candidate_path)
+                if relative_candidate and relative_candidate not in generated_roots:
+                    generated_roots.append(relative_candidate)
+                if len(generated_roots) >= 8:
+                    break
+            modules.append(
+                {
+                    "kind": module_kind,
+                    "root": relative_root,
+                    "source_roots": source_roots[:8],
+                    "generated_roots": generated_roots[:8],
+                }
+            )
+            source_root_entries.extend({"module_kind": module_kind, "module_root": relative_root, "root": item} for item in source_roots[:8])
+            generated_root_entries.extend({"module_kind": module_kind, "module_root": relative_root, "root": item} for item in generated_roots[:8])
+        detected_systems = sorted({module["kind"] for module in modules})
+        return {
+            "build_systems": detected_systems,
+            "modules": modules[:80],
+            "source_roots": source_root_entries[:120],
+            "generated_roots": generated_root_entries[:120],
+        }
+
+    def _longest_matching_root(self, relative_path: str, roots: list[str]) -> str | None:
+        matches = [root for root in roots if relative_path == root or relative_path.startswith(f"{root}/")]
+        if not matches:
+            return None
+        return max(matches, key=len)
+
+    def _resolve_workspace_source(
+        self,
+        *,
+        root: Path,
+        base_dir: Path,
+        specifier: str,
+        suffixes: tuple[str, ...],
+        index_names: tuple[str, ...] = ("index",),
+        root_fallback: bool = False,
+    ) -> str | None:
+        path_parts = self._specifier_path_parts(specifier)
+        if not path_parts:
+            return None
+        candidate = base_dir.joinpath(*path_parts)
+        search_paths: list[Path] = []
+        if candidate.suffix:
+            search_paths.append(candidate)
+        else:
+            search_paths.extend(candidate.with_suffix(suffix) for suffix in suffixes)
+            search_paths.extend(candidate / f"{index_name}{suffix}" for index_name in index_names for suffix in suffixes)
+        if root_fallback:
+            root_candidate = root.joinpath(*path_parts)
+            if root_candidate.suffix:
+                search_paths.append(root_candidate)
+            else:
+                search_paths.extend(root_candidate.with_suffix(suffix) for suffix in suffixes)
+                search_paths.extend(root_candidate / f"{index_name}{suffix}" for index_name in index_names for suffix in suffixes)
+        seen: set[str] = set()
+        for search_path in search_paths:
+            if not search_path.is_file():
+                continue
+            relative = self._workspace_relative_path(root, search_path)
+            if relative and relative not in seen:
+                return relative
+            if relative:
+                seen.add(relative)
+        return None
+
+    def _nearest_js_ts_config(self, root: Path, path: Path) -> tuple[Path, dict[str, Any]] | None:
+        config_root = self._nearest_workspace_marker(root, path, ("tsconfig.json", "jsconfig.json"))
+        if config_root is None:
+            return None
+        for config_name in ("tsconfig.json", "jsconfig.json"):
+            config_path = config_root / config_name
+            if config_path.is_file():
+                payload = self._load_json_file(config_path)
+                if payload:
+                    return config_root, payload
+        return None
+
+    def _resolve_js_ts_path_alias(
+        self,
+        *,
+        root: Path,
+        path: Path,
+        specifier: str,
+        suffixes: tuple[str, ...],
+    ) -> str | None:
+        config = self._nearest_js_ts_config(root, path)
+        if config is None:
+            return None
+        config_root, payload = config
+        compiler_options = payload.get("compilerOptions")
+        if not isinstance(compiler_options, dict):
+            return None
+        base_url = compiler_options.get("baseUrl")
+        base_dir = config_root / str(base_url) if isinstance(base_url, str) and base_url.strip() else config_root
+        paths = compiler_options.get("paths")
+        if not isinstance(paths, dict):
+            return None
+        for raw_pattern, raw_targets in paths.items():
+            pattern = str(raw_pattern)
+            targets = raw_targets if isinstance(raw_targets, list) else [raw_targets]
+            matched: str | None = None
+            if "*" in pattern:
+                prefix, _, suffix = pattern.partition("*")
+                if specifier.startswith(prefix) and specifier.endswith(suffix):
+                    matched = specifier[len(prefix): len(specifier) - len(suffix) if suffix else None]
+            elif specifier == pattern:
+                matched = ""
+            if matched is None:
+                continue
+            for target in targets:
+                target_pattern = str(target)
+                target_specifier = target_pattern.replace("*", matched)
+                resolved = self._resolve_workspace_source(
+                    root=root,
+                    base_dir=base_dir,
+                    specifier=target_specifier,
+                    suffixes=suffixes,
+                    root_fallback=True,
+                )
+                if resolved:
+                    return resolved
+        return None
+
+    def _resolve_workspace_package_entry(
+        self,
+        *,
+        root: Path,
+        package_dir: Path,
+        package_name: str,
+        package_payload: dict[str, Any],
+    ) -> str | None:
+        suffixes = (".ts", ".tsx", ".js", ".jsx", ".mts", ".cts", ".mjs", ".cjs")
+        exports = package_payload.get("exports")
+        if isinstance(exports, dict):
+            root_export = exports.get(".")
+            if isinstance(root_export, str):
+                resolved = self._resolve_workspace_source(root=root, base_dir=package_dir, specifier=root_export, suffixes=suffixes, root_fallback=True)
+                if resolved:
+                    return resolved
+            elif isinstance(root_export, dict):
+                for key in ("types", "import", "default", "require"):
+                    candidate = root_export.get(key)
+                    if isinstance(candidate, str):
+                        resolved = self._resolve_workspace_source(root=root, base_dir=package_dir, specifier=candidate, suffixes=suffixes, root_fallback=True)
+                        if resolved:
+                            return resolved
+        for key in ("types", "module", "main", "source"):
+            candidate = package_payload.get(key)
+            if isinstance(candidate, str):
+                resolved = self._resolve_workspace_source(root=root, base_dir=package_dir, specifier=candidate, suffixes=suffixes, root_fallback=True)
+                if resolved:
+                    return resolved
+        for fallback in ("src/index", "index", "src/main", "main"):
+            resolved = self._resolve_workspace_source(root=root, base_dir=package_dir, specifier=fallback, suffixes=suffixes, root_fallback=True)
+            if resolved:
+                return resolved
+        return None
+
+    def _build_workspace_package_entrypoints(self, root: Path) -> dict[str, dict[str, Any]]:
+        packages: dict[str, dict[str, Any]] = {}
+        for package_json in sorted(root.rglob("package.json")):
+            if any(part in {"node_modules", ".git", ".venv", "venv"} for part in package_json.parts):
+                continue
+            payload = self._load_json_file(package_json)
+            package_name = str(payload.get("name") or "").strip()
+            if not package_name:
+                continue
+            package_dir = package_json.parent
+            packages[package_name] = {
+                "root": package_dir,
+                "entry": self._resolve_workspace_package_entry(
+                    root=root,
+                    package_dir=package_dir,
+                    package_name=package_name,
+                    package_payload=payload,
+                ),
+            }
+            if len(packages) >= 100:
+                break
+        return packages
+
+    def _extract_js_ts_imports(self, *, root: Path, path: Path, package_entrypoints: dict[str, dict[str, Any]]) -> list[str]:
+        text = self._read_workspace_text(path)
+        if not text:
+            return []
+        imports: list[str] = []
+        current_relative = self._workspace_relative_path(root, path)
+        suffixes = (".ts", ".tsx", ".js", ".jsx", ".mts", ".cts", ".mjs", ".cjs")
+        patterns = [
+            r"""(?:import|export)\s+(?:[^;"']*?\s+from\s+)?["']([^"']+)["']""",
+            r"""require\(\s*["']([^"']+)["']\s*\)""",
+            r"""import\(\s*["']([^"']+)["']\s*\)""",
+        ]
+        for pattern in patterns:
+            for match in re.finditer(pattern, text, flags=re.MULTILINE):
+                specifier = match.group(1).strip()
+                resolved: str | None = None
+                if specifier.startswith("."):
+                    resolved = self._resolve_workspace_source(
+                        root=root,
+                        base_dir=path.parent,
+                        specifier=specifier,
+                        suffixes=suffixes,
+                    )
+                else:
+                    resolved = self._resolve_js_ts_path_alias(root=root, path=path, specifier=specifier, suffixes=suffixes)
+                    if resolved is None:
+                        for package_name, package_meta in package_entrypoints.items():
+                            if specifier == package_name:
+                                resolved = str(package_meta.get("entry") or "").strip() or None
+                            elif specifier.startswith(f"{package_name}/"):
+                                package_root = package_meta.get("root")
+                                if isinstance(package_root, Path):
+                                    resolved = self._resolve_workspace_source(
+                                        root=root,
+                                        base_dir=package_root,
+                                        specifier=specifier[len(package_name) + 1 :],
+                                        suffixes=suffixes,
+                                        root_fallback=True,
+                                    )
+                            if resolved:
+                                break
+                if resolved and resolved != current_relative and resolved not in imports:
+                    imports.append(resolved)
+        return imports
+
+    def _extract_js_ts_call_targets(
+        self,
+        *,
+        root: Path,
+        path: Path,
+        package_entrypoints: dict[str, dict[str, Any]],
+        generated_index: dict[str, list[str]],
+    ) -> list[str]:
+        text = self._read_workspace_text(path)
+        if not text:
+            return []
+        current_relative = self._workspace_relative_path(root, path)
+        call_targets: list[str] = []
+        binding_targets: dict[str, str] = {}
+        suffixes = (".ts", ".tsx", ".js", ".jsx", ".mts", ".cts", ".mjs", ".cjs")
+        patterns = [
+            (r"""import\s+\{([^}]+)\}\s+from\s+["']([^"']+)["']""", "named"),
+            (r"""import\s+\*\s+as\s+([A-Za-z_$]\w*)\s+from\s+["']([^"']+)["']""", "namespace"),
+            (r"""import\s+([A-Za-z_$]\w*)\s+from\s+["']([^"']+)["']""", "default"),
+            (r"""const\s+([A-Za-z_$]\w*)\s*=\s*require\(\s*["']([^"']+)["']\s*\)""", "require"),
+        ]
+        for pattern, mode in patterns:
+            for match in re.finditer(pattern, text):
+                if mode == "named":
+                    bindings = [item.strip() for item in match.group(1).split(",") if item.strip()]
+                    specifier = match.group(2).strip()
+                else:
+                    bindings = [match.group(1).strip()]
+                    specifier = match.group(2).strip()
+                resolved = None
+                if specifier.startswith("."):
+                    resolved = self._resolve_workspace_source(root=root, base_dir=path.parent, specifier=specifier, suffixes=suffixes)
+                else:
+                    resolved = self._resolve_js_ts_path_alias(root=root, path=path, specifier=specifier, suffixes=suffixes)
+                    if resolved is None:
+                        for package_name, package_meta in package_entrypoints.items():
+                            if specifier == package_name:
+                                resolved = str(package_meta.get("entry") or "").strip() or None
+                            elif specifier.startswith(f"{package_name}/"):
+                                package_root = package_meta.get("root")
+                                if isinstance(package_root, Path):
+                                    resolved = self._resolve_workspace_source(
+                                        root=root,
+                                        base_dir=package_root,
+                                        specifier=specifier[len(package_name) + 1 :],
+                                        suffixes=suffixes,
+                                        root_fallback=True,
+                                    )
+                            if resolved:
+                                break
+                if resolved is None:
+                    resolved = self._resolve_generated_source_candidate(specifier=specifier, suffixes=suffixes, generated_index=generated_index)
+                if not resolved or resolved == current_relative:
+                    continue
+                for binding in bindings:
+                    binding_name = binding.split(" as ")[-1].strip()
+                    if binding_name:
+                        binding_targets[binding_name] = resolved
+        for binding_name, relative in binding_targets.items():
+            direct_pattern = rf"\b{re.escape(binding_name)}\s*\("
+            member_pattern = rf"\b{re.escape(binding_name)}\s*\.\s*[A-Za-z_$]\w*\s*\("
+            if re.search(direct_pattern, text) or re.search(member_pattern, text):
+                if relative not in call_targets:
+                    call_targets.append(relative)
+        return call_targets
+
+    def _extract_c_family_imports(self, *, root: Path, path: Path) -> list[str]:
+        text = self._read_workspace_text(path)
+        if not text:
+            return []
+        imports: list[str] = []
+        current_relative = self._workspace_relative_path(root, path)
+        for match in re.finditer(r'^\s*#\s*include\s*"([^"]+)"', text, flags=re.MULTILINE):
+            specifier = match.group(1).strip()
+            resolved = self._resolve_workspace_source(
+                root=root,
+                base_dir=path.parent,
+                specifier=specifier,
+                suffixes=(".h", ".hpp", ".hh", ".hxx", ".cuh", ".c", ".cc", ".cpp", ".cxx", ".cu"),
+                root_fallback=True,
+            )
+            if resolved and resolved != current_relative and resolved not in imports:
+                imports.append(resolved)
+        return imports
+
+    def _rust_module_parts(self, root: Path, path: Path) -> tuple[Path, list[str]]:
+        cargo_root = self._nearest_workspace_marker(root, path, ("Cargo.toml",)) or root
+        crate_root = cargo_root / "src" if (cargo_root / "src").exists() else cargo_root
+        try:
+            relative = path.relative_to(crate_root)
+        except ValueError:
+            return crate_root, []
+        parts = list(relative.with_suffix("").parts)
+        if parts and parts[-1] in {"lib", "main"}:
+            parts = []
+        elif parts and parts[-1] == "mod":
+            parts = parts[:-1]
+        return crate_root, parts
+
+    def _resolve_rust_module(self, *, root: Path, crate_root: Path, module_parts: list[str]) -> str | None:
+        candidate_base = crate_root.joinpath(*module_parts) if module_parts else crate_root
+        candidates: list[Path] = []
+        if module_parts:
+            candidates.extend([candidate_base.with_suffix(".rs"), candidate_base / "mod.rs"])
+        else:
+            candidates.extend([crate_root / "lib.rs", crate_root / "main.rs", crate_root / "mod.rs"])
+        for candidate in candidates:
+            if candidate.is_file():
+                relative = self._workspace_relative_path(root, candidate)
+                if relative:
+                    return relative
+        return None
+
+    def _expand_rust_use_clause(self, clause: str) -> list[str]:
+        normalized = clause.strip()
+        if "{" not in normalized or "}" not in normalized:
+            return [re.sub(r"\s+as\s+\w+$", "", normalized).strip()]
+        prefix, _, remainder = normalized.partition("{")
+        inside, _, _ = remainder.partition("}")
+        prefix = prefix.rstrip(":").strip()
+        expanded: list[str] = []
+        for item in inside.split(","):
+            target = re.sub(r"\s+as\s+\w+$", "", item).strip()
+            if not target:
+                continue
+            expanded.append(f"{prefix}::{target}" if prefix else target)
+        return expanded
+
+    def _extract_rust_imports(self, *, root: Path, path: Path) -> list[str]:
+        text = self._read_workspace_text(path)
+        if not text:
+            return []
+        crate_root, current_parts = self._rust_module_parts(root, path)
+        imports: list[str] = []
+        current_relative = self._workspace_relative_path(root, path)
+        for match in re.finditer(r"^\s*(?:pub\s+)?mod\s+([A-Za-z_]\w*)\s*;", text, flags=re.MULTILINE):
+            resolved = self._resolve_rust_module(root=root, crate_root=crate_root, module_parts=current_parts + [match.group(1)])
+            if resolved and resolved != current_relative and resolved not in imports:
+                imports.append(resolved)
+        for match in re.finditer(r"^\s*use\s+([^;]+);", text, flags=re.MULTILINE):
+            for clause in self._expand_rust_use_clause(match.group(1)):
+                clause = clause.strip()
+                if clause.startswith("crate::"):
+                    module_parts = [part for part in clause.removeprefix("crate::").split("::") if part]
+                elif clause.startswith("super::"):
+                    module_parts = current_parts[:-1] + [part for part in clause.removeprefix("super::").split("::") if part]
+                elif clause.startswith("self::"):
+                    module_parts = current_parts + [part for part in clause.removeprefix("self::").split("::") if part]
+                else:
+                    continue
+                resolved = self._resolve_rust_module(root=root, crate_root=crate_root, module_parts=module_parts)
+                if resolved and resolved != current_relative and resolved not in imports:
+                    imports.append(resolved)
+        return imports
+
+    def _go_module_name(self, module_root: Path) -> str | None:
+        go_mod = module_root / "go.mod"
+        if not go_mod.is_file():
+            return None
+        text = self._read_workspace_text(go_mod)
+        for line in text.splitlines():
+            stripped = line.strip()
+            if stripped.startswith("module "):
+                module_name = stripped.removeprefix("module ").strip()
+                return module_name or None
+        return None
+
+    def _extract_go_imports(
+        self,
+        *,
+        path: Path,
+        module_root: Path,
+        module_name: str | None,
+        package_files_by_import: dict[str, list[str]],
+    ) -> list[str]:
+        if not module_name:
+            return []
+        text = self._read_workspace_text(path)
+        if not text:
+            return []
+        imports: list[str] = []
+        for specifier in re.findall(r'"([^"]+)"', text):
+            if not specifier.startswith(module_name):
+                continue
+            for relative in package_files_by_import.get(specifier, []):
+                if relative not in imports:
+                    imports.append(relative)
+        return imports
+
+    def _build_java_kotlin_indices(self, root: Path, files: list[Path]) -> tuple[dict[str, str], dict[str, list[str]]]:
+        symbol_index: dict[str, str] = {}
+        package_index: dict[str, list[str]] = {}
+        for path in files:
+            text = self._read_workspace_text(path)
+            if not text:
+                continue
+            relative = self._workspace_relative_path(root, path)
+            if not relative:
+                continue
+            package_match = re.search(r"^\s*package\s+([A-Za-z_][\w.]*)\s*;?", text, flags=re.MULTILINE)
+            package_name = package_match.group(1).strip() if package_match else ""
+            package_index.setdefault(package_name, [])
+            if relative not in package_index[package_name]:
+                package_index[package_name].append(relative)
+            for symbol_match in re.finditer(r"^\s*(?:public|protected|private|internal|open|sealed|abstract|final|data|enum|record|annotation\s+class|object|\s)*\s*(?:class|interface|enum|record|object)\s+([A-Za-z_]\w*)", text, flags=re.MULTILINE):
+                symbol_name = symbol_match.group(1).strip()
+                qualified_name = f"{package_name}.{symbol_name}".strip(".")
+                symbol_index[qualified_name] = relative
+        return symbol_index, package_index
+
+    def _build_csharp_indices(self, root: Path, files: list[Path]) -> tuple[dict[str, str], dict[str, list[str]]]:
+        symbol_index: dict[str, str] = {}
+        namespace_index: dict[str, list[str]] = {}
+        for path in files:
+            text = self._read_workspace_text(path)
+            if not text:
+                continue
+            relative = self._workspace_relative_path(root, path)
+            if not relative:
+                continue
+            namespace_match = re.search(r"^\s*namespace\s+([A-Za-z_][\w.]*)\s*[{;]", text, flags=re.MULTILINE)
+            namespace_name = namespace_match.group(1).strip() if namespace_match else ""
+            namespace_index.setdefault(namespace_name, [])
+            if relative not in namespace_index[namespace_name]:
+                namespace_index[namespace_name].append(relative)
+            for symbol_match in re.finditer(
+                r"^\s*(?:public|internal|private|protected|abstract|sealed|partial|static|readonly|\s)*\s*"
+                r"(?:class|interface|struct|record|enum)\s+([A-Za-z_]\w*)",
+                text,
+                flags=re.MULTILINE,
+            ):
+                symbol_name = symbol_match.group(1).strip()
+                qualified_name = f"{namespace_name}.{symbol_name}".strip(".")
+                symbol_index[qualified_name] = relative
+        return symbol_index, namespace_index
+
+    def _extract_csharp_imports(
+        self,
+        *,
+        root: Path,
+        path: Path,
+        symbol_index: dict[str, str],
+        namespace_index: dict[str, list[str]],
+    ) -> list[str]:
+        text = self._read_workspace_text(path)
+        if not text:
+            return []
+        imports: list[str] = []
+        current_relative = self._workspace_relative_path(root, path)
+        for match in re.finditer(r"^\s*using\s+(?:static\s+)?([A-Za-z_][\w.]*)\s*;", text, flags=re.MULTILINE):
+            specifier = match.group(1).strip()
+            if specifier in symbol_index:
+                target = symbol_index[specifier]
+                if target != current_relative and target not in imports:
+                    imports.append(target)
+                continue
+            for target in namespace_index.get(specifier, []):
+                if target != current_relative and target not in imports:
+                    imports.append(target)
+        for match in re.finditer(r'Include\s*=\s*"([^"]+)"', text):
+            specifier = match.group(1).strip()
+            target = symbol_index.get(specifier)
+            if target and target != current_relative and target not in imports:
+                imports.append(target)
+        return imports
+
+    def _extract_java_kotlin_imports(
+        self,
+        *,
+        root: Path,
+        path: Path,
+        symbol_index: dict[str, str],
+        package_index: dict[str, list[str]],
+    ) -> list[str]:
+        text = self._read_workspace_text(path)
+        if not text:
+            return []
+        imports: list[str] = []
+        current_relative = self._workspace_relative_path(root, path)
+        for match in re.finditer(r"^\s*import\s+([A-Za-z_][\w.]*)(?:\.\*)?\s*;?", text, flags=re.MULTILINE):
+            specifier = match.group(1).strip()
+            wildcard = text[match.start() : match.end()].find(".*") != -1
+            candidates = package_index.get(specifier, []) if wildcard else ([symbol_index[specifier]] if specifier in symbol_index else [])
+            for relative in candidates:
+                if relative != current_relative and relative not in imports:
+                    imports.append(relative)
+        return imports
+
+    def _build_php_symbol_index(self, root: Path, files: list[Path]) -> dict[str, str]:
+        symbol_index: dict[str, str] = {}
+        for path in files:
+            text = self._read_workspace_text(path)
+            if not text:
+                continue
+            relative = self._workspace_relative_path(root, path)
+            if not relative:
+                continue
+            namespace_match = re.search(r"^\s*namespace\s+([^;]+);", text, flags=re.MULTILINE)
+            namespace_name = namespace_match.group(1).strip().strip("\\") if namespace_match else ""
+            for symbol_match in re.finditer(r"^\s*(?:final\s+|abstract\s+)?(?:class|interface|trait|enum)\s+([A-Za-z_]\w*)", text, flags=re.MULTILINE):
+                symbol_name = symbol_match.group(1).strip()
+                qualified_name = f"{namespace_name}\\{symbol_name}".strip("\\")
+                symbol_index[qualified_name] = relative
+        return symbol_index
+
+    def _extract_php_imports(self, *, root: Path, path: Path, symbol_index: dict[str, str]) -> list[str]:
+        text = self._read_workspace_text(path)
+        if not text:
+            return []
+        imports: list[str] = []
+        current_relative = self._workspace_relative_path(root, path)
+        for match in re.finditer(r"^\s*use\s+([^;]+);", text, flags=re.MULTILINE):
+            clauses = [item.strip() for item in match.group(1).split(",") if item.strip()]
+            for clause in clauses:
+                symbol = re.sub(r"\s+as\s+\w+$", "", clause).strip().strip("\\")
+                relative = symbol_index.get(symbol)
+                if relative and relative != current_relative and relative not in imports:
+                    imports.append(relative)
+        for match in re.finditer(r"\b(?:require|require_once|include|include_once)\s*\(?\s*['\"]([^'\"]+)['\"]\s*\)?", text):
+            resolved = self._resolve_workspace_source(
+                root=root,
+                base_dir=path.parent,
+                specifier=match.group(1).strip(),
+                suffixes=(".php", ".inc"),
+                root_fallback=True,
+            )
+            if resolved and resolved != current_relative and resolved not in imports:
+                imports.append(resolved)
+        return imports
+
+    def _extract_ruby_imports(self, *, root: Path, path: Path) -> list[str]:
+        text = self._read_workspace_text(path)
+        if not text:
+            return []
+        imports: list[str] = []
+        current_relative = self._workspace_relative_path(root, path)
+        for match in re.finditer(r"\brequire_relative\s+['\"]([^'\"]+)['\"]", text):
+            resolved = self._resolve_workspace_source(
+                root=root,
+                base_dir=path.parent,
+                specifier=match.group(1).strip(),
+                suffixes=(".rb",),
+                root_fallback=True,
+            )
+            if resolved and resolved != current_relative and resolved not in imports:
+                imports.append(resolved)
+        for match in re.finditer(r"\brequire\s+['\"]([^'\"]+)['\"]", text):
+            resolved = self._resolve_workspace_source(
+                root=root,
+                base_dir=root / "lib",
+                specifier=match.group(1).strip(),
+                suffixes=(".rb",),
+                root_fallback=True,
+            )
+            if resolved and resolved != current_relative and resolved not in imports:
+                imports.append(resolved)
+        return imports
+
+    def _extract_shell_imports(self, *, root: Path, path: Path) -> list[str]:
+        text = self._read_workspace_text(path)
+        if not text:
+            return []
+        imports: list[str] = []
+        current_relative = self._workspace_relative_path(root, path)
+        for match in re.finditer(r"^\s*(?:source|\.)\s+([^\s#;]+)", text, flags=re.MULTILINE):
+            specifier = match.group(1).strip().strip("\"'")
+            if not specifier or specifier.startswith("$"):
+                continue
+            resolved = self._resolve_workspace_source(
+                root=root,
+                base_dir=path.parent,
+                specifier=specifier,
+                suffixes=(".sh", ".bash", ".zsh"),
+                root_fallback=True,
+            )
+            if resolved and resolved != current_relative and resolved not in imports:
+                imports.append(resolved)
+        return imports
+
+    def _build_codegen_provenance(self, root: Path, files: list[Path], generated_source_reasons: dict[str, list[str]]) -> list[dict[str, Any]]:
+        generator_suffixes = {".proto", ".thrift", ".graphql", ".gql", ".prisma", ".openapi", ".avsc"}
+        generator_names = {
+            "openapi.yaml",
+            "openapi.yml",
+            "openapi.json",
+            "swagger.yaml",
+            "swagger.yml",
+            "swagger.json",
+            "schema.graphql",
+            "schema.gql",
+        }
+        generators: list[dict[str, str]] = []
+        for path in files:
+            relative = self._workspace_relative_path(root, path)
+            if not relative:
+                continue
+            suffix = path.suffix.lower()
+            if suffix in generator_suffixes or path.name.lower() in generator_names:
+                generators.append({"path": relative, "kind": suffix.lstrip(".") or path.name.lower()})
+        provenance_edges: list[dict[str, Any]] = []
+        for generated_relative, reasons in generated_source_reasons.items():
+            generated_path = Path(generated_relative)
+            generated_stem = generated_path.stem.lower()
+            generated_parent = generated_path.parent.as_posix().lower()
+            for generator in generators:
+                generator_path = generator["path"]
+                generator_stem = Path(generator_path).stem.lower()
+                generator_parent = Path(generator_path).parent.as_posix().lower()
+                if generated_stem != generator_stem and generator_stem not in generated_relative.lower():
+                    continue
+                confidence = "medium" if generated_parent == generator_parent or generator_parent in generated_parent else "low"
+                provenance_edges.append(
+                    {
+                        "source": generator_path,
+                        "target": generated_relative,
+                        "relation": "generates",
+                        "generator_kind": generator["kind"],
+                        "confidence": confidence,
+                        "provenance": "codegen-match",
+                        "reasons": list(reasons),
+                    }
+                )
+        return provenance_edges[:200]
+
+    def _detect_framework_runtime_edges(
+        self,
+        *,
+        root: Path,
+        file_paths: list[Path],
+        call_targets_by_file: dict[str, list[str]],
+    ) -> list[dict[str, Any]]:
+        runtime_edges: list[dict[str, Any]] = []
+        for path in file_paths:
+            text = self._read_workspace_text(path)
+            if not text:
+                continue
+            relative = self._workspace_relative_path(root, path)
+            if not relative:
+                continue
+            call_targets = list(call_targets_by_file.get(relative, []))
+            if path.suffix.lower() == ".py":
+                if re.search(r"@\w+\.(?:get|post|put|patch|delete|options|head)\(", text):
+                    for target in call_targets[:4]:
+                        runtime_edges.append(
+                            {
+                                "source": relative,
+                                "target": target,
+                                "framework": "fastapi",
+                                "relation": "route-handler-call",
+                                "confidence": "medium",
+                                "provenance": "decorator+call-target",
+                            }
+                        )
+            elif path.suffix.lower() in {".js", ".jsx", ".ts", ".tsx", ".mts", ".cts", ".mjs", ".cjs"}:
+                if re.search(r"\b(?:app|router)\.(?:get|post|put|patch|delete|use)\(", text):
+                    framework = "express"
+                    for target in call_targets[:4]:
+                        runtime_edges.append(
+                            {
+                                "source": relative,
+                                "target": target,
+                                "framework": framework,
+                                "relation": "route-handler-call",
+                                "confidence": "low",
+                                "provenance": "router+call-target",
+                            }
+                        )
+                if re.search(r"\btest\s*\(", text) and "playwright" in text.lower():
+                    for target in call_targets[:4]:
+                        runtime_edges.append(
+                            {
+                                "source": relative,
+                                "target": target,
+                                "framework": "playwright",
+                                "relation": "test-exercises",
+                                "confidence": "low",
+                                "provenance": "playwright-test+call-target",
+                            }
+                        )
+        return runtime_edges[:200]
+
+    def _workspace_semantic_cache_key(self, root: Path, files: list[Path]) -> str:
+        parts: list[str] = []
+        for path in files[:1500]:
+            try:
+                stat = path.stat()
+            except OSError:
+                continue
+            relative = self._workspace_relative_path(root, path)
+            if not relative:
+                continue
+            parts.append(f"{relative}|{stat.st_mtime_ns}|{stat.st_size}")
+        digest = hashlib.sha1("\n".join(parts).encode("utf-8")).hexdigest()
+        return f"{root.resolve()}::{digest}"
+
+    def _sorted_graph_edges(self, edges: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        return sorted(
+            edges,
+            key=lambda edge: (
+                str(edge.get("relation") or ""),
+                str(edge.get("framework") or ""),
+                str(edge.get("generator_kind") or ""),
+                str(edge.get("language") or ""),
+                str(edge.get("source") or ""),
+                str(edge.get("target") or ""),
+            ),
+        )
+
+    def _build_workspace_semantic_index(self, root: Path) -> dict[str, Any]:
+        candidate_files_for_cache = [
+            path
+            for path in sorted(root.rglob("*"))
+            if path.is_file() and not any(part in {"__pycache__", ".git", "node_modules", ".venv", "venv", "mission-control"} for part in path.parts)
+        ][:1500]
+        cache_key = self._workspace_semantic_cache_key(root, candidate_files_for_cache)
+        cached = self.workspace_semantic_index_cache.get(cache_key)
+        if cached is not None:
+            cached_payload = dict(cached)
+            cached_payload["cache_hit"] = True
+            self.workspace_semantic_index_cache.pop(cache_key, None)
+            self.workspace_semantic_index_cache[cache_key] = cached
+            return cached_payload
+        python_index = self._build_python_semantic_index(root)
+        symbols_by_file = dict(python_index.get("symbols_by_file", {}))
+        imports_by_file = dict(python_index.get("imports_by_file", {}))
+        dependents_by_file = {
+            relative: list(dependents)
+            for relative, dependents in dict(python_index.get("dependents_by_file", {})).items()
+        }
+        parser_backends_by_file: dict[str, str] = {
+            relative: "python-ast-graph"
+            for relative in set(symbols_by_file) | set(imports_by_file) | set(dependents_by_file)
+        }
+        dependency_edges: list[dict[str, str]] = []
+        graph_languages: set[str] = {"python"} if imports_by_file else set()
+        call_targets_by_file: dict[str, list[str]] = {
+            relative: list(targets)
+            for relative, targets in dict(python_index.get("call_targets_by_file", {})).items()
+        }
+        ignored = {"__pycache__", ".git", "node_modules", ".venv", "venv", "mission-control"}
+        supported_suffixes = {
+            ".js",
+            ".jsx",
+            ".ts",
+            ".tsx",
+            ".mts",
+            ".cts",
+            ".mjs",
+            ".cjs",
+            ".rs",
+            ".go",
+            ".c",
+            ".cc",
+            ".cpp",
+            ".cxx",
+            ".cu",
+            ".cuh",
+            ".h",
+            ".hpp",
+            ".hh",
+            ".hxx",
+            ".java",
+            ".kt",
+            ".kts",
+            ".cs",
+            ".php",
+            ".rb",
+            ".sh",
+            ".bash",
+            ".zsh",
+        }
+        package_entrypoints = self._build_workspace_package_entrypoints(root)
+        package_files_by_import: dict[str, list[str]] = {}
+        go_module_names: dict[str, str | None] = {}
+        non_python_files: list[Path] = []
+        for path in sorted(root.rglob("*")):
+            if any(part in ignored for part in path.parts):
+                continue
+            if not path.is_file() or path.suffix.lower() not in supported_suffixes:
+                continue
+            relative = self._workspace_relative_path(root, path)
+            if not relative:
+                continue
+            non_python_files.append(path)
+            if path.suffix.lower() == ".go":
+                module_root = self._nearest_workspace_marker(root, path, ("go.mod",)) or root
+                module_root_key = self._workspace_relative_path(root, module_root) or "."
+                if module_root_key not in go_module_names:
+                    go_module_names[module_root_key] = self._go_module_name(module_root)
+                module_name = go_module_names[module_root_key]
+                if module_name:
+                    directory_relative = Path(relative).parent.as_posix()
+                    module_root_relative = self._workspace_relative_path(root, module_root) or "."
+                    workspace_prefix = "" if module_root_relative in {"", "."} else f"{module_root_relative}/"
+                    local_package = directory_relative[len(workspace_prefix) :] if directory_relative.startswith(workspace_prefix) else directory_relative
+                    import_path = module_name if local_package in {"", "."} else f"{module_name}/{local_package}"
+                    package_files_by_import.setdefault(import_path, [])
+                    if relative not in package_files_by_import[import_path]:
+                        package_files_by_import[import_path].append(relative)
+            if len(non_python_files) >= 500:
+                break
+        generated_source_reasons = {
+            relative: self._detect_generated_source_reasons(root / relative)
+            for relative in [self._workspace_relative_path(root, path) for path in non_python_files]
+            if relative
+        }
+        generated_source_reasons = {relative: reasons for relative, reasons in generated_source_reasons.items() if reasons}
+        generated_index = self._build_generated_source_index(root, non_python_files)
+        build_context = self._build_workspace_build_context(root, non_python_files)
+        source_roots = [item["root"] for item in build_context.get("source_roots", []) if isinstance(item, dict) and item.get("root")]
+        module_roots = [item.get("root") for item in build_context.get("modules", []) if isinstance(item, dict) and item.get("root")]
+        generated_roots = [item["root"] for item in build_context.get("generated_roots", []) if isinstance(item, dict) and item.get("root")]
+
+        def edge_annotation(*, source: str, target: str, language: str, relation: str, backend: str) -> dict[str, Any]:
+            source_generated = source in generated_source_reasons
+            target_generated = target in generated_source_reasons
+            base_confidence = {
+                "python-ast-graph": "high",
+                "rust-module-graph": "high",
+                "go-package-graph": "high",
+                "js-ts-import-graph": "medium",
+                "c-family-include-graph": "medium",
+                "jvm-package-graph": "medium",
+                "php-workspace-graph": "medium",
+                "ruby-require-graph": "medium",
+                "shell-source-graph": "medium",
+            }.get(backend, "low")
+            if relation == "call":
+                if base_confidence == "high":
+                    base_confidence = "medium"
+                elif base_confidence == "medium":
+                    base_confidence = "low"
+            if source_generated or target_generated:
+                if base_confidence == "high":
+                    base_confidence = "medium"
+                elif base_confidence == "medium":
+                    base_confidence = "low"
+            provenance = backend.replace("-graph", "").replace("-", "_")
+            if source_generated or target_generated:
+                provenance = f"{provenance}+generated_source"
+            return {
+                "source": source,
+                "target": target,
+                "language": language,
+                "relation": relation,
+                "backend": backend,
+                "confidence": base_confidence,
+                "provenance": provenance,
+                "source_module_root": self._longest_matching_root(source, module_roots),
+                "target_module_root": self._longest_matching_root(target, module_roots),
+                "source_root": self._longest_matching_root(source, source_roots),
+                "target_root": self._longest_matching_root(target, source_roots),
+                "source_generated_root": self._longest_matching_root(source, generated_roots),
+                "target_generated_root": self._longest_matching_root(target, generated_roots),
+                "source_generated": source_generated,
+                "target_generated": target_generated,
+            }
+
+        for relative, imported_relatives in imports_by_file.items():
+            for imported_relative in imported_relatives:
+                dependency_edges.append(
+                    edge_annotation(
+                        source=relative,
+                        target=imported_relative,
+                        language="python",
+                        relation="import",
+                        backend="python-ast-graph",
+                    )
+                )
+        java_kotlin_files = [path for path in non_python_files if path.suffix.lower() in {".java", ".kt", ".kts"}]
+        java_kotlin_symbols, java_kotlin_packages = self._build_java_kotlin_indices(root, java_kotlin_files)
+        csharp_files = [path for path in non_python_files if path.suffix.lower() == ".cs"]
+        csharp_symbols, csharp_namespaces = self._build_csharp_indices(root, csharp_files)
+        php_files = [path for path in non_python_files if path.suffix.lower() == ".php"]
+        php_symbols = self._build_php_symbol_index(root, php_files)
+        for path in non_python_files:
+            relative = self._workspace_relative_path(root, path)
+            if not relative:
+                continue
+            suffix = path.suffix.lower()
+            resolved_imports: list[str] = []
+            backend: str | None = None
+            relation = "import"
+            language = suffix.lstrip(".")
+            if suffix in {".js", ".jsx", ".ts", ".tsx", ".mts", ".cts", ".mjs", ".cjs"}:
+                resolved_imports = self._extract_js_ts_imports(root=root, path=path, package_entrypoints=package_entrypoints)
+                backend = "js-ts-import-graph" if resolved_imports else None
+                language = "javascript-typescript"
+                call_targets = self._extract_js_ts_call_targets(
+                    root=root,
+                    path=path,
+                    package_entrypoints=package_entrypoints,
+                    generated_index=generated_index,
+                )
+                if call_targets:
+                    call_targets_by_file[relative] = self._dedupe_strings(call_targets)
+            elif suffix == ".rs":
+                resolved_imports = self._extract_rust_imports(root=root, path=path)
+                backend = "rust-module-graph" if resolved_imports else None
+                relation = "module"
+                language = "rust"
+            elif suffix == ".go":
+                module_root = self._nearest_workspace_marker(root, path, ("go.mod",)) or root
+                module_root_key = self._workspace_relative_path(root, module_root) or "."
+                resolved_imports = self._extract_go_imports(
+                    path=path,
+                    module_root=module_root,
+                    module_name=go_module_names.get(module_root_key),
+                    package_files_by_import=package_files_by_import,
+                )
+                backend = "go-package-graph" if resolved_imports else None
+                language = "go"
+            elif suffix in {".c", ".cc", ".cpp", ".cxx", ".cu", ".cuh", ".h", ".hpp", ".hh", ".hxx"}:
+                resolved_imports = self._extract_c_family_imports(root=root, path=path)
+                backend = "c-family-include-graph" if resolved_imports else None
+                relation = "include"
+                language = "c-family"
+            elif suffix in {".java", ".kt", ".kts"}:
+                resolved_imports = self._extract_java_kotlin_imports(
+                    root=root,
+                    path=path,
+                    symbol_index=java_kotlin_symbols,
+                    package_index=java_kotlin_packages,
+                )
+                backend = "jvm-package-graph" if resolved_imports else None
+                language = "jvm"
+            elif suffix == ".cs":
+                resolved_imports = self._extract_csharp_imports(
+                    root=root,
+                    path=path,
+                    symbol_index=csharp_symbols,
+                    namespace_index=csharp_namespaces,
+                )
+                backend = "dotnet-symbol-graph" if resolved_imports else None
+                language = "dotnet"
+            elif suffix == ".php":
+                resolved_imports = self._extract_php_imports(root=root, path=path, symbol_index=php_symbols)
+                backend = "php-workspace-graph" if resolved_imports else None
+                language = "php"
+            elif suffix == ".rb":
+                resolved_imports = self._extract_ruby_imports(root=root, path=path)
+                backend = "ruby-require-graph" if resolved_imports else None
+                relation = "require"
+                language = "ruby"
+            elif suffix in {".sh", ".bash", ".zsh"}:
+                resolved_imports = self._extract_shell_imports(root=root, path=path)
+                backend = "shell-source-graph" if resolved_imports else None
+                relation = "source"
+                language = "shell"
+            if resolved_imports:
+                imports_by_file[relative] = self._dedupe_strings([item for item in resolved_imports if item != relative])
+                graph_languages.add(language)
+                for imported_relative in imports_by_file[relative]:
+                    dependency_edges.append(edge_annotation(source=relative, target=imported_relative, language=language, relation=relation, backend=backend or "dependency-graph"))
+            if backend:
+                parser_backends_by_file[relative] = backend
+            if not resolved_imports and generated_index:
+                parser_backends_by_file.setdefault(relative, "symbol-only")
+        for relative, imported_relatives in imports_by_file.items():
+            for imported_relative in imported_relatives:
+                dependents_by_file.setdefault(imported_relative, [])
+                if relative not in dependents_by_file[imported_relative]:
+                    dependents_by_file[imported_relative].append(relative)
+                parser_backends_by_file.setdefault(imported_relative, parser_backends_by_file.get(relative, "dependency-graph"))
+        transitive_dependents_by_file: dict[str, list[str]] = {}
+        for relative in set(dependents_by_file) | set(imports_by_file):
+            queue = list(dependents_by_file.get(relative, []))
+            seen: set[str] = set()
+            while queue:
+                candidate = queue.pop(0)
+                if candidate == relative or candidate in seen:
+                    continue
+                seen.add(candidate)
+                queue.extend(item for item in dependents_by_file.get(candidate, []) if item not in seen)
+                if len(seen) >= 24:
+                    break
+            if seen:
+                transitive_dependents_by_file[relative] = sorted(seen)
+        reverse_call_targets_by_file: dict[str, list[str]] = {}
+        call_edges: list[dict[str, str]] = []
+        for relative, targets in call_targets_by_file.items():
+            for target in targets:
+                reverse_call_targets_by_file.setdefault(target, [])
+                if relative not in reverse_call_targets_by_file[target]:
+                    reverse_call_targets_by_file[target].append(relative)
+                call_edges.append(
+                    edge_annotation(
+                        source=relative,
+                        target=target,
+                        language=parser_backends_by_file.get(relative, Path(relative).suffix.lstrip(".")),
+                        relation="call",
+                        backend=parser_backends_by_file.get(relative, "call-graph"),
+                    )
+                )
+        runtime_edges = self._detect_framework_runtime_edges(root=root, file_paths=non_python_files + [root / relative for relative in imports_by_file if Path(relative).suffix.lower() == ".py" and (root / relative).is_file()], call_targets_by_file=call_targets_by_file)
+        framework_counts = dict(Counter(str(edge.get("framework") or "unknown") for edge in runtime_edges))
+        codegen_edges = self._build_codegen_provenance(root, candidate_files_for_cache, generated_source_reasons)
+        dependency_edges = self._sorted_graph_edges(dependency_edges)
+        call_edges = self._sorted_graph_edges(call_edges)
+        runtime_edges = self._sorted_graph_edges(runtime_edges)
+        codegen_edges = self._sorted_graph_edges(codegen_edges)
+        edge_confidence_counts = dict(Counter(str(edge.get("confidence") or "unknown") for edge in dependency_edges))
+        edge_provenance_counts = dict(Counter(str(edge.get("provenance") or "unknown") for edge in dependency_edges))
+        call_confidence_counts = dict(Counter(str(edge.get("confidence") or "unknown") for edge in call_edges))
+        result = {
+            "symbols_by_file": symbols_by_file,
+            "imports_by_file": imports_by_file,
+            "dependents_by_file": dependents_by_file,
+            "transitive_dependents_by_file": transitive_dependents_by_file,
+            "parser_backends_by_file": parser_backends_by_file,
+            "dependency_edges": dependency_edges[:200],
+            "graph_languages": sorted(graph_languages),
+            "edge_count": len(dependency_edges),
+            "build_systems": list(build_context.get("build_systems", [])),
+            "module_roots": [item.get("root") for item in build_context.get("modules", []) if isinstance(item, dict) and item.get("root")][:80],
+            "source_roots": source_roots[:120],
+            "generated_roots": generated_roots[:120],
+            "build_modules": list(build_context.get("modules", [])),
+            "edge_confidence_counts": edge_confidence_counts,
+            "edge_provenance_counts": edge_provenance_counts,
+            "call_targets_by_file": call_targets_by_file,
+            "reverse_call_targets_by_file": reverse_call_targets_by_file,
+            "call_edges": call_edges[:200],
+            "call_edge_count": len(call_edges),
+            "call_confidence_counts": call_confidence_counts,
+            "runtime_edges": runtime_edges,
+            "runtime_edge_count": len(runtime_edges),
+            "framework_counts": framework_counts,
+            "codegen_edges": codegen_edges,
+            "codegen_edge_count": len(codegen_edges),
+            "generated_source_files": sorted(generated_source_reasons)[:100],
+            "generated_source_reasons": generated_source_reasons,
+            "cache_hit": False,
+        }
+        if cache_key in self.workspace_semantic_index_cache:
+            self.workspace_semantic_index_cache.pop(cache_key, None)
+        elif len(self.workspace_semantic_index_cache) >= 4:
+            oldest_key = next(iter(self.workspace_semantic_index_cache))
+            self.workspace_semantic_index_cache.pop(oldest_key, None)
+        self.workspace_semantic_index_cache[cache_key] = result
+        return result
 
     def _extract_symbols(self, path: Path) -> list[str]:
         try:
@@ -11605,6 +13030,8 @@ class MissionControlService:
     ) -> dict[str, Any]:
         repo_profile = dict(tooling.get("repo_profile") or {})
         cuda_mode = detect_cuda_repo_mode(project.workspace_path or project.source_path) if workspace_root else {"enabled": False}
+        tensorflow_mode = detect_tensorflow_repo_mode(project.workspace_path or project.source_path) if workspace_root else {"enabled": False}
+        pytorch_mode = detect_pytorch_repo_mode(project.workspace_path or project.source_path) if workspace_root else {"enabled": False}
         files = {path.name.lower() for path in workspace_root.iterdir()} if workspace_root is not None else set()
         capabilities: list[str] = []
         if repo_profile.get("python_repo"):
@@ -11617,6 +13044,10 @@ class MissionControlService:
             capabilities.append("Go")
         if cuda_mode.get("enabled"):
             capabilities.append(f"CUDA mode: {cuda_mode.get('mode')}")
+        if tensorflow_mode.get("enabled"):
+            capabilities.append(f"TensorFlow mode: {tensorflow_mode.get('mode')}")
+        if pytorch_mode.get("enabled"):
+            capabilities.append(f"PyTorch mode: {pytorch_mode.get('mode')}")
         if "turbo.json" in files or "pnpm-workspace.yaml" in files:
             capabilities.append("Monorepo")
         if any(path in files for path in {"playwright.config.ts", "playwright.config.js", "playwright.config.mjs", "playwright.config.cjs"}):
@@ -11640,6 +13071,12 @@ class MissionControlService:
                 "repo_profile": repo_profile,
                 "cuda_repo": bool(cuda_mode.get("enabled")),
                 "cuda_mode": cuda_mode.get("mode"),
+                "tensorflow_repo": bool(tensorflow_mode.get("enabled")),
+                "tensorflow_mode": tensorflow_mode.get("mode"),
+                "tensorflow_frameworks": list(tensorflow_mode.get("frameworks") or []),
+                "pytorch_repo": bool(pytorch_mode.get("enabled")),
+                "pytorch_mode": pytorch_mode.get("mode"),
+                "pytorch_frameworks": list(pytorch_mode.get("frameworks") or []),
                 "capabilities": capabilities,
             },
         )
@@ -11652,6 +13089,8 @@ class MissionControlService:
         *,
         browser_ready: bool,
         cuda_mode: dict[str, Any],
+        tensorflow_mode: dict[str, Any],
+        pytorch_mode: dict[str, Any],
     ) -> dict[str, Any]:
         profiles = [
             "bugfix: narrow file scope, run targeted validation, capture evidence",
@@ -11663,6 +13102,10 @@ class MissionControlService:
             profiles.append("browser_validation: collect screenshots, traces, and failure evidence")
         if cuda_mode.get("enabled"):
             profiles.append("cuda_optimization: separate infra blockers from kernel validation and profiling")
+        if tensorflow_mode.get("enabled"):
+            profiles.append("tensorflow_product: keep tf.data, TensorBoard, export, and deployment checks explicit")
+        if pytorch_mode.get("enabled"):
+            profiles.append("pytorch_training: keep dataloaders, checkpoints, distributed, profiler, and export checks explicit")
         return self._capability_section(
             key="issue_to_execution_profiles",
             title="Issue-to-execution profiles",
@@ -11720,8 +13163,10 @@ class MissionControlService:
         symbols_by_file: dict[str, list[str]] = {}
         likely_tests: list[str] = []
         dependent_files: dict[str, list[str]] = {}
-        needs_python_graph = any(path.suffix.lower() == ".py" for path in deduped_files[:6])
-        semantic_index = self._build_python_semantic_index(root) if root is not None and needs_python_graph else {}
+        transitive_dependent_files: dict[str, list[str]] = {}
+        call_targets_by_file: dict[str, list[str]] = {}
+        reverse_call_targets_by_file: dict[str, list[str]] = {}
+        semantic_index = self._build_workspace_semantic_index(root) if root is not None else {}
         parser_graph_used_files: list[str] = []
         parser_backends_by_file: dict[str, str] = {}
         tree_sitter_binary = self._tree_sitter_binary(tooling)
@@ -11730,14 +13175,15 @@ class MissionControlService:
                 relative = file_path.relative_to(root).as_posix()
                 impacted_files.append(relative)
                 symbols = list(semantic_index.get("symbols_by_file", {}).get(relative) or [])
+                graph_backend = str(semantic_index.get("parser_backends_by_file", {}).get(relative) or "").strip()
                 if symbols:
                     parser_graph_used_files.append(relative)
-                    parser_backends_by_file[relative] = "python-ast-graph"
+                    parser_backends_by_file[relative] = graph_backend or "python-ast-graph"
                 elif tree_sitter_binary and file_path.suffix.lower() in {".js", ".jsx", ".ts", ".tsx", ".rs", ".go", ".c", ".cc", ".cpp", ".cxx", ".cu", ".cuh", ".h", ".hpp"}:
                     symbols = self._extract_tree_sitter_tags(tree_sitter_binary, file_path)
                     if symbols:
                         parser_graph_used_files.append(relative)
-                        parser_backends_by_file[relative] = "tree-sitter-tags"
+                        parser_backends_by_file[relative] = graph_backend or "tree-sitter-tags"
                 if not symbols:
                     symbols = self._extract_symbols(file_path)
                 if symbols:
@@ -11746,11 +13192,27 @@ class MissionControlService:
                 if dependents:
                     dependent_files[relative] = dependents[:6]
                     parser_graph_used_files.append(relative)
+                    if graph_backend:
+                        parser_backends_by_file[relative] = graph_backend
                     likely_tests.extend(
                         item
                         for item in dependents
                         if ("test" in item.lower() or "spec" in item.lower()) and item not in likely_tests
                     )
+                transitive_dependents = list(semantic_index.get("transitive_dependents_by_file", {}).get(relative) or [])
+                if transitive_dependents:
+                    transitive_dependent_files[relative] = transitive_dependents[:8]
+                    likely_tests.extend(
+                        item
+                        for item in transitive_dependents
+                        if ("test" in item.lower() or "spec" in item.lower()) and item not in likely_tests
+                    )
+                call_targets = list(semantic_index.get("call_targets_by_file", {}).get(relative) or [])
+                if call_targets:
+                    call_targets_by_file[relative] = call_targets[:8]
+                reverse_callers = list(semantic_index.get("reverse_call_targets_by_file", {}).get(relative) or [])
+                if reverse_callers:
+                    reverse_call_targets_by_file[relative] = reverse_callers[:8]
                 likely_tests.extend(item for item in self._likely_test_paths_for_file(root, file_path) if item not in likely_tests)
                 if len(likely_tests) >= 6:
                     likely_tests = likely_tests[:6]
@@ -11758,6 +13220,13 @@ class MissionControlService:
         details = [f"{path}: {', '.join(symbols_by_file.get(path, [])) or 'No obvious symbols extracted'}" for path in impacted_files[:6]]
         for path, dependents in list(dependent_files.items())[:4]:
             details.append(f"{path}: parsed dependents -> {', '.join(dependents[:4])}")
+        for path, dependents in list(transitive_dependent_files.items())[:3]:
+            direct_set = set(dependent_files.get(path, []))
+            additional = [item for item in dependents if item not in direct_set]
+            if additional:
+                details.append(f"{path}: transitive dependents -> {', '.join(additional[:4])}")
+        for path, callers in list(reverse_call_targets_by_file.items())[:3]:
+            details.append(f"{path}: call sites -> {', '.join(callers[:4])}")
         if likely_tests:
             details.append(f"Likely affected tests: {', '.join(likely_tests[:4])}")
         semantic_backend = "regex-fallback"
@@ -11766,6 +13235,12 @@ class MissionControlService:
             semantic_backend = "python-ast-graph"
         elif used_backends == {"tree-sitter-tags"}:
             semantic_backend = "tree-sitter-tags"
+        elif any(
+            backend
+            for backend in used_backends
+            if backend != "tree-sitter-tags" and backend != "python-ast-graph"
+        ):
+            semantic_backend = "cross-language-workspace-graph"
         elif used_backends:
             semantic_backend = "mixed-parser"
         return self._capability_section(
@@ -11780,10 +13255,35 @@ class MissionControlService:
                 "tree_sitter_cli_available": any(tool.get("id") == "tree-sitter" and tool.get("installed") for tool in tooling.get("tools", [])),
                 "impacted_files": impacted_files[:8],
                 "symbols_by_file": symbols_by_file,
+                "imports_by_file": dict(semantic_index.get("imports_by_file", {})),
                 "dependent_files": dependent_files,
+                "transitive_dependent_files": transitive_dependent_files,
                 "likely_tests": likely_tests[:8],
                 "parser_graph_used_files": self._dedupe_strings(parser_graph_used_files)[:8],
                 "parser_backends_by_file": parser_backends_by_file,
+                "dependency_edges": list(semantic_index.get("dependency_edges", [])),
+                "graph_languages": list(semantic_index.get("graph_languages", [])),
+                "edge_count": int(semantic_index.get("edge_count", 0) or 0),
+                "build_systems": list(semantic_index.get("build_systems", [])),
+                "module_roots": list(semantic_index.get("module_roots", [])),
+                "source_roots": list(semantic_index.get("source_roots", [])),
+                "generated_roots": list(semantic_index.get("generated_roots", [])),
+                "build_modules": list(semantic_index.get("build_modules", [])),
+                "edge_confidence_counts": dict(semantic_index.get("edge_confidence_counts", {})),
+                "edge_provenance_counts": dict(semantic_index.get("edge_provenance_counts", {})),
+                "call_targets_by_file": call_targets_by_file,
+                "reverse_call_targets_by_file": reverse_call_targets_by_file,
+                "call_edges": list(semantic_index.get("call_edges", [])),
+                "call_edge_count": int(semantic_index.get("call_edge_count", 0) or 0),
+                "call_confidence_counts": dict(semantic_index.get("call_confidence_counts", {})),
+                "runtime_edges": list(semantic_index.get("runtime_edges", [])),
+                "runtime_edge_count": int(semantic_index.get("runtime_edge_count", 0) or 0),
+                "framework_counts": dict(semantic_index.get("framework_counts", {})),
+                "codegen_edges": list(semantic_index.get("codegen_edges", [])),
+                "codegen_edge_count": int(semantic_index.get("codegen_edge_count", 0) or 0),
+                "generated_source_files": list(semantic_index.get("generated_source_files", [])),
+                "generated_source_reasons": dict(semantic_index.get("generated_source_reasons", {})),
+                "cache_hit": bool(semantic_index.get("cache_hit")),
             },
         )
 
@@ -12141,13 +13641,15 @@ class MissionControlService:
         snapshot = self.build_operator_snapshot(db, project)
         workspace_root = self._safe_workspace_root(project)
         cuda_mode = detect_cuda_repo_mode(project.workspace_path or project.source_path) if workspace_root is not None else {"enabled": False}
+        tensorflow_mode = detect_tensorflow_repo_mode(project.workspace_path or project.source_path) if workspace_root is not None else {"enabled": False}
+        pytorch_mode = detect_pytorch_repo_mode(project.workspace_path or project.source_path) if workspace_root is not None else {"enabled": False}
         webwright = self.build_webwright_status(project)
         browser_ready = bool(webwright.get("available")) or any(
             tool.get("id") == "playwright" and tool.get("configured")
             for tool in tooling.get("tools", [])
         )
         sections = [
-            self._build_execution_profiles(project, tooling, verification, browser_ready=browser_ready, cuda_mode=cuda_mode),
+            self._build_execution_profiles(project, tooling, verification, browser_ready=browser_ready, cuda_mode=cuda_mode, tensorflow_mode=tensorflow_mode, pytorch_mode=pytorch_mode),
             self._build_repo_capability_detection(project, tooling, workspace_root=workspace_root),
             self._build_code_impact_map(db, project, tooling),
             self._build_validation_evidence_ledger(db, project),

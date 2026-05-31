@@ -36,6 +36,8 @@ Mission Control resources are read-only context surfaces for Codex chat.
 - `mission-control://projects/{project_id}/operator-snapshot`
 - `mission-control://projects/{project_id}/instincts`
 - `mission-control://projects/{project_id}/verification-brief`
+- `mission-control://projects/{project_id}/capability-report`
+- `mission-control://projects/{project_id}/capability-report/{section_key}`
 
 ## Why These Exist
 
@@ -52,3 +54,14 @@ Mission Control resources are read-only context surfaces for Codex chat.
 - `nvidia-local-runtime` tells the bridge whether the local CUDA, Compute Sanitizer, Nsight, CUDA-GDB, NGC CLI, and NVIDIA runtime tools are actually present before somebody blames a missing `nvcc` on the swarm
 - `nvidia-validation-plan` turns repo mode, local runtime, cluster health, Compute Sanitizer, and optional NGC container smoke lanes into an explicit evidence loop for CUDA work
 - operator snapshot, instincts, and verification brief give Codex or Claude chat a higher-signal operator surface for current state, execution rules, and release readiness
+- capability report pulls together execution profiles, security posture, validation evidence, swarm templates, runner budget, browser evidence, and repo contract drift in one project-scoped surface
+- capability section resources let the bridge pull one named lane such as `semantic_code_impact_mapping` or `release_readiness_mode` without hauling around the whole report
+
+## Deliberate Non-Resources
+
+Some project-scoped backend routes are real code, but they are not currently part of the MCP resource catalog:
+
+- `GET /api/projects/{project_id}/tensorflow/features`
+- `GET /api/projects/{project_id}/tensorflow/features/{feature_id}?variant=...`
+
+Those TensorFlow starter endpoints are daemon APIs backed by `apps/server/src/tensorflow_starters.py`. They return typed starter bundles for Keras scaffolds, `tf.data`, TFX, serving, Lite export, and related product lanes. The bridge docs should call them what they are: backend APIs, not pretend MCP resources.

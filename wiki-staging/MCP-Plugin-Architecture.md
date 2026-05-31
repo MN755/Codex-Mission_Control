@@ -22,6 +22,8 @@ The MCP layer should stay thin and predictable:
 - `mission_control_generate_agents_md`
 - `mission_control_generate_swarm_plan`
 - `mission_control_get_agents_md_status`
+- `mission_control_get_capability_report`
+- `mission_control_get_capability_section`
 - `mission_control_get_codebase_map`
 - `mission_control_get_codebase_understanding`
 - `mission_control_get_diagnostics`
@@ -87,6 +89,8 @@ The MCP layer should stay thin and predictable:
 - `mission-control://projects/{project_id}/operator-snapshot`
 - `mission-control://projects/{project_id}/instincts`
 - `mission-control://projects/{project_id}/verification-brief`
+- `mission-control://projects/{project_id}/capability-report`
+- `mission-control://projects/{project_id}/capability-report/{section_key}`
 
 ## Current MCP prompts
 
@@ -109,6 +113,8 @@ The MCP layer should stay thin and predictable:
 - `install_from_github`
 - `autowire_providers`
 - `ask_manager_for_plan` (aliases: `ask-manager-for-plan`)
+- `review_project_capabilities` (aliases: `review-project-capabilities`)
+- `review_project_capability_section` (aliases: `review-project-capability-section`)
 
 ## Related pages
 

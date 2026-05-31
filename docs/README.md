@@ -19,6 +19,7 @@ GitHub's repository navigation is controlled by GitHub. Project-specific documen
 - [MCP Tools](MCP_TOOLS.md)
 - [MCP Resources](MCP_RESOURCES.md)
 - [MCP Prompts](MCP_PROMPTS.md)
+- [MCP Resources And Prompts](MCP_RESOURCES_PROMPTS.md)
 - [Runner System](RUNNERS.md)
 - [Pending Decisions](PENDING_DECISIONS.md)
 - [Handoffs](HANDOFFS.md)
@@ -46,6 +47,7 @@ GitHub's repository navigation is controlled by GitHub. Project-specific documen
 ## Development
 
 - [Contributing](CONTRIBUTING.md)
+- [Mission Control Skill Library](MISSION_CONTROL_SKILL_LIBRARY.md)
 - [Testing and workflow notes](WORKFLOW.md)
 - [Public release checklist](PUBLIC_RELEASE_CHECKLIST.md)
 - [Changelog](../CHANGELOG.md)

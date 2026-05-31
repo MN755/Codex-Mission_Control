@@ -44,8 +44,15 @@ Additional bridge-oriented skills should include:
 
 - `mission-control-install-from-github`
 - `mission-control-autowire-providers`
+- `mission-control-plugin-health`
+- `mission-control-knowledge-base-map`
 
-If those specific skills are not present yet, treat them as planned wrappers around the documented install/autowire flows.
+Specialized shipped lanes include:
+
+- NVIDIA/CUDA skills such as `mission-control-cuda-kernel-generation`, `mission-control-cuda-tile-refactor`, and `mission-control-nsight-profiling`
+- TensorFlow skills such as `mission-control-tensorflow-scaffolding`, `mission-control-tf-data-pipelines`, `mission-control-tensorflow-serving`, and `mission-control-tflite-deployment`
+
+These are shipped skills, not imaginary roadmap stickers.
 
 ## Prompts
 
@@ -60,6 +67,9 @@ Common workflow prompts should cover:
 - explain current swarm
 - enable safe mode
 - generate AGENTS.md proposal
+- review project capabilities
+- review one named capability section
+- ask Manager for a fresh plan
 
 ## Related pages
 

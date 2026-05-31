@@ -1617,6 +1617,48 @@ class WorkspaceToolingStatusRead(BaseModel):
     intake_commands: list[str] = Field(default_factory=list)
     validation_commands: list[str] = Field(default_factory=list)
     security_commands: list[str] = Field(default_factory=list)
+    deployment_commands: list[str] = Field(default_factory=list)
+    tensorflow_repo: dict[str, Any] = Field(default_factory=dict)
+    tensorflow_validation_plan: dict[str, Any] = Field(default_factory=dict)
+    pytorch_repo: dict[str, Any] = Field(default_factory=dict)
+    pytorch_runtime_status: dict[str, Any] = Field(default_factory=dict)
+    pytorch_validation_plan: dict[str, Any] = Field(default_factory=dict)
+
+
+class TensorFlowFeatureCatalogEntryRead(BaseModel):
+    feature_id: str
+    title: str
+    variants: list[str] = Field(default_factory=list)
+    summary: str
+
+
+class TensorFlowFeatureBundleRead(BaseModel):
+    feature_id: str
+    variant: str
+    title: str
+    summary: str
+    dependencies: list[str] = Field(default_factory=list)
+    files: dict[str, str] = Field(default_factory=dict)
+    validation_steps: list[str] = Field(default_factory=list)
+    evidence_targets: list[str] = Field(default_factory=list)
+
+
+class PyTorchFeatureCatalogEntryRead(BaseModel):
+    feature_id: str
+    title: str
+    variants: list[str] = Field(default_factory=list)
+    summary: str
+
+
+class PyTorchFeatureBundleRead(BaseModel):
+    feature_id: str
+    variant: str
+    title: str
+    summary: str
+    dependencies: list[str] = Field(default_factory=list)
+    files: dict[str, str] = Field(default_factory=dict)
+    validation_steps: list[str] = Field(default_factory=list)
+    evidence_targets: list[str] = Field(default_factory=list)
 
 
 class CodebaseSearchMatchRead(BaseModel):

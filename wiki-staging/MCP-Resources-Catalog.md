@@ -31,6 +31,8 @@ This page summarizes the current read-only MCP resources exposed for Mission Con
 - `mission-control://projects/{project_id}/operator-snapshot`: Operator snapshot - Compact operator-facing snapshot of project health, focus, risks, and next action.
 - `mission-control://projects/{project_id}/instincts`: Operational instincts - Derived operational instincts that turn current project state into reusable execution rules.
 - `mission-control://projects/{project_id}/verification-brief`: Verification brief - Release- and review-oriented verification brief with checks, blockers, and evidence gaps.
+- `mission-control://projects/{project_id}/capability-report`: Capability report - Project-scoped capability report covering execution profiles, security, validation, swarm templates, runner posture, and repo drift.
+- `mission-control://projects/{project_id}/capability-report/{section_key}`: Capability section - One named capability-report section for focused review of a single Mission Control lane such as semantic impact mapping or release readiness.
 
 ## Related pages
 

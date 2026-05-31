@@ -281,3 +281,102 @@ def test_worker_task_prompt_switches_into_gpu_programming_mode_for_cuda_repo() -
     assert "GPU programming mode:" in prompt
     assert "Treat CUDA and GPU validation as first-class work" in prompt
     assert "benchmark comparison, and Nsight profile loop" in prompt
+
+
+def test_worker_task_prompt_switches_into_tensorflow_product_mode_for_tf_repo() -> None:
+    workspace = Path(sample_workspace("prompt-tensorflow"))
+    workspace.mkdir(parents=True, exist_ok=True)
+    _write(
+        workspace / "pyproject.toml",
+        """
+        [project]
+        name = "tf_demo"
+        dependencies = ["tensorflow", "tensorboard", "keras-tuner", "tensorflow-serving-api"]
+        """,
+    )
+    _write(workspace / "train.py", "import tensorflow as tf\n")
+    _write(workspace / "export.py", "import tensorflow as tf\n")
+
+    project = Project(name="Prompt Demo", idea="Ship a TensorFlow product path", workspace_path=workspace.as_posix(), status="building", runner_mode="auto", manager_mode="auto")
+    agent = Agent(project_id=1, name="TF Worker", role="ML implementation", kind="worker", status="idle", workspace_path=project.workspace_path)
+    task = Task(
+        id=6,
+        project_id=1,
+        title="Implement the TensorFlow product flow",
+        goal="Build, validate, and export the TensorFlow path honestly.",
+        scope="Touch the training and export path only.",
+        agent_role="ML implementation",
+        milestone="Milestone 1",
+        allowed_paths_json=["train.py", "export.py"],
+        forbidden_paths_json=["docs"],
+        validation_steps_json=["Run the focused TensorFlow validation loop"],
+        success_criteria_json=["The TensorFlow path is validated honestly"],
+        estimated_complexity="medium",
+        dependencies_json=[],
+        status="backlog",
+        priority=10,
+    )
+
+    prompt = worker_task_prompt(
+        project,
+        agent,
+        task,
+        docs_path=f"{project.workspace_path}/mission-control",
+        provider="codex",
+        model="gpt-5.5",
+        reasoning_effort="high",
+    )
+
+    assert "TensorFlow product mode:" in prompt
+    assert "Treat data pipelines, training, evaluation, export, and serving checks as separate work" in prompt
+    assert "TensorBoard" in prompt
+
+
+def test_worker_task_prompt_switches_into_pytorch_product_mode_for_torch_repo() -> None:
+    workspace = Path(sample_workspace("prompt-pytorch"))
+    workspace.mkdir(parents=True, exist_ok=True)
+    _write(
+        workspace / "pyproject.toml",
+        """
+        [project]
+        name = "torch_demo"
+        dependencies = ["torch", "torchvision", "accelerate", "transformers", "onnx"]
+        """,
+    )
+    _write(workspace / "train.py", "import torch\n")
+    _write(workspace / "export.py", "import torch\n")
+    _write(workspace / "checkpoints" / "model.pt", "weights\n")
+
+    project = Project(name="Prompt Demo", idea="Ship a PyTorch product path", workspace_path=workspace.as_posix(), status="building", runner_mode="auto", manager_mode="auto")
+    agent = Agent(project_id=1, name="Torch Worker", role="ML implementation", kind="worker", status="idle", workspace_path=project.workspace_path)
+    task = Task(
+        id=7,
+        project_id=1,
+        title="Implement the PyTorch product flow",
+        goal="Build, validate, and export the PyTorch path honestly.",
+        scope="Touch the training and export path only.",
+        agent_role="ML implementation",
+        milestone="Milestone 1",
+        allowed_paths_json=["train.py", "export.py"],
+        forbidden_paths_json=["docs"],
+        validation_steps_json=["Run the focused PyTorch validation loop"],
+        success_criteria_json=["The PyTorch path is validated honestly"],
+        estimated_complexity="medium",
+        dependencies_json=[],
+        status="backlog",
+        priority=10,
+    )
+
+    prompt = worker_task_prompt(
+        project,
+        agent,
+        task,
+        docs_path=f"{project.workspace_path}/mission-control",
+        provider="codex",
+        model="gpt-5.5",
+        reasoning_effort="high",
+    )
+
+    assert "PyTorch product mode:" in prompt
+    assert "Treat dataloaders, training, evaluation, checkpoints, and export as separate validation lanes" in prompt
+    assert "device, precision, and batch size" in prompt

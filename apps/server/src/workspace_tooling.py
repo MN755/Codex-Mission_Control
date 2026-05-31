@@ -5,7 +5,13 @@ import shutil
 from pathlib import Path
 from typing import Any
 
+from pytorch_support import (
+    build_pytorch_validation_plan,
+    detect_pytorch_repo_mode,
+    detect_pytorch_runtime_status,
+)
 from security.path_validation import PathValidationError, resolve_local_path
+from tensorflow_support import build_tensorflow_validation_plan, detect_tensorflow_repo_mode
 
 
 _TOOL_SPECS: dict[str, dict[str, Any]] = {
@@ -64,6 +70,41 @@ _TOOL_SPECS: dict[str, dict[str, Any]] = {
         "package_names": ["playwright", "@playwright/test"],
         "notes": ["Headless browser validation lane."],
     },
+    "tensorboard": {
+        "label": "TensorBoard",
+        "category": "validation",
+        "commands": ["tensorboard --logdir logs"],
+        "workspace_tokens": ["tensorboard", "keras.callbacks.tensorboard"],
+        "notes": ["Training-observability lane for TensorFlow and Keras projects."],
+    },
+    "tfx": {
+        "label": "TFX",
+        "category": "deployment",
+        "commands": ["tfx pipeline list"],
+        "workspace_tokens": ["tfx", "tensorflow_data_validation", "tensorflow_transform", "tensorflow_model_analysis"],
+        "notes": ["Production ML pipeline lane for TensorFlow Extended projects."],
+    },
+    "saved_model_cli": {
+        "label": "SavedModel CLI",
+        "category": "deployment",
+        "commands": ["saved_model_cli show --dir <saved_model_dir> --all"],
+        "workspace_tokens": ["tf.saved_model", "saved_model_cli", "tensorflow-serving", "tensorflow_serving"],
+        "notes": ["Inspect exported TensorFlow serving artifacts before shipping them into the void."],
+    },
+    "tflite_convert": {
+        "label": "TensorFlow Lite Converter",
+        "category": "deployment",
+        "commands": ["tflite_convert --saved_model_dir <saved_model_dir> --output_file model.tflite"],
+        "workspace_tokens": ["tflite", "tensorflow_lite", "tf.lite"],
+        "notes": ["Convert SavedModel artifacts into TensorFlow Lite deliverables for edge targets."],
+    },
+    "torchrun": {
+        "label": "torchrun",
+        "category": "validation",
+        "commands": ["torchrun --nproc_per_node 2 train.py"],
+        "workspace_tokens": ["torchrun", "torch.distributed", "accelerate", "deepspeed", "fsdp"],
+        "notes": ["Distributed PyTorch launcher and readiness lane."],
+    },
     "gitleaks": {
         "label": "Gitleaks",
         "category": "security",
@@ -94,6 +135,16 @@ _TOOL_SPECS: dict[str, dict[str, Any]] = {
 
 _PYTHON_SIGNALS = ["pyproject.toml", "requirements.txt", "uv.lock", "poetry.lock", "noxfile.py"]
 _NODE_SIGNALS = ["package.json", "pnpm-lock.yaml", "package-lock.json", "yarn.lock", "bun.lock", "bun.lockb"]
+_PROJECT_TEXT_CANDIDATES = [
+    "pyproject.toml",
+    "requirements.txt",
+    "requirements-dev.txt",
+    "requirements.in",
+    "environment.yml",
+    "environment.yaml",
+    "setup.py",
+    "README.md",
+]
 _SECURITY_LOCKFILES = [
     "package-lock.json",
     "pnpm-lock.yaml",
@@ -151,6 +202,16 @@ def _config_matches(root: Path, spec: dict[str, Any]) -> tuple[list[str], list[s
         installed_names = _package_json_package_names(root)
         for name in sorted(package_names & installed_names):
             matched_files.append(f"package.json::{name}")
+    workspace_tokens = [str(token).strip().lower() for token in spec.get("workspace_tokens", []) if str(token).strip()]
+    if workspace_tokens:
+        haystack = "\n".join(
+            _safe_read_text(root / relative_name).lower()
+            for relative_name in _PROJECT_TEXT_CANDIDATES
+            if (root / relative_name).exists()
+        )
+        for token in workspace_tokens:
+            if token in haystack:
+                matched_sections.append(f"signal:{token}")
     return sorted(set(matched_files)), sorted(set(matched_sections))
 
 
@@ -160,12 +221,20 @@ def _repo_profile(root: Path) -> dict[str, Any]:
     node_repo = any(name in files for name in _NODE_SIGNALS)
     rust_repo = "Cargo.toml" in files
     go_repo = "go.mod" in files
+    tensorflow_mode = detect_tensorflow_repo_mode(root)
+    pytorch_mode = detect_pytorch_repo_mode(root)
     return {
         "python_repo": python_repo,
         "node_repo": node_repo,
         "rust_repo": rust_repo,
         "go_repo": go_repo,
         "lockfiles": sorted(name for name in _SECURITY_LOCKFILES if name in files),
+        "tensorflow_repo": bool(tensorflow_mode.get("enabled")),
+        "tensorflow_mode": tensorflow_mode.get("mode"),
+        "tensorflow_frameworks": list(tensorflow_mode.get("frameworks") or []),
+        "pytorch_repo": bool(pytorch_mode.get("enabled")),
+        "pytorch_mode": pytorch_mode.get("mode"),
+        "pytorch_frameworks": list(pytorch_mode.get("frameworks") or []),
     }
 
 
@@ -257,6 +326,11 @@ def detect_workspace_tooling(workspace_path: str | Path | None, *, project_name:
     repo_profile = _repo_profile(root)
     tools = [_tool_signal_summary(tool_id, root=root) for tool_id in _TOOL_SPECS]
     tooling_by_id = {tool["id"]: tool for tool in tools}
+    tensorflow_mode = detect_tensorflow_repo_mode(root)
+    tensorflow_plan = build_tensorflow_validation_plan(root)
+    pytorch_mode = detect_pytorch_repo_mode(root)
+    pytorch_runtime = detect_pytorch_runtime_status(root)
+    pytorch_plan = build_pytorch_validation_plan(root)
     validation_commands = []
     if tooling_by_id["ruff"]["installed"] and (tooling_by_id["ruff"]["configured"] or repo_profile.get("python_repo")):
         validation_commands.extend(["ruff check .", "ruff format --check ."])
@@ -266,6 +340,10 @@ def detect_workspace_tooling(workspace_path: str | Path | None, *, project_name:
         validation_commands.append("nox --list")
     if tooling_by_id["playwright"]["installed"] and tooling_by_id["playwright"]["configured"]:
         validation_commands.append("playwright test")
+    if tooling_by_id["tensorboard"]["installed"] and tooling_by_id["tensorboard"]["configured"]:
+        validation_commands.append("tensorboard --logdir logs")
+    if pytorch_mode.get("enabled"):
+        validation_commands.extend(str(step.get("command")) for step in list(pytorch_plan.get("steps") or []) if step.get("type") in {"train", "eval", "observability", "checkpoint"} and step.get("command"))
     if tooling_by_id["uv"]["installed"] and repo_profile.get("python_repo"):
         validation_commands.insert(0, "uv run pytest")
     intake_commands = []
@@ -282,6 +360,15 @@ def detect_workspace_tooling(workspace_path: str | Path | None, *, project_name:
         security_commands.append("pip-audit")
     if tooling_by_id["trufflehog"]["installed"]:
         security_commands.append("trufflehog filesystem .")
+    deployment_commands = []
+    if tooling_by_id["saved_model_cli"]["installed"] and tooling_by_id["saved_model_cli"]["configured"]:
+        deployment_commands.append("saved_model_cli show --dir <saved_model_dir> --all")
+    if tooling_by_id["tflite_convert"]["installed"] and tooling_by_id["tflite_convert"]["configured"]:
+        deployment_commands.append("tflite_convert --saved_model_dir <saved_model_dir> --output_file model.tflite")
+    if tooling_by_id["tfx"]["installed"] and tooling_by_id["tfx"]["configured"]:
+        deployment_commands.append("tfx pipeline list")
+    if pytorch_mode.get("enabled"):
+        deployment_commands.extend(str(step.get("command")) for step in list(pytorch_plan.get("steps") or []) if step.get("type") == "export" and step.get("command"))
     packs = [
         _pack_status(
             tools,
@@ -301,6 +388,18 @@ def detect_workspace_tooling(workspace_path: str | Path | None, *, project_name:
             title="Security Gate Pack",
             summary="Secrets and dependency security checks before handoff or release.",
         ),
+        _pack_status(
+            tools,
+            ["tensorboard", "tfx", "saved_model_cli", "tflite_convert"],
+            title="TensorFlow Product Pack",
+            summary="TensorFlow training observability, production pipeline, export, and edge-delivery helpers.",
+        ),
+        _pack_status(
+            tools,
+            ["tensorboard", "torchrun"],
+            title="PyTorch Training Pack",
+            summary="PyTorch training, checkpoint, profiler, and distributed-readiness helpers.",
+        ),
     ]
     recommended_next_steps: list[str] = []
     if tooling_by_id["uv"]["configured"] and not tooling_by_id["uv"]["installed"]:
@@ -313,6 +412,10 @@ def detect_workspace_tooling(workspace_path: str | Path | None, *, project_name:
         recommended_next_steps.append("Install OSV-Scanner to turn dependency-risk claims into an actual scan instead of optimistic storytelling.")
     if repo_profile.get("python_repo") and not tooling_by_id["pip-audit"]["installed"]:
         recommended_next_steps.append("Install pip-audit for Python-specific dependency auditing when release or security review matters.")
+    if tensorflow_mode.get("enabled"):
+        recommended_next_steps.extend(list(tensorflow_plan.get("recommended_fixes") or []))
+    if pytorch_mode.get("enabled"):
+        recommended_next_steps.extend(list(pytorch_plan.get("recommended_fixes") or []))
     if not recommended_next_steps:
         recommended_next_steps.append("The highest-value repo-native tooling lanes are already detectable from this workspace.")
     summary_parts = [
@@ -325,6 +428,10 @@ def detect_workspace_tooling(workspace_path: str | Path | None, *, project_name:
         summary_parts.append("validation evidence lane available")
     if security_commands:
         summary_parts.append("security gate lane available")
+    if tensorflow_mode.get("enabled"):
+        summary_parts.append("tensorflow product lane available")
+    if pytorch_mode.get("enabled"):
+        summary_parts.append("pytorch product lane available")
     summary = ". ".join(summary_parts).strip() + "."
     return {
         "project_name": project_name,
@@ -338,4 +445,10 @@ def detect_workspace_tooling(workspace_path: str | Path | None, *, project_name:
         "intake_commands": intake_commands[:6],
         "validation_commands": validation_commands[:8],
         "security_commands": security_commands[:8],
+        "deployment_commands": deployment_commands[:8],
+        "tensorflow_repo": tensorflow_mode,
+        "tensorflow_validation_plan": tensorflow_plan,
+        "pytorch_repo": pytorch_mode,
+        "pytorch_runtime_status": pytorch_runtime,
+        "pytorch_validation_plan": pytorch_plan,
     }

@@ -48,6 +48,7 @@ REQUIRED_RESOURCES = {
     "mission-control://projects/{project_id}/codebase-map",
     "mission-control://projects/{project_id}/diagnostics",
     "mission-control://projects/{project_id}/orchestrations/{orchestration_id}/status",
+    "mission-control://projects/{project_id}/capability-report/{section_key}",
 }
 
 REQUIRED_PROMPT_ALIASES = [
@@ -58,6 +59,8 @@ REQUIRED_PROMPT_ALIASES = [
     {"review-handoff", "review-latest-handoff", "review_latest_handoff"},
     {"import-existing-repo", "import-existing-codebase", "import_existing_codebase"},
     {"ask-manager-for-plan", "ask_manager_for_plan"},
+    {"review-project-capabilities", "review_project_capabilities"},
+    {"review-project-capability-section", "review_project_capability_section"},
     {"pause-orchestration", "pause_orchestration"},
     {"resume-orchestration", "resume_orchestration"},
 ]

@@ -14,6 +14,7 @@ The bridge keeps Codex chat thin. Mission Control remains the orchestrator. MCP 
 - MCP resources: read-only summaries such as project status, agents, pending decisions, diagnostics, and handoff state
 - MCP prompts: reusable workflow templates for common tasks
 - skills: Codex-facing instructions that tell the bridge how to use Mission Control safely
+- backend-only project routes: typed daemon APIs that are not yet surfaced as MCP tools or resources
 
 ## Expected tools
 
@@ -38,10 +39,13 @@ The bridge keeps Codex chat thin. Mission Control remains the orchestrator. MCP 
 - `mission_control_get_codebase_understanding`
 - `mission_control_set_import_interview_choice`
 - `mission_control_get_diagnostics`
+- `mission_control_get_capability_report`
+- `mission_control_get_capability_section`
 - `mission_control_get_workspace_tooling`
 - `mission_control_search_codebase`
 - `mission_control_get_webwright_status`
 - `mission_control_get_nvidia_dynamo_status`
+- `mission_control_get_nvidia_nim_status`
 - `mission_control_get_nvidia_aiq_status`
 - `mission_control_run_nvidia_aiq_research`
 - `mission_control_get_nvidia_gpu_diagnostics`
@@ -87,6 +91,41 @@ The bridge keeps Codex chat thin. Mission Control remains the orchestrator. MCP 
 - `mission-control://projects/{project_id}/operator-snapshot`
 - `mission-control://projects/{project_id}/instincts`
 - `mission-control://projects/{project_id}/verification-brief`
+- `mission-control://projects/{project_id}/capability-report`
+- `mission-control://projects/{project_id}/capability-report/{section_key}`
+
+## Current prompts
+
+- `attach_current_workspace`
+- `use_mission_control_for_repo`
+- `import_existing_codebase`
+- `start_manager_led_task`
+- `continue_orchestration`
+- `show_pending_approvals`
+- `answer_pending_approval`
+- `review_latest_handoff`
+- `debug_failed_orchestration`
+- `use_webwright_for_browser_task`
+- `pause_orchestration`
+- `resume_orchestration`
+- `explain_current_swarm`
+- `switch_swarm_strategy`
+- `enable_safe_mode`
+- `generate_agents_md_proposal`
+- `install_from_github`
+- `autowire_providers`
+- `review_project_capabilities`
+- `ask_manager_for_plan`
+- `review_project_capability_section`
+
+## Backend-only project routes
+
+These routes are real backend surfaces in `apps/server/src/main.py`, but they are not currently exposed as MCP resources or MCP tools:
+
+- `GET /api/projects/{project_id}/tensorflow/features`
+- `GET /api/projects/{project_id}/tensorflow/features/{feature_id}?variant=...`
+
+Those endpoints expose the typed TensorFlow starter catalog and bundle generator from `apps/server/src/tensorflow_starters.py`. They are useful for daemon and API clients today, but the plugin catalog does not advertise them yet, so docs should not pretend they are part of the MCP layer.
 
 ## Bridge rules
 

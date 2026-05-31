@@ -7,6 +7,10 @@ import subprocess
 import sys
 from pathlib import Path
 
+MCP_SERVER_SRC = Path(__file__).resolve().parents[1] / "src"
+if str(MCP_SERVER_SRC) not in sys.path:
+    sys.path.insert(0, str(MCP_SERVER_SRC))
+
 from mission_control_mcp_server import catalog
 from mission_control_mcp_server.client import MissionControlDaemonClient, _base_url
 from mission_control_mcp_server.server import MissionControlMcpServer
@@ -38,6 +42,8 @@ EXPECTED_RESOURCES = {
     "mission-control://projects/{project_id}/operator-snapshot",
     "mission-control://projects/{project_id}/instincts",
     "mission-control://projects/{project_id}/verification-brief",
+    "mission-control://projects/{project_id}/capability-report",
+    "mission-control://projects/{project_id}/capability-report/{section_key}",
 }
 
 EXPECTED_PROMPTS = {
@@ -59,6 +65,8 @@ EXPECTED_PROMPTS = {
     "generate_agents_md_proposal",
     "install_from_github",
     "autowire_providers",
+    "review_project_capabilities",
+    "review_project_capability_section",
 }
 
 
@@ -209,6 +217,32 @@ class FakeClient:
             "security_commands": ["gitleaks dir . --redact"],
             "recommended_next_steps": ["Install OSV-Scanner for dependency auditing."],
             "tools": [{"id": "uv", "label": "uv", "installed": True, "configured": True, "status": "ready"}],
+        }
+
+    def get_capability_report(self, project_id: int):
+        self.calls.append(("get_capability_report", {"project_id": project_id}))
+        return {
+            "project_id": project_id,
+            "project_name": "Demo",
+            "section_count": 2,
+            "sections": [
+                {"key": "issue_to_execution_profiles", "title": "Issue-to-execution profiles", "status": "ready", "summary": "Profiles exist."},
+                {"key": "release_readiness_mode", "title": "Release readiness mode", "status": "needs_review", "summary": "One blocker remains."},
+            ],
+            "report_markdown": "## Mission Control Capability Report\n",
+        }
+
+    def get_capability_section(self, project_id: int, section_key: str):
+        self.calls.append(("get_capability_section", {"project_id": project_id, "section_key": section_key}))
+        return {
+            "key": section_key,
+            "title": "Semantic code impact mapping",
+            "status": "ready",
+            "summary": "Parser-backed dependency mapping is active.",
+            "details": ["src/worker.py -> tests/test_worker.py"],
+            "commands": ["python -m pytest apps/server/tests/test_capability_report.py -q"],
+            "artifacts": [],
+            "metadata_json": {"semantic_backend": "python-ast-graph"},
         }
 
     def search_codebase(self, project_id: int, **kwargs):
@@ -462,7 +496,9 @@ def test_tool_schemas_are_exposed() -> None:
     assert "mission_control_get_event_digest" in names
     assert "mission_control_request_snapshot" in names
     assert "mission_control_request_recovery_plan" in names
+    assert "mission_control_get_capability_report" in names
     assert "mission_control_get_workspace_tooling" in names
+    assert "mission_control_get_capability_section" in names
     assert "mission_control_search_codebase" in names
     assert all(tool["inputSchema"]["additionalProperties"] is False for tool in server.list_tools())
 
@@ -525,7 +561,9 @@ def test_new_runtime_tools_dispatch_to_client() -> None:
     server.call_tool("mission_control_plugin_health", {})
     server.call_tool("mission_control_enable_safe_mode", {"project_id": 7})
     server.call_tool("mission_control_get_event_digest", {"project_id": 7, "window": "last_15_minutes"})
+    server.call_tool("mission_control_get_capability_report", {"project_id": 7})
     server.call_tool("mission_control_get_workspace_tooling", {"project_id": 7})
+    server.call_tool("mission_control_get_capability_section", {"project_id": 7, "section_key": "semantic_code_impact_mapping"})
     server.call_tool("mission_control_search_codebase", {"project_id": 7, "pattern": "TODO", "max_matches": 5})
     server.call_tool("mission_control_get_webwright_status", {"project_id": 7})
     server.call_tool("mission_control_get_nvidia_dynamo_status", {"project_id": 7})
@@ -542,7 +580,9 @@ def test_new_runtime_tools_dispatch_to_client() -> None:
     assert "plugin_health_summary" in called
     assert "enable_safe_mode" in called
     assert "get_event_digest" in called
+    assert "get_capability_report" in called
     assert "get_workspace_tooling" in called
+    assert "get_capability_section" in called
     assert "search_codebase" in called
     assert "get_webwright_status" in called
     assert "get_nvidia_dynamo_status" in called
@@ -633,6 +673,21 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
             "release_blockers": ["Required review gate not passed: Backend verification gate [pending]"],
             "handoff_warnings": ["Handoff status is needs_review."],
             "loop_strategy": ["Run the required checks first."],
+            "generated_at": "2026-05-26T00:00:00Z",
+        },
+    )
+    monkeypatch.setattr(
+        client,
+        "get_capability_report",
+        lambda project_id: {
+            "project_id": project_id,
+            "project_name": "Demo",
+            "section_count": 2,
+            "sections": [
+                {"key": "issue_to_execution_profiles", "title": "Issue-to-execution profiles", "status": "ready", "summary": "Profiles exist."},
+                {"key": "release_readiness_mode", "title": "Release readiness mode", "status": "needs_review", "summary": "One blocker remains."},
+            ],
+            "report_markdown": "## Mission Control Capability Report\n",
             "generated_at": "2026-05-26T00:00:00Z",
         },
     )
@@ -784,10 +839,26 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
             "evidence_targets": ["Capture build and benchmark results."],
         },
     )
+    monkeypatch.setattr(
+        client,
+        "get_capability_section",
+        lambda project_id, section_key: {
+            "key": section_key,
+            "title": "Semantic code impact mapping",
+            "status": "ready",
+            "summary": "Parser-backed dependency mapping is active.",
+            "details": ["src/worker.py -> tests/test_worker.py"],
+            "commands": ["tree-sitter parse src/worker.py"],
+            "artifacts": [],
+            "metadata_json": {"semantic_backend": "python-ast-graph"},
+        },
+    )
 
     snapshot = client.read_resource("mission-control://projects/7/operator-snapshot")
     instincts = client.read_resource("mission-control://projects/7/instincts")
     verification = client.read_resource("mission-control://projects/7/verification-brief")
+    capability_report = client.read_resource("mission-control://projects/7/capability-report")
+    capability_section = client.read_resource("mission-control://projects/7/capability-report/semantic_code_impact_mapping")
     tooling = client.read_resource("mission-control://projects/7/workspace-tooling")
     webwright = client.read_resource("mission-control://projects/7/webwright")
     dynamo = client.read_resource("mission-control://projects/7/nvidia-dynamo")
@@ -802,6 +873,10 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
     assert instincts["instincts"][0]["key"] == "ship-with-evidence"
     assert verification["readiness"] == "blocked"
     assert verification["required_checks"] == ["python -m pytest apps/server/tests/test_operator_surfaces.py -q"]
+    assert capability_report["section_count"] == 2
+    assert capability_report["sections"][0]["key"] == "issue_to_execution_profiles"
+    assert capability_section["section_key"] == "semantic_code_impact_mapping"
+    assert capability_section["metadata_json"]["semantic_backend"] == "python-ast-graph"
     assert tooling["validation_commands"] == ["uv run pytest", "ruff check ."]
     assert webwright["available"] is True
     assert webwright["launch_command"] == "webwright"
@@ -841,6 +916,8 @@ def test_daemon_client_auto_start_launches_when_health_fails(monkeypatch, tmp_pa
 
 def test_daemon_client_constructs_without_repo_checkout(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.delenv("MISSION_CONTROL_REPO_ROOT", raising=False)
+    monkeypatch.delenv("MISSION_CONTROL_RUNTIME_ROOT", raising=False)
+    monkeypatch.delenv("MISSION_CONTROL_LAUNCHER_DIR", raising=False)
     monkeypatch.setenv("MISSION_CONTROL_APP_HOME", str(tmp_path / "app-home"))
     monkeypatch.setattr(MissionControlDaemonClient, "_discover_repo_root", lambda self: None)
 

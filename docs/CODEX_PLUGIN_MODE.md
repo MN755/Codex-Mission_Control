@@ -16,7 +16,7 @@ Codex chat should:
 - start or continue the Mission Control task
 - poll compact status
 - surface pending decisions
-- send the user’s answer back
+- send the user's answer back
 - retrieve the final handoff
 
 Codex chat should not:
@@ -24,7 +24,7 @@ Codex chat should not:
 - invent its own manager plan
 - spawn extra workers outside Mission Control mode
 - bypass Mission Control approvals
-- quietly edit the repo on Mission Control’s behalf
+- quietly edit the repo on Mission Control's behalf
 
 ## Bridge flow
 
@@ -81,10 +81,14 @@ The MCP bridge can auto-start the daemon when `GET /api/health` fails and the co
 - `mission_control_get_codebase_map`
 - `mission_control_get_codebase_understanding`
 - `mission_control_set_import_interview_choice`
+- `mission_control_get_diagnostics`
+- `mission_control_get_capability_report`
+- `mission_control_get_capability_section`
 - `mission_control_get_workspace_tooling`
 - `mission_control_search_codebase`
 - `mission_control_get_webwright_status`
 - `mission_control_get_nvidia_dynamo_status`
+- `mission_control_get_nvidia_nim_status`
 - `mission_control_get_nvidia_aiq_status`
 - `mission_control_run_nvidia_aiq_research`
 - `mission_control_get_nvidia_gpu_diagnostics`
@@ -94,7 +98,6 @@ The MCP bridge can auto-start the daemon when `GET /api/health` fails and the co
 - `mission_control_update_swarm_preferences`
 - `mission_control_generate_swarm_plan`
 - `mission_control_approve_swarm_plan`
-- `mission_control_get_diagnostics`
 - `mission_control_get_project_settings`
 - `mission_control_update_project_settings`
 - `mission_control_get_import_safety`
@@ -119,6 +122,7 @@ The MCP bridge can auto-start the daemon when `GET /api/health` fails and the co
 - `mission-control://projects/{project_id}/orchestrations/{orchestration_id}/events`
 - `mission-control://projects/{project_id}/webwright`
 - `mission-control://projects/{project_id}/nvidia-dynamo`
+- `mission-control://projects/{project_id}/nvidia-nim`
 - `mission-control://projects/{project_id}/nvidia-aiq`
 - `mission-control://projects/{project_id}/nvidia-gpu-diagnostics`
 - `mission-control://projects/{project_id}/nvidia-local-runtime`
@@ -131,8 +135,43 @@ The MCP bridge can auto-start the daemon when `GET /api/health` fails and the co
 - `mission-control://projects/{project_id}/operator-snapshot`
 - `mission-control://projects/{project_id}/instincts`
 - `mission-control://projects/{project_id}/verification-brief`
+- `mission-control://projects/{project_id}/capability-report`
+- `mission-control://projects/{project_id}/capability-report/{section_key}`
 
 These resources expose safe summaries only. They do not expose raw logs, secret headers, or giant transcripts by default because this is an orchestration bridge, not an exfiltration bridge.
+
+## Current MCP prompts
+
+- `attach_current_workspace`
+- `use_mission_control_for_repo`
+- `import_existing_codebase`
+- `start_manager_led_task`
+- `continue_orchestration`
+- `show_pending_approvals`
+- `answer_pending_approval`
+- `review_latest_handoff`
+- `debug_failed_orchestration`
+- `use_webwright_for_browser_task`
+- `pause_orchestration`
+- `resume_orchestration`
+- `explain_current_swarm`
+- `switch_swarm_strategy`
+- `enable_safe_mode`
+- `generate_agents_md_proposal`
+- `install_from_github`
+- `autowire_providers`
+- `review_project_capabilities`
+- `ask_manager_for_plan`
+- `review_project_capability_section`
+
+## Backend-only project APIs
+
+These daemon routes are real code, but they are not MCP tools or MCP resources yet:
+
+- `GET /api/projects/{project_id}/tensorflow/features`
+- `GET /api/projects/{project_id}/tensorflow/features/{feature_id}?variant=...`
+
+Those TensorFlow starter endpoints expose typed starter catalogs and bundles through the backend. They are not part of the plugin catalog today, so the docs should not cosplay otherwise.
 
 ## Pending decisions
 

@@ -37,6 +37,15 @@
     "mission-control-nsight-profiling",
     "mission-control-benchmark-comparison",
     "mission-control-compiler-autotuning-guidance",
+    "mission-control-tensorflow-scaffolding",
+    "mission-control-tf-data-pipelines",
+    "mission-control-keras-finetuning",
+    "mission-control-tensorboard-observability",
+    "mission-control-keras-tuning",
+    "mission-control-tensorflow-serving",
+    "mission-control-tfx-pipelines",
+    "mission-control-tflite-deployment",
+    "mission-control-model-optimization",
     "mission-control-review-tests",
     "mission-control-generate-runbook",
     "mission-control-explain-codebase",
@@ -120,7 +129,9 @@
     "generate_agents_md_proposal",
     "install_from_github",
     "autowire_providers",
-    "ask_manager_for_plan"
+    "review_project_capabilities",
+    "ask_manager_for_plan",
+    "review_project_capability_section"
   ],
   "resources": [
     "mission-control://projects/{project_id}/orchestrations/{orchestration_id}/status",
@@ -147,7 +158,9 @@
     "mission-control://projects/{project_id}/path-locks",
     "mission-control://projects/{project_id}/operator-snapshot",
     "mission-control://projects/{project_id}/instincts",
-    "mission-control://projects/{project_id}/verification-brief"
+    "mission-control://projects/{project_id}/verification-brief",
+    "mission-control://projects/{project_id}/capability-report",
+    "mission-control://projects/{project_id}/capability-report/{section_key}"
   ],
   "assets": {
     "icon": "./assets/mission-control-logo.png"

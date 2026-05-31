@@ -115,7 +115,9 @@
     "generate_agents_md_proposal",
     "install_from_github",
     "autowire_providers",
-    "ask_manager_for_plan"
+    "review_project_capabilities",
+    "ask_manager_for_plan",
+    "review_project_capability_section"
   ],
   "resources": [
     "mission-control://projects/{project_id}/orchestrations/{orchestration_id}/status",
@@ -142,7 +144,9 @@
     "mission-control://projects/{project_id}/path-locks",
     "mission-control://projects/{project_id}/operator-snapshot",
     "mission-control://projects/{project_id}/instincts",
-    "mission-control://projects/{project_id}/verification-brief"
+    "mission-control://projects/{project_id}/verification-brief",
+    "mission-control://projects/{project_id}/capability-report",
+    "mission-control://projects/{project_id}/capability-report/{section_key}"
   ],
   "mcp": {
     "example_config": "./mcp/mission-control-mcp.example.json",

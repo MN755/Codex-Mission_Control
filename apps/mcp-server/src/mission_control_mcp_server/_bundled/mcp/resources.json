@@ -732,6 +732,64 @@
         ],
         "notes": "Expose the verification plan and blockers, not raw evidence artifacts."
       }
+    },
+    {
+      "uri_template": "mission-control://projects/{project_id}/capability-report",
+      "title": "Capability report",
+      "summary": "Project-scoped capability report covering execution profiles, security, validation, swarm templates, runner posture, and repo drift.",
+      "support_status": "implemented",
+      "source_hint": {
+        "rest_endpoints": [
+          "/api/projects/{project_id}/capability-report"
+        ]
+      },
+      "default_fields": [
+        "project_id",
+        "project_name",
+        "section_count",
+        "sections",
+        "report_markdown"
+      ],
+      "redaction": {
+        "omit_fields": [
+          "raw_log",
+          "internal_reasoning",
+          "secret_env",
+          "full_artifact_bodies"
+        ],
+        "notes": "Expose compact capability sections and safe suggested commands, not raw logs or secret-bearing payloads."
+      }
+    },
+    {
+      "uri_template": "mission-control://projects/{project_id}/capability-report/{section_key}",
+      "title": "Capability section",
+      "summary": "One named capability-report section for focused review of a single Mission Control lane such as semantic impact mapping or release readiness.",
+      "support_status": "implemented",
+      "source_hint": {
+        "rest_endpoints": [
+          "/api/projects/{project_id}/capability-report/{section_key}"
+        ]
+      },
+      "default_fields": [
+        "project_id",
+        "section_key",
+        "title",
+        "status",
+        "summary",
+        "details",
+        "commands",
+        "artifacts",
+        "metadata_json"
+      ],
+      "redaction": {
+        "omit_fields": [
+          "raw_log",
+          "internal_reasoning",
+          "secret_env",
+          "full_artifact_bodies"
+        ],
+        "notes": "Expose one focused capability section with safe commands and metadata, not raw logs or secret-bearing payloads."
+      }
     }
   ]
 }

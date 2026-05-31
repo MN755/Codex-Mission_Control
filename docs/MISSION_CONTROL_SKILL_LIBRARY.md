@@ -11,6 +11,7 @@ The Codex chat agent is not the Mission Control Manager. It is the bridge betwee
 - Execution and swarm workflows handle swarm plans, contracts, path locks, snapshots, and conflict or stuck-agent handling.
 - Validation, evidence, docs, and release workflows keep proof, runbooks, public docs, and release readiness explicit.
 - Diagnostics and policy workflows cover recovery, health, install/update maintenance, model or tool policy, local-first posture, and provider modes.
+- Specialized product lanes include shipped NVIDIA/CUDA skills plus shipped TensorFlow skills for scaffolding, `tf.data`, fine-tuning, TensorBoard, tuning, serving, TFX, Lite export, and model optimization.
 - Additional shipped skills are listed automatically in the index so the manifest and published library cannot quietly drift apart.
 
 ## How Codex should use these skills
@@ -47,7 +48,10 @@ The Codex chat agent is not the Mission Control Manager. It is the bridge betwee
 - `Give me the final handoff.` -> `mission-control-handoff`
 - `The run looks stuck.` -> `mission-control-debug` or `mission-control-recovery-plan`
 - `Make this local-first and prefer Ollama if available.` -> `mission-control-local-first` plus `mission-control-ollama-mode`
+- `Help me scaffold a TensorFlow product path.` -> `mission-control-tensorflow-scaffolding`
+- `Review the TensorBoard evidence for this training lane.` -> `mission-control-tensorboard-observability`
+- `Validate the TensorFlow Lite export path.` -> `mission-control-tflite-deployment`
 
 ## Index
 
-See `plugins/mission-control/SKILL_INDEX.md` for the grouped index of all 84 skills.
+See `plugins/mission-control/SKILL_INDEX.md` for the grouped index of all 93 skills.

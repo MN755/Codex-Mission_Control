@@ -28,6 +28,8 @@ Mission Control MCP tools are action endpoints for the Codex bridge. They do not
 - `mission_control_get_codebase_understanding`
 - `mission_control_set_import_interview_choice`
 - `mission_control_get_diagnostics`
+- `mission_control_get_capability_report`
+- `mission_control_get_capability_section`
 - `mission_control_get_workspace_tooling`
 - `mission_control_search_codebase`
 - `mission_control_get_webwright_status`
@@ -65,3 +67,14 @@ Mission Control MCP tools are action endpoints for the Codex bridge. They do not
 - NVIDIA local runtime status reports the CUDA/NVIDIA toolchain on the current machine separately from remote cluster health, including Compute Sanitizer, Nsight, CUDA-GDB, and NGC/container readiness, because mixing those up is how people waste an afternoon.
 - NVIDIA validation plans turn CUDA repo signals plus runtime truth into a concrete build/test/profile/sanitizer/container loop instead of improvising one badly.
 - Operator snapshot, instincts, and verification brief stay resource-first on purpose; they are read-only operator surfaces, not imperative tools.
+- `mission_control_get_capability_report` is the compact imperative read path for the whole capability picture when a client wants structured JSON instead of a resource-only read.
+- `mission_control_get_capability_section` is the focused read path when a client only needs one capability lane instead of the whole report.
+
+## Explicit Non-Tools
+
+These backend routes exist, but they are not MCP tools:
+
+- `GET /api/projects/{project_id}/tensorflow/features`
+- `GET /api/projects/{project_id}/tensorflow/features/{feature_id}?variant=...`
+
+They expose typed TensorFlow starter catalog data and generated starter bundles through the daemon API. That distinction matters because a backend route is not magically an MCP tool just because somebody wishes it were.

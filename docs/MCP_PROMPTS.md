@@ -22,7 +22,9 @@ Mission Control MCP prompts are reusable Codex-chat workflows. They describe how
 - `generate_agents_md_proposal`
 - `install_from_github`
 - `autowire_providers`
+- `review_project_capabilities`
 - `ask_manager_for_plan`
+- `review_project_capability_section`
 
 ## Prompt Rules
 
@@ -35,4 +37,4 @@ Mission Control MCP prompts are reusable Codex-chat workflows. They describe how
 
 - Canonical names use underscores.
 - Legacy hyphenated names remain prompt aliases in the MCP catalog for compatibility.
-- Key aliases include `use-mission-control-for-this-repo`, `continue-orchestration`, `use-webwright-for-browser-task`, and `ask-manager-for-plan`.
+- Key aliases include `use-mission-control-for-this-repo`, `continue-orchestration`, `use-webwright-for-browser-task`, `review-project-capabilities`, `ask-manager-for-plan`, and `review-project-capability-section`.
