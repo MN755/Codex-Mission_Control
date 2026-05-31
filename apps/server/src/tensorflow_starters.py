@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
-from textwrap import dedent
+from textwrap import dedent, indent
 from typing import Any
 
 
@@ -228,11 +228,37 @@ def _keras_scaffold_bundle(variant: str) -> TensorFlowFeatureBundle:
         raise ValueError(f"Unsupported Keras scaffold variant `{variant}`.")
     head, loss, metrics = model_heads[variant]
     encoder = {
-        "classification": "features = keras.layers.Dense(128, activation='relu')(inputs)",
-        "regression": "features = keras.layers.Dense(128, activation='relu')(inputs)",
-        "nlp": "features = keras.layers.Embedding(VOCAB_SIZE, 128)(inputs)\n    features = keras.layers.GlobalAveragePooling1D()(features)",
-        "vision": "features = keras.layers.Rescaling(1.0 / 255)(inputs)\n    features = keras.layers.Conv2D(32, 3, activation='relu')(features)\n    features = keras.layers.MaxPooling2D()(features)\n    features = keras.layers.Conv2D(64, 3, activation='relu')(features)\n    features = keras.layers.GlobalAveragePooling2D()(features)",
-        "time_series": "features = keras.layers.Normalization()(inputs)\n    features = keras.layers.Dense(64, activation='relu')(features)",
+        "classification": dedent(
+            """
+            features = keras.layers.Dense(128, activation='relu')(inputs)
+            """
+        ).strip(),
+        "regression": dedent(
+            """
+            features = keras.layers.Dense(128, activation='relu')(inputs)
+            """
+        ).strip(),
+        "nlp": dedent(
+            """
+            features = keras.layers.Embedding(VOCAB_SIZE, 128)(inputs)
+            features = keras.layers.GlobalAveragePooling1D()(features)
+            """
+        ).strip(),
+        "vision": dedent(
+            """
+            features = keras.layers.Rescaling(1.0 / 255)(inputs)
+            features = keras.layers.Conv2D(32, 3, activation='relu')(features)
+            features = keras.layers.MaxPooling2D()(features)
+            features = keras.layers.Conv2D(64, 3, activation='relu')(features)
+            features = keras.layers.GlobalAveragePooling2D()(features)
+            """
+        ).strip(),
+        "time_series": dedent(
+            """
+            features = keras.layers.LayerNormalization()(inputs)
+            features = keras.layers.Dense(64, activation='relu')(features)
+            """
+        ).strip(),
     }[variant]
     input_line = {
         "classification": "inputs = keras.Input(shape=(FEATURE_DIM,), name='features')",
@@ -240,6 +266,129 @@ def _keras_scaffold_bundle(variant: str) -> TensorFlowFeatureBundle:
         "nlp": "inputs = keras.Input(shape=(SEQUENCE_LENGTH,), dtype='int32', name='tokens')",
         "vision": "inputs = keras.Input(shape=(IMAGE_HEIGHT, IMAGE_WIDTH, 3), name='image')",
         "time_series": "inputs = keras.Input(shape=(WINDOW_SIZE,), name='window')",
+    }[variant]
+    model_content = "\n".join(
+        [
+            "import keras",
+            "",
+            "from .config import FEATURE_DIM, IMAGE_HEIGHT, IMAGE_WIDTH, NUM_CLASSES, SEQUENCE_LENGTH, VOCAB_SIZE, WINDOW_SIZE",
+            "",
+            "",
+            "def build_model() -> keras.Model:",
+            f"    {input_line}",
+            indent(dedent(encoder).strip(), "    "),
+            f"    outputs = {head}(features)",
+            f'    model = keras.Model(inputs=inputs, outputs=outputs, name="{variant}_starter")',
+            "    model.compile(",
+            "        optimizer=keras.optimizers.Adam(),",
+            f"        loss={loss},",
+            f"        metrics={metrics},",
+            "    )",
+            "    return model",
+        ]
+    )
+    data_builder = {
+        "classification": dedent(
+            """
+            import tensorflow as tf
+
+            from .config import BATCH_SIZE, FEATURE_DIM
+
+
+            def build_datasets():
+                train_ds = tf.data.Dataset.from_tensor_slices(
+                    (tf.zeros((256, FEATURE_DIM), dtype=tf.float32), tf.zeros((256,), dtype=tf.int32))
+                )
+                val_ds = tf.data.Dataset.from_tensor_slices(
+                    (tf.zeros((64, FEATURE_DIM), dtype=tf.float32), tf.zeros((64,), dtype=tf.int32))
+                )
+                train_ds = train_ds.shuffle(512).batch(BATCH_SIZE).prefetch(tf.data.AUTOTUNE)
+                val_ds = val_ds.batch(BATCH_SIZE).prefetch(tf.data.AUTOTUNE)
+                return train_ds, val_ds
+            """
+        ).strip(),
+        "regression": dedent(
+            """
+            import tensorflow as tf
+
+            from .config import BATCH_SIZE, FEATURE_DIM
+
+
+            def build_datasets():
+                train_ds = tf.data.Dataset.from_tensor_slices(
+                    (tf.zeros((256, FEATURE_DIM), dtype=tf.float32), tf.zeros((256, 1), dtype=tf.float32))
+                )
+                val_ds = tf.data.Dataset.from_tensor_slices(
+                    (tf.zeros((64, FEATURE_DIM), dtype=tf.float32), tf.zeros((64, 1), dtype=tf.float32))
+                )
+                train_ds = train_ds.shuffle(512).batch(BATCH_SIZE).prefetch(tf.data.AUTOTUNE)
+                val_ds = val_ds.batch(BATCH_SIZE).prefetch(tf.data.AUTOTUNE)
+                return train_ds, val_ds
+            """
+        ).strip(),
+        "nlp": dedent(
+            """
+            import tensorflow as tf
+
+            from .config import BATCH_SIZE, SEQUENCE_LENGTH
+
+
+            def build_datasets():
+                train_ds = tf.data.Dataset.from_tensor_slices(
+                    (tf.zeros((256, SEQUENCE_LENGTH), dtype=tf.int32), tf.zeros((256,), dtype=tf.int32))
+                )
+                val_ds = tf.data.Dataset.from_tensor_slices(
+                    (tf.zeros((64, SEQUENCE_LENGTH), dtype=tf.int32), tf.zeros((64,), dtype=tf.int32))
+                )
+                train_ds = train_ds.shuffle(512).batch(BATCH_SIZE).prefetch(tf.data.AUTOTUNE)
+                val_ds = val_ds.batch(BATCH_SIZE).prefetch(tf.data.AUTOTUNE)
+                return train_ds, val_ds
+            """
+        ).strip(),
+        "vision": dedent(
+            """
+            import tensorflow as tf
+
+            from .config import BATCH_SIZE, IMAGE_HEIGHT, IMAGE_WIDTH
+
+
+            def build_datasets():
+                train_ds = tf.data.Dataset.from_tensor_slices(
+                    (
+                        tf.zeros((256, IMAGE_HEIGHT, IMAGE_WIDTH, 3), dtype=tf.float32),
+                        tf.zeros((256,), dtype=tf.int32),
+                    )
+                )
+                val_ds = tf.data.Dataset.from_tensor_slices(
+                    (
+                        tf.zeros((64, IMAGE_HEIGHT, IMAGE_WIDTH, 3), dtype=tf.float32),
+                        tf.zeros((64,), dtype=tf.int32),
+                    )
+                )
+                train_ds = train_ds.shuffle(512).batch(BATCH_SIZE).prefetch(tf.data.AUTOTUNE)
+                val_ds = val_ds.batch(BATCH_SIZE).prefetch(tf.data.AUTOTUNE)
+                return train_ds, val_ds
+            """
+        ).strip(),
+        "time_series": dedent(
+            """
+            import tensorflow as tf
+
+            from .config import BATCH_SIZE, WINDOW_SIZE
+
+
+            def build_datasets():
+                train_ds = tf.data.Dataset.from_tensor_slices(
+                    (tf.zeros((256, WINDOW_SIZE), dtype=tf.float32), tf.zeros((256, 1), dtype=tf.float32))
+                )
+                val_ds = tf.data.Dataset.from_tensor_slices(
+                    (tf.zeros((64, WINDOW_SIZE), dtype=tf.float32), tf.zeros((64, 1), dtype=tf.float32))
+                )
+                train_ds = train_ds.shuffle(512).batch(BATCH_SIZE).prefetch(tf.data.AUTOTUNE)
+                val_ds = val_ds.batch(BATCH_SIZE).prefetch(tf.data.AUTOTUNE)
+                return train_ds, val_ds
+            """
+        ).strip(),
     }[variant]
     return _bundle(
         "keras_scaffold",
@@ -259,25 +408,10 @@ def _keras_scaffold_bundle(variant: str) -> TensorFlowFeatureBundle:
                 IMAGE_WIDTH = 224
                 WINDOW_SIZE = 96
             """,
-            "tensorflow_starters/model.py": f"""
-                import keras
-
-                from .config import FEATURE_DIM, IMAGE_HEIGHT, IMAGE_WIDTH, NUM_CLASSES, SEQUENCE_LENGTH, VOCAB_SIZE, WINDOW_SIZE
-
-
-                def build_model() -> keras.Model:
-                    {input_line}
-                    {encoder}
-                    outputs = {head}(features)
-                    model = keras.Model(inputs=inputs, outputs=outputs, name="{variant}_starter")
-                    model.compile(
-                        optimizer=keras.optimizers.Adam(),
-                        loss={loss},
-                        metrics={metrics},
-                    )
-                    return model
-            """,
+            "tensorflow_starters/model.py": model_content,
             "tensorflow_starters/train.py": """
+                from pathlib import Path
+
                 import keras
 
                 from .config import EPOCHS
@@ -288,6 +422,7 @@ def _keras_scaffold_bundle(variant: str) -> TensorFlowFeatureBundle:
                 def main() -> None:
                     train_ds, val_ds = build_datasets()
                     model = build_model()
+                    Path("artifacts").mkdir(parents=True, exist_ok=True)
                     callbacks = [
                         keras.callbacks.ModelCheckpoint("artifacts/best.keras", save_best_only=True),
                         keras.callbacks.TensorBoard(log_dir="artifacts/tensorboard"),
@@ -299,19 +434,7 @@ def _keras_scaffold_bundle(variant: str) -> TensorFlowFeatureBundle:
                 if __name__ == "__main__":
                     main()
             """,
-            "tensorflow_starters/data.py": """
-                import tensorflow as tf
-
-                from .config import BATCH_SIZE
-
-
-                def build_datasets():
-                    train_ds = tf.data.Dataset.from_tensor_slices((tf.zeros((256, 32)), tf.zeros((256,), dtype=tf.int32)))
-                    val_ds = tf.data.Dataset.from_tensor_slices((tf.zeros((64, 32)), tf.zeros((64,), dtype=tf.int32)))
-                    train_ds = train_ds.shuffle(512).batch(BATCH_SIZE).prefetch(tf.data.AUTOTUNE)
-                    val_ds = val_ds.batch(BATCH_SIZE).prefetch(tf.data.AUTOTUNE)
-                    return train_ds, val_ds
-            """,
+            "tensorflow_starters/data.py": data_builder,
         },
         [
             "python -m tensorflow_starters.train",
@@ -337,6 +460,7 @@ def _tf_data_bundle(variant: str) -> TensorFlowFeatureBundle:
     if variant not in builders:
         raise ValueError(f"Unsupported tf.data variant `{variant}`.")
     source_code = builders[variant]
+    already_batched = variant in {"csv", "images", "text"}
     return _bundle(
         "tf_data_pipeline",
         variant,
@@ -349,13 +473,24 @@ def _tf_data_bundle(variant: str) -> TensorFlowFeatureBundle:
                 import keras
 
 
+                def generator_fn():
+                    for _ in range(32):
+                        yield tf.zeros((32,), dtype=tf.float32), tf.constant(0, dtype=tf.int32)
+
+
+                output_signature = (
+                    tf.TensorSpec(shape=(32,), dtype=tf.float32),
+                    tf.TensorSpec(shape=(), dtype=tf.int32),
+                )
+
+
                 def build_dataset():
                     dataset = {source_code}
                     if isinstance(dataset, tuple):
                         dataset = dataset[0]
                     dataset = dataset.shuffle(1024)
                     dataset = dataset.cache()
-                    dataset = dataset.batch(64) if not isinstance(dataset.element_spec, tuple) else dataset
+                    dataset = dataset if {already_batched!r} else dataset.batch(64)
                     dataset = dataset.prefetch(tf.data.AUTOTUNE)
                     return dataset
             """,
@@ -521,7 +656,11 @@ def _distributed_bundle(variant: str) -> TensorFlowFeatureBundle:
         f"Distributed training: {variant.replace('_', ' ')}",
         "A distribution starter for either single-node multi-GPU or multi-worker setups.",
         ["tensorflow", "keras"],
-        {"tensorflow_starters/distribute.py": content},
+        {
+            "tensorflow_starters/distribute.py": (
+                "from .model import build_model\n\n" + dedent(content).strip() + "\n"
+            )
+        },
         [
             "Verify device visibility before starting distributed training.",
             "Run a tiny smoke epoch before trusting the cluster-scale configuration.",
@@ -542,11 +681,15 @@ def _tensorboard_bundle(_variant: str) -> TensorFlowFeatureBundle:
         ["tensorflow", "keras", "tensorboard"],
         {
             "tensorflow_starters/observability.py": """
+                from pathlib import Path
+
                 import keras
                 import tensorflow as tf
 
 
                 def training_callbacks(run_name: str = "baseline"):
+                    Path(f"artifacts/tensorboard/{run_name}").mkdir(parents=True, exist_ok=True)
+                    Path("artifacts/metrics").mkdir(parents=True, exist_ok=True)
                     return [
                         keras.callbacks.TensorBoard(
                             log_dir=f"artifacts/tensorboard/{run_name}",
@@ -585,6 +728,39 @@ def _tuning_bundle(variant: str) -> TensorFlowFeatureBundle:
     }.get(variant)
     if tuner_class is None:
         raise ValueError(f"Unsupported tuning variant `{variant}`.")
+    tuner_args = {
+        "random_search": ["max_trials=12,", 'directory="artifacts/tuning",', 'project_name="random_search",'],
+        "bayesian_optimization": ["max_trials=12,", 'directory="artifacts/tuning",', 'project_name="bayesian_optimization",'],
+        "hyperband": ["max_epochs=12,", "factor=3,", 'directory="artifacts/tuning",', 'project_name="hyperband",'],
+    }[variant]
+    tune_content = "\n".join(
+        [
+            "import keras",
+            "import keras_tuner",
+            "",
+            "",
+            "def build_model(hp):",
+            "    model = keras.Sequential([",
+            '        keras.layers.Input(shape=(32,)),',
+            '        keras.layers.Dense(hp.Int("units", min_value=64, max_value=256, step=64), activation="relu"),',
+            '        keras.layers.Dense(3, activation="softmax"),',
+            "    ])",
+            "    model.compile(",
+            '        optimizer=keras.optimizers.Adam(hp.Float("learning_rate", 1e-4, 1e-2, sampling="log")),',
+            "        loss=keras.losses.SparseCategoricalCrossentropy(),",
+            '        metrics=["accuracy"],',
+            "    )",
+            "    return model",
+            "",
+            "",
+            "def build_tuner():",
+            f"    return {tuner_class}(",
+            "        build_model,",
+            '        objective="val_accuracy",',
+            *[f"        {line}" for line in tuner_args],
+            "    )",
+        ]
+    )
     return _bundle(
         "hyperparameter_tuning",
         variant,
@@ -592,34 +768,7 @@ def _tuning_bundle(variant: str) -> TensorFlowFeatureBundle:
         "A bounded tuning recipe with a named search strategy and explicit result export.",
         ["tensorflow", "keras", "keras_tuner"],
         {
-            "tensorflow_starters/tune.py": f"""
-                import keras
-                import keras_tuner
-
-
-                def build_model(hp):
-                    model = keras.Sequential([
-                        keras.layers.Input(shape=(32,)),
-                        keras.layers.Dense(hp.Int("units", min_value=64, max_value=256, step=64), activation="relu"),
-                        keras.layers.Dense(3, activation="softmax"),
-                    ])
-                    model.compile(
-                        optimizer=keras.optimizers.Adam(hp.Float("learning_rate", 1e-4, 1e-2, sampling="log")),
-                        loss=keras.losses.SparseCategoricalCrossentropy(),
-                        metrics=["accuracy"],
-                    )
-                    return model
-
-
-                def build_tuner():
-                    return {tuner_class}(
-                        build_model,
-                        objective="val_accuracy",
-                        max_trials=12,
-                        directory="artifacts/tuning",
-                        project_name="{variant}",
-                    )
-            """,
+            "tensorflow_starters/tune.py": tune_content,
         },
         [
             "Run the tuner with an explicit max_trials or epoch budget.",
@@ -642,21 +791,29 @@ def _export_bundle(_variant: str) -> TensorFlowFeatureBundle:
         ["tensorflow", "keras"],
         {
             "tensorflow_starters/export.py": """
+                from pathlib import Path
+
                 import keras
                 import tensorflow as tf
 
 
                 def save_training_artifact(model: keras.Model) -> None:
+                    Path("artifacts").mkdir(parents=True, exist_ok=True)
                     model.save("artifacts/model.keras")
 
 
-                @tf.function(input_signature=[tf.TensorSpec(shape=[None, 32], dtype=tf.float32, name="features")])
-                def serve_fn(features):
-                    return {"predictions": model(features, training=False)}
+                def build_serving_signature(model: keras.Model):
+                    @tf.function(input_signature=[tf.TensorSpec(shape=[None, 32], dtype=tf.float32, name="features")])
+                    def serve_fn(features):
+                        return {"predictions": model(features, training=False)}
+
+                    return serve_fn
 
 
                 def export_inference_artifact(model: keras.Model) -> None:
-                    model.export("artifacts/exported_model")
+                    Path("artifacts").mkdir(parents=True, exist_ok=True)
+                    signature = build_serving_signature(model)
+                    tf.saved_model.save(model, "artifacts/exported_model", signatures={"serving_default": signature})
             """,
             "tensorflow_starters/export_contract.md": """
                 # Export contract
@@ -798,6 +955,27 @@ def _tfx_bundle(_variant: str) -> TensorFlowFeatureBundle:
                         ],
                     )
             """,
+            "tensorflow_starters/trainer.py": """
+                import keras
+
+
+                def run_fn(fn_args):
+                    model = keras.Sequential([
+                        keras.layers.Input(shape=(32,)),
+                        keras.layers.Dense(32, activation="relu"),
+                        keras.layers.Dense(3, activation="softmax"),
+                    ])
+                    model.compile(
+                        optimizer=keras.optimizers.Adam(),
+                        loss=keras.losses.SparseCategoricalCrossentropy(),
+                        metrics=["accuracy"],
+                    )
+                    model.export(fn_args.serving_model_dir)
+            """,
+            "tensorflow_starters/preprocessing.py": """
+                def preprocessing_fn(inputs):
+                    return inputs
+            """,
         },
         [
             "Validate the pipeline compiles before running it.",
@@ -925,6 +1103,8 @@ def _tflite_bundle(_variant: str) -> TensorFlowFeatureBundle:
         ["tensorflow"],
         {
             "tensorflow_starters/tflite_export.py": """
+                from pathlib import Path
+
                 import tensorflow as tf
 
 
@@ -938,11 +1118,20 @@ def _tflite_bundle(_variant: str) -> TensorFlowFeatureBundle:
                     converter.optimizations = [tf.lite.Optimize.DEFAULT]
                     converter.representative_dataset = representative_dataset
                     tflite_model = converter.convert()
+                    Path(output_path).parent.mkdir(parents=True, exist_ok=True)
                     with open(output_path, "wb") as handle:
                         handle.write(tflite_model)
             """,
             "tensorflow_starters/mobile_integration.kt": """
                 // Kotlin integration sketch
+                import java.nio.MappedByteBuffer
+                import org.tensorflow.lite.Interpreter
+
+
+                fun loadModelFile(name: String): MappedByteBuffer {
+                    TODO("Provide an asset-backed model file loader for your Android app.")
+                }
+
                 val options = Interpreter.Options()
                 val interpreter = Interpreter(loadModelFile("model.tflite"), options)
             """,
@@ -977,12 +1166,15 @@ def _optimization_bundle(_variant: str) -> TensorFlowFeatureBundle:
                 5. Re-check TensorFlow Lite export and slice metrics after every optimization step.
             """,
             "tensorflow_starters/quantize.py": """
+                from pathlib import Path
+
                 import tensorflow as tf
 
 
                 def quantize_saved_model(saved_model_dir: str, output_path: str) -> None:
                     converter = tf.lite.TFLiteConverter.from_saved_model(saved_model_dir)
                     converter.optimizations = [tf.lite.Optimize.DEFAULT]
+                    Path(output_path).parent.mkdir(parents=True, exist_ok=True)
                     with open(output_path, "wb") as handle:
                         handle.write(converter.convert())
             """,

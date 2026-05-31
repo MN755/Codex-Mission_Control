@@ -15,6 +15,7 @@ coverage/
 workspace/runtime/
 workspace/worktrees/
 workspace/demo-project/
+/.worktrees/
 apps/server/.pytest_cache/
 apps/server/.runtime/
 apps/server/.runtime-test/

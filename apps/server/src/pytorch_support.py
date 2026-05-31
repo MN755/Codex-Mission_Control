@@ -10,6 +10,19 @@ from typing import Any
 
 MAX_SCANNED_FILES = 1500
 PYTHON_FILE_EXTENSIONS = {".py", ".ipynb"}
+SKIPPED_SCAN_DIRS = {
+    ".git",
+    ".hg",
+    ".svn",
+    ".venv",
+    "venv",
+    "__pycache__",
+    "node_modules",
+    ".runtime",
+    "dist",
+    "build",
+    "artifacts",
+}
 PROJECT_TEXT_CANDIDATES = [
     "pyproject.toml",
     "requirements.txt",
@@ -57,6 +70,8 @@ def _scan_files(root: Path) -> list[Path]:
     files: list[Path] = []
     try:
         for path in root.rglob("*"):
+            if any(part.lower() in SKIPPED_SCAN_DIRS for part in path.parts):
+                continue
             try:
                 if path.is_file():
                     files.append(path)
@@ -74,6 +89,16 @@ def _safe_read_text(path: Path) -> str:
         return path.read_text(encoding="utf-8", errors="ignore")
     except OSError:
         return ""
+
+
+def _parse_probe_payload(output: str) -> dict[str, Any]:
+    lines = [line.strip() for line in str(output or "").splitlines() if line.strip()]
+    if not lines:
+        return {"ok": False, "error": "PyTorch runtime probe produced no output."}
+    for line in reversed(lines):
+        if line.startswith("{") and line.endswith("}"):
+            return json.loads(line)
+    return json.loads(lines[-1])
 
 
 def _dedupe(items: list[str]) -> list[str]:
@@ -391,8 +416,8 @@ def detect_pytorch_runtime_status(workspace_path: str | Path) -> dict[str, Any]:
             timeout=10,
             check=False,
         )
-        output = (completed.stdout or "").strip()
-        payload = json.loads(output) if output else {"ok": False, "error": "PyTorch runtime probe produced no output."}
+        output = completed.stdout or ""
+        payload = _parse_probe_payload(output)
     except (OSError, subprocess.SubprocessError, json.JSONDecodeError) as exc:
         payload = {"ok": False, "error": str(exc)}
 
@@ -429,7 +454,7 @@ def detect_pytorch_runtime_status(workspace_path: str | Path) -> dict[str, Any]:
         summary = "PyTorch runtime is available, but only CPU validation is currently obvious."
 
     return {
-        "available": True,
+        "available": torch_installed,
         "status": status,
         "summary": summary,
         "torch_installed": torch_installed,
@@ -508,8 +533,6 @@ def build_pytorch_validation_plan(workspace_path: str | Path) -> dict[str, Any]:
     )
 
     status = "blocked" if blockers else str(runtime.get("status") or "ready")
-    if status == "partial" and not blockers:
-        status = "ready"
     summary = (
         "Mission Control can run a PyTorch-aware validation lane for this workspace."
         if not blockers

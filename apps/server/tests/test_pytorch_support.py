@@ -81,10 +81,34 @@ def test_detect_pytorch_runtime_status_handles_missing_torch_gracefully(monkeypa
 
     payload = detect_pytorch_runtime_status(workspace)
 
-    assert payload["available"] is True
+    assert payload["available"] is False
     assert payload["status"] == "blocked"
     assert payload["torch_installed"] is False
     assert "No module named 'torch'" in payload["blockers"][0]
+
+
+def test_detect_pytorch_runtime_status_tolerates_noise_before_json_payload(monkeypatch) -> None:
+    workspace = Path(sample_workspace("pytorch-runtime-noisy-stdout"))
+    workspace.mkdir(parents=True, exist_ok=True)
+    _write(workspace / "requirements.txt", "torch\n")
+    _write(workspace / "train.py", "print('train')\n")
+
+    class _Completed:
+        def __init__(self, stdout: str) -> None:
+            self.stdout = stdout
+
+    monkeypatch.setattr(
+        "pytorch_support.subprocess.run",
+        lambda *args, **kwargs: _Completed("warning: startup noise\n{\"ok\": true, \"torch_version\": \"2.7.0\", \"cuda_available\": false, \"mps_available\": true, \"device_count\": 0, \"cuda_version\": null, \"cudnn_available\": false}\n"),
+    )
+    monkeypatch.setattr("pytorch_support.shutil.which", lambda _command: "C:/tools/python.exe")
+
+    payload = detect_pytorch_runtime_status(workspace)
+
+    assert payload["available"] is True
+    assert payload["status"] == "ready"
+    assert payload["torch_version"] == "2.7.0"
+    assert payload["mps_available"] is True
 
 
 def test_pytorch_validation_plan_surfaces_training_export_checkpoint_and_runtime_steps(monkeypatch) -> None:
@@ -135,3 +159,48 @@ def test_pytorch_validation_plan_surfaces_training_export_checkpoint_and_runtime
     assert any(step["type"] == "export" for step in payload["steps"])
     assert any(step["type"] == "checkpoint" for step in payload["steps"])
     assert any("device, precision, and batch-size" in target.lower() for target in payload["evidence_targets"])
+
+
+def test_pytorch_validation_plan_keeps_partial_runtime_status(monkeypatch) -> None:
+    workspace = Path(sample_workspace("pytorch-plan-partial-runtime"))
+    workspace.mkdir(parents=True, exist_ok=True)
+    _write(workspace / "requirements.txt", "torch\npytest\n")
+    _write(workspace / "train.py", "print('train')\n")
+
+    monkeypatch.setattr(
+        "pytorch_support.detect_pytorch_runtime_status",
+        lambda _workspace: {
+            "available": True,
+            "status": "partial",
+            "summary": "CPU only",
+            "torch_installed": True,
+            "cuda_available": False,
+            "mps_available": False,
+            "device_count": 0,
+            "torch_version": "2.7.0",
+            "cuda_version": None,
+            "cudnn_available": False,
+            "distributed_backends": ["gloo"],
+            "blockers": [],
+            "recommended_fixes": [],
+        },
+    )
+
+    payload = build_pytorch_validation_plan(workspace)
+
+    assert payload["status"] == "partial"
+    assert payload["runtime_status"] == "partial"
+
+
+def test_detect_pytorch_repo_mode_ignores_artifact_flood_and_finds_real_repo_signals(tmp_path: Path) -> None:
+    workspace = tmp_path / "artifact-heavy-pytorch"
+    (workspace / "artifacts").mkdir(parents=True, exist_ok=True)
+    for index in range(1800):
+        _write(workspace / "artifacts" / f"noise-{index}.txt", "x\n")
+    _write(workspace / "pyproject.toml", "[project]\ndependencies=['torch','accelerate']\n")
+    _write(workspace / "train.py", "import torch\n")
+
+    payload = detect_pytorch_repo_mode(workspace)
+
+    assert payload["enabled"] is True
+    assert "python train.py" in payload["training_commands"]

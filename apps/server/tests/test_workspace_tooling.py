@@ -218,3 +218,43 @@ def test_detect_workspace_tooling_surfaces_pytorch_training_pack(tmp_path: Path,
     packs = {pack["id"]: pack for pack in payload["packs"]}
     assert packs["pytorch_training_pack"]["status"] == "ready"
     assert any(command.startswith("python train.py") for command in payload["validation_commands"])
+
+
+def test_detect_workspace_tooling_uses_code_signals_and_survives_binary_config_files(tmp_path: Path, monkeypatch) -> None:
+    (tmp_path / "requirements.txt").write_bytes(b"\xff\xfe\x00\x00")
+    (tmp_path / "train.py").write_text(
+        "import torch\nfrom torch.profiler import profile\nimport tensorflow as tf\n"
+        "from keras.callbacks import TensorBoard\n"
+        "tf.saved_model.save(object(), 'artifacts/exported_model')\n"
+        "torchrun = 'enabled'\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        "workspace_tooling._which",
+        lambda command: f"C:/tools/{command}.exe" if command in {"tensorboard", "saved_model_cli", "torchrun"} else None,
+    )
+    monkeypatch.setattr(
+        "workspace_tooling.detect_pytorch_runtime_status",
+        lambda _workspace: {
+            "available": True,
+            "status": "ready",
+            "summary": "PyTorch runtime is ready.",
+            "torch_installed": True,
+            "cuda_available": True,
+            "mps_available": False,
+            "device_count": 1,
+            "torch_version": "2.7.0",
+            "cuda_version": "12.4",
+            "cudnn_available": True,
+            "distributed_backends": ["nccl", "gloo"],
+            "blockers": [],
+            "recommended_fixes": [],
+        },
+    )
+
+    payload = detect_workspace_tooling(tmp_path, project_name="Signal Demo")
+
+    tools = {tool["id"]: tool for tool in payload["tools"]}
+    assert tools["tensorboard"]["configured"] is True
+    assert tools["saved_model_cli"]["configured"] is True
+    assert tools["torchrun"]["configured"] is True

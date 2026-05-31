@@ -8,6 +8,19 @@ from typing import Any
 
 MAX_SCANNED_FILES = 1500
 PYTHON_FILE_EXTENSIONS = {".py", ".ipynb"}
+SKIPPED_SCAN_DIRS = {
+    ".git",
+    ".hg",
+    ".svn",
+    ".venv",
+    "venv",
+    "__pycache__",
+    "node_modules",
+    ".runtime",
+    "dist",
+    "build",
+    "artifacts",
+}
 MODEL_FILE_HINTS = {"saved_model.pb", "keras_metadata.pb"}
 EXPORT_FILE_EXTENSIONS = {".tflite"}
 PROJECT_TEXT_CANDIDATES = [
@@ -58,6 +71,8 @@ def _scan_files(root: Path) -> list[Path]:
     files: list[Path] = []
     try:
         for path in root.rglob("*"):
+            if any(part.lower() in SKIPPED_SCAN_DIRS for part in path.parts):
+                continue
             try:
                 if path.is_file():
                     files.append(path)

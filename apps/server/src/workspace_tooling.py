@@ -163,8 +163,8 @@ def _which(command: str) -> str | None:
 
 def _safe_read_text(path: Path) -> str:
     try:
-        return path.read_text(encoding="utf-8")
-    except OSError:
+        return path.read_text(encoding="utf-8", errors="ignore")
+    except (OSError, UnicodeDecodeError):
         return ""
 
 
@@ -180,6 +180,25 @@ def _package_json_package_names(root: Path) -> set[str]:
     deps.update(dict(payload.get("dependencies") or {}))
     deps.update(dict(payload.get("devDependencies") or {}))
     return {str(name) for name in deps}
+
+
+def _workspace_signal_haystack(root: Path) -> str:
+    text_parts = [
+        _safe_read_text(root / relative_name).lower()
+        for relative_name in _PROJECT_TEXT_CANDIDATES
+        if (root / relative_name).exists()
+    ]
+    for path in sorted(root.rglob("*")):
+        if len(text_parts) >= 40:
+            break
+        if not path.is_file():
+            continue
+        if path.suffix.lower() not in {".py", ".ipynb", ".js", ".jsx", ".ts", ".tsx", ".json", ".toml", ".yaml", ".yml"}:
+            continue
+        if any(part.startswith(".") and part not in {".github"} for part in path.relative_to(root).parts):
+            continue
+        text_parts.append(_safe_read_text(path).lower())
+    return "\n".join(text_parts)
 
 
 def _config_matches(root: Path, spec: dict[str, Any]) -> tuple[list[str], list[str]]:
@@ -204,11 +223,7 @@ def _config_matches(root: Path, spec: dict[str, Any]) -> tuple[list[str], list[s
             matched_files.append(f"package.json::{name}")
     workspace_tokens = [str(token).strip().lower() for token in spec.get("workspace_tokens", []) if str(token).strip()]
     if workspace_tokens:
-        haystack = "\n".join(
-            _safe_read_text(root / relative_name).lower()
-            for relative_name in _PROJECT_TEXT_CANDIDATES
-            if (root / relative_name).exists()
-        )
+        haystack = _workspace_signal_haystack(root)
         for token in workspace_tokens:
             if token in haystack:
                 matched_sections.append(f"signal:{token}")
@@ -216,7 +231,10 @@ def _config_matches(root: Path, spec: dict[str, Any]) -> tuple[list[str], list[s
 
 
 def _repo_profile(root: Path) -> dict[str, Any]:
-    files = {entry.name for entry in root.iterdir()} if root.exists() else set()
+    try:
+        files = {entry.name for entry in root.iterdir()} if root.exists() else set()
+    except OSError:
+        files = set()
     python_repo = any(name in files for name in _PYTHON_SIGNALS)
     node_repo = any(name in files for name in _NODE_SIGNALS)
     rust_repo = "Cargo.toml" in files

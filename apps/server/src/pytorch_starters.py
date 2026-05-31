@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
-from textwrap import dedent
+from textwrap import dedent, indent
 from typing import Any
 
 
@@ -141,14 +141,136 @@ def _bundle(
 
 
 def _project_scaffold_bundle(variant: str) -> PyTorchFeatureBundle:
-    heads = {
-        "classification": ("torch.nn.Linear(hidden_dim, num_classes)", "torch.nn.CrossEntropyLoss()"),
-        "vision": ("torch.nn.Linear(hidden_dim, num_classes)", "torch.nn.CrossEntropyLoss()"),
-        "nlp": ("torch.nn.Linear(hidden_dim, vocab_size)", "torch.nn.CrossEntropyLoss()"),
-    }
-    if variant not in heads:
+    if variant not in {"classification", "vision", "nlp"}:
         raise ValueError(f"Unsupported PyTorch scaffold variant `{variant}`.")
-    head, loss = heads[variant]
+    model_content = {
+        "classification": dedent(
+            """
+            import torch
+
+            from .config import hidden_dim, num_classes
+
+
+            class DemoModel(torch.nn.Module):
+                def __init__(self) -> None:
+                    super().__init__()
+                    self.encoder = torch.nn.Linear(128, hidden_dim)
+                    self.head = torch.nn.Linear(hidden_dim, num_classes)
+
+                def forward(self, inputs: torch.Tensor) -> torch.Tensor:
+                    features = torch.relu(self.encoder(inputs))
+                    return self.head(features)
+
+
+            def build_loss():
+                return torch.nn.CrossEntropyLoss()
+            """
+        ).strip(),
+        "vision": dedent(
+            """
+            import torch
+
+            from .config import num_classes
+
+
+            class DemoModel(torch.nn.Module):
+                def __init__(self) -> None:
+                    super().__init__()
+                    self.encoder = torch.nn.Sequential(
+                        torch.nn.Conv2d(3, 16, kernel_size=3, stride=2, padding=1),
+                        torch.nn.ReLU(),
+                        torch.nn.Conv2d(16, 32, kernel_size=3, stride=2, padding=1),
+                        torch.nn.ReLU(),
+                        torch.nn.AdaptiveAvgPool2d((1, 1)),
+                    )
+                    self.head = torch.nn.Linear(32, num_classes)
+
+                def forward(self, inputs: torch.Tensor) -> torch.Tensor:
+                    features = self.encoder(inputs).flatten(1)
+                    return self.head(features)
+
+
+            def build_loss():
+                return torch.nn.CrossEntropyLoss()
+            """
+        ).strip(),
+        "nlp": dedent(
+            """
+            import torch
+
+            from .config import hidden_dim, num_classes, vocab_size
+
+
+            class DemoModel(torch.nn.Module):
+                def __init__(self) -> None:
+                    super().__init__()
+                    self.embedding = torch.nn.Embedding(vocab_size, hidden_dim)
+                    self.head = torch.nn.Linear(hidden_dim, num_classes)
+
+                def forward(self, inputs: torch.Tensor) -> torch.Tensor:
+                    features = self.embedding(inputs).mean(dim=1)
+                    return self.head(features)
+
+
+            def build_loss():
+                return torch.nn.CrossEntropyLoss()
+            """
+        ).strip(),
+    }[variant]
+    data_content = {
+        "classification": dedent(
+            """
+            import torch
+            from torch.utils.data import DataLoader, TensorDataset
+
+            from .config import batch_size
+
+
+            def build_dataloaders():
+                features = torch.zeros((128, 128), dtype=torch.float32)
+                labels = torch.zeros((128,), dtype=torch.long)
+                dataset = TensorDataset(features, labels)
+                train_loader = DataLoader(dataset, batch_size=batch_size, shuffle=True, num_workers=2, pin_memory=True)
+                val_loader = DataLoader(dataset, batch_size=batch_size, shuffle=False, num_workers=2)
+                return train_loader, val_loader
+            """
+        ).strip(),
+        "vision": dedent(
+            """
+            import torch
+            from torch.utils.data import DataLoader, TensorDataset
+
+            from .config import batch_size
+
+
+            def build_dataloaders():
+                images = torch.zeros((128, 3, 64, 64), dtype=torch.float32)
+                labels = torch.zeros((128,), dtype=torch.long)
+                dataset = TensorDataset(images, labels)
+                train_loader = DataLoader(dataset, batch_size=batch_size, shuffle=True, num_workers=2, pin_memory=True)
+                val_loader = DataLoader(dataset, batch_size=batch_size, shuffle=False, num_workers=2)
+                return train_loader, val_loader
+            """
+        ).strip(),
+        "nlp": dedent(
+            """
+            import torch
+            from torch.utils.data import DataLoader, TensorDataset
+
+            from .config import batch_size, vocab_size
+
+
+            def build_dataloaders():
+                tokens = torch.zeros((128, 32), dtype=torch.long)
+                labels = torch.zeros((128,), dtype=torch.long)
+                tokens[:, 0] = torch.arange(128) % max(vocab_size, 1)
+                dataset = TensorDataset(tokens, labels)
+                train_loader = DataLoader(dataset, batch_size=batch_size, shuffle=True, num_workers=2, pin_memory=True)
+                val_loader = DataLoader(dataset, batch_size=batch_size, shuffle=False, num_workers=2)
+                return train_loader, val_loader
+            """
+        ).strip(),
+    }[variant]
     return _bundle(
         "project_scaffold",
         variant,
@@ -164,27 +286,10 @@ def _project_scaffold_bundle(variant: str) -> PyTorchFeatureBundle:
                 num_classes = 4
                 vocab_size = 32000
             """,
-            "pytorch_starters/model.py": f"""
-                import torch
-
-                from .config import hidden_dim, num_classes, vocab_size
-
-
-                class DemoModel(torch.nn.Module):
-                    def __init__(self) -> None:
-                        super().__init__()
-                        self.encoder = torch.nn.Linear(128, hidden_dim)
-                        self.head = {head}
-
-                    def forward(self, inputs: torch.Tensor) -> torch.Tensor:
-                        features = torch.relu(self.encoder(inputs))
-                        return self.head(features)
-
-
-                def build_loss():
-                    return {loss}
-            """,
+            "pytorch_starters/model.py": model_content,
             "pytorch_starters/train.py": """
+                from pathlib import Path
+
                 import torch
 
                 from .config import epochs, learning_rate
@@ -194,38 +299,34 @@ def _project_scaffold_bundle(variant: str) -> PyTorchFeatureBundle:
 
                 def main() -> None:
                     train_loader, val_loader = build_dataloaders()
-                    model = DemoModel()
+                    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+                    model = DemoModel().to(device)
                     optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
                     criterion = build_loss()
                     for epoch in range(epochs):
                         model.train()
                         for features, labels in train_loader:
+                            features = features.to(device)
+                            labels = labels.to(device)
                             optimizer.zero_grad(set_to_none=True)
                             logits = model(features)
                             loss = criterion(logits, labels)
                             loss.backward()
                             optimizer.step()
+                        model.eval()
+                        with torch.no_grad():
+                            for features, labels in val_loader:
+                                features = features.to(device)
+                                labels = labels.to(device)
+                                criterion(model(features), labels)
+                    Path("artifacts").mkdir(parents=True, exist_ok=True)
                     torch.save({"model": model.state_dict(), "optimizer": optimizer.state_dict()}, "artifacts/checkpoint.pt")
 
 
                 if __name__ == "__main__":
                     main()
             """,
-            "pytorch_starters/data.py": """
-                import torch
-                from torch.utils.data import DataLoader, TensorDataset
-
-                from .config import batch_size
-
-
-                def build_dataloaders():
-                    features = torch.zeros((128, 128))
-                    labels = torch.zeros((128,), dtype=torch.long)
-                    dataset = TensorDataset(features, labels)
-                    train_loader = DataLoader(dataset, batch_size=batch_size, shuffle=True, num_workers=2, pin_memory=True)
-                    val_loader = DataLoader(dataset, batch_size=batch_size, shuffle=False, num_workers=2)
-                    return train_loader, val_loader
-            """,
+            "pytorch_starters/data.py": data_content,
         },
         [
             "python -m pytorch_starters.train",
@@ -233,8 +334,8 @@ def _project_scaffold_bundle(variant: str) -> PyTorchFeatureBundle:
             "Run one forward/backward smoke pass before trusting the starter.",
         ],
         [
-            "Capture device, precision, batch size, and checkpoint artifact path.",
-            "Record whether the training loop and validation loop both executed.",
+        "Capture device, precision, batch size, and checkpoint artifact path.",
+            "Record whether both the training loop and validation loop actually executed.",
         ],
     )
 
@@ -242,11 +343,49 @@ def _project_scaffold_bundle(variant: str) -> PyTorchFeatureBundle:
 def _dataset_dataloader_bundle(variant: str) -> PyTorchFeatureBundle:
     if variant not in {"tabular", "vision", "text"}:
         raise ValueError(f"Unsupported DataLoader variant `{variant}`.")
-    transform_block = {
-        "tabular": "features = torch.tensor(frame.drop(columns=['label']).values, dtype=torch.float32)",
-        "vision": "transform = torchvision.transforms.Compose([torchvision.transforms.Resize((224, 224)), torchvision.transforms.ToTensor()])",
-        "text": "tokens = tokenizer(batch['text'], truncation=True, padding='max_length', max_length=256, return_tensors='pt')",
+    dataset_prelude = {
+        "tabular": "",
+        "vision": "import torchvision",
+        "text": "from transformers import AutoTokenizer",
     }[variant]
+    dataset_init = {
+        "tabular": "pass",
+        "vision": "pass",
+        "text": "self.tokenizer = AutoTokenizer.from_pretrained(\"distilbert-base-uncased\")",
+    }[variant]
+    sample_block = {
+        "tabular": dedent(
+            """
+            features = torch.zeros(32, dtype=torch.float32)
+            return features, torch.tensor(index % 2, dtype=torch.long)
+            """
+        ).strip(),
+        "vision": dedent(
+            """
+            transform = torchvision.transforms.Compose([
+                torchvision.transforms.Resize((224, 224)),
+                torchvision.transforms.ConvertImageDtype(torch.float32),
+            ])
+            image = torch.zeros((3, 256, 256), dtype=torch.uint8)
+            return transform(image), torch.tensor(index % 10, dtype=torch.long)
+            """
+        ).strip(),
+        "text": dedent(
+            """
+            tokens = self.tokenizer(
+                f"sample text {index}",
+                truncation=True,
+                padding="max_length",
+                max_length=32,
+                return_tensors="pt",
+            )
+            return tokens["input_ids"].squeeze(0), torch.tensor(index % 2, dtype=torch.long)
+            """
+        ).strip(),
+    }[variant]
+    dataset_prelude_block = indent(dataset_prelude, "                ") + "\n" if dataset_prelude else ""
+    dataset_init_block = indent(dataset_init, "                        ")
+    sample_block_indented = indent(sample_block, "                        ")
     return _bundle(
         "dataset_dataloader",
         variant,
@@ -257,15 +396,18 @@ def _dataset_dataloader_bundle(variant: str) -> PyTorchFeatureBundle:
             "pytorch_starters/dataloader.py": f"""
                 import torch
                 from torch.utils.data import DataLoader, Dataset
+{dataset_prelude_block}
 
 
                 class DemoDataset(Dataset):
+                    def __init__(self) -> None:
+{dataset_init_block}
+
                     def __len__(self) -> int:
                         return 1024
 
                     def __getitem__(self, index: int):
-                        {transform_block}
-                        return torch.zeros(128), torch.tensor(0, dtype=torch.long)
+{sample_block_indented}
 
 
                 def build_dataloader() -> DataLoader:
@@ -293,16 +435,73 @@ def _dataset_dataloader_bundle(variant: str) -> PyTorchFeatureBundle:
 def _training_loop_bundle(variant: str) -> PyTorchFeatureBundle:
     if variant not in {"basic", "amp"}:
         raise ValueError(f"Unsupported training loop variant `{variant}`.")
-    amp_lines = (
-        "scaler = torch.cuda.amp.GradScaler(enabled=device.type == 'cuda')\n"
-        "        with torch.cuda.amp.autocast(enabled=device.type == 'cuda'):\n"
-        "            logits = model(features)\n"
-        "            loss = criterion(logits, labels)\n"
-        "        scaler.scale(loss).backward()\n"
-        "        scaler.step(optimizer)\n"
-        "        scaler.update()"
+    training_loop_content = (
+        dedent(
+            """
+            import torch
+
+
+            def run_epoch(model, loader, optimizer, criterion, device):
+                model.train()
+                model.to(device)
+                scaler = torch.cuda.amp.GradScaler(enabled=device.type == "cuda")
+                for features, labels in loader:
+                    features = features.to(device)
+                    labels = labels.to(device)
+                    optimizer.zero_grad(set_to_none=True)
+                    with torch.cuda.amp.autocast(enabled=device.type == "cuda"):
+                        logits = model(features)
+                        loss = criterion(logits, labels)
+                    scaler.scale(loss).backward()
+                    scaler.step(optimizer)
+                    scaler.update()
+
+
+            @torch.no_grad()
+            def run_validation(model, loader, criterion, device):
+                model.eval()
+                model.to(device)
+                total_loss = 0.0
+                for features, labels in loader:
+                    features = features.to(device)
+                    labels = labels.to(device)
+                    logits = model(features)
+                    total_loss += float(criterion(logits, labels).item())
+                return total_loss / max(len(loader), 1)
+            """
+        ).strip()
         if variant == "amp"
-        else "logits = model(features)\n        loss = criterion(logits, labels)\n        loss.backward()\n        optimizer.step()"
+        else dedent(
+            """
+            import torch
+
+
+            def run_epoch(model, loader, optimizer, criterion, device):
+                model.train()
+                model.to(device)
+                for features, labels in loader:
+                    features = features.to(device)
+                    labels = labels.to(device)
+                    optimizer.zero_grad(set_to_none=True)
+                    logits = model(features)
+                    loss = criterion(logits, labels)
+                    loss.backward()
+                    optimizer.step()
+
+
+            @torch.no_grad()
+            def run_validation(model, loader, criterion, device):
+                model.eval()
+                model.to(device)
+                total_loss = 0.0
+                for features, labels in loader:
+                    features = features.to(device)
+                    labels = labels.to(device)
+                    logits = model(features)
+                    total_loss += float(criterion(logits, labels).item())
+                return total_loss / max(len(loader), 1)
+            """
+        ).strip()
     )
     return _bundle(
         "training_loop",
@@ -311,30 +510,7 @@ def _training_loop_bundle(variant: str) -> PyTorchFeatureBundle:
         "Generate a PyTorch loop with explicit train/eval phases and less magical state leakage.",
         ["torch"],
         {
-            "pytorch_starters/training_loop.py": f"""
-                import torch
-
-
-                def run_epoch(model, loader, optimizer, criterion, device):
-                    model.train()
-                    for features, labels in loader:
-                        features = features.to(device)
-                        labels = labels.to(device)
-                        optimizer.zero_grad(set_to_none=True)
-                        {amp_lines}
-
-
-                @torch.no_grad()
-                def run_validation(model, loader, criterion, device):
-                    model.eval()
-                    total_loss = 0.0
-                    for features, labels in loader:
-                        features = features.to(device)
-                        labels = labels.to(device)
-                        logits = model(features)
-                        total_loss += float(criterion(logits, labels).item())
-                    return total_loss / max(len(loader), 1)
-            """,
+            "pytorch_starters/training_loop.py": training_loop_content,
         },
         [
             "Run one train epoch and one validation epoch on a toy batch.",
@@ -358,16 +534,20 @@ def _distributed_training_bundle(variant: str) -> PyTorchFeatureBundle:
 
 
             def setup() -> tuple[int, int]:
-                dist.init_process_group("nccl")
+                backend = "nccl" if torch.cuda.is_available() else "gloo"
+                dist.init_process_group(backend)
                 rank = int(os.environ["RANK"])
-                local_rank = int(os.environ["LOCAL_RANK"])
-                torch.cuda.set_device(local_rank)
+                local_rank = int(os.environ.get("LOCAL_RANK", "0"))
+                if torch.cuda.is_available():
+                    torch.cuda.set_device(local_rank)
                 return rank, local_rank
 
 
             def wrap(model: torch.nn.Module) -> torch.nn.Module:
                 _, local_rank = setup()
-                return DDP(model.to(local_rank), device_ids=[local_rank])
+                if torch.cuda.is_available():
+                    return DDP(model.to(local_rank), device_ids=[local_rank])
+                return DDP(model)
         """,
         "accelerate": """
             from accelerate import Accelerator
@@ -421,10 +601,13 @@ def _checkpoint_resume_bundle(variant: str) -> PyTorchFeatureBundle:
         ["torch"],
         {
             "pytorch_starters/checkpoints.py": """
+                from pathlib import Path
+
                 import torch
 
 
                 def save_checkpoint(path, model, optimizer, epoch, scaler=None):
+                    Path(path).parent.mkdir(parents=True, exist_ok=True)
                     payload = {
                         "model": model.state_dict(),
                         "optimizer": optimizer.state_dict(),
@@ -465,12 +648,18 @@ def _profiler_observability_bundle(variant: str) -> PyTorchFeatureBundle:
         ["torch", "tensorboard"],
         {
             "pytorch_starters/profiler.py": """
+                from pathlib import Path
+
                 import torch
 
 
                 def profile_step(model, batch, logdir="artifacts/tensorboard"):
+                    Path(logdir).mkdir(parents=True, exist_ok=True)
+                    activities = [torch.profiler.ProfilerActivity.CPU]
+                    if torch.cuda.is_available():
+                        activities.append(torch.profiler.ProfilerActivity.CUDA)
                     with torch.profiler.profile(
-                        activities=[torch.profiler.ProfilerActivity.CPU, torch.profiler.ProfilerActivity.CUDA],
+                        activities=activities,
                         schedule=torch.profiler.schedule(wait=1, warmup=1, active=2),
                         on_trace_ready=torch.profiler.tensorboard_trace_handler(logdir),
                         record_shapes=True,
@@ -504,10 +693,14 @@ def _export_inference_bundle(variant: str) -> PyTorchFeatureBundle:
         ["torch", "onnx"],
         {
             "pytorch_starters/export.py": """
+                from pathlib import Path
+
                 import torch
 
 
                 def export_artifacts(model: torch.nn.Module, sample: torch.Tensor) -> None:
+                    Path("artifacts").mkdir(parents=True, exist_ok=True)
+                    model.eval()
                     scripted = torch.jit.trace(model, sample)
                     scripted.save("artifacts/model.ts")
                     torch.onnx.export(
@@ -560,7 +753,7 @@ def _peft_finetuning_bundle(variant: str) -> PyTorchFeatureBundle:
                         r=16,
                         lora_alpha=32,
                         lora_dropout=0.05,
-                        target_modules=["q_proj", "v_proj"],
+                        target_modules=["c_attn"],
                         bias="none",
                         task_type="CAUSAL_LM",
                     )

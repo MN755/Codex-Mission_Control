@@ -94,3 +94,17 @@ def test_tensorflow_validation_plan_surfaces_export_and_observability_steps(monk
     assert any(step["type"] == "observability" for step in payload["steps"])
     assert any(step["type"] == "export" for step in payload["steps"])
     assert any("training, evaluation, and export" in target.lower() for target in payload["evidence_targets"])
+
+
+def test_detect_tensorflow_repo_mode_ignores_artifact_flood_and_finds_real_repo_signals(tmp_path: Path) -> None:
+    workspace = tmp_path / "artifact-heavy-tensorflow"
+    (workspace / "artifacts").mkdir(parents=True, exist_ok=True)
+    for index in range(1800):
+        _write(workspace / "artifacts" / f"noise-{index}.txt", "x\n")
+    _write(workspace / "pyproject.toml", "[project]\ndependencies=['tensorflow','tensorboard']\n")
+    _write(workspace / "train.py", "import tensorflow as tf\n")
+
+    payload = detect_tensorflow_repo_mode(workspace)
+
+    assert payload["enabled"] is True
+    assert "python train.py" in payload["training_commands"]
