@@ -298,6 +298,21 @@ def test_detect_pytorch_repo_mode_tracks_notebooks_and_configs(tmp_path: Path) -
     assert "apps/trainer/configs/train.yaml" in payload["config_paths"]
 
 
+def test_detect_pytorch_repo_mode_tracks_existing_export_artifacts(tmp_path: Path) -> None:
+    workspace = tmp_path / "pytorch-export-artifacts"
+    workspace.mkdir(parents=True, exist_ok=True)
+    _write(workspace / "pyproject.toml", "[project]\ndependencies=['torch','onnx']\n")
+    _write(workspace / "train.py", "import torch\n")
+    _write(workspace / "artifacts" / "model.onnx", "artifact\n")
+    _write(workspace / "artifacts" / "model.torchscript", "artifact\n")
+
+    payload = detect_pytorch_repo_mode(workspace)
+
+    assert "artifacts/model.onnx" in payload["existing_onnx_artifacts"]
+    assert "artifacts/model.torchscript" in payload["existing_torchscript_artifacts"]
+    assert "model_export" in payload["product_workflows"]
+
+
 def test_detect_pytorch_repo_mode_ignores_readme_hype_for_advanced_frameworks(tmp_path: Path) -> None:
     workspace = tmp_path / "pytorch-readme-hype"
     workspace.mkdir(parents=True, exist_ok=True)
@@ -584,6 +599,42 @@ def test_pytorch_validation_plan_allows_export_only_repo(monkeypatch, tmp_path: 
     assert payload["status"] == "partial"
     assert payload["blockers"] == []
     assert any(step["type"] == "export" and step["command"] == "python export.py" for step in payload["steps"])
+
+
+def test_pytorch_validation_plan_accepts_existing_export_artifacts_without_repo_export_command(monkeypatch, tmp_path: Path) -> None:
+    workspace = tmp_path / "pytorch-existing-export-artifacts"
+    workspace.mkdir(parents=True, exist_ok=True)
+    _write(workspace / "requirements.txt", "torch\nonnx\n")
+    _write(workspace / "artifacts" / "model.onnx", "artifact\n")
+    _write(workspace / "artifacts" / "model.torchscript", "artifact\n")
+
+    monkeypatch.setattr(
+        "pytorch_support.detect_pytorch_runtime_status",
+        lambda _workspace: {
+            "available": True,
+            "status": "partial",
+            "summary": "CPU only",
+            "torch_installed": True,
+            "python_available": True,
+            "cuda_available": False,
+            "mps_available": False,
+            "device_count": 0,
+            "torch_version": "2.7.0",
+            "cuda_version": None,
+            "cudnn_available": False,
+            "distributed_backends": ["gloo"],
+            "blockers": [],
+            "recommended_fixes": [],
+        },
+    )
+
+    payload = build_pytorch_validation_plan(workspace)
+
+    assert payload["status"] == "partial"
+    assert payload["blockers"] == []
+    export_steps = [step["command"] for step in payload["steps"] if step["type"] == "export"]
+    assert any("model.onnx" in command for command in export_steps)
+    assert any("torch.jit.load" in command for command in export_steps)
 
 
 def test_detect_pytorch_repo_mode_tailors_observability_commands_to_real_signals(tmp_path: Path) -> None:

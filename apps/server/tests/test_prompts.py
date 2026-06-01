@@ -352,6 +352,7 @@ def test_worker_task_prompt_switches_into_pytorch_product_mode_for_torch_repo() 
     _write(workspace / "train.py", "import torch\n")
     _write(workspace / "export.py", "import torch\n")
     _write(workspace / "checkpoints" / "model.pt", "weights\n")
+    _write(workspace / "artifacts" / "model.onnx", "artifact\n")
     _write(workspace / "notebooks" / "experiment.ipynb", "{}\n")
     _write(workspace / "configs" / "train.yaml", "epochs: 2\n")
 
@@ -391,3 +392,4 @@ def test_worker_task_prompt_switches_into_pytorch_product_mode_for_torch_repo() 
     assert "Notebook rescue needed for:" in prompt
     assert "Review PyTorch config files explicitly:" in prompt
     assert "Existing checkpoint evidence in repo:" in prompt
+    assert "Existing PyTorch export artifacts already in repo:" in prompt

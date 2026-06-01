@@ -525,6 +525,8 @@ def detect_workspace_tooling(workspace_path: str | Path | None, *, project_name:
         [str(item) for item in list(tensorflow_mode.get("existing_savedmodel_artifacts") or [])]
         + [str(item) for item in list(tensorflow_mode.get("existing_tflite_artifacts") or [])]
         + [str(item) for item in list(pytorch_mode.get("checkpoint_paths") or [])]
+        + [str(item) for item in list(pytorch_mode.get("existing_onnx_artifacts") or [])]
+        + [str(item) for item in list(pytorch_mode.get("existing_torchscript_artifacts") or [])]
     )
     config_review_paths = _dedupe(
         [str(item) for item in list(tensorflow_mode.get("config_paths") or [])]

@@ -98,6 +98,10 @@ def _cached_context_value(context: dict[str, Any], key: str, factory) -> Any:
     return context[key]
 
 
+def _python_available() -> bool:
+    return bool(shutil.which("python"))
+
+
 def _availability(tool_id: str, *, provider: str, connected_accounts: dict[str, Any], context: dict[str, Any]) -> tuple[str, list[str]]:
     notes: list[str] = []
     if tool_id in {"file-search", "format-changer", "write-publishable-docs", "goal-reminder", "ascii-image-creator"}:
@@ -162,7 +166,8 @@ def _availability(tool_id: str, *, provider: str, connected_accounts: dict[str, 
         if mode.get("enabled"):
             notes.append(f"Detected TensorFlow mode `{mode.get('mode')}` with frameworks: {', '.join(list(mode.get('frameworks') or [])[:4])}.")
             notes.append(str(validation.get("summary") or "TensorFlow validation planning is available."))
-            return "available", notes
+            python_required = bool(mode.get("build_commands") or mode.get("training_commands") or mode.get("export_commands"))
+            return (("available" if _python_available() or not python_required else "needs_setup"), notes)
         notes.append("No TensorFlow or Keras repo signals were detected in the current workspace.")
         return "needs_setup", notes
     if tool_id == "tensorboard-observability":
@@ -172,28 +177,35 @@ def _availability(tool_id: str, *, provider: str, connected_accounts: dict[str, 
             notes.append("TensorBoard only matters when the repo actually signals TensorFlow, Keras, or PyTorch observability work.")
             return "experimental", notes
         tensorboard_path = shutil.which("tensorboard")
+        pytorch_observability_commands = list(pytorch_mode.get("observability_commands") or [])
+        has_pytorch_alt_observability = bool(shutil.which("wandb") or shutil.which("mlflow"))
         notes.append("Use TensorBoard to prove training behavior with logs and curves instead of optimistic narration.")
-        return ("available" if tensorboard_path else "needs_setup"), notes
+        if tensorboard_path or has_pytorch_alt_observability or (pytorch_observability_commands and _python_available()):
+            return "available", notes
+        return "needs_setup", notes
     if tool_id == "tensorflow-serving-export":
         mode = _cached_context_value(context, "tensorflow_mode", lambda: detect_tensorflow_repo_mode(REPO_ROOT))
         notes.append("SavedModel export checks keep training artifacts and serving artifacts from being treated like the same thing.")
         if "SavedModel / Serving" not in list(mode.get("frameworks") or []):
             return "experimental", notes
         has_repo_export = bool(mode.get("export_commands") or mode.get("existing_savedmodel_artifacts"))
-        return ("available" if shutil.which("saved_model_cli") or has_repo_export else "needs_setup"), notes
+        has_inspection_runtime = bool(shutil.which("saved_model_cli") or _python_available())
+        return ("available" if has_repo_export and has_inspection_runtime or shutil.which("saved_model_cli") else "needs_setup"), notes
     if tool_id == "tfx-pipeline-validation":
         mode = _cached_context_value(context, "tensorflow_mode", lambda: detect_tensorflow_repo_mode(REPO_ROOT))
         notes.append("TFX validation is only interesting when the repo actually carries production-pipeline signals.")
         if "TFX" not in list(mode.get("frameworks") or []):
             return "experimental", notes
-        return ("available" if shutil.which("tfx") else "needs_setup"), notes
+        has_repo_pipeline = any(str(command).strip().startswith("python ") for command in list(mode.get("training_commands") or []))
+        return ("available" if shutil.which("tfx") or (has_repo_pipeline and _python_available()) else "needs_setup"), notes
     if tool_id == "tensorflow-lite-export":
         mode = _cached_context_value(context, "tensorflow_mode", lambda: detect_tensorflow_repo_mode(REPO_ROOT))
         notes.append("Lite export checks matter for edge or mobile targets, not every model repo under the sun.")
         if "TensorFlow Lite" not in list(mode.get("frameworks") or []):
             return "experimental", notes
         has_repo_export = bool(mode.get("export_commands") or mode.get("existing_tflite_artifacts"))
-        return ("available" if shutil.which("tflite_convert") or has_repo_export else "needs_setup"), notes
+        has_inspection_runtime = bool(shutil.which("tflite_convert") or _python_available())
+        return ("available" if has_repo_export and has_inspection_runtime or shutil.which("tflite_convert") else "needs_setup"), notes
     if tool_id == "tensorflow-notebook-rescue":
         mode = _cached_context_value(context, "tensorflow_mode", lambda: detect_tensorflow_repo_mode(REPO_ROOT))
         if "notebook_experiments" not in list(mode.get("product_workflows") or []):
@@ -207,7 +219,11 @@ def _availability(tool_id: str, *, provider: str, connected_accounts: dict[str, 
         if mode.get("enabled"):
             notes.append(f"Detected PyTorch mode `{mode.get('mode')}` with frameworks: {', '.join(list(mode.get('frameworks') or [])[:4])}.")
             notes.append(str(validation.get("summary") or "PyTorch validation planning is available."))
-            return "available", notes
+            python_required = any(
+                mode.get(key)
+                for key in ("build_commands", "training_commands", "evaluation_commands", "inference_commands", "export_commands")
+            )
+            return (("available" if _python_available() or not python_required else "needs_setup"), notes)
         notes.append("No PyTorch repo signals were detected in the current workspace.")
         return "needs_setup", notes
     if tool_id == "pytorch-runtime-readiness":
@@ -225,13 +241,13 @@ def _availability(tool_id: str, *, provider: str, connected_accounts: dict[str, 
             return "available", notes
         observability_cli_detected = any(shutil.which(command) for command in ("tensorboard", "wandb", "mlflow"))
         has_repo_observability_command = bool(mode.get("observability_commands"))
-        return ("available" if observability_cli_detected or has_repo_observability_command else "needs_setup"), notes
+        return ("available" if observability_cli_detected or (has_repo_observability_command and _python_available()) else "needs_setup"), notes
     if tool_id == "pytorch-checkpoint-validation":
         mode = _cached_context_value(context, "pytorch_mode", lambda: detect_pytorch_repo_mode(REPO_ROOT))
         notes.append("Checkpoint validation keeps resume claims attached to reality instead of wishful config files.")
         if not mode.get("enabled"):
             return "experimental", notes
-        return ("available" if mode.get("checkpoint_paths") or mode.get("training_commands") else "needs_setup"), notes
+        return ("available" if (mode.get("checkpoint_paths") or mode.get("training_commands")) and _python_available() else "needs_setup"), notes
     if tool_id == "pytorch-distributed-readiness":
         mode = _cached_context_value(context, "pytorch_mode", lambda: detect_pytorch_repo_mode(REPO_ROOT))
         runtime = _cached_context_value(context, "pytorch_runtime_status", lambda: detect_pytorch_runtime_status(REPO_ROOT))
@@ -255,9 +271,9 @@ def _availability(tool_id: str, *, provider: str, connected_accounts: dict[str, 
         notes.append("Export checks matter when TorchScript or ONNX artifacts are part of the product path.")
         if not mode.get("enabled"):
             return "experimental", notes
-        if "model_export" not in list(mode.get("product_workflows") or []) and not mode.get("export_commands"):
+        if "model_export" not in list(mode.get("product_workflows") or []) and not mode.get("export_commands") and not mode.get("existing_onnx_artifacts") and not mode.get("existing_torchscript_artifacts"):
             return "experimental", notes
-        return ("available" if shutil.which("python") else "needs_setup"), notes
+        return ("available" if _python_available() else "needs_setup"), notes
     if tool_id == "pytorch-notebook-rescue":
         mode = _cached_context_value(context, "pytorch_mode", lambda: detect_pytorch_repo_mode(REPO_ROOT))
         if "notebook_experiments" not in list(mode.get("product_workflows") or []):

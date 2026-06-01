@@ -88,6 +88,60 @@ def test_tool_catalog_allows_tensorboard_for_pytorch_observability(monkeypatch) 
     assert tools["tensorboard-observability"]["availability"] == "available"
 
 
+def test_tool_catalog_allows_pytorch_observability_with_wandb_without_tensorboard(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "tool_catalog.detect_tensorflow_repo_mode",
+        lambda _root: {"enabled": False, "mode": None, "frameworks": []},
+    )
+    monkeypatch.setattr(
+        "tool_catalog.detect_pytorch_repo_mode",
+        lambda _root: {
+            "enabled": True,
+            "mode": "pytorch_general",
+            "frameworks": ["PyTorch"],
+            "product_workflows": ["training_observability"],
+            "distributed_stack": [],
+            "checkpoint_paths": [],
+            "training_commands": ["python train.py"],
+            "export_commands": [],
+            "observability_commands": ["wandb sync wandb"],
+        },
+    )
+    monkeypatch.setattr("tool_catalog.shutil.which", lambda command: "C:/tools/wandb.exe" if command == "wandb" else None)
+
+    payload = catalog_with_permissions(provider="codex", connected_accounts={}, permission_overrides={})
+    tools = {item["id"]: item for item in payload}
+
+    assert tools["tensorboard-observability"]["availability"] == "available"
+
+
+def test_tool_catalog_allows_pytorch_observability_with_mlflow_without_tensorboard(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "tool_catalog.detect_tensorflow_repo_mode",
+        lambda _root: {"enabled": False, "mode": None, "frameworks": []},
+    )
+    monkeypatch.setattr(
+        "tool_catalog.detect_pytorch_repo_mode",
+        lambda _root: {
+            "enabled": True,
+            "mode": "pytorch_general",
+            "frameworks": ["PyTorch"],
+            "product_workflows": ["training_observability"],
+            "distributed_stack": [],
+            "checkpoint_paths": [],
+            "training_commands": ["python train.py"],
+            "export_commands": [],
+            "observability_commands": ["mlflow ui --backend-store-uri mlruns"],
+        },
+    )
+    monkeypatch.setattr("tool_catalog.shutil.which", lambda command: "C:/tools/mlflow.exe" if command == "mlflow" else None)
+
+    payload = catalog_with_permissions(provider="codex", connected_accounts={}, permission_overrides={})
+    tools = {item["id"]: item for item in payload}
+
+    assert tools["tensorboard-observability"]["availability"] == "available"
+
+
 def test_tool_catalog_surfaces_pytorch_tools_when_repo_signals_exist(monkeypatch) -> None:
     monkeypatch.setattr(
         "tool_catalog.detect_pytorch_repo_mode",
@@ -101,6 +155,8 @@ def test_tool_catalog_surfaces_pytorch_tools_when_repo_signals_exist(monkeypatch
             "training_commands": ["python train.py"],
             "export_commands": ["python export.py"],
             "observability_commands": ["python -m torch.utils.bottleneck train.py"],
+            "existing_onnx_artifacts": ["artifacts/model.onnx"],
+            "existing_torchscript_artifacts": ["artifacts/model.torchscript"],
         },
     )
     monkeypatch.setattr(
@@ -181,12 +237,35 @@ def test_tool_catalog_allows_pytorch_observability_when_repo_has_commands_but_no
             "observability_commands": ["python -m torch.utils.bottleneck train.py"],
         },
     )
-    monkeypatch.setattr("tool_catalog.shutil.which", lambda _command: None)
+    monkeypatch.setattr("tool_catalog.shutil.which", lambda command: "C:/tools/python.exe" if command == "python" else None)
 
     payload = catalog_with_permissions(provider="codex", connected_accounts={}, permission_overrides={})
     tools = {item["id"]: item for item in payload}
 
     assert tools["pytorch-profiler-observability"]["availability"] == "available"
+
+
+def test_tool_catalog_requires_python_for_pytorch_observability_repo_commands(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "tool_catalog.detect_pytorch_repo_mode",
+        lambda _root: {
+            "enabled": True,
+            "mode": "pytorch_basic",
+            "frameworks": ["PyTorch"],
+            "product_workflows": ["training_observability"],
+            "distributed_stack": [],
+            "checkpoint_paths": [],
+            "training_commands": ["python train.py"],
+            "export_commands": [],
+            "observability_commands": ["python -m torch.utils.bottleneck train.py"],
+        },
+    )
+    monkeypatch.setattr("tool_catalog.shutil.which", lambda _command: None)
+
+    payload = catalog_with_permissions(provider="codex", connected_accounts={}, permission_overrides={})
+    tools = {item["id"]: item for item in payload}
+
+    assert tools["pytorch-profiler-observability"]["availability"] == "needs_setup"
 
 
 def test_tool_catalog_requires_specific_distributed_clis_for_signaled_stacks(monkeypatch) -> None:
@@ -309,13 +388,32 @@ def test_tool_catalog_accepts_repo_native_tensorflow_export_commands_without_cli
             "export_commands": ["python export.py"],
         },
     )
-    monkeypatch.setattr("tool_catalog.shutil.which", lambda _command: None)
+    monkeypatch.setattr("tool_catalog.shutil.which", lambda command: "C:/tools/python.exe" if command == "python" else None)
 
     payload = catalog_with_permissions(provider="codex", connected_accounts={}, permission_overrides={})
     tools = {item["id"]: item for item in payload}
 
     assert tools["tensorflow-serving-export"]["availability"] == "available"
     assert tools["tensorflow-lite-export"]["availability"] == "available"
+
+
+def test_tool_catalog_requires_python_for_repo_native_tensorflow_export_commands(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "tool_catalog.detect_tensorflow_repo_mode",
+        lambda _root: {
+            "enabled": True,
+            "mode": "tensorflow_product",
+            "frameworks": ["TensorFlow", "SavedModel / Serving", "TensorFlow Lite"],
+            "export_commands": ["python export.py"],
+        },
+    )
+    monkeypatch.setattr("tool_catalog.shutil.which", lambda _command: None)
+
+    payload = catalog_with_permissions(provider="codex", connected_accounts={}, permission_overrides={})
+    tools = {item["id"]: item for item in payload}
+
+    assert tools["tensorflow-serving-export"]["availability"] == "needs_setup"
+    assert tools["tensorflow-lite-export"]["availability"] == "needs_setup"
 
 
 def test_tool_catalog_accepts_tensorflow_artifacts_without_repo_export_commands(monkeypatch) -> None:
@@ -331,13 +429,79 @@ def test_tool_catalog_accepts_tensorflow_artifacts_without_repo_export_commands(
             "existing_tflite_artifacts": ["artifacts/model.tflite"],
         },
     )
-    monkeypatch.setattr("tool_catalog.shutil.which", lambda _command: None)
+    monkeypatch.setattr("tool_catalog.shutil.which", lambda command: "C:/tools/python.exe" if command == "python" else None)
 
     payload = catalog_with_permissions(provider="codex", connected_accounts={}, permission_overrides={})
     tools = {item["id"]: item for item in payload}
 
     assert tools["tensorflow-serving-export"]["availability"] == "available"
     assert tools["tensorflow-lite-export"]["availability"] == "available"
+
+
+def test_tool_catalog_allows_tfx_pipeline_validation_with_repo_python_entry(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "tool_catalog.detect_tensorflow_repo_mode",
+        lambda _root: {
+            "enabled": True,
+            "mode": "tensorflow_tfx",
+            "frameworks": ["TensorFlow", "TFX"],
+            "training_commands": ["python pipeline.py"],
+        },
+    )
+    monkeypatch.setattr("tool_catalog.shutil.which", lambda command: "C:/tools/python.exe" if command == "python" else None)
+
+    payload = catalog_with_permissions(provider="codex", connected_accounts={}, permission_overrides={})
+    tools = {item["id"]: item for item in payload}
+
+    assert tools["tfx-pipeline-validation"]["availability"] == "available"
+
+
+def test_tool_catalog_requires_python_for_pytorch_checkpoint_validation(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "tool_catalog.detect_pytorch_repo_mode",
+        lambda _root: {
+            "enabled": True,
+            "mode": "pytorch_general",
+            "frameworks": ["PyTorch"],
+            "product_workflows": [],
+            "distributed_stack": [],
+            "checkpoint_paths": ["checkpoints/model.pt"],
+            "training_commands": ["python train.py"],
+            "export_commands": [],
+            "observability_commands": [],
+        },
+    )
+    monkeypatch.setattr("tool_catalog.shutil.which", lambda _command: None)
+
+    payload = catalog_with_permissions(provider="codex", connected_accounts={}, permission_overrides={})
+    tools = {item["id"]: item for item in payload}
+
+    assert tools["pytorch-checkpoint-validation"]["availability"] == "needs_setup"
+
+
+def test_tool_catalog_accepts_artifact_backed_pytorch_export_validation(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "tool_catalog.detect_pytorch_repo_mode",
+        lambda _root: {
+            "enabled": True,
+            "mode": "pytorch_general",
+            "frameworks": ["PyTorch"],
+            "product_workflows": ["model_export"],
+            "distributed_stack": [],
+            "checkpoint_paths": [],
+            "training_commands": [],
+            "export_commands": [],
+            "observability_commands": [],
+            "existing_onnx_artifacts": ["artifacts/model.onnx"],
+            "existing_torchscript_artifacts": ["artifacts/model.torchscript"],
+        },
+    )
+    monkeypatch.setattr("tool_catalog.shutil.which", lambda command: "C:/tools/python.exe" if command == "python" else None)
+
+    payload = catalog_with_permissions(provider="codex", connected_accounts={}, permission_overrides={})
+    tools = {item["id"]: item for item in payload}
+
+    assert tools["pytorch-export-validation"]["availability"] == "available"
 
 
 def test_tool_catalog_requires_jupyter_for_notebook_rescue(monkeypatch) -> None:

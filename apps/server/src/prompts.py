@@ -246,6 +246,9 @@ def _pytorch_mode_block(project: Project) -> str:
         lines.append(f"- Review PyTorch config files explicitly: {', '.join(str(item) for item in list(mode.get('config_paths') or [])[:3])}.")
     if mode.get("checkpoint_paths"):
         lines.append(f"- Existing checkpoint evidence in repo: {', '.join(str(item) for item in list(mode.get('checkpoint_paths') or [])[:3])}.")
+    export_artifacts = list(mode.get("existing_onnx_artifacts") or []) + list(mode.get("existing_torchscript_artifacts") or [])
+    if export_artifacts:
+        lines.append(f"- Existing PyTorch export artifacts already in repo: {', '.join(str(item) for item in export_artifacts[:3])}.")
     if validation.get("recommended_fixes"):
         lines.append(f"- Current PyTorch validation gaps: {' '.join(str(item) for item in list(validation.get('recommended_fixes') or [])[:3])}")
     return "\n".join(lines)

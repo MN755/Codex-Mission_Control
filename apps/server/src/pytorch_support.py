@@ -74,6 +74,14 @@ INFERENCE_FILE_CANDIDATES = [
 ]
 CHECKPOINT_DIR_HINTS = {"checkpoints", "checkpoint", "ckpt", "weights", "artifacts"}
 CHECKPOINT_FILE_EXTENSIONS = {".pt", ".pth", ".ckpt", ".bin", ".safetensors"}
+EXPORT_FILE_EXTENSIONS = {".onnx", ".torchscript"}
+TORCHSCRIPT_FILE_HINTS = {
+    "model.torchscript",
+    "scripted_model.pt",
+    "traced_model.pt",
+    "model_jit.pt",
+    "torchscript_model.pt",
+}
 OBSERVABILITY_DIR_CANDIDATES = [
     "artifacts/tensorboard",
     "artifacts/logs",
@@ -266,6 +274,24 @@ def _config_paths(relative_paths: list[str]) -> list[str]:
     return sorted(config_paths)
 
 
+def _artifact_paths(root: Path) -> list[str]:
+    artifacts: list[str] = []
+    try:
+        for path in root.rglob("*"):
+            if not path.is_file():
+                continue
+            relative = path.relative_to(root)
+            if any(part.lower() in SKIPPED_DISCOVERY_DIRS for part in relative.parts):
+                continue
+            name = path.name.lower()
+            suffix = path.suffix.lower()
+            if suffix in EXPORT_FILE_EXTENSIONS or name in TORCHSCRIPT_FILE_HINTS:
+                artifacts.append(relative.as_posix())
+    except OSError:
+        return []
+    return sorted(set(artifacts))
+
+
 def _build_python_install_command(root: Path) -> str | None:
     root_pyproject = root / "pyproject.toml"
     root_setup = root / "setup.py"
@@ -305,6 +331,8 @@ def detect_pytorch_repo_mode(workspace_path: str | Path) -> dict[str, Any]:
             "distributed_stack": [],
             "notebook_paths": [],
             "config_paths": [],
+            "existing_onnx_artifacts": [],
+            "existing_torchscript_artifacts": [],
         }
 
     files = _scan_files(root)
@@ -326,6 +354,8 @@ def detect_pytorch_repo_mode(workspace_path: str | Path) -> dict[str, Any]:
     distributed_stack: list[str] = []
     notebook_paths = _notebook_paths(relative_paths)
     config_paths = _config_paths(relative_paths)
+    existing_onnx_artifacts: list[str] = []
+    existing_torchscript_artifacts: list[str] = []
 
     if any(path.suffix.lower() in PYTHON_FILE_EXTENSIONS for path in files):
         languages.append("Python")
@@ -371,7 +401,9 @@ def detect_pytorch_repo_mode(workspace_path: str | Path) -> dict[str, Any]:
         "onnx",
     )
     checkpoint_signal = any(Path(path).suffix.lower() in CHECKPOINT_FILE_EXTENSIONS for path in relative_paths)
-    core_signal = any(token in combined_text for token in pytorch_tokens) or checkpoint_signal
+    artifact_paths = _artifact_paths(root)
+    artifact_signal = bool(artifact_paths)
+    core_signal = any(token in combined_text for token in pytorch_tokens) or checkpoint_signal or artifact_signal
     if core_signal:
         frameworks.append("PyTorch")
         signals.append("Detected PyTorch dependency or checkpoint signals in project files.")
@@ -396,6 +428,8 @@ def detect_pytorch_repo_mode(workspace_path: str | Path) -> dict[str, Any]:
             "distributed_stack": [],
             "notebook_paths": [],
             "config_paths": [],
+            "existing_onnx_artifacts": [],
+            "existing_torchscript_artifacts": [],
         }
 
     if any(token in combined_text for token in ("torchvision", "imagenet", "albumentations", "timm")):
@@ -435,6 +469,16 @@ def detect_pytorch_repo_mode(workspace_path: str | Path) -> dict[str, Any]:
     if any(token in combined_text for token in ("onnx", "torchscript", "jit.trace", "jit.script")):
         product_workflows.append("model_export")
         signals.append("Detected TorchScript or ONNX export signals.")
+    for relative in artifact_paths:
+        name = Path(relative).name.lower()
+        suffix = Path(relative).suffix.lower()
+        if suffix == ".onnx":
+            existing_onnx_artifacts.append(relative)
+        if suffix == ".torchscript" or name in TORCHSCRIPT_FILE_HINTS:
+            existing_torchscript_artifacts.append(relative)
+    if existing_onnx_artifacts or existing_torchscript_artifacts:
+        product_workflows.append("model_export")
+        signals.append("Detected checked-in PyTorch export artifacts that deserve validation instead of superstition.")
     if any(token in combined_text for token in ("torch.profiler", "tensorboard", "wandb", "mlflow")):
         product_workflows.append("training_observability")
         signals.append("Detected training observability or profiler signals.")
@@ -542,6 +586,8 @@ def detect_pytorch_repo_mode(workspace_path: str | Path) -> dict[str, Any]:
         "distributed_stack": _dedupe(distributed_stack),
         "notebook_paths": _dedupe(notebook_paths),
         "config_paths": _dedupe(config_paths),
+        "existing_onnx_artifacts": _dedupe(existing_onnx_artifacts),
+        "existing_torchscript_artifacts": _dedupe(existing_torchscript_artifacts),
     }
 
 
@@ -730,7 +776,8 @@ def build_pytorch_validation_plan(workspace_path: str | Path) -> dict[str, Any]:
         repo_mode.get(key)
         for key in ("training_commands", "test_commands", "evaluation_commands", "inference_commands", "export_commands")
     )
-    if not has_execution_entry:
+    has_export_artifacts = bool(repo_mode.get("existing_onnx_artifacts") or repo_mode.get("existing_torchscript_artifacts"))
+    if not has_execution_entry and not has_export_artifacts:
         blockers.append("No obvious PyTorch train, test, eval, infer, or export entry point was detected yet.")
         recommended_fixes.append("Add or document a concrete train, evaluate, infer, export, or pytest command so Mission Control can validate PyTorch work honestly.")
         if repo_mode.get("notebook_paths"):
@@ -756,6 +803,42 @@ def build_pytorch_validation_plan(workspace_path: str | Path) -> dict[str, Any]:
         )
     else:
         recommended_fixes.append("Document where checkpoints are written so Mission Control can verify resume behavior without rummaging blindly.")
+    for relative in list(repo_mode.get("existing_onnx_artifacts") or [])[:2]:
+        literal = json.dumps(relative)
+        steps.append(
+            {
+                "title": "Inspect existing ONNX export artifact",
+                "command": (
+                    "python -c "
+                    f"\"from pathlib import Path; p = Path({literal}); "
+                    "print({'exists': p.exists(), 'size_bytes': p.stat().st_size if p.exists() else 0})\""
+                ),
+                "type": "export",
+                "status": "pending",
+            }
+        )
+    for relative in list(repo_mode.get("existing_torchscript_artifacts") or [])[:2]:
+        literal = json.dumps(relative)
+        if runtime.get("available") and python_available:
+            command = (
+                "python -c "
+                f"\"import torch; m = torch.jit.load({literal}, map_location='cpu'); "
+                "print(type(m).__name__)\""
+            )
+        else:
+            command = (
+                "python -c "
+                f"\"from pathlib import Path; p = Path({literal}); "
+                "print({'exists': p.exists(), 'size_bytes': p.stat().st_size if p.exists() else 0})\""
+            )
+        steps.append(
+            {
+                "title": "Inspect existing TorchScript artifact",
+                "command": command,
+                "type": "export",
+                "status": "pending",
+            }
+        )
 
     evidence_targets = _dedupe(
         [

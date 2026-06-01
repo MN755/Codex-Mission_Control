@@ -200,6 +200,8 @@ def test_detect_workspace_tooling_surfaces_pytorch_training_pack(tmp_path: Path,
     (tmp_path / "export.py").write_text("import torch\n", encoding="utf-8")
     (tmp_path / "checkpoints").mkdir()
     (tmp_path / "checkpoints" / "model.pt").write_text("weights\n", encoding="utf-8")
+    (tmp_path / "artifacts" / "model.onnx").parent.mkdir(parents=True, exist_ok=True)
+    (tmp_path / "artifacts" / "model.onnx").write_text("artifact\n", encoding="utf-8")
     monkeypatch.setattr(
         "workspace_tooling._which",
         lambda command: f"C:/tools/{command}.exe" if command in {"accelerate", "tensorboard"} else None,
@@ -251,6 +253,7 @@ def test_detect_workspace_tooling_surfaces_pytorch_training_pack(tmp_path: Path,
     assert payload["pytorch_repo"]["enabled"] is True
     assert payload["pytorch_runtime_status"]["status"] == "ready"
     assert payload["pytorch_validation_plan"]["available"] is True
+    assert "artifacts/model.onnx" in payload["artifact_paths"]
     tools = {tool["id"]: tool for tool in payload["tools"]}
     assert tools["accelerate"]["configured"] is True
     assert tools["torchrun"]["configured"] is False
