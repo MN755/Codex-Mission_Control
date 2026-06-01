@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 import shutil
 from pathlib import Path
@@ -98,6 +99,9 @@ PRIORITY_SIGNAL_FILE_CANDIDATES = [
     "api/server.py",
     "app.py",
 ]
+CONFIG_DIR_HINTS = {"config", "configs", "conf", "hydra", "settings"}
+CONFIG_FILE_HINTS = {"config", "configs", "params", "hparams", "hyperparams", "serving"}
+CONFIG_FILE_EXTENSIONS = {".yaml", ".yml", ".json", ".toml"}
 
 
 def _scan_files(root: Path) -> list[Path]:
@@ -225,6 +229,42 @@ def _priority_signal_paths(root: Path, files: list[Path]) -> list[Path]:
     return ordered
 
 
+def _notebook_paths(relative_paths: list[str]) -> list[str]:
+    return sorted(path for path in relative_paths if Path(path).suffix.lower() == ".ipynb")
+
+
+def _config_paths(relative_paths: list[str]) -> list[str]:
+    config_paths: list[str] = []
+    for relative in relative_paths:
+        path = Path(relative)
+        suffix = path.suffix.lower()
+        if suffix not in CONFIG_FILE_EXTENSIONS:
+            continue
+        if path.name in {"package.json", "pyproject.toml"}:
+            continue
+        stem = path.stem.lower()
+        parent_names = {part.lower() for part in path.parts[:-1]}
+        if parent_names & CONFIG_DIR_HINTS or any(hint in stem for hint in CONFIG_FILE_HINTS):
+            config_paths.append(relative)
+    return sorted(config_paths)
+
+
+def _artifact_paths(root: Path) -> list[str]:
+    artifacts: list[str] = []
+    try:
+        for path in root.rglob("*"):
+            if not path.is_file():
+                continue
+            relative = path.relative_to(root)
+            if any(part.lower() in SKIPPED_DISCOVERY_DIRS for part in relative.parts):
+                continue
+            if path.name in MODEL_FILE_HINTS or path.suffix.lower() in EXPORT_FILE_EXTENSIONS:
+                artifacts.append(relative.as_posix())
+    except OSError:
+        return []
+    return sorted(set(artifacts))
+
+
 def _build_python_install_command(root: Path) -> str | None:
     root_pyproject = root / "pyproject.toml"
     root_setup = root / "setup.py"
@@ -258,11 +298,14 @@ def detect_tensorflow_repo_mode(workspace_path: str | Path) -> dict[str, Any]:
             "product_workflows": [],
             "validation_notes": [],
             "important_paths": [],
+            "notebook_paths": [],
+            "config_paths": [],
+            "existing_tflite_artifacts": [],
+            "existing_savedmodel_artifacts": [],
         }
 
     files = _scan_files(root)
     relative_paths = [path.relative_to(root).as_posix() for path in files]
-    file_set = set(relative_paths)
     languages: list[str] = []
     frameworks: list[str] = []
     build_commands: list[str] = []
@@ -274,6 +317,8 @@ def detect_tensorflow_repo_mode(workspace_path: str | Path) -> dict[str, Any]:
     validation_notes: list[str] = []
     signals: list[str] = []
     important_paths: list[str] = []
+    notebook_paths = _notebook_paths(relative_paths)
+    config_paths = _config_paths(relative_paths)
     existing_tflite_artifacts: list[str] = []
     existing_savedmodel_artifacts: list[str] = []
 
@@ -316,7 +361,8 @@ def detect_tensorflow_repo_mode(workspace_path: str | Path) -> dict[str, Any]:
         "tensorflow_transform",
         "tensorflow_model_analysis",
     )
-    file_hints = any(path.name in MODEL_FILE_HINTS or path.suffix.lower() in EXPORT_FILE_EXTENSIONS for path in files)
+    artifact_paths = _artifact_paths(root)
+    file_hints = any(path.name in MODEL_FILE_HINTS or path.suffix.lower() in EXPORT_FILE_EXTENSIONS for path in files) or bool(artifact_paths)
     core_tensorflow_signal = any(token in combined_text for token in tensorflow_tokens) or file_hints
     if core_tensorflow_signal:
         _append_unique(frameworks, ["TensorFlow", "Keras"])
@@ -337,6 +383,10 @@ def detect_tensorflow_repo_mode(workspace_path: str | Path) -> dict[str, Any]:
             "product_workflows": [],
             "validation_notes": [],
             "important_paths": [],
+            "notebook_paths": [],
+            "config_paths": [],
+            "existing_tflite_artifacts": [],
+            "existing_savedmodel_artifacts": [],
         }
 
     if any(token in combined_text for token in ("keras_tuner", "keras-tuner", "hyperband", "bayesianoptimization")):
@@ -370,6 +420,14 @@ def detect_tensorflow_repo_mode(workspace_path: str | Path) -> dict[str, Any]:
     if any(token in combined_text for token in ("tf.data", "from_tensor_slices", "tfrecord", "image_dataset_from_directory", "text_dataset_from_directory")):
         product_workflows.append("data_pipelines")
         signals.append("Detected tf.data or TensorFlow dataset pipeline signals.")
+    if notebook_paths:
+        product_workflows.append("notebook_experiments")
+        signals.append("Detected TensorFlow notebook experiments that should not stay trapped in notebook limbo forever.")
+        _append_unique(important_paths, notebook_paths[:3])
+    if config_paths:
+        product_workflows.append("config_driven_runs")
+        signals.append("Detected TensorFlow config files that likely drive training, export, or serving behavior.")
+        _append_unique(important_paths, config_paths[:4])
 
     build_command = _build_python_install_command(root)
     if build_command:
@@ -382,8 +440,6 @@ def detect_tensorflow_repo_mode(workspace_path: str | Path) -> dict[str, Any]:
     if training_entry:
         training_commands.append(f"python {training_entry}")
         important_paths.append(training_entry)
-    elif any(path.startswith("notebooks/") for path in relative_paths):
-        important_paths.append("notebooks")
 
     tuning_entry = _first_existing_command(root, TUNING_FILE_CANDIDATES)
     if tuning_entry:
@@ -408,7 +464,7 @@ def detect_tensorflow_repo_mode(workspace_path: str | Path) -> dict[str, Any]:
     if "TensorBoard" in frameworks:
         logdir = _find_workspace_directory_candidate(root, OBSERVABILITY_DIR_CANDIDATES) or "artifacts/tensorboard"
         observability_commands.append(f"tensorboard --logdir {logdir}")
-    for relative in relative_paths:
+    for relative in artifact_paths:
         relative_path = Path(relative)
         if relative_path.suffix.lower() == ".tflite":
             existing_tflite_artifacts.append(relative)
@@ -440,6 +496,10 @@ def detect_tensorflow_repo_mode(workspace_path: str | Path) -> dict[str, Any]:
         validation_notes.append("For edge targets, prove the exported Lite artifact exists and still meets latency, memory, or accuracy constraints.")
     if "KerasTuner" in frameworks:
         validation_notes.append("Treat tuning results as evidence-backed comparisons, not a slot machine that excuses missing baselines.")
+    if notebook_paths:
+        validation_notes.append("If the real workflow still lives in notebooks, promote the repeatable path into a repo-owned script before calling validation complete.")
+    if config_paths:
+        validation_notes.append("Capture which TensorFlow config file drove each run so validation evidence stops depending on whoever remembers the last override.")
 
     return {
         "enabled": True,
@@ -455,6 +515,8 @@ def detect_tensorflow_repo_mode(workspace_path: str | Path) -> dict[str, Any]:
         "product_workflows": _dedupe(product_workflows),
         "validation_notes": _dedupe(validation_notes),
         "important_paths": _dedupe(important_paths),
+        "notebook_paths": _dedupe(notebook_paths),
+        "config_paths": _dedupe(config_paths),
         "existing_tflite_artifacts": _dedupe(existing_tflite_artifacts),
         "existing_savedmodel_artifacts": _dedupe(existing_savedmodel_artifacts),
     }
@@ -522,6 +584,8 @@ def build_tensorflow_validation_plan(workspace_path: str | Path) -> dict[str, An
     if not has_execution_entry:
         blockers.append("No obvious TensorFlow train, test, or repo-owned export entry point was detected yet.")
         recommended_fixes.append("Add or document a concrete TensorFlow train, test, export, or pytest command so Mission Control can validate changes honestly.")
+        if repo_mode.get("notebook_paths"):
+            recommended_fixes.append("Promote the detected TensorFlow notebook flow into a repo-owned script or test command so Mission Control can validate something repeatable.")
     elif not smoke_command:
         recommended_fixes.append("Document the smallest repo-owned TensorFlow train, test, or export command so Mission Control can run a real smoke pass.")
     if "TensorBoard" in list(repo_mode.get("frameworks") or []) and not shutil.which("tensorboard"):
@@ -540,6 +604,42 @@ def build_tensorflow_validation_plan(workspace_path: str | Path) -> dict[str, An
         repo_mode.get("export_commands") or repo_mode.get("existing_tflite_artifacts")
     ):
         recommended_fixes.append("Add or document a concrete TensorFlow export entry point so Mission Control can validate deployment artifacts instead of just talking about them.")
+
+    saved_model_artifacts = list(repo_mode.get("existing_savedmodel_artifacts") or [])
+    if saved_model_artifacts:
+        saved_model_dir = Path(saved_model_artifacts[0]).parent.as_posix() or "."
+        if shutil.which("saved_model_cli"):
+            command = f"saved_model_cli show --dir {saved_model_dir} --all"
+        else:
+            literal = json.dumps(saved_model_dir)
+            command = (
+                "python -c "
+                f"\"from pathlib import Path; p = Path({literal}); "
+                "print({'exists': p.exists(), 'files': sorted(child.name for child in p.iterdir() if child.is_file())[:12]})\""
+            )
+        steps.append(
+            {
+                "title": "Inspect the existing SavedModel artifact",
+                "command": command,
+                "type": "export",
+                "status": "pending",
+            }
+        )
+    tflite_artifacts = list(repo_mode.get("existing_tflite_artifacts") or [])
+    if tflite_artifacts:
+        artifact_literal = json.dumps(tflite_artifacts[0])
+        steps.append(
+            {
+                "title": "Inspect the existing TensorFlow Lite artifact",
+                "command": (
+                    "python -c "
+                    f"\"from pathlib import Path; p = Path({artifact_literal}); "
+                    "print({'exists': p.exists(), 'size_bytes': p.stat().st_size if p.exists() else 0})\""
+                ),
+                "type": "export",
+                "status": "pending",
+            }
+        )
 
     evidence_targets = _dedupe(
         [

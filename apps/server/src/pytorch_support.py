@@ -102,6 +102,9 @@ PRIORITY_SIGNAL_FILE_CANDIDATES = [
     "deployment/export.py",
     "serving/export.py",
 ]
+CONFIG_DIR_HINTS = {"config", "configs", "conf", "hydra", "settings"}
+CONFIG_FILE_HINTS = {"config", "configs", "params", "hparams", "hyperparams", "trainer", "launch"}
+CONFIG_FILE_EXTENSIONS = {".yaml", ".yml", ".json", ".toml"}
 
 
 def _scan_files(root: Path) -> list[Path]:
@@ -243,6 +246,26 @@ def _priority_signal_paths(root: Path, files: list[Path]) -> list[Path]:
     return ordered
 
 
+def _notebook_paths(relative_paths: list[str]) -> list[str]:
+    return sorted(path for path in relative_paths if Path(path).suffix.lower() == ".ipynb")
+
+
+def _config_paths(relative_paths: list[str]) -> list[str]:
+    config_paths: list[str] = []
+    for relative in relative_paths:
+        path = Path(relative)
+        suffix = path.suffix.lower()
+        if suffix not in CONFIG_FILE_EXTENSIONS:
+            continue
+        if path.name in {"package.json", "pyproject.toml"}:
+            continue
+        stem = path.stem.lower()
+        parent_names = {part.lower() for part in path.parts[:-1]}
+        if parent_names & CONFIG_DIR_HINTS or any(hint in stem for hint in CONFIG_FILE_HINTS):
+            config_paths.append(relative)
+    return sorted(config_paths)
+
+
 def _build_python_install_command(root: Path) -> str | None:
     root_pyproject = root / "pyproject.toml"
     root_setup = root / "setup.py"
@@ -280,6 +303,8 @@ def detect_pytorch_repo_mode(workspace_path: str | Path) -> dict[str, Any]:
             "important_paths": [],
             "checkpoint_paths": [],
             "distributed_stack": [],
+            "notebook_paths": [],
+            "config_paths": [],
         }
 
     files = _scan_files(root)
@@ -299,6 +324,8 @@ def detect_pytorch_repo_mode(workspace_path: str | Path) -> dict[str, Any]:
     important_paths: list[str] = []
     checkpoint_paths: list[str] = []
     distributed_stack: list[str] = []
+    notebook_paths = _notebook_paths(relative_paths)
+    config_paths = _config_paths(relative_paths)
 
     if any(path.suffix.lower() in PYTHON_FILE_EXTENSIONS for path in files):
         languages.append("Python")
@@ -367,6 +394,8 @@ def detect_pytorch_repo_mode(workspace_path: str | Path) -> dict[str, Any]:
             "important_paths": [],
             "checkpoint_paths": [],
             "distributed_stack": [],
+            "notebook_paths": [],
+            "config_paths": [],
         }
 
     if any(token in combined_text for token in ("torchvision", "imagenet", "albumentations", "timm")):
@@ -409,6 +438,14 @@ def detect_pytorch_repo_mode(workspace_path: str | Path) -> dict[str, Any]:
     if any(token in combined_text for token in ("torch.profiler", "tensorboard", "wandb", "mlflow")):
         product_workflows.append("training_observability")
         signals.append("Detected training observability or profiler signals.")
+    if notebook_paths:
+        product_workflows.append("notebook_experiments")
+        signals.append("Detected PyTorch notebook experiments that need a repeatable script path instead of vibes.")
+        _append_unique(important_paths, notebook_paths[:3])
+    if config_paths:
+        product_workflows.append("config_driven_runs")
+        signals.append("Detected PyTorch config files that likely control launcher, optimizer, or export behavior.")
+        _append_unique(important_paths, config_paths[:4])
 
     build_command = _build_python_install_command(root)
     if build_command:
@@ -480,6 +517,10 @@ def detect_pytorch_repo_mode(workspace_path: str | Path) -> dict[str, Any]:
         validation_notes.append("For TorchScript or ONNX exports, prove the artifact loads and runs on a representative inference path.")
     if "llm_finetuning" in product_workflows:
         validation_notes.append("For PEFT or LoRA flows, verify trainable-parameter counts and merged-adapter behavior instead of trusting the config file on vibes.")
+    if notebook_paths:
+        validation_notes.append("If the real PyTorch workflow still lives in notebooks, promote the repeatable path into a repo-owned script before calling validation complete.")
+    if config_paths:
+        validation_notes.append("Capture the config file used for each training or export run so PyTorch evidence stops depending on memory and luck.")
 
     return {
         "enabled": True,
@@ -499,6 +540,8 @@ def detect_pytorch_repo_mode(workspace_path: str | Path) -> dict[str, Any]:
         "important_paths": _dedupe(important_paths),
         "checkpoint_paths": _dedupe(checkpoint_paths),
         "distributed_stack": _dedupe(distributed_stack),
+        "notebook_paths": _dedupe(notebook_paths),
+        "config_paths": _dedupe(config_paths),
     }
 
 
@@ -677,6 +720,8 @@ def build_pytorch_validation_plan(workspace_path: str | Path) -> dict[str, Any]:
     if not has_execution_entry:
         blockers.append("No obvious PyTorch train, test, eval, infer, or export entry point was detected yet.")
         recommended_fixes.append("Add or document a concrete train, evaluate, infer, export, or pytest command so Mission Control can validate PyTorch work honestly.")
+        if repo_mode.get("notebook_paths"):
+            recommended_fixes.append("Promote the detected PyTorch notebook flow into a repo-owned script or test command so Mission Control can validate something repeatable.")
     elif not smoke_command:
         recommended_fixes.append("Document the smallest repo-owned train, eval, infer, or pytest command so Mission Control can run a real PyTorch smoke pass.")
     distributed_stack = {str(item) for item in list(repo_mode.get("distributed_stack") or [])}

@@ -61,6 +61,8 @@ def test_detect_pytorch_repo_mode_does_not_treat_marketing_readme_as_repo_signal
 
     assert payload["enabled"] is False
     assert payload["mode"] is None
+    assert payload["notebook_paths"] == []
+    assert payload["config_paths"] == []
 
 
 def test_detect_pytorch_runtime_status_handles_missing_torch_gracefully(monkeypatch) -> None:
@@ -259,6 +261,20 @@ def test_detect_pytorch_repo_mode_uses_real_nested_tensorboard_logdir(tmp_path: 
     assert "python -m tensorboard.main --logdir services/trainer/artifacts/tensorboard" in payload["observability_commands"]
 
 
+def test_detect_pytorch_repo_mode_tracks_notebooks_and_configs(tmp_path: Path) -> None:
+    workspace = tmp_path / "pytorch-assets"
+    workspace.mkdir(parents=True, exist_ok=True)
+    _write(workspace / "apps" / "trainer" / "pyproject.toml", "[project]\ndependencies=['torch']\n")
+    _write(workspace / "apps" / "trainer" / "train.py", "import torch\n")
+    _write(workspace / "apps" / "trainer" / "notebooks" / "analysis.ipynb", "{}\n")
+    _write(workspace / "apps" / "trainer" / "configs" / "train.yaml", "epochs: 2\n")
+
+    payload = detect_pytorch_repo_mode(workspace)
+
+    assert "apps/trainer/notebooks/analysis.ipynb" in payload["notebook_paths"]
+    assert "apps/trainer/configs/train.yaml" in payload["config_paths"]
+
+
 def test_detect_pytorch_repo_mode_ignores_readme_hype_for_advanced_frameworks(tmp_path: Path) -> None:
     workspace = tmp_path / "pytorch-readme-hype"
     workspace.mkdir(parents=True, exist_ok=True)
@@ -348,6 +364,37 @@ def test_pytorch_validation_plan_does_not_warn_cpu_only_for_accelerate_only_repo
     payload = build_pytorch_validation_plan(workspace)
 
     assert not any("cpu-only" in item.lower() for item in payload["recommended_fixes"])
+
+
+def test_pytorch_validation_plan_calls_out_notebook_only_repo(monkeypatch, tmp_path: Path) -> None:
+    workspace = tmp_path / "pytorch-notebook-only"
+    workspace.mkdir(parents=True, exist_ok=True)
+    _write(workspace / "pyproject.toml", "[project]\ndependencies=['torch']\n")
+    _write(workspace / "notebooks" / "experiment.ipynb", "{}\n")
+
+    monkeypatch.setattr(
+        "pytorch_support.detect_pytorch_runtime_status",
+        lambda _workspace: {
+            "available": True,
+            "status": "partial",
+            "summary": "CPU only",
+            "torch_installed": True,
+            "cuda_available": False,
+            "mps_available": False,
+            "device_count": 0,
+            "torch_version": "2.7.0",
+            "cuda_version": None,
+            "cudnn_available": False,
+            "distributed_backends": ["gloo"],
+            "blockers": [],
+            "recommended_fixes": [],
+        },
+    )
+
+    payload = build_pytorch_validation_plan(workspace)
+
+    assert payload["status"] == "blocked"
+    assert any("notebook" in item.lower() and "repeatable" in item.lower() for item in payload["recommended_fixes"])
 
 
 def test_detect_pytorch_runtime_status_recommends_stack_specific_clis(monkeypatch) -> None:

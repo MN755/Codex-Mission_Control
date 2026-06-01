@@ -63,6 +63,10 @@ def test_detect_tensorflow_repo_mode_handles_deleted_workspace_gracefully() -> N
 
     assert payload["enabled"] is False
     assert payload["frameworks"] == []
+    assert payload["notebook_paths"] == []
+    assert payload["config_paths"] == []
+    assert payload["existing_savedmodel_artifacts"] == []
+    assert payload["existing_tflite_artifacts"] == []
 
 
 def test_tensorflow_validation_plan_surfaces_export_and_observability_steps(monkeypatch) -> None:
@@ -160,6 +164,24 @@ def test_detect_tensorflow_repo_mode_uses_real_nested_tensorboard_logdir(tmp_pat
     assert "tensorboard --logdir services/model/artifacts/tensorboard" in payload["observability_commands"]
 
 
+def test_detect_tensorflow_repo_mode_tracks_notebooks_configs_and_artifacts(tmp_path: Path) -> None:
+    workspace = tmp_path / "tensorflow-assets"
+    workspace.mkdir(parents=True, exist_ok=True)
+    _write(workspace / "services" / "model" / "pyproject.toml", "[project]\ndependencies=['tensorflow']\n")
+    _write(workspace / "services" / "model" / "train.py", "import tensorflow as tf\n")
+    _write(workspace / "services" / "model" / "notebooks" / "eda.ipynb", "{}\n")
+    _write(workspace / "services" / "model" / "conf" / "train.yaml", "epochs: 5\n")
+    _write(workspace / "services" / "model" / "artifacts" / "saved_model.pb", "artifact\n")
+    _write(workspace / "services" / "model" / "artifacts" / "model.tflite", "artifact\n")
+
+    payload = detect_tensorflow_repo_mode(workspace)
+
+    assert "services/model/notebooks/eda.ipynb" in payload["notebook_paths"]
+    assert "services/model/conf/train.yaml" in payload["config_paths"]
+    assert "services/model/artifacts/saved_model.pb" in payload["existing_savedmodel_artifacts"]
+    assert "services/model/artifacts/model.tflite" in payload["existing_tflite_artifacts"]
+
+
 def test_detect_tensorflow_repo_mode_ignores_readme_hype_for_advanced_frameworks(tmp_path: Path) -> None:
     workspace = tmp_path / "tensorflow-readme-hype"
     workspace.mkdir(parents=True, exist_ok=True)
@@ -239,3 +261,36 @@ def test_tensorflow_validation_plan_accepts_existing_artifacts_without_repo_expo
     payload = build_tensorflow_validation_plan(workspace)
 
     assert not any("deployment artifacts instead of just talking about them" in item for item in payload["recommended_fixes"])
+
+
+def test_tensorflow_validation_plan_adds_concrete_artifact_inspection_steps(monkeypatch, tmp_path: Path) -> None:
+    workspace = tmp_path / "tensorflow-artifact-inspection"
+    workspace.mkdir(parents=True, exist_ok=True)
+    _write(workspace / "requirements.txt", "tensorflow\n")
+    _write(workspace / "saved_model.pb", "artifact\n")
+    _write(workspace / "model.tflite", "artifact\n")
+
+    monkeypatch.setattr(
+        "tensorflow_support.shutil.which",
+        lambda command: f"C:/tools/{command}.exe" if command == "saved_model_cli" else None,
+    )
+
+    payload = build_tensorflow_validation_plan(workspace)
+    export_commands = [step["command"] for step in payload["steps"] if step["type"] == "export"]
+
+    assert "saved_model_cli show --dir . --all" in export_commands
+    assert any("model.tflite" in command and "size_bytes" in command for command in export_commands)
+
+
+def test_tensorflow_validation_plan_calls_out_notebook_only_repo(monkeypatch, tmp_path: Path) -> None:
+    workspace = tmp_path / "tensorflow-notebook-only"
+    workspace.mkdir(parents=True, exist_ok=True)
+    _write(workspace / "pyproject.toml", "[project]\ndependencies=['tensorflow']\n")
+    _write(workspace / "notebooks" / "experiment.ipynb", "{}\n")
+
+    monkeypatch.setattr("tensorflow_support.shutil.which", lambda _command: None)
+
+    payload = build_tensorflow_validation_plan(workspace)
+
+    assert payload["status"] == "blocked"
+    assert any("notebook" in item.lower() and "repeatable" in item.lower() for item in payload["recommended_fixes"])

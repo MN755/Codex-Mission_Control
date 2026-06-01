@@ -176,7 +176,7 @@ def test_detect_workspace_tooling_surfaces_tensorflow_product_pack(tmp_path: Pat
     assert tools["tfx"]["configured"] is True
     packs = {pack["id"]: pack for pack in payload["packs"]}
     assert packs["tensorflow_product_pack"]["status"] == "ready"
-    assert "tensorboard --logdir logs" in payload["validation_commands"]
+    assert "tensorboard --logdir artifacts/tensorboard" in payload["validation_commands"]
 
 
 def test_detect_workspace_tooling_surfaces_pytorch_training_pack(tmp_path: Path, monkeypatch) -> None:
@@ -470,3 +470,59 @@ def test_detect_workspace_tooling_includes_tensorflow_plan_commands_and_dedupes(
     assert "python train.py" in payload["validation_commands"]
     assert payload["validation_commands"].count("python -m pytest") == 1
     assert "python export.py" in payload["deployment_commands"]
+
+
+def test_detect_workspace_tooling_reads_nested_project_text_signals(tmp_path: Path, monkeypatch) -> None:
+    (tmp_path / "services" / "model").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "services" / "model" / "requirements.txt").write_text("tensorflow\ntensorboard\n", encoding="utf-8")
+    monkeypatch.setattr(
+        "workspace_tooling._which",
+        lambda command: f"C:/tools/{command}.exe" if command == "tensorboard" else None,
+    )
+
+    payload = detect_workspace_tooling(tmp_path, project_name="Nested Text Demo")
+
+    tools = {tool["id"]: tool for tool in payload["tools"]}
+    assert tools["tensorboard"]["configured"] is True
+
+
+def test_detect_workspace_tooling_prefers_concrete_tensorboard_command(tmp_path: Path, monkeypatch) -> None:
+    (tmp_path / "pyproject.toml").write_text(
+        "[project]\nname='tf-demo'\ndependencies=['tensorflow','tensorboard']\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "train.py").write_text("from keras.callbacks import TensorBoard\n", encoding="utf-8")
+    (tmp_path / "services" / "model" / "artifacts" / "tensorboard").mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(
+        "workspace_tooling._which",
+        lambda command: f"C:/tools/{command}.exe" if command == "tensorboard" else None,
+    )
+    monkeypatch.setattr(
+        "tensorflow_support.shutil.which",
+        lambda command: f"C:/tools/{command}.exe" if command == "tensorboard" else None,
+    )
+
+    payload = detect_workspace_tooling(tmp_path, project_name="TensorBoard Demo")
+
+    assert "tensorboard --logdir services/model/artifacts/tensorboard" in payload["validation_commands"]
+    assert "tensorboard --logdir logs" not in payload["validation_commands"]
+
+
+def test_detect_workspace_tooling_prefers_concrete_tensorflow_artifact_commands(tmp_path: Path, monkeypatch) -> None:
+    (tmp_path / "requirements.txt").write_text("tensorflow\n", encoding="utf-8")
+    (tmp_path / "saved_model.pb").write_text("artifact\n", encoding="utf-8")
+    (tmp_path / "model.tflite").write_text("artifact\n", encoding="utf-8")
+    monkeypatch.setattr(
+        "workspace_tooling._which",
+        lambda command: f"C:/tools/{command}.exe" if command in {"saved_model_cli", "tflite_convert"} else None,
+    )
+    monkeypatch.setattr(
+        "tensorflow_support.shutil.which",
+        lambda command: f"C:/tools/{command}.exe" if command in {"saved_model_cli", "tflite_convert"} else None,
+    )
+
+    payload = detect_workspace_tooling(tmp_path, project_name="TensorFlow Artifact Demo")
+
+    assert "saved_model_cli show --dir . --all" in payload["deployment_commands"]
+    assert any("model.tflite" in command and "size_bytes" in command for command in payload["deployment_commands"])
+    assert "saved_model_cli show --dir <saved_model_dir> --all" not in payload["deployment_commands"]

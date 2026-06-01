@@ -267,11 +267,14 @@ def _package_json_package_names(root: Path, relative_files: list[str] | None = N
 
 
 def _workspace_signal_haystack(root: Path) -> str:
-    text_parts = [
-        _safe_read_text(root / relative_name).lower()
-        for relative_name in _PROJECT_TEXT_CANDIDATES
-        if (root / relative_name).exists()
-    ]
+    return _workspace_signal_haystack_from_files(root, _workspace_relative_files(root))
+
+
+def _workspace_signal_haystack_from_files(root: Path, relative_files: list[str]) -> str:
+    text_parts: list[str] = []
+    for relative_name in _PROJECT_TEXT_CANDIDATES:
+        for matched_path in _matching_relative_paths(relative_files, relative_name):
+            text_parts.append(_safe_read_text(root / matched_path).lower())
     for path in sorted(root.rglob("*")):
         if len(text_parts) >= 40:
             break
@@ -286,6 +289,11 @@ def _workspace_signal_haystack(root: Path) -> str:
             continue
         text_parts.append(_safe_read_text(path).lower())
     return "\n".join(text_parts)
+
+
+def _has_prefixed_command(commands: list[str], prefixes: tuple[str, ...]) -> bool:
+    lowered_prefixes = tuple(prefix.lower() for prefix in prefixes)
+    return any(str(command).strip().lower().startswith(lowered_prefixes) for command in commands)
 
 
 def _config_matches(
@@ -468,7 +476,7 @@ def detect_workspace_tooling(workspace_path: str | Path | None, *, project_name:
     relative_files = _workspace_relative_files(root)
     repo_profile = _repo_profile(root, relative_files=relative_files, tensorflow_mode=tensorflow_mode, pytorch_mode=pytorch_mode)
     package_names = _package_json_package_names(root, relative_files)
-    haystack = _workspace_signal_haystack(root)
+    haystack = _workspace_signal_haystack_from_files(root, relative_files)
     tools = [
         _tool_signal_summary(tool_id, root=root, relative_files=relative_files, package_names=package_names, haystack=haystack)
         for tool_id in _TOOL_SPECS
@@ -486,8 +494,6 @@ def detect_workspace_tooling(workspace_path: str | Path | None, *, project_name:
         validation_commands.append("nox --list")
     if tooling_by_id["playwright"]["installed"] and tooling_by_id["playwright"]["configured"]:
         validation_commands.append("playwright test")
-    if tooling_by_id["tensorboard"]["installed"] and tooling_by_id["tensorboard"]["configured"]:
-        validation_commands.append("tensorboard --logdir logs")
     if tensorflow_mode.get("enabled"):
         validation_commands.extend(
             str(step.get("command"))
@@ -500,6 +506,11 @@ def detect_workspace_tooling(workspace_path: str | Path | None, *, project_name:
             for step in list(pytorch_plan.get("steps") or [])
             if step.get("type") in {"train", "eval", "inference", "observability", "checkpoint", "sanity"} and step.get("command")
         )
+    if tooling_by_id["tensorboard"]["installed"] and tooling_by_id["tensorboard"]["configured"] and not _has_prefixed_command(
+        validation_commands,
+        ("tensorboard --logdir", "python -m tensorboard.main --logdir"),
+    ):
+        validation_commands.append("tensorboard --logdir logs")
     if tooling_by_id["uv"]["installed"] and repo_profile.get("python_repo"):
         validation_commands.insert(0, "uv run pytest")
     intake_commands = []
@@ -517,12 +528,6 @@ def detect_workspace_tooling(workspace_path: str | Path | None, *, project_name:
     if tooling_by_id["trufflehog"]["installed"]:
         security_commands.append("trufflehog filesystem .")
     deployment_commands = []
-    if tooling_by_id["saved_model_cli"]["installed"] and tooling_by_id["saved_model_cli"]["configured"]:
-        deployment_commands.append("saved_model_cli show --dir <saved_model_dir> --all")
-    if tooling_by_id["tflite_convert"]["installed"] and tooling_by_id["tflite_convert"]["configured"]:
-        deployment_commands.append("tflite_convert --saved_model_dir <saved_model_dir> --output_file model.tflite")
-    if tooling_by_id["tfx"]["installed"] and tooling_by_id["tfx"]["configured"]:
-        deployment_commands.append("tfx pipeline list")
     if tensorflow_mode.get("enabled"):
         deployment_commands.extend(
             str(step.get("command"))
@@ -531,6 +536,21 @@ def detect_workspace_tooling(workspace_path: str | Path | None, *, project_name:
         )
     if pytorch_mode.get("enabled"):
         deployment_commands.extend(str(step.get("command")) for step in list(pytorch_plan.get("steps") or []) if step.get("type") == "export" and step.get("command"))
+    if tooling_by_id["saved_model_cli"]["installed"] and tooling_by_id["saved_model_cli"]["configured"] and not _has_prefixed_command(
+        deployment_commands,
+        ("saved_model_cli show --dir",),
+    ):
+        deployment_commands.append("saved_model_cli show --dir <saved_model_dir> --all")
+    if tooling_by_id["tflite_convert"]["installed"] and tooling_by_id["tflite_convert"]["configured"] and not _has_prefixed_command(
+        deployment_commands,
+        ("tflite_convert --saved_model_dir", "python -c "),
+    ):
+        deployment_commands.append("tflite_convert --saved_model_dir <saved_model_dir> --output_file model.tflite")
+    if tooling_by_id["tfx"]["installed"] and tooling_by_id["tfx"]["configured"] and not _has_prefixed_command(
+        deployment_commands,
+        ("tfx pipeline list",),
+    ):
+        deployment_commands.append("tfx pipeline list")
     packs = [
         _pack_status(
             tools,
