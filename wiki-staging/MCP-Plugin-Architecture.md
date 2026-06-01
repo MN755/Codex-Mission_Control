@@ -131,5 +131,6 @@ Continue with [Skills and Prompts](Skills-and-Prompts), [MCP Resources Catalog](
 - `mission_control_execute_integration_action`
 - `mission-control://integrations/catalog`
 - `mission-control://integrations/connections`
+- `mission-control://integrations/health`
 - `mission-control://projects/{project_id}/integrations`
 - `mission-control://projects/{project_id}/integrations/{family}`

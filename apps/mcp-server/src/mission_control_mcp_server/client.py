@@ -508,6 +508,9 @@ class MissionControlDaemonClient:
     def get_integration_connections(self) -> list[dict[str, Any]]:
         return self._request("GET", "/api/integrations/connections")
 
+    def get_integration_health(self) -> dict[str, Any]:
+        return self._request("GET", "/api/integrations/health")
+
     def import_host_integrations(self) -> dict[str, Any]:
         return self._request("POST", "/api/integrations/import-host-state")
 
@@ -1431,6 +1434,8 @@ class MissionControlDaemonClient:
                 return {"integrations": self.get_integrations_catalog()}
             if kind == "connections":
                 return {"connections": self.get_integration_connections()}
+            if kind == "health":
+                return self.get_integration_health()
         if len(parts) >= 5 and parts[0] == "projects" and parts[2] == "orchestrations":
             project_id = int(parts[1])
             orchestration_id = int(parts[3])

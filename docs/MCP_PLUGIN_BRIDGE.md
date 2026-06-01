@@ -152,5 +152,6 @@ Those endpoints expose the typed TensorFlow starter catalog and bundle generator
 - `mission_control_execute_integration_action`
 - `mission-control://integrations/catalog`
 - `mission-control://integrations/connections`
+- `mission-control://integrations/health`
 - `mission-control://projects/{project_id}/integrations`
 - `mission-control://projects/{project_id}/integrations/{family}`

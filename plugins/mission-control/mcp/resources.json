@@ -276,6 +276,35 @@
       }
     },
     {
+      "uri_template": "mission-control://integrations/health",
+      "title": "Integration health",
+      "summary": "Cross-host integration registry health, authority posture, host import coverage, and recent action failures.",
+      "support_status": "implemented",
+      "source_hint": {
+        "rest_endpoints": [
+          "/api/integrations/health"
+        ]
+      },
+      "default_fields": [
+        "version",
+        "family_count",
+        "connection_count",
+        "authoritative_connection_count",
+        "host_imported_count",
+        "status_counts",
+        "recent_action_failures",
+        "host_import_roots"
+      ],
+      "redaction": {
+        "omit_fields": [
+          "raw_tokens",
+          "secret_values",
+          "private_paths_outside_workspace"
+        ],
+        "notes": "Health output should summarize authority and failures without exposing credentials or external secret material."
+      }
+    },
+    {
       "uri_template": "mission-control://projects/{project_id}/integrations",
       "title": "Project integrations",
       "summary": "Project-scoped integration readiness view across supported provider families.",

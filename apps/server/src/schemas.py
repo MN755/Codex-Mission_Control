@@ -3144,6 +3144,17 @@ class IntegrationConnectionRead(BaseModel):
     notes: list[str] = Field(default_factory=list)
 
 
+class IntegrationHealthRead(BaseModel):
+    version: int
+    family_count: int
+    connection_count: int
+    authoritative_connection_count: int
+    host_imported_count: int
+    status_counts: dict[str, int] = Field(default_factory=dict)
+    recent_action_failures: list[dict[str, Any]] = Field(default_factory=list)
+    host_import_roots: dict[str, list[str]] = Field(default_factory=dict)
+
+
 class ProjectIntegrationFamilyRead(BaseModel):
     family: str
     name: str

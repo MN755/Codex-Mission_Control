@@ -229,6 +229,7 @@ from schemas import (
     IntegrationActionRequest,
     IntegrationCatalogEntryRead,
     IntegrationConnectionRead,
+    IntegrationHealthRead,
     ProjectIntegrationFamilyRead,
     ProjectIntegrationsRead,
     ToolCatalogItemRead,
@@ -3332,6 +3333,14 @@ def get_integration_connections(
     _: None = Depends(_require_bridge_token),
 ) -> list[IntegrationConnectionRead]:
     return [IntegrationConnectionRead(**item) for item in service.get_integration_connections(db)]
+
+
+@app.get("/api/integrations/health", response_model=IntegrationHealthRead)
+def get_integration_health(
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> IntegrationHealthRead:
+    return IntegrationHealthRead(**service.get_integration_health(db))
 
 
 @app.post("/api/integrations/import-host-state")

@@ -56,6 +56,7 @@ class MissionControlMcpServer:
             "mission_control_get_workspace_tooling": self._call_get_workspace_tooling,
             "mission_control_get_integrations_catalog": self._call_get_integrations_catalog,
             "mission_control_get_integration_connections": self._call_get_integration_connections,
+            "mission_control_get_integration_health": self._call_get_integration_health,
             "mission_control_import_host_integrations": self._call_import_host_integrations,
             "mission_control_get_project_integrations": self._call_get_project_integrations,
             "mission_control_get_project_integration_family": self._call_get_project_integration_family,
@@ -329,6 +330,12 @@ class MissionControlMcpServer:
                 "description": "Fetch the normalized Mission Control integration connection registry.",
                 "inputSchema": _object_schema({}),
                 "outputSchema": {"type": "array", "items": {"type": "object", "additionalProperties": True}},
+            },
+            {
+                "name": "mission_control_get_integration_health",
+                "description": "Fetch cross-host integration registry health, authority counts, and recent failures.",
+                "inputSchema": _object_schema({}),
+                "outputSchema": GENERIC_OUTPUT_SCHEMA,
             },
             {
                 "name": "mission_control_import_host_integrations",
@@ -800,6 +807,9 @@ class MissionControlMcpServer:
 
     def _call_get_integration_connections(self, _: dict[str, Any]) -> Any:
         return self.client.get_integration_connections()
+
+    def _call_get_integration_health(self, _: dict[str, Any]) -> Any:
+        return self.client.get_integration_health()
 
     def _call_import_host_integrations(self, _: dict[str, Any]) -> Any:
         return self.client.import_host_integrations()

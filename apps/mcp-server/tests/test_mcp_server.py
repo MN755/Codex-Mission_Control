@@ -26,6 +26,7 @@ EXPECTED_RESOURCES = {
     "mission-control://projects/{project_id}/codebase-map",
     "mission-control://integrations/catalog",
     "mission-control://integrations/connections",
+    "mission-control://integrations/health",
     "mission-control://projects/{project_id}/integrations",
     "mission-control://projects/{project_id}/integrations/{family}",
     "mission-control://projects/{project_id}/workspace-tooling",
@@ -235,6 +236,10 @@ class FakeClient:
     def get_integration_connections(self):
         self.calls.append(("get_integration_connections", {}))
         return [{"family": "source_control", "status": "connected", "host_imported": True}]
+
+    def get_integration_health(self):
+        self.calls.append(("get_integration_health", {}))
+        return {"family_count": 30, "connection_count": 1, "status_counts": {"connected": 1}}
 
     def import_host_integrations(self):
         self.calls.append(("import_host_integrations", {}))
@@ -1015,16 +1020,19 @@ def test_mcp_server_surfaces_integration_tools_and_resources() -> None:
 
     tools = {item["name"] for item in server._build_tool_specs()}
     assert "mission_control_get_integrations_catalog" in tools
+    assert "mission_control_get_integration_health" in tools
     assert "mission_control_get_project_integrations" in tools
     assert "mission_control_preview_integration_action" in tools
     assert "mission_control_execute_integration_action" in tools
 
     resource_catalog = server._call_get_integrations_catalog({})
     connections = server._call_get_integration_connections({})
+    health = server._call_get_integration_health({})
     project_family = server._call_get_project_integration_family({"project_id": 7, "family": "source_control"})
 
     assert resource_catalog[0]["family"] == "source_control"
     assert connections[0]["family"] == "source_control"
+    assert health["family_count"] == 30
     assert project_family["family"] == "source_control"
 
     preview = server._call_preview_integration_action({"project_id": 7, "family": "source_control", "action_id": "create", "params": {"title": "Demo", "body": "Body"}})

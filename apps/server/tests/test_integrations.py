@@ -2,7 +2,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from integration_registry import normalize_integration_registry
+from integration_registry import (
+    build_project_integration_status,
+    execute_integration_action,
+    import_host_state,
+    normalize_integration_registry,
+)
 from tool_catalog import catalog_with_permissions
 
 
@@ -128,3 +133,137 @@ def test_import_host_state_endpoint_persists_registry(client, bridge_headers, mo
     assert payload["status"] == "completed"
     assert payload["connections"][0]["family"] == "source_control"
     assert payload["connections"][0]["host_imported"] is True
+
+    health = client.get("/api/integrations/health", headers=bridge_headers)
+    assert health.status_code == 200
+    assert health.json()["family_count"] >= 30
+
+
+def test_import_host_state_preserves_authoritative_connection_state(monkeypatch, tmp_path) -> None:
+    host_root = tmp_path / "codex-host"
+    plugin_dir = host_root / "plugins" / "github"
+    plugin_dir.mkdir(parents=True, exist_ok=True)
+    (plugin_dir / "plugin.json").write_text('{"name":"github"}\n', encoding="utf-8")
+
+    registry = normalize_integration_registry(
+        {
+            "connections": {
+                "source_control": {
+                    "family": "source_control",
+                    "status": "connected",
+                    "providers": ["github"],
+                    "connection_source": "mission_control",
+                    "host_imported": False,
+                    "notes": ["Mission Control already verified this lane."],
+                }
+            }
+        },
+        {},
+    )
+
+    monkeypatch.setattr(
+        "integration_registry._host_scan_roots",
+        lambda: {"codex": [host_root], "claude_code": []},
+    )
+
+    imported = import_host_state(registry)
+    connection = imported["connections"]["source_control"]
+
+    assert connection["status"] == "connected"
+    assert connection["connection_source"] == "mission_control"
+    assert connection["host_imported"] is True
+    assert any("already verified" in note.lower() for note in connection["notes"])
+    assert imported["host_imports"]["codex"]["source_control"]["detected"] is True
+
+
+def test_project_integrations_report_partial_when_only_host_or_workspace_signals_exist(monkeypatch, tmp_path) -> None:
+    workspace = tmp_path / "partial-integration"
+    workspace.mkdir(parents=True, exist_ok=True)
+    (workspace / "vercel.json").write_text('{"framework":"nextjs"}\n', encoding="utf-8")
+
+    registry = normalize_integration_registry(
+        {
+            "connections": {
+                "hosting_deploy": {
+                    "family": "hosting_deploy",
+                    "status": "partial",
+                    "providers": ["vercel"],
+                    "connection_source": "codex_host",
+                    "host_imported": True,
+                }
+            }
+        },
+        {},
+    )
+
+    monkeypatch.setattr("integration_registry.shutil.which", lambda _command: None)
+
+    statuses = {
+        item["family"]: item
+        for item in build_project_integration_status(
+            workspace_path=str(workspace),
+            project_name="Partial Demo",
+            registry_payload=registry,
+        )
+    }
+
+    hosting = statuses["hosting_deploy"]
+    assert hosting["status"] == "partial"
+    assert any("host-imported metadata" in blocker.lower() for blocker in hosting["blockers"])
+    assert any("install one of" in fix.lower() for fix in hosting["recommended_fixes"])
+
+
+def test_execute_integration_action_is_shell_free_and_blocks_missing_executable(monkeypatch) -> None:
+    monkeypatch.setattr("integration_registry.shutil.which", lambda _command: None)
+
+    called = {"ran": False}
+
+    def fake_run(*args, **kwargs):
+        called["ran"] = True
+        raise AssertionError("subprocess.run should not be called when the executable is missing")
+
+    monkeypatch.setattr("integration_registry.subprocess.run", fake_run)
+
+    result = execute_integration_action(
+        family_id="source_control",
+        action_id="create",
+        params={"title": "Demo", "body": "Body"},
+        registry_payload=normalize_integration_registry({}, {}),
+        workspace_path=None,
+        project_name="Shell Safety",
+        confirmed=True,
+    )
+
+    assert result["status"] == "blocked"
+    assert result["approval_required"] is False
+    assert "not available on PATH" in result["stderr"]
+    assert called["ran"] is False
+
+
+def test_connect_and_disconnect_actions_update_registry_state() -> None:
+    registry = normalize_integration_registry({}, {})
+
+    connected = execute_integration_action(
+        family_id="source_control",
+        action_id="connect",
+        params={},
+        registry_payload=registry,
+        workspace_path=None,
+        project_name="Connect Demo",
+        confirmed=False,
+    )
+    assert connected["status"] == "completed"
+    assert connected["updated_registry"]["connections"]["source_control"]["status"] == "partial"
+    assert connected["updated_registry"]["connections"]["source_control"]["connection_source"] == "manual"
+
+    disconnected = execute_integration_action(
+        family_id="source_control",
+        action_id="disconnect",
+        params={},
+        registry_payload=connected["updated_registry"],
+        workspace_path=None,
+        project_name="Connect Demo",
+        confirmed=True,
+    )
+    assert disconnected["status"] == "completed"
+    assert disconnected["updated_registry"]["connections"]["source_control"]["status"] == "disconnected"

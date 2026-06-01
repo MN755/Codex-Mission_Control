@@ -42,6 +42,7 @@ from interview import INTERVIEW_CATEGORIES, select_fallback_questions
 from diagnostics import list_diagnostic_reports
 from imported_codebase import import_service
 from integration_registry import (
+    build_integration_health,
     build_integration_catalog_with_connections,
     build_project_integration_status,
     execute_integration_action,
@@ -14025,6 +14026,17 @@ class MissionControlService:
             profile.integration_registry_json = registry
             db.flush()
         return list_connections(profile.integration_registry_json)
+
+    def get_integration_health(self, db: Session) -> dict[str, Any]:
+        profile = self._app_profile_preview(db)
+        registry = normalize_integration_registry(
+            profile.integration_registry_json,
+            profile.connected_accounts_json,
+        )
+        if dict(profile.integration_registry_json or {}) != registry:
+            profile.integration_registry_json = registry
+            db.flush()
+        return build_integration_health(profile.integration_registry_json)
 
     def import_host_integrations(self, db: Session) -> dict[str, Any]:
         profile = self._app_profile(db)

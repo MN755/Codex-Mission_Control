@@ -226,6 +226,7 @@ def test_runtime_and_project_control_routes_require_token(client) -> None:
         assert raw_client.get("/api/tools").status_code == 401
         assert raw_client.get("/api/integrations/catalog").status_code == 401
         assert raw_client.get("/api/integrations/connections").status_code == 401
+        assert raw_client.get("/api/integrations/health").status_code == 401
         assert raw_client.post("/api/integrations/import-host-state").status_code == 401
         assert raw_client.get("/api/skills").status_code == 401
         assert raw_client.get("/api/handoffs").status_code == 401

@@ -148,6 +148,7 @@
     "mission-control://projects/{project_id}/codebase-map",
     "mission-control://integrations/catalog",
     "mission-control://integrations/connections",
+    "mission-control://integrations/health",
     "mission-control://projects/{project_id}/integrations",
     "mission-control://projects/{project_id}/integrations/{family}",
     "mission-control://projects/{project_id}/workspace-tooling",

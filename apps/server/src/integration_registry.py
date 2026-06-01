@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import shutil
 import subprocess
 from dataclasses import dataclass
@@ -14,6 +15,7 @@ from config import REPO_ROOT, get_codex_home
 REGISTRY_VERSION = 1
 INTEGRATION_REGISTRY_KEY = "integration_registry_json"
 LEGACY_CONNECTION_SOURCES = {"legacy_connected_accounts", "manual", "codex_host", "claude_code_host", "mission_control"}
+AUTHORITATIVE_CONNECTION_SOURCES = {"mission_control", "manual", "legacy_connected_accounts"}
 SKIP_DIRS = {
     ".git",
     ".hg",
@@ -87,6 +89,16 @@ COMMON_ACTIONS = (
         preview_supported=True,
         mutates_remote_state=False,
         requires_confirmation=False,
+    ),
+    IntegrationActionDefinition(
+        action_id="disconnect",
+        title="Disconnect",
+        summary="Disconnect the Mission Control-owned connection state for this family without pretending host imports disappeared.",
+        risk_level="medium",
+        permission_policy="ask_every_time",
+        preview_supported=True,
+        mutates_remote_state=False,
+        requires_confirmation=True,
     ),
 )
 
@@ -632,6 +644,17 @@ def _dedupe_strs(values: list[str]) -> list[str]:
     return ordered
 
 
+def _normalized_connection_status(value: Any) -> str:
+    status = str(value or "").strip().lower()
+    if status in {"connected", "ready"}:
+        return "connected"
+    if status in {"partial", "host_imported", "degraded"}:
+        return "partial"
+    if status in {"needs_setup", "disconnected", "unknown"}:
+        return status
+    return "unknown"
+
+
 def _quote(value: Any) -> str:
     text = str(value)
     return '"' + text.replace('"', '\\"') + '"'
@@ -645,12 +668,35 @@ def _format_command(template: str, params: dict[str, Any]) -> str:
     return template.format(**values)
 
 
+def _command_to_args(command: str) -> list[str]:
+    return shlex.split(command, posix=os.name != "nt")
+
+
+def _command_executable_name(command: str) -> str | None:
+    try:
+        args = _command_to_args(command)
+    except ValueError:
+        return None
+    if not args:
+        return None
+    return args[0]
+
+
+def _command_is_available(command: str) -> bool:
+    executable = _command_executable_name(command)
+    if not executable:
+        return False
+    return shutil.which(executable) is not None
+
+
 def _provider_status_from_legacy(account: dict[str, Any]) -> str:
     status = str(account.get("status") or "").strip().lower()
     if status == "connected":
         return "connected"
     if status in {"configure_manually", "coming_soon"}:
         return "needs_setup"
+    if status in {"ready", "partial", "needs_setup", "disconnected", "unknown"}:
+        return _normalized_connection_status(status)
     if status:
         return status
     return "unknown"
@@ -672,6 +718,14 @@ def normalize_integration_registry(
     if isinstance(payload.get("action_history"), list):
         normalized["action_history"] = [dict(item or {}) for item in list(payload["action_history"])[:50]]
     normalized["version"] = int(payload.get("version") or REGISTRY_VERSION)
+    for family_id, connection in list(normalized["connections"].items()):
+        connection["family"] = str(connection.get("family") or family_id)
+        connection["status"] = _normalized_connection_status(connection.get("status"))
+        connection["providers"] = _dedupe_strs([str(item) for item in list(connection.get("providers") or []) if str(item).strip()])
+        connection["connection_source"] = str(connection.get("connection_source") or "mission_control")
+        connection["host_imported"] = bool(connection.get("host_imported"))
+        connection["approval_policy"] = str(connection.get("approval_policy") or "ask_every_time")
+        connection["notes"] = _dedupe_strs([str(item) for item in list(connection.get("notes") or []) if str(item).strip()])
 
     legacy = dict(legacy_connected_accounts or {})
     for family in FAMILIES:
@@ -692,6 +746,34 @@ def normalize_integration_registry(
                 },
             )
     return normalized
+
+
+def _merge_connection_entry(
+    existing: dict[str, Any] | None,
+    *,
+    family: IntegrationFamilyDefinition,
+    status: str,
+    providers: list[str],
+    connection_source: str,
+    host_imported: bool,
+    notes: list[str],
+) -> dict[str, Any]:
+    current = dict(existing or {})
+    current_source = str(current.get("connection_source") or "mission_control")
+    current_status = _normalized_connection_status(current.get("status"))
+    preserve_authoritative = current_source in AUTHORITATIVE_CONNECTION_SOURCES and current_status in {"connected", "partial"}
+    merged = {
+        "family": family.family_id,
+        "status": current_status if current_source in AUTHORITATIVE_CONNECTION_SOURCES and current_status == "connected" else _normalized_connection_status(status),
+        "providers": _dedupe_strs([str(item) for item in list(current.get("providers") or [])] + providers),
+        "connection_source": current_source if preserve_authoritative else connection_source,
+        "host_imported": bool(current.get("host_imported")) or host_imported,
+        "approval_policy": str(current.get("approval_policy") or "ask_every_time"),
+        "notes": _dedupe_strs([str(item) for item in list(current.get("notes") or [])] + notes),
+    }
+    if preserve_authoritative:
+        merged["status"] = current_status
+    return merged
 
 
 def registry_to_legacy_connected_accounts(registry_payload: dict[str, Any] | None) -> dict[str, Any]:
@@ -761,15 +843,15 @@ def import_host_state(
                     "paths": _dedupe_strs(matched_paths),
                     "provider_hints": list(family.providers),
                 }
-                registry["connections"][family.family_id] = {
-                    "family": family.family_id,
-                    "status": "connected",
-                    "providers": list(family.providers),
-                    "connection_source": f"{host_name}_host",
-                    "host_imported": True,
-                    "approval_policy": "ask_every_time",
-                    "notes": [f"Imported from {host_name} host assets."],
-                }
+                registry["connections"][family.family_id] = _merge_connection_entry(
+                    dict(registry["connections"].get(family.family_id) or {}),
+                    family=family,
+                    status="partial",
+                    providers=list(family.providers),
+                    connection_source=f"{host_name}_host",
+                    host_imported=True,
+                    notes=[f"Imported metadata from {host_name} host assets. Host import does not override Mission Control-owned connection state."],
+                )
         registry["host_imports"][host_name] = imported
     return registry
 
@@ -838,22 +920,55 @@ def build_project_integration_status(
     statuses: list[dict[str, Any]] = []
     for family in FAMILIES:
         connection = _connection_status_for_family(registry, family)
-        detected_files = [path for path in relative_files if any(path == item or path.endswith("/" + item) or Path(path).name == item for item in family.config_files)]
+        connection_status = _normalized_connection_status(connection.get("status"))
+        detected_files = [
+            path
+            for path in relative_files
+            if any(
+                path == item
+                or path.endswith("/" + item)
+                or path.startswith(item.rstrip("/") + "/")
+                or Path(path).name == item
+                for item in family.config_files
+            )
+        ]
         token_hits = [token for token in family.workspace_tokens if token and token.lower() in haystack]
         installed_clis = [cli for cli in family.cli_candidates if shutil.which(cli)]
+        has_host_import = bool(connection.get("host_imported"))
+        has_workspace_signal = bool(detected_files or token_hits)
+        has_cli = bool(installed_clis)
+        has_connection = connection_status == "connected"
         available_actions: list[dict[str, Any]] = []
         blockers: list[str] = []
         recommended_fixes: list[str] = []
-        if not installed_clis and not connection.get("host_imported") and not detected_files and not token_hits:
+        if not has_cli and not has_host_import and not has_workspace_signal and not has_connection:
             blockers.append("No host import, local CLI, or workspace signals were detected for this family.")
             recommended_fixes.append("Connect the provider in Mission Control or install the relevant local CLI before expecting a serious integration lane.")
             status = "needs_setup"
-        elif connection.get("status") == "connected" or installed_clis or detected_files or token_hits:
+        elif has_connection and (has_cli or has_host_import or not family.cli_candidates):
+            status = "ready"
+        elif has_cli and (has_workspace_signal or has_host_import):
             status = "ready"
         else:
-            status = str(connection.get("status") or "unknown")
+            status = "partial"
+            if not has_cli and family.cli_candidates:
+                blockers.append("A local CLI is still missing for the actionable lane in this family.")
+                recommended_fixes.append(f"Install one of: {', '.join(family.cli_candidates)}")
+            if not has_connection and has_host_import:
+                blockers.append("Only host-imported metadata is present. Mission Control has not verified a live provider session yet.")
+                recommended_fixes.append("Refresh the connection in Mission Control or use a verified local CLI before treating this lane as live.")
+            if has_workspace_signal and not has_connection:
+                recommended_fixes.append("Workspace signals exist, but Mission Control has not verified the live provider context yet.")
         for action in family.actions:
-            action_ready = bool(installed_clis or connection.get("host_imported") or connection.get("status") == "connected" or action.action_id in {"import_host_state", "connect", "inspect_status"})
+            action_command_ready = bool(action.command_template and _command_is_available(action.command_template))
+            action_ready = bool(
+                action.action_id in {"import_host_state", "connect", "disconnect", "inspect_status"}
+                or action_command_ready
+                or (
+                    not action.command_template
+                    and (has_connection or has_host_import or has_workspace_signal)
+                )
+            )
             available_actions.append(
                 {
                     "action_id": action.action_id,
@@ -871,7 +986,7 @@ def build_project_integration_status(
         safe_commands = [
             action.command_template
             for action in family.actions
-            if action.command_template and not action.mutates_remote_state
+            if action.command_template and not action.mutates_remote_state and _command_is_available(action.command_template)
         ]
         artifacts = [{"type": "config_file", "path": path} for path in detected_files]
         statuses.append(
@@ -891,7 +1006,8 @@ def build_project_integration_status(
                     "cli_detected": installed_clis,
                     "workspace_config_files": detected_files,
                     "workspace_token_hits": token_hits,
-                    "host_imported": bool(connection.get("host_imported")),
+                    "host_imported": has_host_import,
+                    "connection_status": connection_status,
                 },
                 "artifacts": artifacts,
                 "safe_commands": safe_commands,
@@ -904,6 +1020,36 @@ def build_project_integration_status(
     return statuses
 
 
+def build_integration_health(registry_payload: dict[str, Any] | None) -> dict[str, Any]:
+    registry = normalize_integration_registry(registry_payload, {})
+    connections = list_connections(registry)
+    status_counts: dict[str, int] = {}
+    host_imported_count = 0
+    authoritative_count = 0
+    for connection in connections:
+        status = _normalized_connection_status(connection.get("status"))
+        status_counts[status] = status_counts.get(status, 0) + 1
+        if connection.get("host_imported"):
+            host_imported_count += 1
+        if str(connection.get("connection_source") or "") in AUTHORITATIVE_CONNECTION_SOURCES:
+            authoritative_count += 1
+    recent_actions = list(registry.get("action_history") or [])[-10:]
+    failed_actions = [item for item in recent_actions if str(item.get("status") or "") == "failed"]
+    return {
+        "version": int(registry.get("version") or REGISTRY_VERSION),
+        "family_count": len(FAMILIES),
+        "connection_count": len([item for item in connections if _normalized_connection_status(item.get("status")) != "disconnected"]),
+        "authoritative_connection_count": authoritative_count,
+        "host_imported_count": host_imported_count,
+        "status_counts": status_counts,
+        "recent_action_failures": failed_actions,
+        "host_import_roots": {
+            host: [str(path) for path in roots]
+            for host, roots in _host_scan_roots().items()
+        },
+    }
+
+
 def build_integration_catalog_with_connections(registry_payload: dict[str, Any] | None) -> list[dict[str, Any]]:
     registry = normalize_integration_registry(registry_payload, {})
     rows: list[dict[str, Any]] = []
@@ -912,7 +1058,7 @@ def build_integration_catalog_with_connections(registry_payload: dict[str, Any] 
         rows.append(
             {
                 **next(item for item in integration_catalog() if item["family"] == family.family_id),
-                "status": connection.get("status") or "disconnected",
+                "status": _normalized_connection_status(connection.get("status") or "disconnected"),
                 "connection_source": connection.get("connection_source") or "mission_control",
                 "host_imported": bool(connection.get("host_imported")),
                 "notes": list(connection.get("notes") or []),
@@ -953,6 +1099,7 @@ def preview_integration_action(
             command = action.command_template
         else:
             command = _format_command(action.command_template, params)
+    executable_available = bool(command and _command_is_available(command))
     return {
         "family": family.family_id,
         "action_id": action.action_id,
@@ -969,6 +1116,9 @@ def preview_integration_action(
         "missing_params": missing,
         "notes": [
             "Mission Control previews the action before execution so approvals are tied to a concrete command or host import step.",
+            "Local execution stays shell-free and only runs when the previewed executable is actually present.",
+            "A host import is metadata, not proof of live remote authorization.",
+            f"Executable detected: {'yes' if executable_available else 'no'}.",
         ],
     }
 
@@ -1023,6 +1173,54 @@ def execute_integration_action(
             "returncode": None,
             "approval_required": True,
         }
+    if action.action_id == "connect":
+        family = FAMILY_BY_ID[family_id]
+        updated_registry = normalize_integration_registry(registry, {})
+        updated_registry["connections"][family_id] = _merge_connection_entry(
+            dict(updated_registry["connections"].get(family_id) or {}),
+            family=family,
+            status="partial",
+            providers=list(family.providers),
+            connection_source="manual",
+            host_imported=bool(dict(updated_registry["connections"].get(family_id) or {}).get("host_imported")),
+            notes=["Manual connection intent recorded by Mission Control. Live provider verification is still pending."],
+        )
+        history = list(updated_registry.get("action_history") or [])
+        history.append({"family": family_id, "action_id": action_id, "status": "completed", "command": None, "returncode": 0})
+        updated_registry["action_history"] = history[-50:]
+        return {
+            **preview,
+            "status": "completed",
+            "stdout": "Recorded manual connection intent. Mission Control still requires live provider verification before treating this lane as connected.",
+            "stderr": "",
+            "returncode": 0,
+            "approval_required": False,
+            "updated_registry": updated_registry,
+        }
+    if action.action_id == "disconnect":
+        updated_registry = normalize_integration_registry(registry, {})
+        existing = dict(updated_registry["connections"].get(family_id) or {})
+        updated_registry["connections"][family_id] = {
+            "family": family_id,
+            "status": "disconnected",
+            "providers": _dedupe_strs([str(item) for item in list(existing.get("providers") or [])]),
+            "connection_source": "mission_control",
+            "host_imported": bool(existing.get("host_imported")),
+            "approval_policy": str(existing.get("approval_policy") or "ask_every_time"),
+            "notes": _dedupe_strs([str(item) for item in list(existing.get("notes") or [])] + ["Disconnected through Mission Control."]),
+        }
+        history = list(updated_registry.get("action_history") or [])
+        history.append({"family": family_id, "action_id": action_id, "status": "completed", "command": None, "returncode": 0})
+        updated_registry["action_history"] = history[-50:]
+        return {
+            **preview,
+            "status": "completed",
+            "stdout": "Disconnected the Mission Control-owned connection state for this family.",
+            "stderr": "",
+            "returncode": 0,
+            "approval_required": False,
+            "updated_registry": updated_registry,
+        }
     if not preview.get("command"):
         return {
             **preview,
@@ -1032,15 +1230,43 @@ def execute_integration_action(
             "returncode": 0 if action.action_id == "connect" else None,
             "approval_required": False,
         }
-    completed = subprocess.run(
-        str(preview["command"]),
-        shell=True,
-        cwd=workspace_path if workspace_path and Path(workspace_path).exists() else str(REPO_ROOT),
-        capture_output=True,
-        text=True,
-        timeout=120,
-        check=False,
-    )
+    if not _command_is_available(str(preview["command"])):
+        return {
+            **preview,
+            "status": "blocked",
+            "stdout": "",
+            "stderr": "The previewed executable is not available on PATH for this environment.",
+            "returncode": None,
+            "approval_required": False,
+        }
+    try:
+        completed = subprocess.run(
+            _command_to_args(str(preview["command"])),
+            shell=False,
+            cwd=workspace_path if workspace_path and Path(workspace_path).exists() else str(REPO_ROOT),
+            capture_output=True,
+            text=True,
+            timeout=120,
+            check=False,
+        )
+    except subprocess.TimeoutExpired as exc:
+        return {
+            **preview,
+            "status": "failed",
+            "stdout": (exc.stdout or "").strip(),
+            "stderr": f"Integration action timed out after {int(exc.timeout)} seconds.",
+            "returncode": None,
+            "approval_required": False,
+        }
+    except OSError as exc:
+        return {
+            **preview,
+            "status": "failed",
+            "stdout": "",
+            "stderr": str(exc),
+            "returncode": None,
+            "approval_required": False,
+        }
     history = list(registry.get("action_history") or [])
     history.append(
         {
@@ -1061,4 +1287,3 @@ def execute_integration_action(
         "approval_required": False,
         "updated_registry": registry,
     }
-

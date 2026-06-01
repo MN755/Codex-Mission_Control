@@ -70,5 +70,6 @@ Those TensorFlow starter endpoints are daemon APIs backed by `apps/server/src/te
 
 - `mission-control://integrations/catalog`
 - `mission-control://integrations/connections`
+- `mission-control://integrations/health`
 - `mission-control://projects/{project_id}/integrations`
 - `mission-control://projects/{project_id}/integrations/{family}`
