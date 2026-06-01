@@ -25,6 +25,12 @@ Mission Control MCP prompts are reusable Codex-chat workflows. They describe how
 - `review_project_capabilities`
 - `ask_manager_for_plan`
 - `review_project_capability_section`
+- `review_tensorflow_feature_catalog`
+- `review_tensorflow_feature_bundle`
+- `review_pytorch_feature_catalog`
+- `review_pytorch_feature_bundle`
+- `review_spatial_feature_catalog`
+- `review_spatial_feature_bundle`
 
 ## Prompt Rules
 
@@ -37,7 +43,7 @@ Mission Control MCP prompts are reusable Codex-chat workflows. They describe how
 
 - Canonical names use underscores.
 - Legacy hyphenated names remain prompt aliases in the MCP catalog for compatibility.
-- Key aliases include `use-mission-control-for-this-repo`, `continue-orchestration`, `use-webwright-for-browser-task`, `review-project-capabilities`, `ask-manager-for-plan`, and `review-project-capability-section`.
+- Key aliases include `use-mission-control-for-this-repo`, `continue-orchestration`, `use-webwright-for-browser-task`, `review-project-capabilities`, `ask-manager-for-plan`, `review-project-capability-section`, `review-tensorflow-feature-catalog`, `review-tensorflow-feature-bundle`, `review-pytorch-feature-catalog`, `review-pytorch-feature-bundle`, `review-spatial-feature-catalog`, and `review-spatial-feature-bundle`.
 
 ## Integration prompts
 

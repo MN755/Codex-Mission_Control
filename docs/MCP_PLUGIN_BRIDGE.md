@@ -42,6 +42,12 @@ The bridge keeps Codex chat thin. Mission Control remains the orchestrator. MCP 
 - `mission_control_get_capability_report`
 - `mission_control_get_capability_section`
 - `mission_control_get_workspace_tooling`
+- `mission_control_get_tensorflow_feature_catalog`
+- `mission_control_get_tensorflow_feature_bundle`
+- `mission_control_get_pytorch_feature_catalog`
+- `mission_control_get_pytorch_feature_bundle`
+- `mission_control_get_spatial_feature_catalog`
+- `mission_control_get_spatial_feature_bundle`
 - `mission_control_search_codebase`
 - `mission_control_get_webwright_status`
 - `mission_control_get_nvidia_dynamo_status`
@@ -73,6 +79,12 @@ The bridge keeps Codex chat thin. Mission Control remains the orchestrator. MCP 
 - `mission-control://projects/{project_id}/handoff`
 - `mission-control://projects/{project_id}/codebase-map`
 - `mission-control://projects/{project_id}/workspace-tooling`
+- `mission-control://projects/{project_id}/tensorflow/features`
+- `mission-control://projects/{project_id}/tensorflow/features/{feature_id}`
+- `mission-control://projects/{project_id}/pytorch/features`
+- `mission-control://projects/{project_id}/pytorch/features/{feature_id}`
+- `mission-control://projects/{project_id}/spatial/features`
+- `mission-control://projects/{project_id}/spatial/features/{feature_id}`
 - `mission-control://projects/{project_id}/diagnostics`
 - `mission-control://projects/{project_id}/orchestrations/{orchestration_id}/status`
 - `mission-control://projects/{project_id}/orchestrations/{orchestration_id}/events`
@@ -117,15 +129,16 @@ The bridge keeps Codex chat thin. Mission Control remains the orchestrator. MCP 
 - `review_project_capabilities`
 - `ask_manager_for_plan`
 - `review_project_capability_section`
+- `review_tensorflow_feature_catalog`
+- `review_tensorflow_feature_bundle`
+- `review_pytorch_feature_catalog`
+- `review_pytorch_feature_bundle`
+- `review_spatial_feature_catalog`
+- `review_spatial_feature_bundle`
 
 ## Backend-only project routes
 
-These routes are real backend surfaces in `apps/server/src/main.py`, but they are not currently exposed as MCP resources or MCP tools:
-
-- `GET /api/projects/{project_id}/tensorflow/features`
-- `GET /api/projects/{project_id}/tensorflow/features/{feature_id}?variant=...`
-
-Those endpoints expose the typed TensorFlow starter catalog and bundle generator from `apps/server/src/tensorflow_starters.py`. They are useful for daemon and API clients today, but the plugin catalog does not advertise them yet, so docs should not pretend they are part of the MCP layer.
+There are still daemon APIs that are not MCP surfaces, but the typed starter catalogs are no longer in that bucket for TensorFlow, PyTorch, or spatial. Those three families are now surfaced through project-scoped MCP resources and bridge tools.
 
 ## Bridge rules
 

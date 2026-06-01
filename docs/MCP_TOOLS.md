@@ -31,6 +31,12 @@ Mission Control MCP tools are action endpoints for the Codex bridge. They do not
 - `mission_control_get_capability_report`
 - `mission_control_get_capability_section`
 - `mission_control_get_workspace_tooling`
+- `mission_control_get_tensorflow_feature_catalog`
+- `mission_control_get_tensorflow_feature_bundle`
+- `mission_control_get_pytorch_feature_catalog`
+- `mission_control_get_pytorch_feature_bundle`
+- `mission_control_get_spatial_feature_catalog`
+- `mission_control_get_spatial_feature_bundle`
 - `mission_control_search_codebase`
 - `mission_control_get_webwright_status`
 - `mission_control_get_nvidia_dynamo_status`
@@ -69,12 +75,10 @@ Mission Control MCP tools are action endpoints for the Codex bridge. They do not
 - Operator snapshot, instincts, and verification brief stay resource-first on purpose; they are read-only operator surfaces, not imperative tools.
 - `mission_control_get_capability_report` is the compact imperative read path for the whole capability picture when a client wants structured JSON instead of a resource-only read.
 - `mission_control_get_capability_section` is the focused read path when a client only needs one capability lane instead of the whole report.
+- `mission_control_get_tensorflow_feature_catalog` and `mission_control_get_tensorflow_feature_bundle` are the explicit read paths for the TensorFlow starter catalog and one named bundle.
+- `mission_control_get_pytorch_feature_catalog` and `mission_control_get_pytorch_feature_bundle` do the same for PyTorch starter lanes.
+- `mission_control_get_spatial_feature_catalog` and `mission_control_get_spatial_feature_bundle` are the explicit read paths for the spatial/3D starter catalog and one named starter bundle, so the bridge can stop guessing at graphics workflow structure.
 
 ## Explicit Non-Tools
 
-These backend routes exist, but they are not MCP tools:
-
-- `GET /api/projects/{project_id}/tensorflow/features`
-- `GET /api/projects/{project_id}/tensorflow/features/{feature_id}?variant=...`
-
-They expose typed TensorFlow starter catalog data and generated starter bundles through the daemon API. That distinction matters because a backend route is not magically an MCP tool just because somebody wishes it were.
+Some backend routes still exist without MCP tool exposure, but TensorFlow, PyTorch, and spatial starter catalogs are no longer examples of that category.

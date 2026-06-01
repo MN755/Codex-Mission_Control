@@ -542,6 +542,27 @@ class MissionControlDaemonClient:
             json_body={"params": params or {}, "confirmed": confirmed},
         )
 
+    def get_tensorflow_feature_catalog(self, project_id: int) -> list[dict[str, Any]]:
+        return self._request("GET", f"/api/projects/{project_id}/tensorflow/features")
+
+    def get_tensorflow_feature_bundle(self, project_id: int, feature_id: str, *, variant: str | None = None) -> dict[str, Any]:
+        params = {"variant": variant} if variant else None
+        return self._request("GET", f"/api/projects/{project_id}/tensorflow/features/{feature_id}", params=params)
+
+    def get_pytorch_feature_catalog(self, project_id: int) -> list[dict[str, Any]]:
+        return self._request("GET", f"/api/projects/{project_id}/pytorch/features")
+
+    def get_pytorch_feature_bundle(self, project_id: int, feature_id: str, *, variant: str | None = None) -> dict[str, Any]:
+        params = {"variant": variant} if variant else None
+        return self._request("GET", f"/api/projects/{project_id}/pytorch/features/{feature_id}", params=params)
+
+    def get_spatial_feature_catalog(self, project_id: int) -> list[dict[str, Any]]:
+        return self._request("GET", f"/api/projects/{project_id}/spatial/features")
+
+    def get_spatial_feature_bundle(self, project_id: int, feature_id: str, *, variant: str | None = None) -> dict[str, Any]:
+        params = {"variant": variant} if variant else None
+        return self._request("GET", f"/api/projects/{project_id}/spatial/features/{feature_id}", params=params)
+
     def search_codebase(
         self,
         project_id: int,
@@ -1065,6 +1086,67 @@ class MissionControlDaemonClient:
             "tools": list(payload.get("tools") or [])[:12],
         }
 
+    def _summarize_ml_feature_catalog(self, project_id: int, payload: list[dict[str, Any]]) -> dict[str, Any]:
+        features = list(payload or [])
+        return {
+            "project_id": project_id,
+            "feature_count": len(features),
+            "features": [
+                {
+                    "feature_id": item.get("feature_id"),
+                    "title": item.get("title"),
+                    "summary": item.get("summary"),
+                    "variants": list(item.get("variants") or [])[:10],
+                    "keywords": list(item.get("keywords") or [])[:12],
+                }
+                for item in features[:32]
+            ],
+        }
+
+    def _summarize_ml_feature_bundle(self, project_id: int, payload: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "project_id": project_id,
+            "feature_id": payload.get("feature_id"),
+            "variant": payload.get("variant"),
+            "summary": payload.get("summary"),
+            "files": dict(payload.get("files") or {}),
+            "validation_steps": list(payload.get("validation_steps") or [])[:16],
+            "dependencies": list(payload.get("dependencies") or [])[:20],
+            "evidence_targets": list(payload.get("evidence_targets") or [])[:16],
+        }
+
+    def _summarize_spatial_feature_catalog(self, project_id: int, payload: list[dict[str, Any]]) -> dict[str, Any]:
+        features = list(payload or [])
+        return {
+            "project_id": project_id,
+            "feature_count": len(features),
+            "features": [
+                {
+                    "id": item.get("id"),
+                    "title": item.get("title"),
+                    "summary": item.get("summary"),
+                    "category": item.get("category"),
+                    "variants": list(item.get("variants") or [])[:8],
+                    "keywords": list(item.get("keywords") or [])[:10],
+                }
+                for item in features[:32]
+            ],
+        }
+
+    def _summarize_spatial_feature_bundle(self, project_id: int, payload: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "project_id": project_id,
+            "feature_id": payload.get("feature_id"),
+            "variant": payload.get("variant"),
+            "title": payload.get("title"),
+            "summary": payload.get("summary"),
+            "dependencies": list(payload.get("dependencies") or [])[:20],
+            "starter_files": list(payload.get("starter_files") or [])[:24],
+            "validation_steps": list(payload.get("validation_steps") or [])[:16],
+            "evidence_targets": list(payload.get("evidence_targets") or [])[:16],
+            "notes": list(payload.get("notes") or [])[:10],
+        }
+
     def _summarize_capability_report(self, project_id: int, payload: dict[str, Any]) -> dict[str, Any]:
         sections = list(payload.get("sections") or [])
         return {
@@ -1515,6 +1597,21 @@ class MissionControlDaemonClient:
                 if len(parts) == 4:
                     return self.get_project_integration_family(project_id, parts[3])
                 return self.get_project_integrations(project_id)
+            if kind == "tensorflow" and len(parts) >= 4 and parts[3] == "features":
+                if len(parts) == 4:
+                    return self._summarize_ml_feature_catalog(project_id, self.get_tensorflow_feature_catalog(project_id))
+                feature_id = parts[4]
+                return self._summarize_ml_feature_bundle(project_id, self.get_tensorflow_feature_bundle(project_id, feature_id))
+            if kind == "pytorch" and len(parts) >= 4 and parts[3] == "features":
+                if len(parts) == 4:
+                    return self._summarize_ml_feature_catalog(project_id, self.get_pytorch_feature_catalog(project_id))
+                feature_id = parts[4]
+                return self._summarize_ml_feature_bundle(project_id, self.get_pytorch_feature_bundle(project_id, feature_id))
+            if kind == "spatial" and len(parts) >= 4 and parts[3] == "features":
+                if len(parts) == 4:
+                    return self._summarize_spatial_feature_catalog(project_id, self.get_spatial_feature_catalog(project_id))
+                feature_id = parts[4]
+                return self._summarize_spatial_feature_bundle(project_id, self.get_spatial_feature_bundle(project_id, feature_id))
             if kind == "webwright":
                 return self._summarize_webwright_status(project_id, self.get_webwright_status(project_id))
             if kind == "nvidia-dynamo":

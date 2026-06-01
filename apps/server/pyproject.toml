@@ -62,6 +62,8 @@ py-modules = [
   "pytorch_support",
   "runtime_paths",
   "schemas",
+  "spatial3d_starters",
+  "spatial3d_support",
   "startup",
   "subagent_planner",
   "swarm",

@@ -31,7 +31,18 @@ The canonical machine-readable catalogs live here:
 - `mission-control://projects/{project_id}/pending-decisions`
 - `mission-control://projects/{project_id}/handoff`
 - `mission-control://projects/{project_id}/codebase-map`
+- `mission-control://integrations/catalog`
+- `mission-control://integrations/connections`
+- `mission-control://integrations/health`
+- `mission-control://projects/{project_id}/integrations`
+- `mission-control://projects/{project_id}/integrations/{family}`
 - `mission-control://projects/{project_id}/workspace-tooling`
+- `mission-control://projects/{project_id}/tensorflow/features`
+- `mission-control://projects/{project_id}/tensorflow/features/{feature_id}`
+- `mission-control://projects/{project_id}/pytorch/features`
+- `mission-control://projects/{project_id}/pytorch/features/{feature_id}`
+- `mission-control://projects/{project_id}/spatial/features`
+- `mission-control://projects/{project_id}/spatial/features/{feature_id}`
 - `mission-control://projects/{project_id}/diagnostics`
 - `mission-control://projects/{project_id}/webwright`
 - `mission-control://projects/{project_id}/nvidia-dynamo`
@@ -81,6 +92,16 @@ The canonical machine-readable catalogs live here:
 - `review-project-capabilities`
 - `ask-manager-for-plan`
 - `review-project-capability-section`
+- `review-integration-catalog`
+- `import-host-integrations`
+- `review-project-integrations`
+- `review-project-integration-family`
+- `review-tensorflow-feature-catalog`
+- `review-tensorflow-feature-bundle`
+- `review-pytorch-feature-catalog`
+- `review-pytorch-feature-bundle`
+- `review-spatial-feature-catalog`
+- `review-spatial-feature-bundle`
 
 ## Prompt To Tool Pattern
 
@@ -122,14 +143,4 @@ These resources and prompts are designed to make Mission Control usable from Cod
 
 ## Backend-only note
 
-Mission Control also exposes real project-scoped backend APIs that are not in the MCP resource or prompt catalogs yet, including:
-
-- `GET /api/projects/{project_id}/tensorflow/features`
-- `GET /api/projects/{project_id}/tensorflow/features/{feature_id}?variant=...`
-
-Those TensorFlow starter routes are daemon APIs today. The docs should describe them accurately instead of quietly pretending the plugin already exposes them.
-
-## Integration additions
-
-- Prompts: `review_integration_catalog`, `import_host_integrations`, `review_project_integrations`, `review_project_integration_family`
-- Resources: `mission-control://integrations/catalog`, `mission-control://integrations/connections`, `mission-control://integrations/health`, `mission-control://projects/{project_id}/integrations`, `mission-control://projects/{project_id}/integrations/{family}`
+Mission Control still has project-scoped backend APIs that are not in the MCP resource or prompt catalogs for every possible lane, but TensorFlow, PyTorch, and spatial starter catalogs are no longer examples of that gap. They are now exposed through MCP resources, prompts, and bridge tools.

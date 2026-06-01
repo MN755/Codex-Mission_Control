@@ -10,6 +10,7 @@ from pytorch_support import (
     detect_pytorch_repo_mode,
     detect_pytorch_runtime_status,
 )
+from spatial3d_support import build_spatial3d_validation_plan, detect_spatial3d_repo_mode
 from security.path_validation import PathValidationError, resolve_local_path
 from tensorflow_support import build_tensorflow_validation_plan, detect_tensorflow_repo_mode
 
@@ -483,6 +484,8 @@ def _base_workspace_tooling_payload(
         "pytorch_repo": {"enabled": False, "frameworks": [], "product_workflows": [], "distributed_stack": []},
         "pytorch_runtime_status": {"available": False, "status": "not_applicable", "recommended_fixes": []},
         "pytorch_validation_plan": {"available": False, "status": "not_applicable", "steps": [], "recommended_fixes": []},
+        "spatial3d_repo": {"enabled": False, "frameworks": [], "product_workflows": []},
+        "spatial3d_validation_plan": {"available": False, "status": "not_applicable", "steps": [], "recommended_fixes": []},
     }
 
 
@@ -573,8 +576,12 @@ def detect_workspace_tooling(workspace_path: str | Path | None, *, project_name:
         )
     tensorflow_mode = detect_tensorflow_repo_mode(root)
     pytorch_mode = detect_pytorch_repo_mode(root)
+    spatial3d_mode = detect_spatial3d_repo_mode(root)
     relative_files = _workspace_relative_files(root)
     repo_profile = _repo_profile(root, relative_files=relative_files, tensorflow_mode=tensorflow_mode, pytorch_mode=pytorch_mode)
+    repo_profile["spatial3d_repo"] = bool(spatial3d_mode.get("enabled"))
+    repo_profile["spatial3d_mode"] = spatial3d_mode.get("mode")
+    repo_profile["spatial3d_frameworks"] = list(spatial3d_mode.get("frameworks") or [])
     package_names = _package_json_package_names(root, relative_files)
     haystack = _workspace_signal_haystack_from_files(root, relative_files)
     tools = [
@@ -585,6 +592,7 @@ def detect_workspace_tooling(workspace_path: str | Path | None, *, project_name:
     tensorflow_plan = build_tensorflow_validation_plan(root)
     pytorch_runtime = detect_pytorch_runtime_status(root)
     pytorch_plan = build_pytorch_validation_plan(root)
+    spatial3d_plan = build_spatial3d_validation_plan(root)
     repo_mode_summaries = _dedupe(
         [
             (
@@ -599,11 +607,18 @@ def detect_workspace_tooling(workspace_path: str | Path | None, *, project_name:
             )
             if pytorch_mode.get("enabled")
             else "",
+            (
+                f"Spatial mode `{spatial3d_mode.get('mode')}` with frameworks: "
+                f"{', '.join(str(item) for item in list(spatial3d_mode.get('frameworks') or [])[:6])}"
+            )
+            if spatial3d_mode.get("enabled")
+            else "",
         ]
     )
     important_paths = _dedupe(
         [str(item) for item in list(tensorflow_mode.get("important_paths") or [])]
         + [str(item) for item in list(pytorch_mode.get("important_paths") or [])]
+        + [str(item) for item in list(spatial3d_mode.get("important_paths") or [])]
     )
     notebook_paths = _dedupe(
         [str(item) for item in list(tensorflow_mode.get("notebook_paths") or [])]
@@ -615,10 +630,12 @@ def detect_workspace_tooling(workspace_path: str | Path | None, *, project_name:
         + [str(item) for item in list(pytorch_mode.get("checkpoint_paths") or [])]
         + [str(item) for item in list(pytorch_mode.get("existing_onnx_artifacts") or [])]
         + [str(item) for item in list(pytorch_mode.get("existing_torchscript_artifacts") or [])]
+        + [str(item) for item in list(spatial3d_mode.get("asset_paths") or [])]
     )
     config_review_paths = _dedupe(
         [str(item) for item in list(tensorflow_mode.get("config_paths") or [])]
         + [str(item) for item in list(pytorch_mode.get("config_paths") or [])]
+        + [str(item) for item in list(spatial3d_mode.get("config_paths") or [])]
     )
     config_review_commands = [_config_review_command(path) for path in config_review_paths[:6]]
     execution_entrypoints = _dedupe(
@@ -630,15 +647,21 @@ def detect_workspace_tooling(workspace_path: str | Path | None, *, project_name:
         + [str(item) for item in list(pytorch_mode.get("evaluation_commands") or [])]
         + [str(item) for item in list(pytorch_mode.get("inference_commands") or [])]
         + [str(item) for item in list(pytorch_mode.get("export_commands") or [])]
+        + [str(item) for item in list(spatial3d_mode.get("render_commands") or [])]
+        + [str(item) for item in list(spatial3d_mode.get("conversion_commands") or [])]
+        + [str(item) for item in list(spatial3d_mode.get("capture_commands") or [])]
+        + [str(item) for item in list(spatial3d_mode.get("benchmark_commands") or [])]
     )
     runtime_blockers = _dedupe(
         [str(item) for item in list(tensorflow_plan.get("blockers") or [])]
         + [str(item) for item in list(pytorch_runtime.get("blockers") or [])]
         + [str(item) for item in list(pytorch_plan.get("blockers") or [])]
+        + [str(item) for item in list(spatial3d_plan.get("blockers") or [])]
     )
     validation_evidence_targets = _dedupe(
         [str(item) for item in list(tensorflow_plan.get("evidence_targets") or [])]
         + [str(item) for item in list(pytorch_plan.get("evidence_targets") or [])]
+        + [str(item) for item in list(spatial3d_plan.get("evidence_targets") or [])]
     )
     notebook_commands: list[str] = [_notebook_rescue_command(path) for path in notebook_paths[:4]]
     if "jupyter" in tooling_by_id and notebook_paths:
@@ -688,6 +711,12 @@ def detect_workspace_tooling(workspace_path: str | Path | None, *, project_name:
             for step in list(pytorch_plan.get("steps") or [])
             if step.get("type") == "observability" and step.get("command")
         )
+    if spatial3d_mode.get("enabled"):
+        validation_commands.extend(
+            str(step.get("command"))
+            for step in list(spatial3d_plan.get("steps") or [])
+            if step.get("type") in {"render", "convert", "capture", "benchmark", "inspect"} and step.get("command")
+        )
     if tooling_by_id["tensorboard"]["installed"] and tooling_by_id["tensorboard"]["configured"] and not _has_prefixed_command(
         validation_commands,
         ("tensorboard --logdir", "python -m tensorboard.main --logdir"),
@@ -724,6 +753,12 @@ def detect_workspace_tooling(workspace_path: str | Path | None, *, project_name:
             for step in list(pytorch_plan.get("steps") or [])
             if step.get("type") == "checkpoint" and step.get("command")
         )
+    if spatial3d_mode.get("enabled"):
+        deployment_commands.extend(
+            str(step.get("command"))
+            for step in list(spatial3d_plan.get("steps") or [])
+            if step.get("type") in {"convert", "capture"} and step.get("command")
+        )
     artifact_inspection_commands = _dedupe(
         [
             str(step.get("command"))
@@ -734,6 +769,11 @@ def detect_workspace_tooling(workspace_path: str | Path | None, *, project_name:
             str(step.get("command"))
             for step in list(pytorch_plan.get("steps") or [])
             if step.get("command") and _is_inspection_step(step)
+        ]
+        + [
+            str(step.get("command"))
+            for step in list(spatial3d_plan.get("steps") or [])
+            if step.get("command") and step.get("type") == "inspect"
         ]
     )
     if tooling_by_id["saved_model_cli"]["installed"] and tooling_by_id["saved_model_cli"]["configured"] and not _has_prefixed_command(
@@ -768,6 +808,9 @@ def detect_workspace_tooling(workspace_path: str | Path | None, *, project_name:
             f"pytorch:{pytorch_plan.get('status') or 'not_applicable'}"
             if pytorch_mode.get("enabled")
             else "",
+            f"spatial3d:{spatial3d_plan.get('status') or 'not_applicable'}"
+            if spatial3d_mode.get("enabled")
+            else "",
         ]
     )
     execution_lane_summaries = _dedupe(
@@ -777,6 +820,9 @@ def detect_workspace_tooling(workspace_path: str | Path | None, *, project_name:
             else "",
             f"PyTorch lane `{pytorch_mode.get('mode')}` has {len(list(pytorch_plan.get('steps') or []))} planned validation step(s)."
             if pytorch_mode.get("enabled")
+            else "",
+            f"Spatial lane `{spatial3d_mode.get('mode')}` has {len(list(spatial3d_plan.get('steps') or []))} planned validation step(s)."
+            if spatial3d_mode.get("enabled")
             else "",
             f"Distributed launcher paths detected: {', '.join(distributed_launcher_commands[:3])}."
             if distributed_launcher_commands
@@ -860,6 +906,8 @@ def detect_workspace_tooling(workspace_path: str | Path | None, *, project_name:
         recommended_next_steps.extend(list(tensorflow_plan.get("recommended_fixes") or []))
     if pytorch_mode.get("enabled"):
         recommended_next_steps.extend(list(pytorch_plan.get("recommended_fixes") or []))
+    if spatial3d_mode.get("enabled"):
+        recommended_next_steps.extend(list(spatial3d_plan.get("recommended_fixes") or []))
     if not recommended_next_steps:
         recommended_next_steps.append("The highest-value repo-native tooling lanes are already detectable from this workspace.")
     summary_parts = [
@@ -886,6 +934,8 @@ def detect_workspace_tooling(workspace_path: str | Path | None, *, project_name:
         summary_parts.append("tensorflow product lane available")
     if pytorch_mode.get("enabled"):
         summary_parts.append("pytorch product lane available")
+    if spatial3d_mode.get("enabled"):
+        summary_parts.append("spatial 3d product lane available")
     summary = ". ".join(summary_parts).strip() + "."
     return {
         "project_name": project_name,
@@ -922,4 +972,6 @@ def detect_workspace_tooling(workspace_path: str | Path | None, *, project_name:
         "pytorch_repo": pytorch_mode,
         "pytorch_runtime_status": pytorch_runtime,
         "pytorch_validation_plan": pytorch_plan,
+        "spatial3d_repo": spatial3d_mode,
+        "spatial3d_validation_plan": spatial3d_plan,
     }

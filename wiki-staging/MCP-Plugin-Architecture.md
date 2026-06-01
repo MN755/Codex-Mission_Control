@@ -40,8 +40,14 @@ The MCP layer should stay thin and predictable:
 - `mission_control_get_orchestration_events`
 - `mission_control_get_pending_decisions`
 - `mission_control_get_project_settings`
+- `mission_control_get_pytorch_feature_bundle`
+- `mission_control_get_pytorch_feature_catalog`
+- `mission_control_get_spatial_feature_bundle`
+- `mission_control_get_spatial_feature_catalog`
 - `mission_control_get_status`
 - `mission_control_get_swarm_plan`
+- `mission_control_get_tensorflow_feature_bundle`
+- `mission_control_get_tensorflow_feature_catalog`
 - `mission_control_get_tool_catalog`
 - `mission_control_get_webwright_status`
 - `mission_control_get_workspace_tooling`
@@ -72,6 +78,12 @@ The MCP layer should stay thin and predictable:
 - `mission-control://projects/{project_id}/handoff`
 - `mission-control://projects/{project_id}/codebase-map`
 - `mission-control://projects/{project_id}/workspace-tooling`
+- `mission-control://projects/{project_id}/tensorflow/features`
+- `mission-control://projects/{project_id}/tensorflow/features/{feature_id}`
+- `mission-control://projects/{project_id}/pytorch/features`
+- `mission-control://projects/{project_id}/pytorch/features/{feature_id}`
+- `mission-control://projects/{project_id}/spatial/features`
+- `mission-control://projects/{project_id}/spatial/features/{feature_id}`
 - `mission-control://projects/{project_id}/diagnostics`
 - `mission-control://projects/{project_id}/webwright`
 - `mission-control://projects/{project_id}/nvidia-dynamo`
@@ -115,6 +127,12 @@ The MCP layer should stay thin and predictable:
 - `ask_manager_for_plan` (aliases: `ask-manager-for-plan`)
 - `review_project_capabilities` (aliases: `review-project-capabilities`)
 - `review_project_capability_section` (aliases: `review-project-capability-section`)
+- `review_tensorflow_feature_catalog` (aliases: `review-tensorflow-feature-catalog`)
+- `review_tensorflow_feature_bundle` (aliases: `review-tensorflow-feature-bundle`)
+- `review_pytorch_feature_catalog` (aliases: `review-pytorch-feature-catalog`)
+- `review_pytorch_feature_bundle` (aliases: `review-pytorch-feature-bundle`)
+- `review_spatial_feature_catalog` (aliases: `review-spatial-feature-catalog`)
+- `review_spatial_feature_bundle` (aliases: `review-spatial-feature-bundle`)
 
 ## Related pages
 

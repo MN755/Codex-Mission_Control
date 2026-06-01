@@ -85,6 +85,12 @@ The MCP bridge can auto-start the daemon when `GET /api/health` fails and the co
 - `mission_control_get_capability_report`
 - `mission_control_get_capability_section`
 - `mission_control_get_workspace_tooling`
+- `mission_control_get_tensorflow_feature_catalog`
+- `mission_control_get_tensorflow_feature_bundle`
+- `mission_control_get_pytorch_feature_catalog`
+- `mission_control_get_pytorch_feature_bundle`
+- `mission_control_get_spatial_feature_catalog`
+- `mission_control_get_spatial_feature_bundle`
 - `mission_control_search_codebase`
 - `mission_control_get_webwright_status`
 - `mission_control_get_nvidia_dynamo_status`
@@ -117,6 +123,12 @@ The MCP bridge can auto-start the daemon when `GET /api/health` fails and the co
 - `mission-control://projects/{project_id}/handoff`
 - `mission-control://projects/{project_id}/codebase-map`
 - `mission-control://projects/{project_id}/workspace-tooling`
+- `mission-control://projects/{project_id}/tensorflow/features`
+- `mission-control://projects/{project_id}/tensorflow/features/{feature_id}`
+- `mission-control://projects/{project_id}/pytorch/features`
+- `mission-control://projects/{project_id}/pytorch/features/{feature_id}`
+- `mission-control://projects/{project_id}/spatial/features`
+- `mission-control://projects/{project_id}/spatial/features/{feature_id}`
 - `mission-control://projects/{project_id}/diagnostics`
 - `mission-control://projects/{project_id}/orchestrations/{orchestration_id}/status`
 - `mission-control://projects/{project_id}/orchestrations/{orchestration_id}/events`
@@ -163,15 +175,16 @@ These resources expose safe summaries only. They do not expose raw logs, secret 
 - `review_project_capabilities`
 - `ask_manager_for_plan`
 - `review_project_capability_section`
+- `review_tensorflow_feature_catalog`
+- `review_tensorflow_feature_bundle`
+- `review_pytorch_feature_catalog`
+- `review_pytorch_feature_bundle`
+- `review_spatial_feature_catalog`
+- `review_spatial_feature_bundle`
 
 ## Backend-only project APIs
 
-These daemon routes are real code, but they are not MCP tools or MCP resources yet:
-
-- `GET /api/projects/{project_id}/tensorflow/features`
-- `GET /api/projects/{project_id}/tensorflow/features/{feature_id}?variant=...`
-
-Those TensorFlow starter endpoints expose typed starter catalogs and bundles through the backend. They are not part of the plugin catalog today, so the docs should not cosplay otherwise.
+Some daemon routes are still backend-only, but TensorFlow, PyTorch, and spatial starter catalogs are no longer examples of that. Those starter catalogs are now part of the plugin contract through MCP tools, resources, and prompts.
 
 ## Pending decisions
 

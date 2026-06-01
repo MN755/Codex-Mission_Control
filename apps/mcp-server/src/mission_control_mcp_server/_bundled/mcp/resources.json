@@ -394,6 +394,166 @@
       }
     },
     {
+      "uri_template": "mission-control://projects/{project_id}/tensorflow/features",
+      "title": "TensorFlow feature catalog",
+      "summary": "Project-scoped TensorFlow and Keras starter catalog for product-ready ML workflows.",
+      "support_status": "implemented",
+      "source_hint": {
+        "rest_endpoints": [
+          "/api/projects/{project_id}/tensorflow/features"
+        ]
+      },
+      "default_fields": [
+        "project_id",
+        "feature_count",
+        "features"
+      ],
+      "redaction": {
+        "omit_fields": [
+          "raw_log",
+          "secret_env",
+          "private_workspace_files"
+        ],
+        "notes": "Expose the typed TensorFlow starter catalog only. Do not inline repo files or secret-bearing payloads."
+      }
+    },
+    {
+      "uri_template": "mission-control://projects/{project_id}/tensorflow/features/{feature_id}",
+      "title": "TensorFlow feature bundle",
+      "summary": "One named TensorFlow starter bundle with files, dependencies, validation steps, and evidence targets.",
+      "support_status": "implemented",
+      "source_hint": {
+        "rest_endpoints": [
+          "/api/projects/{project_id}/tensorflow/features/{feature_id}"
+        ]
+      },
+      "default_fields": [
+        "project_id",
+        "feature_id",
+        "variant",
+        "summary",
+        "files",
+        "validation_steps",
+        "dependencies",
+        "evidence_targets"
+      ],
+      "redaction": {
+        "omit_fields": [
+          "raw_log",
+          "secret_env",
+          "private_workspace_files"
+        ],
+        "notes": "Expose TensorFlow starter-bundle metadata, not raw local files or secret-bearing payloads."
+      }
+    },
+    {
+      "uri_template": "mission-control://projects/{project_id}/pytorch/features",
+      "title": "PyTorch feature catalog",
+      "summary": "Project-scoped PyTorch starter catalog for training, distributed, export, and fine-tuning lanes.",
+      "support_status": "implemented",
+      "source_hint": {
+        "rest_endpoints": [
+          "/api/projects/{project_id}/pytorch/features"
+        ]
+      },
+      "default_fields": [
+        "project_id",
+        "feature_count",
+        "features"
+      ],
+      "redaction": {
+        "omit_fields": [
+          "raw_log",
+          "secret_env",
+          "private_workspace_files"
+        ],
+        "notes": "Expose the typed PyTorch starter catalog only. Do not inline repo files or secret-bearing payloads."
+      }
+    },
+    {
+      "uri_template": "mission-control://projects/{project_id}/pytorch/features/{feature_id}",
+      "title": "PyTorch feature bundle",
+      "summary": "One named PyTorch starter bundle with files, dependencies, validation steps, and evidence targets.",
+      "support_status": "implemented",
+      "source_hint": {
+        "rest_endpoints": [
+          "/api/projects/{project_id}/pytorch/features/{feature_id}"
+        ]
+      },
+      "default_fields": [
+        "project_id",
+        "feature_id",
+        "variant",
+        "summary",
+        "files",
+        "validation_steps",
+        "dependencies",
+        "evidence_targets"
+      ],
+      "redaction": {
+        "omit_fields": [
+          "raw_log",
+          "secret_env",
+          "private_workspace_files"
+        ],
+        "notes": "Expose PyTorch starter-bundle metadata, not raw local files or secret-bearing payloads."
+      }
+    },
+    {
+      "uri_template": "mission-control://projects/{project_id}/spatial/features",
+      "title": "Spatial feature catalog",
+      "summary": "Project-scoped spatial and 3D starter catalog for asset pipelines, rendering, capture, reconstruction, geospatial, and scene-validation workflows.",
+      "support_status": "implemented",
+      "source_hint": {
+        "rest_endpoints": [
+          "/api/projects/{project_id}/spatial/features"
+        ]
+      },
+      "default_fields": [
+        "project_id",
+        "feature_count",
+        "features"
+      ],
+      "redaction": {
+        "omit_fields": [
+          "raw_log",
+          "secret_env",
+          "private_workspace_files"
+        ],
+        "notes": "Expose the typed spatial starter catalog only. Do not inline repo files or secret-bearing payloads."
+      }
+    },
+    {
+      "uri_template": "mission-control://projects/{project_id}/spatial/features/{feature_id}",
+      "title": "Spatial feature bundle",
+      "summary": "One named spatial or 3D starter bundle with dependencies, starter files, validation steps, and evidence targets.",
+      "support_status": "implemented",
+      "source_hint": {
+        "rest_endpoints": [
+          "/api/projects/{project_id}/spatial/features/{feature_id}"
+        ]
+      },
+      "default_fields": [
+        "project_id",
+        "feature_id",
+        "variant",
+        "title",
+        "summary",
+        "dependencies",
+        "starter_files",
+        "validation_steps",
+        "evidence_targets"
+      ],
+      "redaction": {
+        "omit_fields": [
+          "raw_log",
+          "secret_env",
+          "private_workspace_files"
+        ],
+        "notes": "Expose bundle metadata and starter guidance, not raw local files or secret-bearing payloads."
+      }
+    },
+    {
       "uri_template": "mission-control://projects/{project_id}/diagnostics",
       "title": "Project diagnostics",
       "summary": "Bridge-safe diagnostic summary for degraded orchestration or environment issues.",

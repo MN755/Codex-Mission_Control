@@ -18,7 +18,18 @@ Mission Control resources are read-only context surfaces for Codex chat.
 - `mission-control://projects/{project_id}/pending-decisions`
 - `mission-control://projects/{project_id}/handoff`
 - `mission-control://projects/{project_id}/codebase-map`
+- `mission-control://integrations/catalog`
+- `mission-control://integrations/connections`
+- `mission-control://integrations/health`
+- `mission-control://projects/{project_id}/integrations`
+- `mission-control://projects/{project_id}/integrations/{family}`
 - `mission-control://projects/{project_id}/workspace-tooling`
+- `mission-control://projects/{project_id}/tensorflow/features`
+- `mission-control://projects/{project_id}/tensorflow/features/{feature_id}`
+- `mission-control://projects/{project_id}/pytorch/features`
+- `mission-control://projects/{project_id}/pytorch/features/{feature_id}`
+- `mission-control://projects/{project_id}/spatial/features`
+- `mission-control://projects/{project_id}/spatial/features/{feature_id}`
 - `mission-control://projects/{project_id}/diagnostics`
 - `mission-control://projects/{project_id}/webwright`
 - `mission-control://projects/{project_id}/nvidia-dynamo`
@@ -56,20 +67,9 @@ Mission Control resources are read-only context surfaces for Codex chat.
 - operator snapshot, instincts, and verification brief give Codex or Claude chat a higher-signal operator surface for current state, execution rules, and release readiness
 - capability report pulls together execution profiles, security posture, validation evidence, swarm templates, runner budget, browser evidence, and repo contract drift in one project-scoped surface
 - capability section resources let the bridge pull one named lane such as `semantic_code_impact_mapping` or `release_readiness_mode` without hauling around the whole report
+- TensorFlow and PyTorch feature resources expose typed starter catalogs and one named bundle so the bridge can discuss ML product lanes without hallucinating framework scaffolds
+- spatial feature resources expose the shipped 3D and spatial starter catalog plus one named bundle without making Codex guess which capture, render, or reconstruction lane is even relevant
 
 ## Deliberate Non-Resources
 
-Some project-scoped backend routes are real code, but they are not currently part of the MCP resource catalog:
-
-- `GET /api/projects/{project_id}/tensorflow/features`
-- `GET /api/projects/{project_id}/tensorflow/features/{feature_id}?variant=...`
-
-Those TensorFlow starter endpoints are daemon APIs backed by `apps/server/src/tensorflow_starters.py`. They return typed starter bundles for Keras scaffolds, `tf.data`, TFX, serving, Lite export, and related product lanes. The bridge docs should call them what they are: backend APIs, not pretend MCP resources.
-
-## Integration additions
-
-- `mission-control://integrations/catalog`
-- `mission-control://integrations/connections`
-- `mission-control://integrations/health`
-- `mission-control://projects/{project_id}/integrations`
-- `mission-control://projects/{project_id}/integrations/{family}`
+Some project-scoped backend routes are still real code without MCP exposure, but TensorFlow, PyTorch, and spatial starter catalogs are no longer among them.

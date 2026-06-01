@@ -3043,10 +3043,7 @@ def _build_dynamic_bridge_endpoints_page() -> str:
         "`/api/projects/{project_id}/codebase/search`",
     ]
     project_intelligence_endpoints = [f"`{endpoint}`" for endpoint in resource_endpoints]
-    backend_only_endpoints = [
-        "`/api/projects/{project_id}/tensorflow/features`",
-        "`/api/projects/{project_id}/tensorflow/features/{feature_id}`",
-    ]
+    backend_only_endpoints = []
     return render_page(
         "MCP Bridge Endpoints",
         "This page lists the main backend endpoints that support bridge mode and calls out which ones are MCP-backed versus daemon-only.",
@@ -3056,9 +3053,7 @@ def _build_dynamic_bridge_endpoints_page() -> str:
             ("Project intelligence endpoints", _markdown_bullets(project_intelligence_endpoints)),
             (
                 "Backend-only project APIs",
-                _markdown_bullets(backend_only_endpoints)
-                + "\n\n"
-                + "These TensorFlow starter endpoints are real project-scoped backend APIs, but they are not currently exposed as MCP resources or tools. Treat them as daemon API surfaces, not plugin-catalog surfaces.",
+                "Some daemon APIs are still backend-only, but TensorFlow, PyTorch, and spatial starter catalogs are no longer in that bucket. Those typed starter families are now surfaced through project-scoped MCP resources, prompts, and bridge tools.",
             ),
             (
                 "Related pages",

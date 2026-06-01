@@ -14,6 +14,12 @@ This page summarizes the current read-only MCP resources exposed for Mission Con
 - `mission-control://projects/{project_id}/handoff`: Project handoff - Final handoff summary with run guidance, evidence posture, limitations, and dry-run warnings.
 - `mission-control://projects/{project_id}/codebase-map`: Codebase map - Compact structure and repo-understanding summary for imported or attached codebases.
 - `mission-control://projects/{project_id}/workspace-tooling`: Workspace tooling - Project-scoped repo-native tooling summary covering intake, validation, and security helper lanes.
+- `mission-control://projects/{project_id}/tensorflow/features`: TensorFlow feature catalog - Project-scoped TensorFlow and Keras starter catalog for product-ready ML workflows.
+- `mission-control://projects/{project_id}/tensorflow/features/{feature_id}`: TensorFlow feature bundle - One named TensorFlow starter bundle with files, dependencies, validation steps, and evidence targets.
+- `mission-control://projects/{project_id}/pytorch/features`: PyTorch feature catalog - Project-scoped PyTorch starter catalog for training, distributed, export, and fine-tuning lanes.
+- `mission-control://projects/{project_id}/pytorch/features/{feature_id}`: PyTorch feature bundle - One named PyTorch starter bundle with files, dependencies, validation steps, and evidence targets.
+- `mission-control://projects/{project_id}/spatial/features`: Spatial feature catalog - Project-scoped spatial and 3D starter catalog for asset pipelines, rendering, capture, reconstruction, geospatial, and scene-validation workflows.
+- `mission-control://projects/{project_id}/spatial/features/{feature_id}`: Spatial feature bundle - One named spatial or 3D starter bundle with dependencies, starter files, validation steps, and evidence targets.
 - `mission-control://projects/{project_id}/diagnostics`: Project diagnostics - Bridge-safe diagnostic summary for degraded orchestration or environment issues.
 - `mission-control://projects/{project_id}/webwright`: Webwright readiness - Project-scoped Webwright readiness summary for browser-agent work, install posture, and recommended next steps.
 - `mission-control://projects/{project_id}/nvidia-dynamo`: NVIDIA Dynamo readiness - Project-scoped NVIDIA Dynamo readiness summary for GPU-backed worker inference through an OpenAI-compatible frontend.

@@ -62,6 +62,12 @@ class MissionControlMcpServer:
             "mission_control_get_project_integration_family": self._call_get_project_integration_family,
             "mission_control_preview_integration_action": self._call_preview_integration_action,
             "mission_control_execute_integration_action": self._call_execute_integration_action,
+            "mission_control_get_tensorflow_feature_catalog": self._call_get_tensorflow_feature_catalog,
+            "mission_control_get_tensorflow_feature_bundle": self._call_get_tensorflow_feature_bundle,
+            "mission_control_get_pytorch_feature_catalog": self._call_get_pytorch_feature_catalog,
+            "mission_control_get_pytorch_feature_bundle": self._call_get_pytorch_feature_bundle,
+            "mission_control_get_spatial_feature_catalog": self._call_get_spatial_feature_catalog,
+            "mission_control_get_spatial_feature_bundle": self._call_get_spatial_feature_bundle,
             "mission_control_search_codebase": self._call_search_codebase,
             "mission_control_get_webwright_status": self._call_get_webwright_status,
             "mission_control_get_nvidia_dynamo_status": self._call_get_nvidia_dynamo_status,
@@ -344,6 +350,12 @@ class MissionControlMcpServer:
                 "outputSchema": GENERIC_OUTPUT_SCHEMA,
             },
             {
+                "name": "mission_control_get_tensorflow_feature_catalog",
+                "description": "Fetch the project-scoped TensorFlow and Keras starter catalog for product-ready ML workflows.",
+                "inputSchema": _object_schema({"project_id": {"type": "integer", "minimum": 1}}, required=["project_id"]),
+                "outputSchema": GENERIC_OUTPUT_SCHEMA,
+            },
+            {
                 "name": "mission_control_get_project_integrations",
                 "description": "Fetch the project-scoped integration status across all supported families.",
                 "inputSchema": _object_schema({"project_id": {"type": "integer", "minimum": 1}}, required=["project_id"]),
@@ -358,6 +370,38 @@ class MissionControlMcpServer:
                         "family": {"type": "string", "minLength": 1},
                     },
                     required=["project_id", "family"],
+                ),
+                "outputSchema": GENERIC_OUTPUT_SCHEMA,
+            },
+            {
+                "name": "mission_control_get_tensorflow_feature_bundle",
+                "description": "Fetch one named TensorFlow starter bundle with files, dependencies, validation steps, and evidence targets.",
+                "inputSchema": _object_schema(
+                    {
+                        "project_id": {"type": "integer", "minimum": 1},
+                        "feature_id": {"type": "string", "minLength": 1},
+                        "variant": {"type": "string", "minLength": 1},
+                    },
+                    required=["project_id", "feature_id"],
+                ),
+                "outputSchema": GENERIC_OUTPUT_SCHEMA,
+            },
+            {
+                "name": "mission_control_get_pytorch_feature_catalog",
+                "description": "Fetch the project-scoped PyTorch starter catalog for training, distributed, export, and fine-tuning lanes.",
+                "inputSchema": _object_schema({"project_id": {"type": "integer", "minimum": 1}}, required=["project_id"]),
+                "outputSchema": GENERIC_OUTPUT_SCHEMA,
+            },
+            {
+                "name": "mission_control_get_pytorch_feature_bundle",
+                "description": "Fetch one named PyTorch starter bundle with files, dependencies, validation steps, and evidence targets.",
+                "inputSchema": _object_schema(
+                    {
+                        "project_id": {"type": "integer", "minimum": 1},
+                        "feature_id": {"type": "string", "minLength": 1},
+                        "variant": {"type": "string", "minLength": 1},
+                    },
+                    required=["project_id", "feature_id"],
                 ),
                 "outputSchema": GENERIC_OUTPUT_SCHEMA,
             },
@@ -387,6 +431,25 @@ class MissionControlMcpServer:
                         "confirmed": {"type": "boolean"},
                     },
                     required=["project_id", "family", "action_id"],
+                ),
+                "outputSchema": GENERIC_OUTPUT_SCHEMA,
+            },
+            {
+                "name": "mission_control_get_spatial_feature_catalog",
+                "description": "Fetch the project-scoped spatial and 3D starter catalog for asset, capture, rendering, geospatial, and reconstruction lanes.",
+                "inputSchema": _object_schema({"project_id": {"type": "integer", "minimum": 1}}, required=["project_id"]),
+                "outputSchema": GENERIC_OUTPUT_SCHEMA,
+            },
+            {
+                "name": "mission_control_get_spatial_feature_bundle",
+                "description": "Fetch one named spatial or 3D starter bundle with dependencies, starter files, validation steps, and evidence targets.",
+                "inputSchema": _object_schema(
+                    {
+                        "project_id": {"type": "integer", "minimum": 1},
+                        "feature_id": {"type": "string", "minLength": 1},
+                        "variant": {"type": "string", "minLength": 1},
+                    },
+                    required=["project_id", "feature_id"],
                 ),
                 "outputSchema": GENERIC_OUTPUT_SCHEMA,
             },
@@ -838,6 +901,36 @@ class MissionControlMcpServer:
             self._require_string(args, "action_id"),
             params=dict(args.get("params") or {}),
             confirmed=bool(args.get("confirmed")),
+        )
+
+    def _call_get_tensorflow_feature_catalog(self, args: dict[str, Any]) -> Any:
+        return self.client.get_tensorflow_feature_catalog(self._require_int(args, "project_id"))
+
+    def _call_get_tensorflow_feature_bundle(self, args: dict[str, Any]) -> Any:
+        return self.client.get_tensorflow_feature_bundle(
+            self._require_int(args, "project_id"),
+            self._require_string(args, "feature_id"),
+            variant=str(args["variant"]).strip() if args.get("variant") else None,
+        )
+
+    def _call_get_pytorch_feature_catalog(self, args: dict[str, Any]) -> Any:
+        return self.client.get_pytorch_feature_catalog(self._require_int(args, "project_id"))
+
+    def _call_get_pytorch_feature_bundle(self, args: dict[str, Any]) -> Any:
+        return self.client.get_pytorch_feature_bundle(
+            self._require_int(args, "project_id"),
+            self._require_string(args, "feature_id"),
+            variant=str(args["variant"]).strip() if args.get("variant") else None,
+        )
+
+    def _call_get_spatial_feature_catalog(self, args: dict[str, Any]) -> Any:
+        return self.client.get_spatial_feature_catalog(self._require_int(args, "project_id"))
+
+    def _call_get_spatial_feature_bundle(self, args: dict[str, Any]) -> Any:
+        return self.client.get_spatial_feature_bundle(
+            self._require_int(args, "project_id"),
+            self._require_string(args, "feature_id"),
+            variant=str(args["variant"]).strip() if args.get("variant") else None,
         )
 
     def _call_search_codebase(self, args: dict[str, Any]) -> Any:

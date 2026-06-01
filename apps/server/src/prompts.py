@@ -311,6 +311,44 @@ def _pytorch_mode_block(project: Project) -> str:
     return "\n".join(lines)
 
 
+def _spatial3d_mode_block(project: Project) -> str:
+    from spatial3d_support import build_spatial3d_validation_plan, detect_spatial3d_repo_mode
+
+    mode = detect_spatial3d_repo_mode(project.workspace_path)
+    if not mode.get("enabled"):
+        return ""
+    validation = build_spatial3d_validation_plan(project.workspace_path)
+    lines = [
+        "Spatial 3D product mode:",
+        f"- Detected spatial repo mode: {mode.get('mode')}.",
+        "- Treat asset inspection, render validation, conversion checks, and streaming or benchmark evidence as separate lanes instead of one smug screenshot.",
+        "- When the repo touches Blender, USD, browser rendering, GIS, capture, or simulation workflows, keep those product lanes explicit in the validation plan.",
+    ]
+    if mode.get("frameworks"):
+        lines.append(f"- Detected spatial stack: {', '.join(str(item) for item in list(mode.get('frameworks') or [])[:6])}.")
+    if mode.get("product_workflows"):
+        lines.append(f"- Expected spatial workflows: {', '.join(str(item) for item in list(mode.get('product_workflows') or [])[:8])}.")
+    if mode.get("important_paths"):
+        lines.append(f"- Critical spatial paths to keep in scope: {', '.join(str(item) for item in list(mode.get('important_paths') or [])[:6])}.")
+    if mode.get("asset_paths"):
+        lines.append(f"- Existing 3D assets already in repo: {', '.join(str(item) for item in list(mode.get('asset_paths') or [])[:6])}.")
+    execution_commands = (
+        list(mode.get("render_commands") or [])
+        + list(mode.get("conversion_commands") or [])
+        + list(mode.get("capture_commands") or [])
+        + list(mode.get("benchmark_commands") or [])
+    )
+    if execution_commands:
+        lines.append(f"- Repo-owned spatial execution entrypoints: {', '.join(str(item) for item in execution_commands[:6])}.")
+    if validation.get("blockers"):
+        lines.append(f"- Spatial runtime blockers right now: {' '.join(str(item) for item in list(validation.get('blockers') or [])[:2])}")
+    if validation.get("evidence_targets"):
+        lines.append(f"- Spatial evidence to capture before claiming success: {' '.join(str(item) for item in list(validation.get('evidence_targets') or [])[:2])}")
+    if validation.get("recommended_fixes"):
+        lines.append(f"- Current spatial validation gaps: {' '.join(str(item) for item in list(validation.get('recommended_fixes') or [])[:3])}")
+    return "\n".join(lines)
+
+
 def build_prompt_profile(*, provider: str | None = None, model: str | None = None, reasoning_effort: str | None = None) -> PromptProfile:
     provider_text = (provider or "").strip().lower()
     model_text = (model or "").strip().lower()
@@ -534,6 +572,7 @@ def manager_system_prompt(project: Project, *, provider: str | None = None, mode
     gpu_block = _gpu_mode_block(project)
     tensorflow_block = _tensorflow_mode_block(project)
     pytorch_block = _pytorch_mode_block(project)
+    spatial3d_block = _spatial3d_mode_block(project)
     return f"""You are the Manager AI for Codex Mission Control.
 
 Project name: {project.name}
@@ -558,6 +597,7 @@ Responsibilities:
 
 {tensorflow_block}
 {pytorch_block}
+{spatial3d_block}
 
 When you reply with structured content, keep it concise and machine-friendly.
 """
@@ -593,6 +633,7 @@ def worker_task_prompt(
     gpu_block = _gpu_mode_block(project)
     tensorflow_block = _tensorflow_mode_block(project)
     pytorch_block = _pytorch_mode_block(project)
+    spatial3d_block = _spatial3d_mode_block(project)
     worker_bias_block = "\n".join(f"- {rule}" for rule in _worker_task_biases(task, profile))
     state_bias_block = "\n".join(f"- {rule}" for rule in _project_state_biases(project, task=task))
     return f"""You are a Codex worker agent operating under Codex Mission Control.
@@ -629,6 +670,7 @@ Requirements:
 
 {tensorflow_block}
 {pytorch_block}
+{spatial3d_block}
 
 Task-specific execution biases:
 {worker_bias_block}
@@ -667,6 +709,7 @@ def manager_message_prompt(
     gpu_block = _gpu_mode_block(project)
     tensorflow_block = _tensorflow_mode_block(project)
     pytorch_block = _pytorch_mode_block(project)
+    spatial3d_block = _spatial3d_mode_block(project)
     return f"""You are the Manager AI for the project "{project.name}".
 
 Project docs live at: {docs_path}
@@ -681,6 +724,7 @@ The user sent this message:
 
 {tensorflow_block}
 {pytorch_block}
+{spatial3d_block}
 
 Respond as the manager coordinating the project. If the message requests changes, outline the next step clearly.
 """
@@ -706,6 +750,7 @@ def manager_action_prompt(
     gpu_block = _gpu_mode_block(project)
     tensorflow_block = _tensorflow_mode_block(project)
     pytorch_block = _pytorch_mode_block(project)
+    spatial3d_block = _spatial3d_mode_block(project)
     action_biases = _manager_action_biases(action, profile)
     state_biases = _project_state_biases(project, action=action)
     action_bias_block = "\n".join(f"- {rule}" for rule in [*action_biases, *state_biases])
@@ -726,7 +771,8 @@ Input payload:
 {gpu_block}
 
 {tensorflow_block}
-{pytorch_block}{task_bias_section}
+{pytorch_block}
+{spatial3d_block}{task_bias_section}
 
 Response rules:
 - Return only valid JSON.
@@ -758,6 +804,7 @@ def manager_interview_prompt(
     gpu_block = _gpu_mode_block(project)
     tensorflow_block = _tensorflow_mode_block(project)
     pytorch_block = _pytorch_mode_block(project)
+    spatial3d_block = _spatial3d_mode_block(project)
     action_bias_block = "\n".join(f"- {rule}" for rule in [*_manager_action_biases(action, profile), *_project_state_biases(project, action=action)])
     task_bias_section = f"\nTask-specific decision biases:\n{action_bias_block}" if action_bias_block else ""
     return f"""You are the Manager AI for Codex Mission Control.
@@ -777,7 +824,8 @@ Preferred user name: {user_name or project.created_by or "Operator"}
 {gpu_block}
 
 {tensorflow_block}
-{pytorch_block}{task_bias_section}
+{pytorch_block}
+{spatial3d_block}{task_bias_section}
 
 Interview requirements:
 - You are interviewing the user to gather project-specific requirements.
@@ -813,6 +861,7 @@ def manager_swarm_prompt(
     gpu_block = _gpu_mode_block(project)
     tensorflow_block = _tensorflow_mode_block(project)
     pytorch_block = _pytorch_mode_block(project)
+    spatial3d_block = _spatial3d_mode_block(project)
     action_bias_block = "\n".join(f"- {rule}" for rule in [*_manager_action_biases("swarm.plan", profile), *_project_state_biases(project, action="swarm.plan")])
     task_bias_section = f"\nTask-specific decision biases:\n{action_bias_block}" if action_bias_block else ""
     return f"""You are the Manager AI for Codex Mission Control.
@@ -828,7 +877,8 @@ Preferred user name: {user_name or project.created_by or "Operator"}
 {gpu_block}
 
 {tensorflow_block}
-{pytorch_block}{task_bias_section}
+{pytorch_block}
+{spatial3d_block}{task_bias_section}
 
 You are producing an adaptive swarm plan for this specific project.
 

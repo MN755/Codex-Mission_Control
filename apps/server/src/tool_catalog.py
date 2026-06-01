@@ -18,6 +18,7 @@ from pytorch_support import (
     detect_pytorch_repo_mode,
     detect_pytorch_runtime_status,
 )
+from spatial3d_support import build_spatial3d_validation_plan, detect_spatial3d_repo_mode
 from tensorflow_support import build_tensorflow_validation_plan, detect_tensorflow_repo_mode
 from webwright_support import detect_webwright_status
 
@@ -59,6 +60,16 @@ TOOL_CATALOG: list[dict[str, Any]] = [
     {"id": "pytorch-export-validation", "name": "PyTorch Export Validation", "category": "Deployment tools", "summary": "Check TorchScript or ONNX export readiness before calling a PyTorch repo product-ready.", "risk_level": "medium"},
     {"id": "pytorch-notebook-rescue", "name": "PyTorch Notebook Rescue", "category": "Core tools", "summary": "Promote notebook-only PyTorch work into a repeatable repo-owned script before the repo becomes a tensor scrapbook.", "risk_level": "medium"},
     {"id": "ml-config-audit", "name": "ML Config Audit", "category": "Testing tools", "summary": "Surface config-driven ML execution paths so validation evidence is tied to the config that actually ran.", "risk_level": "medium"},
+    {"id": "spatial3d-asset-pipeline", "name": "Spatial 3D Asset Pipeline", "category": "Core tools", "summary": "Inventory, validate, and package splats, meshes, textures, and reconstruction outputs with a real asset lane.", "risk_level": "medium"},
+    {"id": "blender-headless-validation", "name": "Blender Headless Validation", "category": "Testing tools", "summary": "Run or plan Blender scene checks and background renders instead of trusting renderer changes on vibes.", "risk_level": "medium"},
+    {"id": "usd-scene-graph-validation", "name": "USD Scene Graph Validation", "category": "Testing tools", "summary": "Inspect USD stages, schema expectations, and Hydra-facing scene graph structure before pipeline handoff.", "risk_level": "medium"},
+    {"id": "splat-conversion-compression", "name": "Splat Conversion and Compression", "category": "Deployment tools", "summary": "Plan or validate splat conversion, compatibility, and compression work for delivery targets.", "risk_level": "medium"},
+    {"id": "scene-visual-regression", "name": "Scene Visual Regression", "category": "Testing tools", "summary": "Capture and compare rendered frames so broken shaders or missing assets stop hiding behind unit tests.", "risk_level": "medium"},
+    {"id": "browser-3d-renderer-debugging", "name": "Browser 3D Renderer Debugging", "category": "Testing tools", "summary": "Exercise WebGL or WebGPU viewer behavior, load waterfalls, and scene readiness instead of just checking the build.", "risk_level": "medium"},
+    {"id": "geospatial-3d-validation", "name": "Geospatial 3D Validation", "category": "Testing tools", "summary": "Validate CRS, georeference, and city-scale 3D layer assumptions before shipping spatial scenes.", "risk_level": "medium"},
+    {"id": "capture-reconstruction-orchestration", "name": "Capture and Reconstruction Orchestration", "category": "Infrastructure tools", "summary": "Validate capture metadata and reconstruction job orchestration instead of babysitting cloud jobs by hand.", "risk_level": "high"},
+    {"id": "neural-graphics-benchmarking", "name": "Neural Graphics Benchmarking", "category": "Testing tools", "summary": "Benchmark FPS, memory, streaming latency, and artifact quality before calling a renderer optimized.", "risk_level": "medium"},
+    {"id": "research-to-code-prototyping", "name": "Research to Code Prototyping", "category": "Search/research tools", "summary": "Convert graphics or spatial research ideas into benchmarked prototypes with explicit experimental boundaries.", "risk_level": "medium"},
     {"id": "secret-scan-with-gitleaks", "name": "Secret Scan with Gitleaks", "category": "Testing tools", "summary": "Run a redacted local secret scan before handoff or release.", "risk_level": "medium"},
     {"id": "dependency-audit-with-osv-scanner", "name": "Dependency Audit with OSV-Scanner", "category": "Testing tools", "summary": "Scan repo lockfiles for known dependency vulnerabilities.", "risk_level": "medium"},
     {"id": "python-audit-with-pip-audit", "name": "Python Audit with pip-audit", "category": "Testing tools", "summary": "Audit Python dependencies for known vulnerabilities.", "risk_level": "medium"},
@@ -304,6 +315,78 @@ def _availability(
             return "experimental", notes
         notes.append("Use config audit to tie validation evidence to the exact ML config files that drove the run.")
         return ("available" if shutil.which("python") else "needs_setup"), notes
+    if tool_id == "spatial3d-asset-pipeline":
+        mode = _cached_context_value(context, "spatial3d_mode", lambda: detect_spatial3d_repo_mode(REPO_ROOT))
+        validation = _cached_context_value(context, "spatial3d_validation_plan", lambda: build_spatial3d_validation_plan(REPO_ROOT))
+        if mode.get("enabled"):
+            notes.append(f"Detected spatial mode `{mode.get('mode')}` with frameworks: {', '.join(list(mode.get('frameworks') or [])[:5])}.")
+            notes.append(str(validation.get("summary") or "Spatial validation planning is available."))
+            return ("available" if mode.get("asset_paths") or _python_available() else "needs_setup"), notes
+        notes.append("No spatial 3D or Gaussian-splat repo signals were detected in the current workspace.")
+        return "needs_setup", notes
+    if tool_id == "blender-headless-validation":
+        mode = _cached_context_value(context, "spatial3d_mode", lambda: detect_spatial3d_repo_mode(REPO_ROOT))
+        if "Blender" not in list(mode.get("frameworks") or []):
+            notes.append("Blender validation only matters when the repo actually contains Blender assets or bpy automation.")
+            return "experimental", notes
+        notes.append("Background Blender rendering keeps scene changes attached to evidence instead of artist folklore.")
+        return ("available" if shutil.which("blender") or any(str(command).startswith("python ") for command in list(mode.get("render_commands") or [])) else "needs_setup"), notes
+    if tool_id == "usd-scene-graph-validation":
+        mode = _cached_context_value(context, "spatial3d_mode", lambda: detect_spatial3d_repo_mode(REPO_ROOT))
+        if "OpenUSD" not in list(mode.get("frameworks") or []):
+            notes.append("USD validation only matters when the repo actually carries USD assets or scene-graph code.")
+            return "experimental", notes
+        notes.append("Scene-graph validation should prove the USD stage opens and traverses cleanly before pipeline handoff.")
+        return ("available" if _python_available() else "needs_setup"), notes
+    if tool_id == "splat-conversion-compression":
+        mode = _cached_context_value(context, "spatial3d_mode", lambda: detect_spatial3d_repo_mode(REPO_ROOT))
+        if "splat_compression" not in list(mode.get("product_workflows") or []):
+            notes.append("Splat conversion matters when the repo actually handles Gaussian splat assets.")
+            return "experimental", notes
+        notes.append("Conversion and compression work should leave behind compatibility and size evidence, not just a renamed blob.")
+        return ("available" if _python_available() else "needs_setup"), notes
+    if tool_id == "scene-visual-regression":
+        mode = _cached_context_value(context, "spatial3d_mode", lambda: detect_spatial3d_repo_mode(REPO_ROOT))
+        if "visual_regression" not in list(mode.get("product_workflows") or []):
+            notes.append("Visual regression only matters when the repo changes rendered scene output.")
+            return "experimental", notes
+        notes.append("Rendered-frame diffs catch broken transparency, missing assets, and haunted shader regressions that unit tests miss.")
+        return ("available" if _python_available() else "needs_setup"), notes
+    if tool_id == "browser-3d-renderer-debugging":
+        mode = _cached_context_value(context, "spatial3d_mode", lambda: detect_spatial3d_repo_mode(REPO_ROOT))
+        if "browser_renderer" not in list(mode.get("product_workflows") or []):
+            notes.append("Browser 3D debugging only matters when the repo ships a viewer or web renderer.")
+            return "experimental", notes
+        notes.append("Use this lane to check viewer readiness, load waterfalls, and renderer diagnostics instead of blessing a passing build.")
+        return "available", notes
+    if tool_id == "geospatial-3d-validation":
+        mode = _cached_context_value(context, "spatial3d_mode", lambda: detect_spatial3d_repo_mode(REPO_ROOT))
+        if "geospatial_gis" not in list(mode.get("product_workflows") or []):
+            notes.append("Geospatial validation only matters when the repo actually carries GIS or CRS-sensitive assets.")
+            return "experimental", notes
+        notes.append("Coordinate systems are quiet sabotage; validate them before city-scale scenes go on tour.")
+        return ("available" if _python_available() else "needs_setup"), notes
+    if tool_id == "capture-reconstruction-orchestration":
+        mode = _cached_context_value(context, "spatial3d_mode", lambda: detect_spatial3d_repo_mode(REPO_ROOT))
+        if not {"drone_capture", "cloud_reconstruction", "mobile_capture"} & set(mode.get("product_workflows") or []):
+            notes.append("Capture orchestration only matters when the repo actually handles spatial ingestion or reconstruction jobs.")
+            return "experimental", notes
+        notes.append("Capture and reconstruction pipelines are long-running failure magnets, which is exactly why they should be scripted.")
+        return ("available" if _python_available() else "needs_setup"), notes
+    if tool_id == "neural-graphics-benchmarking":
+        mode = _cached_context_value(context, "spatial3d_mode", lambda: detect_spatial3d_repo_mode(REPO_ROOT))
+        if not mode.get("enabled"):
+            notes.append("Benchmarking only matters when the repo actually renders or ships spatial assets.")
+            return "experimental", notes
+        notes.append("Benchmarking keeps optimization claims attached to FPS, memory, latency, and artifact quality instead of ego.")
+        return ("available" if _python_available() else "needs_setup"), notes
+    if tool_id == "research-to-code-prototyping":
+        mode = _cached_context_value(context, "spatial3d_mode", lambda: detect_spatial3d_repo_mode(REPO_ROOT))
+        if not mode.get("enabled"):
+            notes.append("Research-to-code prototyping only matters when the repo is exploring new graphics or spatial workflows.")
+            return "experimental", notes
+        notes.append("Keep research prototypes behind explicit experimental boundaries so paper enthusiasm does not become default production behavior.")
+        return ("available" if _python_available() else "needs_setup"), notes
     if tool_id == "secret-scan-with-gitleaks":
         return ("available" if shutil.which("gitleaks") else "needs_setup"), ["Redacted secret scanning is the sane default gate before handoff or release."]
     if tool_id == "dependency-audit-with-osv-scanner":

@@ -299,6 +299,78 @@
       "expected_chat_output": "A focused summary of one capability area, its status, safe commands, evidence, and any setup or drift gaps.",
       "safety_notes": "Keep the output scoped to the requested capability section and do not pretend the section proves unrelated parts of the system are healthy.",
       "prompt_text": "Review one named Mission Control capability-report section for the attached project. Load only the requested section, summarize its current status, safe commands, artifacts, and setup gaps, and explain what still limits that lane if anything remains partial."
+    },
+    {
+      "name": "review_tensorflow_feature_catalog",
+      "aliases": ["review-tensorflow-feature-catalog"],
+      "title": "Review TensorFlow feature catalog",
+      "description": "Load the shipped TensorFlow starter catalog when the operator needs a real menu of Keras, serving, TFX, and edge-deployment lanes instead of notebook folklore.",
+      "required_arguments": ["PROJECT_ID"],
+      "tool_sequence": ["mission_control_get_tensorflow_feature_catalog", "mission_control_get_workspace_tooling"],
+      "resource_sequence": ["mission-control://projects/{project_id}/tensorflow/features", "mission-control://projects/{project_id}/workspace-tooling"],
+      "expected_chat_output": "A compact summary of the relevant TensorFlow starter lanes, current workspace posture, and the safest next ML product path.",
+      "safety_notes": "Do not pretend every TensorFlow feature fits every repo. Use workspace-tooling posture to keep the recommendation grounded.",
+      "prompt_text": "Review the Mission Control TensorFlow starter catalog for this project. Load the TensorFlow feature catalog and workspace-tooling summary, identify the most relevant starter lanes for the current repo, and summarize the safest next options without pretending unsupported runtimes or exports already work."
+    },
+    {
+      "name": "review_tensorflow_feature_bundle",
+      "aliases": ["review-tensorflow-feature-bundle"],
+      "title": "Review TensorFlow feature bundle",
+      "description": "Load one named TensorFlow starter bundle so Codex can explain its files, dependencies, validation loop, and evidence targets without improvising ML architecture details.",
+      "required_arguments": ["PROJECT_ID", "FEATURE_ID"],
+      "tool_sequence": ["mission_control_get_tensorflow_feature_bundle"],
+      "resource_sequence": ["mission-control://projects/{project_id}/tensorflow/features/{feature_id}"],
+      "expected_chat_output": "A focused summary of one TensorFlow starter bundle, including files, dependencies, validation steps, and evidence targets.",
+      "safety_notes": "Keep the output scoped to the requested bundle and be explicit about runtime or export blockers instead of implying the path is magically shippable.",
+      "prompt_text": "Review one named Mission Control TensorFlow starter bundle for this project. Load only the requested feature bundle, summarize its files, dependencies, validation steps, and evidence targets, and call out any runtime, export, or deployment blockers plainly."
+    },
+    {
+      "name": "review_pytorch_feature_catalog",
+      "aliases": ["review-pytorch-feature-catalog"],
+      "title": "Review PyTorch feature catalog",
+      "description": "Load the shipped PyTorch starter catalog when the operator needs a real menu of training, distributed, export, and fine-tuning lanes instead of generic Python wishcasting.",
+      "required_arguments": ["PROJECT_ID"],
+      "tool_sequence": ["mission_control_get_pytorch_feature_catalog", "mission_control_get_workspace_tooling"],
+      "resource_sequence": ["mission-control://projects/{project_id}/pytorch/features", "mission-control://projects/{project_id}/workspace-tooling"],
+      "expected_chat_output": "A compact summary of the relevant PyTorch starter lanes, current workspace posture, and the safest next training or deployment path.",
+      "safety_notes": "Do not pretend every PyTorch feature fits every repo. Use workspace-tooling posture to keep the recommendation grounded.",
+      "prompt_text": "Review the Mission Control PyTorch starter catalog for this project. Load the PyTorch feature catalog and workspace-tooling summary, identify the most relevant starter lanes for the current repo, and summarize the safest next options without pretending unsupported runtimes or export paths already work."
+    },
+    {
+      "name": "review_pytorch_feature_bundle",
+      "aliases": ["review-pytorch-feature-bundle"],
+      "title": "Review PyTorch feature bundle",
+      "description": "Load one named PyTorch starter bundle so Codex can explain its files, dependencies, validation loop, and evidence targets without making up model-training process from vibes.",
+      "required_arguments": ["PROJECT_ID", "FEATURE_ID"],
+      "tool_sequence": ["mission_control_get_pytorch_feature_bundle"],
+      "resource_sequence": ["mission-control://projects/{project_id}/pytorch/features/{feature_id}"],
+      "expected_chat_output": "A focused summary of one PyTorch starter bundle, including files, dependencies, validation steps, and evidence targets.",
+      "safety_notes": "Keep the output scoped to the requested bundle and be explicit about runtime, distributed, or export blockers instead of implying the path is already proven.",
+      "prompt_text": "Review one named Mission Control PyTorch starter bundle for this project. Load only the requested feature bundle, summarize its files, dependencies, validation steps, and evidence targets, and call out any runtime, distributed, or export blockers plainly."
+    },
+    {
+      "name": "review_spatial_feature_catalog",
+      "aliases": ["review-spatial-feature-catalog"],
+      "title": "Review spatial feature catalog",
+      "description": "Load the shipped Mission Control spatial and 3D feature catalog when the operator needs a sane menu of starter lanes instead of hand-wavy graphics advice.",
+      "required_arguments": ["PROJECT_ID"],
+      "tool_sequence": ["mission_control_get_spatial_feature_catalog", "mission_control_get_workspace_tooling"],
+      "resource_sequence": ["mission-control://projects/{project_id}/spatial/features", "mission-control://projects/{project_id}/workspace-tooling"],
+      "expected_chat_output": "A compact summary of the relevant spatial feature lanes, the detected repo posture, and which starter paths fit the current workspace.",
+      "safety_notes": "Do not pretend every spatial feature applies to every repo. Use workspace-tooling posture to keep the recommendation grounded.",
+      "prompt_text": "Review the Mission Control spatial and 3D feature catalog for this project. Load the spatial feature catalog and workspace-tooling summary, identify the most relevant starter lanes for the current repo, and summarize the safest next options without pretending unsupported toolchains are already installed."
+    },
+    {
+      "name": "review_spatial_feature_bundle",
+      "aliases": ["review-spatial-feature-bundle"],
+      "title": "Review spatial feature bundle",
+      "description": "Load one named spatial or 3D starter bundle so Codex can explain its dependencies, validation loop, and evidence targets without inventing graphics pipeline details.",
+      "required_arguments": ["PROJECT_ID", "FEATURE_ID"],
+      "tool_sequence": ["mission_control_get_spatial_feature_bundle"],
+      "resource_sequence": ["mission-control://projects/{project_id}/spatial/features/{feature_id}"],
+      "expected_chat_output": "A focused summary of one spatial starter bundle, including dependencies, starter files, validation steps, and evidence targets.",
+      "safety_notes": "Keep the output scoped to the requested bundle and be explicit about missing external tools such as Blender, Houdini, or GIS runtimes.",
+      "prompt_text": "Review one named Mission Control spatial or 3D starter bundle for this project. Load only the requested feature bundle, summarize its dependencies, starter files, validation steps, and evidence targets, and call out any external runtime blockers plainly instead of implying the workflow is magically ready."
     }
   ]
 }

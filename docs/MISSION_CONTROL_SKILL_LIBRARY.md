@@ -11,7 +11,7 @@ The Codex chat agent is not the Mission Control Manager. It is the bridge betwee
 - Execution and swarm workflows handle swarm plans, contracts, path locks, snapshots, and conflict or stuck-agent handling.
 - Validation, evidence, docs, and release workflows keep proof, runbooks, public docs, and release readiness explicit.
 - Diagnostics and policy workflows cover recovery, health, install/update maintenance, model or tool policy, local-first posture, and provider modes.
-- Specialized product lanes include shipped NVIDIA/CUDA skills plus shipped TensorFlow skills for scaffolding, `tf.data`, fine-tuning, TensorBoard, tuning, serving, TFX, Lite export, and model optimization.
+- Specialized product lanes include shipped NVIDIA/CUDA skills, shipped TensorFlow skills for scaffolding, `tf.data`, fine-tuning, TensorBoard, tuning, serving, TFX, Lite export, and model optimization, plus shipped spatial/3D skills for asset pipelines, Blender validation, USD/Houdini workflows, visual regression, and capture/reconstruction.
 - Additional shipped skills are listed automatically in the index so the manifest and published library cannot quietly drift apart.
 
 ## How Codex should use these skills
@@ -51,7 +51,10 @@ The Codex chat agent is not the Mission Control Manager. It is the bridge betwee
 - `Help me scaffold a TensorFlow product path.` -> `mission-control-tensorflow-scaffolding`
 - `Review the TensorBoard evidence for this training lane.` -> `mission-control-tensorboard-observability`
 - `Validate the TensorFlow Lite export path.` -> `mission-control-tflite-deployment`
+- `Map the spatial asset pipeline for this repo.` -> `mission-control-spatial-asset-pipeline`
+- `Check whether the Blender headless path is actually usable.` -> `mission-control-blender-headless`
+- `Review the USD or Houdini scene pipeline lane.` -> `mission-control-usd-houdini`
 
 ## Index
 
-See `plugins/mission-control/SKILL_INDEX.md` for the grouped index of all 94 skills.
+See `plugins/mission-control/SKILL_INDEX.md` for the grouped index of all 99 skills.

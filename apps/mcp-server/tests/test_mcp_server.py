@@ -30,6 +30,12 @@ EXPECTED_RESOURCES = {
     "mission-control://projects/{project_id}/integrations",
     "mission-control://projects/{project_id}/integrations/{family}",
     "mission-control://projects/{project_id}/workspace-tooling",
+    "mission-control://projects/{project_id}/tensorflow/features",
+    "mission-control://projects/{project_id}/tensorflow/features/{feature_id}",
+    "mission-control://projects/{project_id}/pytorch/features",
+    "mission-control://projects/{project_id}/pytorch/features/{feature_id}",
+    "mission-control://projects/{project_id}/spatial/features",
+    "mission-control://projects/{project_id}/spatial/features/{feature_id}",
     "mission-control://projects/{project_id}/diagnostics",
     "mission-control://projects/{project_id}/webwright",
     "mission-control://projects/{project_id}/nvidia-dynamo",
@@ -77,6 +83,12 @@ EXPECTED_PROMPTS = {
     "import_host_integrations",
     "review_project_integrations",
     "review_project_integration_family",
+    "review_tensorflow_feature_catalog",
+    "review_tensorflow_feature_bundle",
+    "review_pytorch_feature_catalog",
+    "review_pytorch_feature_bundle",
+    "review_spatial_feature_catalog",
+    "review_spatial_feature_bundle",
 }
 
 
@@ -320,6 +332,89 @@ class FakeClient:
             "returncode": None if not confirmed else 0,
             "approval_required": not confirmed,
             "updated_registry": {},
+        }
+
+    def get_tensorflow_feature_catalog(self, project_id: int):
+        self.calls.append(("get_tensorflow_feature_catalog", {"project_id": project_id}))
+        return [
+            {
+                "feature_id": "keras_scaffold",
+                "title": "Keras scaffold",
+                "summary": "Starter lane for structured TensorFlow product code.",
+                "variants": ["classification", "time_series"],
+                "keywords": ["keras", "tensorflow", "training"],
+            }
+        ]
+
+    def get_tensorflow_feature_bundle(self, project_id: int, feature_id: str, *, variant: str | None = None):
+        self.calls.append(("get_tensorflow_feature_bundle", {"project_id": project_id, "feature_id": feature_id, "variant": variant}))
+        return {
+            "feature_id": feature_id,
+            "variant": variant or "classification",
+            "summary": "Starter lane for structured TensorFlow product code.",
+            "files": {"tensorflow_starters/model.py": "class Model", "tensorflow_starters/train.py": "artifacts/final.keras"},
+            "validation_steps": ["python -m pytest"],
+            "dependencies": ["tensorflow", "keras"],
+            "evidence_targets": ["training logs", "saved model"],
+        }
+
+    def get_pytorch_feature_catalog(self, project_id: int):
+        self.calls.append(("get_pytorch_feature_catalog", {"project_id": project_id}))
+        return [
+            {
+                "feature_id": "project_scaffold",
+                "title": "PyTorch scaffold",
+                "summary": "Starter lane for structured PyTorch training code.",
+                "variants": ["classification", "nlp"],
+                "keywords": ["pytorch", "training", "export"],
+            }
+        ]
+
+    def get_pytorch_feature_bundle(self, project_id: int, feature_id: str, *, variant: str | None = None):
+        self.calls.append(("get_pytorch_feature_bundle", {"project_id": project_id, "feature_id": feature_id, "variant": variant}))
+        return {
+            "feature_id": feature_id,
+            "variant": variant or "classification",
+            "summary": "Starter lane for structured PyTorch training code.",
+            "files": {"pytorch_starters/model.py": "class Model", "pytorch_starters/train.py": "artifacts/checkpoint.pt"},
+            "validation_steps": ["python -m pytest"],
+            "dependencies": ["torch", "torchvision"],
+            "evidence_targets": ["checkpoint", "eval metrics"],
+        }
+
+    def get_spatial_feature_catalog(self, project_id: int):
+        self.calls.append(("get_spatial_feature_catalog", {"project_id": project_id}))
+        return [
+            {
+                "id": "asset_pipeline",
+                "title": "Spatial asset pipeline",
+                "summary": "Starter lane for ingest, conversion, validation, and publishing.",
+                "category": "pipeline",
+                "variants": ["default"],
+                "keywords": ["spatial", "assets", "pipeline"],
+            },
+            {
+                "id": "visual_regression_3d",
+                "title": "3D visual regression",
+                "summary": "Render diff and evidence capture workflow.",
+                "category": "validation",
+                "variants": ["default"],
+                "keywords": ["render", "diff", "validation"],
+            },
+        ]
+
+    def get_spatial_feature_bundle(self, project_id: int, feature_id: str, *, variant: str | None = None):
+        self.calls.append(("get_spatial_feature_bundle", {"project_id": project_id, "feature_id": feature_id, "variant": variant}))
+        return {
+            "feature_id": feature_id,
+            "variant": variant or "default",
+            "title": "Spatial asset pipeline",
+            "summary": "Starter lane for ingest, conversion, validation, and publishing.",
+            "dependencies": ["blender", "usd-core"],
+            "starter_files": ["pipelines/asset_pipeline.py", "configs/asset_pipeline.yaml"],
+            "validation_steps": [{"title": "Render probe", "command": "python scripts/render_probe.py"}],
+            "evidence_targets": ["Rendered preview", "conversion logs"],
+            "notes": ["Block if Blender is missing."],
         }
 
     def get_capability_report(self, project_id: int):
@@ -601,6 +696,12 @@ def test_tool_schemas_are_exposed() -> None:
     assert "mission_control_request_recovery_plan" in names
     assert "mission_control_get_capability_report" in names
     assert "mission_control_get_workspace_tooling" in names
+    assert "mission_control_get_tensorflow_feature_catalog" in names
+    assert "mission_control_get_tensorflow_feature_bundle" in names
+    assert "mission_control_get_pytorch_feature_catalog" in names
+    assert "mission_control_get_pytorch_feature_bundle" in names
+    assert "mission_control_get_spatial_feature_catalog" in names
+    assert "mission_control_get_spatial_feature_bundle" in names
     assert "mission_control_get_capability_section" in names
     assert "mission_control_search_codebase" in names
     assert all(tool["inputSchema"]["additionalProperties"] is False for tool in server.list_tools())
@@ -666,6 +767,12 @@ def test_new_runtime_tools_dispatch_to_client() -> None:
     server.call_tool("mission_control_get_event_digest", {"project_id": 7, "window": "last_15_minutes"})
     server.call_tool("mission_control_get_capability_report", {"project_id": 7})
     server.call_tool("mission_control_get_workspace_tooling", {"project_id": 7})
+    server.call_tool("mission_control_get_tensorflow_feature_catalog", {"project_id": 7})
+    server.call_tool("mission_control_get_tensorflow_feature_bundle", {"project_id": 7, "feature_id": "keras_scaffold"})
+    server.call_tool("mission_control_get_pytorch_feature_catalog", {"project_id": 7})
+    server.call_tool("mission_control_get_pytorch_feature_bundle", {"project_id": 7, "feature_id": "project_scaffold"})
+    server.call_tool("mission_control_get_spatial_feature_catalog", {"project_id": 7})
+    server.call_tool("mission_control_get_spatial_feature_bundle", {"project_id": 7, "feature_id": "asset_pipeline"})
     server.call_tool("mission_control_get_capability_section", {"project_id": 7, "section_key": "semantic_code_impact_mapping"})
     server.call_tool("mission_control_search_codebase", {"project_id": 7, "pattern": "TODO", "max_matches": 5})
     server.call_tool("mission_control_get_webwright_status", {"project_id": 7})
@@ -685,6 +792,12 @@ def test_new_runtime_tools_dispatch_to_client() -> None:
     assert "get_event_digest" in called
     assert "get_capability_report" in called
     assert "get_workspace_tooling" in called
+    assert "get_tensorflow_feature_catalog" in called
+    assert "get_tensorflow_feature_bundle" in called
+    assert "get_pytorch_feature_catalog" in called
+    assert "get_pytorch_feature_bundle" in called
+    assert "get_spatial_feature_catalog" in called
+    assert "get_spatial_feature_bundle" in called
     assert "get_capability_section" in called
     assert "search_codebase" in called
     assert "get_webwright_status" in called
@@ -810,6 +923,95 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
             "security_commands": ["gitleaks dir . --redact"],
             "recommended_next_steps": ["Install OSV-Scanner for dependency auditing."],
             "tools": [{"id": "uv", "label": "uv", "installed": True, "configured": True, "status": "ready"}],
+        },
+    )
+    monkeypatch.setattr(
+        client,
+        "get_tensorflow_feature_catalog",
+        lambda project_id: [
+            {
+                "feature_id": "keras_scaffold",
+                "title": "Keras scaffold",
+                "summary": "Starter lane for structured TensorFlow product code.",
+                "variants": ["classification", "time_series"],
+                "keywords": ["keras", "tensorflow", "training"],
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        client,
+        "get_tensorflow_feature_bundle",
+        lambda project_id, feature_id, variant=None: {
+            "feature_id": feature_id,
+            "variant": variant or "classification",
+            "summary": "Starter lane for structured TensorFlow product code.",
+            "files": {"tensorflow_starters/model.py": "class Model", "tensorflow_starters/train.py": "artifacts/final.keras"},
+            "validation_steps": ["python -m pytest"],
+            "dependencies": ["tensorflow", "keras"],
+            "evidence_targets": ["training logs", "saved model"],
+        },
+    )
+    monkeypatch.setattr(
+        client,
+        "get_pytorch_feature_catalog",
+        lambda project_id: [
+            {
+                "feature_id": "project_scaffold",
+                "title": "PyTorch scaffold",
+                "summary": "Starter lane for structured PyTorch training code.",
+                "variants": ["classification", "nlp"],
+                "keywords": ["pytorch", "training", "export"],
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        client,
+        "get_pytorch_feature_bundle",
+        lambda project_id, feature_id, variant=None: {
+            "feature_id": feature_id,
+            "variant": variant or "classification",
+            "summary": "Starter lane for structured PyTorch training code.",
+            "files": {"pytorch_starters/model.py": "class Model", "pytorch_starters/train.py": "artifacts/checkpoint.pt"},
+            "validation_steps": ["python -m pytest"],
+            "dependencies": ["torch", "torchvision"],
+            "evidence_targets": ["checkpoint", "eval metrics"],
+        },
+    )
+    monkeypatch.setattr(
+        client,
+        "get_spatial_feature_catalog",
+        lambda project_id: [
+            {
+                "id": "asset_pipeline",
+                "title": "Spatial asset pipeline",
+                "summary": "Starter lane for ingest, conversion, validation, and publishing.",
+                "category": "pipeline",
+                "variants": ["default"],
+                "keywords": ["spatial", "assets", "pipeline"],
+            },
+            {
+                "id": "visual_regression_3d",
+                "title": "3D visual regression",
+                "summary": "Render diff and evidence capture workflow.",
+                "category": "validation",
+                "variants": ["default"],
+                "keywords": ["render", "diff", "validation"],
+            },
+        ],
+    )
+    monkeypatch.setattr(
+        client,
+        "get_spatial_feature_bundle",
+        lambda project_id, feature_id, variant=None: {
+            "feature_id": feature_id,
+            "variant": variant or "default",
+            "title": "Spatial asset pipeline",
+            "summary": "Starter lane for ingest, conversion, validation, and publishing.",
+            "dependencies": ["blender", "usd-core"],
+            "starter_files": ["pipelines/asset_pipeline.py", "configs/asset_pipeline.yaml"],
+            "validation_steps": [{"title": "Render probe", "command": "python scripts/render_probe.py"}],
+            "evidence_targets": ["Rendered preview", "conversion logs"],
+            "notes": ["Block if Blender is missing."],
         },
     )
     monkeypatch.setattr(
@@ -963,6 +1165,12 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
     capability_report = client.read_resource("mission-control://projects/7/capability-report")
     capability_section = client.read_resource("mission-control://projects/7/capability-report/semantic_code_impact_mapping")
     tooling = client.read_resource("mission-control://projects/7/workspace-tooling")
+    tensorflow_catalog = client.read_resource("mission-control://projects/7/tensorflow/features")
+    tensorflow_bundle = client.read_resource("mission-control://projects/7/tensorflow/features/keras_scaffold")
+    pytorch_catalog = client.read_resource("mission-control://projects/7/pytorch/features")
+    pytorch_bundle = client.read_resource("mission-control://projects/7/pytorch/features/project_scaffold")
+    spatial_catalog = client.read_resource("mission-control://projects/7/spatial/features")
+    spatial_bundle = client.read_resource("mission-control://projects/7/spatial/features/asset_pipeline")
     webwright = client.read_resource("mission-control://projects/7/webwright")
     dynamo = client.read_resource("mission-control://projects/7/nvidia-dynamo")
     nim = client.read_resource("mission-control://projects/7/nvidia-nim")
@@ -981,6 +1189,13 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
     assert capability_section["section_key"] == "semantic_code_impact_mapping"
     assert capability_section["metadata_json"]["semantic_backend"] == "python-ast-graph"
     assert tooling["validation_commands"] == ["uv run pytest", "ruff check ."]
+    assert tensorflow_catalog["feature_count"] == 1
+    assert tensorflow_bundle["feature_id"] == "keras_scaffold"
+    assert pytorch_catalog["feature_count"] == 1
+    assert pytorch_bundle["feature_id"] == "project_scaffold"
+    assert spatial_catalog["feature_count"] == 2
+    assert spatial_bundle["feature_id"] == "asset_pipeline"
+    assert spatial_bundle["starter_files"] == ["pipelines/asset_pipeline.py", "configs/asset_pipeline.yaml"]
     assert webwright["available"] is True
     assert webwright["launch_command"] == "webwright"
     assert dynamo["reachable"] is True

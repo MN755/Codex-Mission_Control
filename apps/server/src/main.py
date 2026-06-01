@@ -199,6 +199,8 @@ from schemas import (
     SystemStatusRead,
     RunnersStatusRead,
     SafeModeStatusRead,
+    Spatial3DFeatureBundleRead,
+    Spatial3DFeatureCatalogEntryRead,
     SubagentBatchRead,
     SubagentBatchResultsIngestRequest,
     SubagentBurstRecommendationRead,
@@ -260,6 +262,7 @@ from schemas import (
     BridgeMessageRead,
 )
 from startup import startup_service
+from spatial3d_starters import generate_spatial3d_feature_bundle, get_spatial3d_feature_catalog_entry, spatial3d_feature_catalog
 from tensorflow_starters import generate_tensorflow_feature_bundle, get_tensorflow_feature_catalog_entry, tensorflow_feature_catalog
 from subagent_planner import subagent_planner_service
 from task_board import can_assign_task
@@ -2435,6 +2438,35 @@ def get_project_pytorch_feature_bundle(
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     try:
         return PyTorchFeatureBundleRead(**generate_pytorch_feature_bundle(feature_id, variant=variant))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/api/projects/{project_id}/spatial/features", response_model=list[Spatial3DFeatureCatalogEntryRead])
+def list_project_spatial3d_features(
+    project_id: int,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> list[Spatial3DFeatureCatalogEntryRead]:
+    _get_project_or_404(db, project_id)
+    return [Spatial3DFeatureCatalogEntryRead(**entry) for entry in spatial3d_feature_catalog()]
+
+
+@app.get("/api/projects/{project_id}/spatial/features/{feature_id}", response_model=Spatial3DFeatureBundleRead)
+def get_project_spatial3d_feature_bundle(
+    project_id: int,
+    feature_id: str,
+    variant: str | None = Query(default=None),
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> Spatial3DFeatureBundleRead:
+    _get_project_or_404(db, project_id)
+    try:
+        get_spatial3d_feature_catalog_entry(feature_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    try:
+        return Spatial3DFeatureBundleRead(**generate_spatial3d_feature_bundle(feature_id, variant=variant))
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 

@@ -29,6 +29,12 @@ This page lists the main backend endpoints that support bridge mode and calls ou
 - `/api/projects/{project_id}/codebase-map`
 - `/api/projects/{project_id}/codebase-understanding`
 - `/api/projects/{project_id}/workspace-tooling`
+- `/api/projects/{project_id}/tensorflow/features`
+- `/api/projects/{project_id}/tensorflow/features/{feature_id}`
+- `/api/projects/{project_id}/pytorch/features`
+- `/api/projects/{project_id}/pytorch/features/{feature_id}`
+- `/api/projects/{project_id}/spatial/features`
+- `/api/projects/{project_id}/spatial/features/{feature_id}`
 - `/api/diagnostics/reports`
 - `/api/orchestrations/plugin-health`
 - `/api/projects/{project_id}/webwright`
@@ -53,10 +59,7 @@ This page lists the main backend endpoints that support bridge mode and calls ou
 
 ## Backend-only project APIs
 
-- `/api/projects/{project_id}/tensorflow/features`
-- `/api/projects/{project_id}/tensorflow/features/{feature_id}`
-
-These TensorFlow starter endpoints are real project-scoped backend APIs, but they are not currently exposed as MCP resources or tools. Treat them as daemon API surfaces, not plugin-catalog surfaces.
+Some daemon APIs are still backend-only, but TensorFlow, PyTorch, and spatial starter catalogs are no longer in that bucket. Those typed starter families are now surfaced through project-scoped MCP resources, prompts, and bridge tools.
 
 ## Related pages
 

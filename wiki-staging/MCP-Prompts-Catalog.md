@@ -27,6 +27,12 @@ This page summarizes the current prompt workflows packaged for Mission Control b
 - Ask Manager for plan (`ask_manager_for_plan`; aliases: `ask-manager-for-plan`) - tools: `mission_control_start_task`, `mission_control_get_status`, `mission_control_get_pending_decisions`
 - Review project capabilities (`review_project_capabilities`; aliases: `review-project-capabilities`) - tools: `mission_control_get_capability_report`
 - Review project capability section (`review_project_capability_section`; aliases: `review-project-capability-section`) - tools: `mission_control_get_capability_section`
+- Review TensorFlow feature catalog (`review_tensorflow_feature_catalog`; aliases: `review-tensorflow-feature-catalog`) - tools: `mission_control_get_tensorflow_feature_catalog`, `mission_control_get_workspace_tooling`
+- Review TensorFlow feature bundle (`review_tensorflow_feature_bundle`; aliases: `review-tensorflow-feature-bundle`) - tools: `mission_control_get_tensorflow_feature_bundle`
+- Review PyTorch feature catalog (`review_pytorch_feature_catalog`; aliases: `review-pytorch-feature-catalog`) - tools: `mission_control_get_pytorch_feature_catalog`, `mission_control_get_workspace_tooling`
+- Review PyTorch feature bundle (`review_pytorch_feature_bundle`; aliases: `review-pytorch-feature-bundle`) - tools: `mission_control_get_pytorch_feature_bundle`
+- Review spatial feature catalog (`review_spatial_feature_catalog`; aliases: `review-spatial-feature-catalog`) - tools: `mission_control_get_spatial_feature_catalog`, `mission_control_get_workspace_tooling`
+- Review spatial feature bundle (`review_spatial_feature_bundle`; aliases: `review-spatial-feature-bundle`) - tools: `mission_control_get_spatial_feature_bundle`
 
 ## Related pages
 

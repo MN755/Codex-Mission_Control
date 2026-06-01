@@ -1640,6 +1640,8 @@ class WorkspaceToolingStatusRead(BaseModel):
     pytorch_repo: dict[str, Any] = Field(default_factory=dict)
     pytorch_runtime_status: dict[str, Any] = Field(default_factory=dict)
     pytorch_validation_plan: dict[str, Any] = Field(default_factory=dict)
+    spatial3d_repo: dict[str, Any] = Field(default_factory=dict)
+    spatial3d_validation_plan: dict[str, Any] = Field(default_factory=dict)
 
 
 class TensorFlowFeatureCatalogEntryRead(BaseModel):
@@ -1668,6 +1670,24 @@ class PyTorchFeatureCatalogEntryRead(BaseModel):
 
 
 class PyTorchFeatureBundleRead(BaseModel):
+    feature_id: str
+    variant: str
+    title: str
+    summary: str
+    dependencies: list[str] = Field(default_factory=list)
+    files: dict[str, str] = Field(default_factory=dict)
+    validation_steps: list[str] = Field(default_factory=list)
+    evidence_targets: list[str] = Field(default_factory=list)
+
+
+class Spatial3DFeatureCatalogEntryRead(BaseModel):
+    feature_id: str
+    title: str
+    variants: list[str] = Field(default_factory=list)
+    summary: str
+
+
+class Spatial3DFeatureBundleRead(BaseModel):
     feature_id: str
     variant: str
     title: str

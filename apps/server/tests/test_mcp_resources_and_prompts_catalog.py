@@ -30,6 +30,12 @@ EXPECTED_RESOURCES = [
     "mission-control://projects/{project_id}/integrations",
     "mission-control://projects/{project_id}/integrations/{family}",
     "mission-control://projects/{project_id}/workspace-tooling",
+    "mission-control://projects/{project_id}/tensorflow/features",
+    "mission-control://projects/{project_id}/tensorflow/features/{feature_id}",
+    "mission-control://projects/{project_id}/pytorch/features",
+    "mission-control://projects/{project_id}/pytorch/features/{feature_id}",
+    "mission-control://projects/{project_id}/spatial/features",
+    "mission-control://projects/{project_id}/spatial/features/{feature_id}",
     "mission-control://projects/{project_id}/diagnostics",
     "mission-control://projects/{project_id}/webwright",
     "mission-control://projects/{project_id}/nvidia-dynamo",
@@ -77,6 +83,12 @@ EXPECTED_PROMPTS = [
     "import_host_integrations",
     "review_project_integrations",
     "review_project_integration_family",
+    "review_tensorflow_feature_catalog",
+    "review_tensorflow_feature_bundle",
+    "review_pytorch_feature_catalog",
+    "review_pytorch_feature_bundle",
+    "review_spatial_feature_catalog",
+    "review_spatial_feature_bundle",
 ]
 
 
@@ -144,7 +156,19 @@ def test_docs_explain_resources_prompts_and_headless_boundary() -> None:
     assert "mission-control://projects/{project_id}/nvidia-aiq" in resources_content
     assert "mission-control://projects/{project_id}/nvidia-validation-plan" in resources_content
     assert "mission-control://projects/{project_id}/workspace-tooling" in resources_content
+    assert "mission-control://projects/{project_id}/tensorflow/features" in resources_content
+    assert "mission-control://projects/{project_id}/tensorflow/features/{feature_id}" in resources_content
+    assert "mission-control://projects/{project_id}/pytorch/features" in resources_content
+    assert "mission-control://projects/{project_id}/pytorch/features/{feature_id}" in resources_content
+    assert "mission-control://projects/{project_id}/spatial/features" in resources_content
+    assert "mission-control://projects/{project_id}/spatial/features/{feature_id}" in resources_content
     assert "attach_current_workspace" in prompts_content
     assert "use_webwright_for_browser_task" in prompts_content
     assert "review_project_capability_section" in prompts_content
+    assert "review_tensorflow_feature_catalog" in prompts_content
+    assert "review_tensorflow_feature_bundle" in prompts_content
+    assert "review_pytorch_feature_catalog" in prompts_content
+    assert "review_pytorch_feature_bundle" in prompts_content
+    assert "review_spatial_feature_catalog" in prompts_content
+    assert "review_spatial_feature_bundle" in prompts_content
     assert "Invalid answers are rejected" in pending_content
