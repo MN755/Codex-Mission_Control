@@ -11299,6 +11299,7 @@ class MissionControlService:
             [
                 *list(tooling.get("validation_commands") or []),
                 *list(tooling.get("security_commands") or []),
+                *list(tooling.get("artifact_inspection_commands") or []),
                 *[
                     str(step.get("command") or step.get("title") or "").strip()
                     for step in list(recipe.steps_json or [])
@@ -11313,7 +11314,13 @@ class MissionControlService:
         recommended_checks = self._dedupe_strings(
             [
                 *list(tooling.get("intake_commands") or [])[:2],
+                *list(tooling.get("notebook_commands") or [])[:2],
                 *list(tooling.get("validation_commands") or [])[:3],
+                *[
+                    f"Review config path: {item}"
+                    for item in list(tooling.get("config_review_paths") or [])[:3]
+                ],
+                *list(tooling.get("artifact_inspection_commands") or [])[:2],
                 *list(tooling.get("security_commands") or [])[:2],
                 *[
                     str(step.get("title") or step.get("command") or "").strip()
@@ -11364,6 +11371,20 @@ class MissionControlService:
                     f"Workspace tooling gap: {tool['label']} is referenced by the repo but not installed in the current runtime."
                     for tool in tooling.get("tools", [])
                     if tool.get("configured") and not tool.get("installed")
+                ],
+                *[
+                    "Notebook-driven ML workflow still needs promotion into a repo-owned script before validation evidence is trustworthy."
+                    if list(tooling.get("notebook_commands") or [])
+                    else ""
+                ],
+                *[
+                    f"Config-driven ML path needs explicit review: {item}"
+                    for item in list(tooling.get("config_review_paths") or [])[:3]
+                ],
+                *[
+                    "Artifact inspection commands exist but no validated evidence has been attached yet."
+                    if list(tooling.get("artifact_inspection_commands") or [])
+                    else ""
                 ],
                 *[f"NVIDIA validation gap: {item}" for item in list(nvidia_plan.get("recommended_fixes") or [])[:4]],
                 *["No validated handoff evidence has been recorded yet." if str(handoff.get("evidence_status") or "") == "missing" else ""],

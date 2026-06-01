@@ -210,6 +210,13 @@ def _tensorflow_mode_block(project: Project) -> str:
         lines.append(f"- Detected TensorFlow stack: {', '.join(str(item) for item in list(mode.get('frameworks') or [])[:5])}.")
     if mode.get("product_workflows"):
         lines.append(f"- Expected product workflows: {', '.join(str(item) for item in list(mode.get('product_workflows') or [])[:6])}.")
+    if mode.get("notebook_paths"):
+        lines.append(f"- Notebook rescue needed for: {', '.join(str(item) for item in list(mode.get('notebook_paths') or [])[:3])}.")
+    if mode.get("config_paths"):
+        lines.append(f"- Review TensorFlow config files explicitly: {', '.join(str(item) for item in list(mode.get('config_paths') or [])[:3])}.")
+    if mode.get("existing_savedmodel_artifacts") or mode.get("existing_tflite_artifacts"):
+        artifacts = list(mode.get("existing_savedmodel_artifacts") or []) + list(mode.get("existing_tflite_artifacts") or [])
+        lines.append(f"- Existing TensorFlow artifacts already in repo: {', '.join(str(item) for item in artifacts[:3])}.")
     if validation.get("recommended_fixes"):
         lines.append(f"- Current TensorFlow validation gaps: {' '.join(str(item) for item in list(validation.get('recommended_fixes') or [])[:3])}")
     return "\n".join(lines)
@@ -233,6 +240,12 @@ def _pytorch_mode_block(project: Project) -> str:
         lines.append(f"- Detected PyTorch stack: {', '.join(str(item) for item in list(mode.get('frameworks') or [])[:5])}.")
     if mode.get("product_workflows"):
         lines.append(f"- Expected product workflows: {', '.join(str(item) for item in list(mode.get('product_workflows') or [])[:6])}.")
+    if mode.get("notebook_paths"):
+        lines.append(f"- Notebook rescue needed for: {', '.join(str(item) for item in list(mode.get('notebook_paths') or [])[:3])}.")
+    if mode.get("config_paths"):
+        lines.append(f"- Review PyTorch config files explicitly: {', '.join(str(item) for item in list(mode.get('config_paths') or [])[:3])}.")
+    if mode.get("checkpoint_paths"):
+        lines.append(f"- Existing checkpoint evidence in repo: {', '.join(str(item) for item in list(mode.get('checkpoint_paths') or [])[:3])}.")
     if validation.get("recommended_fixes"):
         lines.append(f"- Current PyTorch validation gaps: {' '.join(str(item) for item in list(validation.get('recommended_fixes') or [])[:3])}")
     return "\n".join(lines)

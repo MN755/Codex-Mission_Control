@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from main import service
 from db import SessionLocal
 from models import (
     Agent,
@@ -291,3 +292,27 @@ def test_verification_brief_endpoint_exposes_checks_and_blockers(client, bridge_
     assert payload["evidence_gaps"]
     assert payload["release_blockers"]
     assert "## Mission Control Verification Brief" in payload["brief_markdown"]
+
+
+def test_verification_brief_endpoint_surfaces_notebook_config_and_artifact_followups(client, bridge_headers, monkeypatch) -> None:
+    project_id = _seed_operator_project()
+
+    original = service.build_workspace_tooling_status
+
+    def patched(project):
+        payload = original(project)
+        payload["notebook_commands"] = ["jupyter nbconvert --to script notebooks/experiment.ipynb"]
+        payload["artifact_inspection_commands"] = ["saved_model_cli show --dir artifacts/exported_model --all"]
+        payload["config_review_paths"] = ["configs/train.yaml"]
+        return payload
+
+    monkeypatch.setattr(service, "build_workspace_tooling_status", patched)
+
+    response = client.get(f"/api/projects/{project_id}/verification-brief", headers=bridge_headers)
+    assert response.status_code == 200, response.text
+    payload = response.json()
+
+    assert "saved_model_cli show --dir artifacts/exported_model --all" in payload["required_checks"]
+    assert "jupyter nbconvert --to script notebooks/experiment.ipynb" in payload["recommended_checks"]
+    assert any("Config-driven ML path needs explicit review: configs/train.yaml" == item for item in payload["evidence_gaps"])
+    assert any("Notebook-driven ML workflow still needs promotion" in item for item in payload["evidence_gaps"])

@@ -296,6 +296,9 @@ def test_worker_task_prompt_switches_into_tensorflow_product_mode_for_tf_repo() 
     )
     _write(workspace / "train.py", "import tensorflow as tf\n")
     _write(workspace / "export.py", "import tensorflow as tf\n")
+    _write(workspace / "notebooks" / "experiment.ipynb", "{}\n")
+    _write(workspace / "configs" / "train.yaml", "epochs: 3\n")
+    _write(workspace / "artifacts" / "saved_model.pb", "artifact\n")
 
     project = Project(name="Prompt Demo", idea="Ship a TensorFlow product path", workspace_path=workspace.as_posix(), status="building", runner_mode="auto", manager_mode="auto")
     agent = Agent(project_id=1, name="TF Worker", role="ML implementation", kind="worker", status="idle", workspace_path=project.workspace_path)
@@ -330,6 +333,9 @@ def test_worker_task_prompt_switches_into_tensorflow_product_mode_for_tf_repo() 
     assert "TensorFlow product mode:" in prompt
     assert "Treat data pipelines, training, evaluation, export, and serving checks as separate work" in prompt
     assert "TensorBoard" in prompt
+    assert "Notebook rescue needed for:" in prompt
+    assert "Review TensorFlow config files explicitly:" in prompt
+    assert "Existing TensorFlow artifacts already in repo:" in prompt
 
 
 def test_worker_task_prompt_switches_into_pytorch_product_mode_for_torch_repo() -> None:
@@ -346,6 +352,8 @@ def test_worker_task_prompt_switches_into_pytorch_product_mode_for_torch_repo() 
     _write(workspace / "train.py", "import torch\n")
     _write(workspace / "export.py", "import torch\n")
     _write(workspace / "checkpoints" / "model.pt", "weights\n")
+    _write(workspace / "notebooks" / "experiment.ipynb", "{}\n")
+    _write(workspace / "configs" / "train.yaml", "epochs: 2\n")
 
     project = Project(name="Prompt Demo", idea="Ship a PyTorch product path", workspace_path=workspace.as_posix(), status="building", runner_mode="auto", manager_mode="auto")
     agent = Agent(project_id=1, name="Torch Worker", role="ML implementation", kind="worker", status="idle", workspace_path=project.workspace_path)
@@ -380,3 +388,6 @@ def test_worker_task_prompt_switches_into_pytorch_product_mode_for_torch_repo() 
     assert "PyTorch product mode:" in prompt
     assert "Treat dataloaders, training, evaluation, checkpoints, and export as separate validation lanes" in prompt
     assert "device, precision, and batch size" in prompt
+    assert "Notebook rescue needed for:" in prompt
+    assert "Review PyTorch config files explicitly:" in prompt
+    assert "Existing checkpoint evidence in repo:" in prompt
