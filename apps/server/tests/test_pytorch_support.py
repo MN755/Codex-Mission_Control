@@ -89,6 +89,29 @@ def test_detect_pytorch_runtime_status_handles_missing_torch_gracefully(monkeypa
     assert "No module named 'torch'" in payload["blockers"][0]
 
 
+def test_detect_pytorch_runtime_status_blocks_when_python_is_missing_for_repo_commands(monkeypatch) -> None:
+    workspace = Path(sample_workspace("pytorch-runtime-no-python"))
+    workspace.mkdir(parents=True, exist_ok=True)
+    _write(workspace / "requirements.txt", "torch\n")
+    _write(workspace / "train.py", "print('train')\n")
+
+    class _Completed:
+        def __init__(self, stdout: str) -> None:
+            self.stdout = stdout
+
+    monkeypatch.setattr(
+        "pytorch_support.subprocess.run",
+        lambda *args, **kwargs: _Completed(json.dumps({"ok": True, "torch_version": "2.7.0", "cuda_available": False, "mps_available": False, "device_count": 0, "cuda_version": None, "cudnn_available": False})),
+    )
+    monkeypatch.setattr("pytorch_support.shutil.which", lambda _command: None)
+
+    payload = detect_pytorch_runtime_status(workspace)
+
+    assert payload["status"] == "blocked"
+    assert payload["python_available"] is False
+    assert any("python is not available on path" in blocker.lower() for blocker in payload["blockers"])
+
+
 def test_detect_pytorch_runtime_status_tolerates_noise_before_json_payload(monkeypatch) -> None:
     workspace = Path(sample_workspace("pytorch-runtime-noisy-stdout"))
     workspace.mkdir(parents=True, exist_ok=True)
@@ -395,6 +418,38 @@ def test_pytorch_validation_plan_calls_out_notebook_only_repo(monkeypatch, tmp_p
 
     assert payload["status"] == "blocked"
     assert any("notebook" in item.lower() and "repeatable" in item.lower() for item in payload["recommended_fixes"])
+
+
+def test_pytorch_validation_plan_blocks_when_runtime_lacks_python(monkeypatch, tmp_path: Path) -> None:
+    workspace = tmp_path / "pytorch-plan-no-python"
+    workspace.mkdir(parents=True, exist_ok=True)
+    _write(workspace / "requirements.txt", "torch\n")
+    _write(workspace / "train.py", "print('train')\n")
+
+    monkeypatch.setattr(
+        "pytorch_support.detect_pytorch_runtime_status",
+        lambda _workspace: {
+            "available": True,
+            "status": "blocked",
+            "summary": "No python on PATH",
+            "torch_installed": True,
+            "python_available": False,
+            "cuda_available": False,
+            "mps_available": False,
+            "device_count": 0,
+            "torch_version": "2.7.0",
+            "cuda_version": None,
+            "cudnn_available": False,
+            "distributed_backends": ["gloo"],
+            "blockers": ["Python is not available on PATH for the repo-owned PyTorch commands this workspace expects to run."],
+            "recommended_fixes": ["Expose Python on PATH before asking Mission Control to run repo-owned PyTorch validation commands."],
+        },
+    )
+
+    payload = build_pytorch_validation_plan(workspace)
+
+    assert payload["status"] == "blocked"
+    assert any("python is not available on path" in blocker.lower() for blocker in payload["blockers"])
 
 
 def test_detect_pytorch_runtime_status_recommends_stack_specific_clis(monkeypatch) -> None:

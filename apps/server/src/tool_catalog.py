@@ -50,12 +50,15 @@ TOOL_CATALOG: list[dict[str, Any]] = [
     {"id": "tensorflow-serving-export", "name": "TensorFlow Serving Export", "category": "Deployment tools", "summary": "Inspect SavedModel and serving-export readiness before calling a model product-ready.", "risk_level": "medium"},
     {"id": "tfx-pipeline-validation", "name": "TFX Pipeline Validation", "category": "Deployment tools", "summary": "Surface TFX production-pipeline signals so product work does not stop at the trainer script.", "risk_level": "medium"},
     {"id": "tensorflow-lite-export", "name": "TensorFlow Lite Export", "category": "Deployment tools", "summary": "Check whether the repo can credibly ship TensorFlow Lite artifacts for edge targets.", "risk_level": "medium"},
+    {"id": "tensorflow-notebook-rescue", "name": "TensorFlow Notebook Rescue", "category": "Core tools", "summary": "Promote notebook-only TensorFlow work into a repeatable repo-owned script before it becomes tribal lore.", "risk_level": "medium"},
     {"id": "pytorch-project-scaffolding", "name": "PyTorch Project Scaffolding", "category": "Core tools", "summary": "Plan a real PyTorch training and inference lane instead of another notebook graveyard with tensors in it.", "risk_level": "medium"},
     {"id": "pytorch-runtime-readiness", "name": "PyTorch Runtime Readiness", "category": "Infrastructure tools", "summary": "Check whether the local PyTorch runtime can actually run the repo before Mission Control starts making claims.", "risk_level": "medium"},
     {"id": "pytorch-profiler-observability", "name": "PyTorch Profiler Observability", "category": "Testing tools", "summary": "Inspect profiler and training-observability evidence instead of trusting performance folklore.", "risk_level": "medium"},
     {"id": "pytorch-checkpoint-validation", "name": "PyTorch Checkpoint Validation", "category": "Testing tools", "summary": "Verify checkpoint save, load, and resume behavior before pretending a model is reproducible.", "risk_level": "medium"},
     {"id": "pytorch-distributed-readiness", "name": "PyTorch Distributed Readiness", "category": "Infrastructure tools", "summary": "Surface torchrun, Accelerate, DeepSpeed, and rank-handling risks before distributed runs waste everyone's afternoon.", "risk_level": "high"},
     {"id": "pytorch-export-validation", "name": "PyTorch Export Validation", "category": "Deployment tools", "summary": "Check TorchScript or ONNX export readiness before calling a PyTorch repo product-ready.", "risk_level": "medium"},
+    {"id": "pytorch-notebook-rescue", "name": "PyTorch Notebook Rescue", "category": "Core tools", "summary": "Promote notebook-only PyTorch work into a repeatable repo-owned script before the repo becomes a tensor scrapbook.", "risk_level": "medium"},
+    {"id": "ml-config-audit", "name": "ML Config Audit", "category": "Testing tools", "summary": "Surface config-driven ML execution paths so validation evidence is tied to the config that actually ran.", "risk_level": "medium"},
     {"id": "secret-scan-with-gitleaks", "name": "Secret Scan with Gitleaks", "category": "Testing tools", "summary": "Run a redacted local secret scan before handoff or release.", "risk_level": "medium"},
     {"id": "dependency-audit-with-osv-scanner", "name": "Dependency Audit with OSV-Scanner", "category": "Testing tools", "summary": "Scan repo lockfiles for known dependency vulnerabilities.", "risk_level": "medium"},
     {"id": "python-audit-with-pip-audit", "name": "Python Audit with pip-audit", "category": "Testing tools", "summary": "Audit Python dependencies for known vulnerabilities.", "risk_level": "medium"},
@@ -176,7 +179,7 @@ def _availability(tool_id: str, *, provider: str, connected_accounts: dict[str, 
         notes.append("SavedModel export checks keep training artifacts and serving artifacts from being treated like the same thing.")
         if "SavedModel / Serving" not in list(mode.get("frameworks") or []):
             return "experimental", notes
-        has_repo_export = bool(mode.get("export_commands"))
+        has_repo_export = bool(mode.get("export_commands") or mode.get("existing_savedmodel_artifacts"))
         return ("available" if shutil.which("saved_model_cli") or has_repo_export else "needs_setup"), notes
     if tool_id == "tfx-pipeline-validation":
         mode = _cached_context_value(context, "tensorflow_mode", lambda: detect_tensorflow_repo_mode(REPO_ROOT))
@@ -189,8 +192,15 @@ def _availability(tool_id: str, *, provider: str, connected_accounts: dict[str, 
         notes.append("Lite export checks matter for edge or mobile targets, not every model repo under the sun.")
         if "TensorFlow Lite" not in list(mode.get("frameworks") or []):
             return "experimental", notes
-        has_repo_export = bool(mode.get("export_commands"))
+        has_repo_export = bool(mode.get("export_commands") or mode.get("existing_tflite_artifacts"))
         return ("available" if shutil.which("tflite_convert") or has_repo_export else "needs_setup"), notes
+    if tool_id == "tensorflow-notebook-rescue":
+        mode = _cached_context_value(context, "tensorflow_mode", lambda: detect_tensorflow_repo_mode(REPO_ROOT))
+        if "notebook_experiments" not in list(mode.get("product_workflows") or []):
+            notes.append("Notebook rescue only matters when the TensorFlow repo still hides real work inside notebooks.")
+            return "experimental", notes
+        notes.append("Use this lane to turn TensorFlow notebooks into repo-owned scripts before validation claims get theatrical.")
+        return "available", notes
     if tool_id == "pytorch-project-scaffolding":
         mode = _cached_context_value(context, "pytorch_mode", lambda: detect_pytorch_repo_mode(REPO_ROOT))
         validation = _cached_context_value(context, "pytorch_validation_plan", lambda: build_pytorch_validation_plan(REPO_ROOT))
@@ -248,6 +258,21 @@ def _availability(tool_id: str, *, provider: str, connected_accounts: dict[str, 
         if "model_export" not in list(mode.get("product_workflows") or []) and not mode.get("export_commands"):
             return "experimental", notes
         return ("available" if shutil.which("python") else "needs_setup"), notes
+    if tool_id == "pytorch-notebook-rescue":
+        mode = _cached_context_value(context, "pytorch_mode", lambda: detect_pytorch_repo_mode(REPO_ROOT))
+        if "notebook_experiments" not in list(mode.get("product_workflows") or []):
+            notes.append("Notebook rescue only matters when the PyTorch repo still hides real work inside notebooks.")
+            return "experimental", notes
+        notes.append("Use this lane to turn PyTorch notebooks into repo-owned scripts before validation claims become fiction.")
+        return "available", notes
+    if tool_id == "ml-config-audit":
+        tensorflow_mode = _cached_context_value(context, "tensorflow_mode", lambda: detect_tensorflow_repo_mode(REPO_ROOT))
+        pytorch_mode = _cached_context_value(context, "pytorch_mode", lambda: detect_pytorch_repo_mode(REPO_ROOT))
+        if "config_driven_runs" not in list(tensorflow_mode.get("product_workflows") or []) and "config_driven_runs" not in list(pytorch_mode.get("product_workflows") or []):
+            notes.append("Config audit only matters when the repo actually has ML config files worth treating seriously.")
+            return "experimental", notes
+        notes.append("Use config audit to tie validation evidence to the exact ML config files that drove the run.")
+        return "available", notes
     if tool_id == "secret-scan-with-gitleaks":
         return ("available" if shutil.which("gitleaks") else "needs_setup"), ["Redacted secret scanning is the sane default gate before handoff or release."]
     if tool_id == "dependency-audit-with-osv-scanner":

@@ -87,7 +87,7 @@ def test_tensorflow_validation_plan_surfaces_export_and_observability_steps(monk
 
     monkeypatch.setattr(
         "tensorflow_support.shutil.which",
-        lambda command: f"C:/tools/{command}.exe" if command in {"tensorboard", "saved_model_cli", "tflite_convert"} else None,
+        lambda command: f"C:/tools/{command}.exe" if command in {"python", "tensorboard", "saved_model_cli", "tflite_convert"} else None,
     )
 
     payload = build_tensorflow_validation_plan(workspace)
@@ -205,7 +205,7 @@ def test_tensorflow_validation_plan_adds_sanity_step_and_export_fix(monkeypatch,
     _write(workspace / "train.py", "import tensorflow as tf\n")
     _write(workspace / "notes.py", "tf.saved_model.save(model, 'artifacts/exported_model')\n")
 
-    monkeypatch.setattr("tensorflow_support.shutil.which", lambda _command: None)
+    monkeypatch.setattr("tensorflow_support.shutil.which", lambda command: "C:/tools/python.exe" if command == "python" else None)
 
     payload = build_tensorflow_validation_plan(workspace)
 
@@ -220,7 +220,7 @@ def test_tensorflow_validation_plan_allows_export_only_repo(monkeypatch, tmp_pat
     _write(workspace / "export.py", "import tensorflow as tf\n")
     _write(workspace / "notes.py", "tf.saved_model.save(model, 'artifacts/exported_model')\n")
 
-    monkeypatch.setattr("tensorflow_support.shutil.which", lambda _command: None)
+    monkeypatch.setattr("tensorflow_support.shutil.which", lambda command: "C:/tools/python.exe" if command == "python" else None)
 
     payload = build_tensorflow_validation_plan(workspace)
 
@@ -294,3 +294,17 @@ def test_tensorflow_validation_plan_calls_out_notebook_only_repo(monkeypatch, tm
 
     assert payload["status"] == "blocked"
     assert any("notebook" in item.lower() and "repeatable" in item.lower() for item in payload["recommended_fixes"])
+
+
+def test_tensorflow_validation_plan_blocks_when_python_is_missing(monkeypatch, tmp_path: Path) -> None:
+    workspace = tmp_path / "tensorflow-no-python"
+    workspace.mkdir(parents=True, exist_ok=True)
+    _write(workspace / "requirements.txt", "tensorflow\n")
+    _write(workspace / "train.py", "import tensorflow as tf\n")
+
+    monkeypatch.setattr("tensorflow_support.shutil.which", lambda _command: None)
+
+    payload = build_tensorflow_validation_plan(workspace)
+
+    assert payload["status"] == "blocked"
+    assert any("python is not available on path" in blocker.lower() for blocker in payload["blockers"])

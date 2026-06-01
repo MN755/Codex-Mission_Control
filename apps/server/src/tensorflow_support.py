@@ -588,6 +588,9 @@ def build_tensorflow_validation_plan(workspace_path: str | Path) -> dict[str, An
             recommended_fixes.append("Promote the detected TensorFlow notebook flow into a repo-owned script or test command so Mission Control can validate something repeatable.")
     elif not smoke_command:
         recommended_fixes.append("Document the smallest repo-owned TensorFlow train, test, or export command so Mission Control can run a real smoke pass.")
+    if repo_owned_execution_commands and not shutil.which("python"):
+        blockers.append("Python is not available on PATH for the repo-owned TensorFlow commands this workspace expects to run.")
+        recommended_fixes.append("Expose Python on PATH before asking Mission Control to run repo-owned TensorFlow validation commands.")
     if "TensorBoard" in list(repo_mode.get("frameworks") or []) and not shutil.which("tensorboard"):
         recommended_fixes.append("Install TensorBoard if you expect Mission Control to review training curves instead of pretending logs explain themselves.")
     if "TFX" in list(repo_mode.get("frameworks") or []) and not shutil.which("tfx"):

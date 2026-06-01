@@ -10,6 +10,9 @@ def test_tool_catalog_surfaces_tensorflow_tools_when_repo_signals_exist(monkeypa
             "enabled": True,
             "mode": "tensorflow_tfx",
             "frameworks": ["TensorFlow", "TensorBoard", "TFX", "SavedModel / Serving"],
+            "product_workflows": ["notebook_experiments", "config_driven_runs"],
+            "existing_savedmodel_artifacts": ["artifacts/exported_model/saved_model.pb"],
+            "existing_tflite_artifacts": [],
         },
     )
     monkeypatch.setattr(
@@ -29,12 +32,18 @@ def test_tool_catalog_surfaces_tensorflow_tools_when_repo_signals_exist(monkeypa
     assert tools["tensorflow-serving-export"]["availability"] == "available"
     assert tools["tfx-pipeline-validation"]["availability"] == "available"
     assert tools["tensorflow-lite-export"]["availability"] == "experimental"
+    assert tools["tensorflow-notebook-rescue"]["availability"] == "available"
+    assert tools["ml-config-audit"]["availability"] == "available"
 
 
 def test_tool_catalog_marks_tensorflow_tools_experimental_without_repo_signals(monkeypatch) -> None:
     monkeypatch.setattr(
         "tool_catalog.detect_tensorflow_repo_mode",
-        lambda _root: {"enabled": False, "mode": None, "frameworks": []},
+        lambda _root: {"enabled": False, "mode": None, "frameworks": [], "product_workflows": []},
+    )
+    monkeypatch.setattr(
+        "tool_catalog.detect_pytorch_repo_mode",
+        lambda _root: {"enabled": False, "mode": None, "frameworks": [], "product_workflows": [], "distributed_stack": [], "checkpoint_paths": [], "training_commands": [], "export_commands": [], "observability_commands": []},
     )
     monkeypatch.setattr(
         "tool_catalog.build_tensorflow_validation_plan",
@@ -48,6 +57,8 @@ def test_tool_catalog_marks_tensorflow_tools_experimental_without_repo_signals(m
     assert tools["tensorflow-project-scaffolding"]["availability"] == "needs_setup"
     assert tools["tensorboard-observability"]["availability"] == "experimental"
     assert tools["tfx-pipeline-validation"]["availability"] == "experimental"
+    assert tools["tensorflow-notebook-rescue"]["availability"] == "experimental"
+    assert tools["ml-config-audit"]["availability"] == "experimental"
 
 
 def test_tool_catalog_allows_tensorboard_for_pytorch_observability(monkeypatch) -> None:
@@ -84,7 +95,7 @@ def test_tool_catalog_surfaces_pytorch_tools_when_repo_signals_exist(monkeypatch
             "enabled": True,
             "mode": "pytorch_distributed",
             "frameworks": ["PyTorch", "TorchVision", "Accelerate", "Transformers / PEFT"],
-            "product_workflows": ["distributed_training", "training_observability", "model_export"],
+            "product_workflows": ["distributed_training", "training_observability", "model_export", "notebook_experiments", "config_driven_runs"],
             "distributed_stack": ["Accelerate", "DDP/FSDP"],
             "checkpoint_paths": ["checkpoints/model.pt"],
             "training_commands": ["python train.py"],
@@ -114,6 +125,8 @@ def test_tool_catalog_surfaces_pytorch_tools_when_repo_signals_exist(monkeypatch
     assert tools["pytorch-checkpoint-validation"]["availability"] == "available"
     assert tools["pytorch-distributed-readiness"]["availability"] == "available"
     assert tools["pytorch-export-validation"]["availability"] == "available"
+    assert tools["pytorch-notebook-rescue"]["availability"] == "available"
+    assert tools["ml-config-audit"]["availability"] == "available"
 
 
 def test_tool_catalog_marks_pytorch_tools_experimental_without_repo_signals(monkeypatch) -> None:
@@ -294,6 +307,28 @@ def test_tool_catalog_accepts_repo_native_tensorflow_export_commands_without_cli
             "mode": "tensorflow_product",
             "frameworks": ["TensorFlow", "SavedModel / Serving", "TensorFlow Lite"],
             "export_commands": ["python export.py"],
+        },
+    )
+    monkeypatch.setattr("tool_catalog.shutil.which", lambda _command: None)
+
+    payload = catalog_with_permissions(provider="codex", connected_accounts={}, permission_overrides={})
+    tools = {item["id"]: item for item in payload}
+
+    assert tools["tensorflow-serving-export"]["availability"] == "available"
+    assert tools["tensorflow-lite-export"]["availability"] == "available"
+
+
+def test_tool_catalog_accepts_tensorflow_artifacts_without_repo_export_commands(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "tool_catalog.detect_tensorflow_repo_mode",
+        lambda _root: {
+            "enabled": True,
+            "mode": "tensorflow_product",
+            "frameworks": ["TensorFlow", "SavedModel / Serving", "TensorFlow Lite"],
+            "product_workflows": [],
+            "export_commands": [],
+            "existing_savedmodel_artifacts": ["artifacts/exported_model/saved_model.pb"],
+            "existing_tflite_artifacts": ["artifacts/model.tflite"],
         },
     )
     monkeypatch.setattr("tool_catalog.shutil.which", lambda _command: None)

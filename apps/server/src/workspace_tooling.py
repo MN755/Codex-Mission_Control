@@ -440,9 +440,12 @@ def detect_workspace_tooling(workspace_path: str | Path | None, *, project_name:
             "packs": [],
             "recommended_next_steps": ["Attach a real workspace before asking Mission Control to reason about repo-native tooling."],
             "intake_commands": [],
+            "notebook_commands": [],
             "validation_commands": [],
             "security_commands": [],
             "deployment_commands": [],
+            "artifact_inspection_commands": [],
+            "config_review_paths": [],
             "tensorflow_repo": {"enabled": False, "frameworks": [], "product_workflows": []},
             "tensorflow_validation_plan": {"available": False, "status": "not_applicable", "steps": [], "recommended_fixes": []},
             "pytorch_repo": {"enabled": False, "frameworks": [], "product_workflows": [], "distributed_stack": []},
@@ -462,9 +465,12 @@ def detect_workspace_tooling(workspace_path: str | Path | None, *, project_name:
             "packs": [],
             "recommended_next_steps": ["Reattach the workspace with a valid local directory before running tooling discovery."],
             "intake_commands": [],
+            "notebook_commands": [],
             "validation_commands": [],
             "security_commands": [],
             "deployment_commands": [],
+            "artifact_inspection_commands": [],
+            "config_review_paths": [],
             "tensorflow_repo": {"enabled": False, "frameworks": [], "product_workflows": []},
             "tensorflow_validation_plan": {"available": False, "status": "not_applicable", "steps": [], "recommended_fixes": []},
             "pytorch_repo": {"enabled": False, "frameworks": [], "product_workflows": [], "distributed_stack": []},
@@ -485,6 +491,17 @@ def detect_workspace_tooling(workspace_path: str | Path | None, *, project_name:
     tensorflow_plan = build_tensorflow_validation_plan(root)
     pytorch_runtime = detect_pytorch_runtime_status(root)
     pytorch_plan = build_pytorch_validation_plan(root)
+    notebook_paths = _dedupe(
+        [str(item) for item in list(tensorflow_mode.get("notebook_paths") or [])]
+        + [str(item) for item in list(pytorch_mode.get("notebook_paths") or [])]
+    )
+    config_review_paths = _dedupe(
+        [str(item) for item in list(tensorflow_mode.get("config_paths") or [])]
+        + [str(item) for item in list(pytorch_mode.get("config_paths") or [])]
+    )
+    notebook_commands: list[str] = [
+        f"jupyter nbconvert --to script {path}" for path in notebook_paths[:4]
+    ]
     validation_commands = []
     if tooling_by_id["ruff"]["installed"] and (tooling_by_id["ruff"]["configured"] or repo_profile.get("python_repo")):
         validation_commands.extend(["ruff check .", "ruff format --check ."])
@@ -536,6 +553,18 @@ def detect_workspace_tooling(workspace_path: str | Path | None, *, project_name:
         )
     if pytorch_mode.get("enabled"):
         deployment_commands.extend(str(step.get("command")) for step in list(pytorch_plan.get("steps") or []) if step.get("type") == "export" and step.get("command"))
+    artifact_inspection_commands = _dedupe(
+        [
+            str(step.get("command"))
+            for step in list(tensorflow_plan.get("steps") or [])
+            if step.get("type") == "export" and step.get("command")
+        ]
+        + [
+            str(step.get("command"))
+            for step in list(pytorch_plan.get("steps") or [])
+            if step.get("type") in {"checkpoint", "export"} and step.get("command")
+        ]
+    )
     if tooling_by_id["saved_model_cli"]["installed"] and tooling_by_id["saved_model_cli"]["configured"] and not _has_prefixed_command(
         deployment_commands,
         ("saved_model_cli show --dir",),
@@ -612,6 +641,10 @@ def detect_workspace_tooling(workspace_path: str | Path | None, *, project_name:
         f"Detected {sum(1 for tool in tools if tool['installed'])} installed helper CLIs",
         f"{sum(1 for tool in tools if tool['configured'])} workspace-signaled integrations",
     ]
+    if notebook_paths:
+        summary_parts.append(f"{len(notebook_paths)} notebook flow(s) need scriptable rescue")
+    if config_review_paths:
+        summary_parts.append(f"{len(config_review_paths)} config-driven path(s) detected")
     if intake_commands:
         summary_parts.append("fast intake ready")
     if validation_commands:
@@ -633,9 +666,12 @@ def detect_workspace_tooling(workspace_path: str | Path | None, *, project_name:
         "packs": packs,
         "recommended_next_steps": recommended_next_steps[:8],
         "intake_commands": _dedupe(intake_commands)[:6],
+        "notebook_commands": notebook_commands[:6],
         "validation_commands": _dedupe(validation_commands)[:8],
         "security_commands": _dedupe(security_commands)[:8],
         "deployment_commands": _dedupe(deployment_commands)[:8],
+        "artifact_inspection_commands": artifact_inspection_commands[:8],
+        "config_review_paths": config_review_paths[:8],
         "tensorflow_repo": tensorflow_mode,
         "tensorflow_validation_plan": tensorflow_plan,
         "pytorch_repo": pytorch_mode,

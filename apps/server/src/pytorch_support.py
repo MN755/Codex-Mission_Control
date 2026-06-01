@@ -547,12 +547,14 @@ def detect_pytorch_repo_mode(workspace_path: str | Path) -> dict[str, Any]:
 
 def detect_pytorch_runtime_status(workspace_path: str | Path) -> dict[str, Any]:
     repo_mode = detect_pytorch_repo_mode(workspace_path)
+    python_available = bool(shutil.which("python"))
     if not repo_mode.get("enabled"):
         return {
             "available": False,
             "status": "not_applicable",
             "summary": "This workspace does not currently look like a PyTorch repo.",
             "torch_installed": False,
+            "python_available": python_available,
             "cuda_available": False,
             "mps_available": False,
             "device_count": 0,
@@ -612,6 +614,15 @@ def detect_pytorch_runtime_status(workspace_path: str | Path) -> dict[str, Any]:
     if not torch_installed:
         blockers.append(f"PyTorch runtime probe failed: {payload.get('error') or 'unknown error'}")
         recommended_fixes.append("Install a working PyTorch build for this Python environment before asking Mission Control to validate training or inference.")
+    repo_owned_commands = [
+        str(command)
+        for key in ("build_commands", "test_commands", "training_commands", "evaluation_commands", "inference_commands", "export_commands")
+        for command in list(repo_mode.get(key) or [])
+        if str(command).strip().startswith("python ")
+    ]
+    if repo_owned_commands and not python_available:
+        blockers.append("Python is not available on PATH for the repo-owned PyTorch commands this workspace expects to run.")
+        recommended_fixes.append("Expose Python on PATH before asking Mission Control to run repo-owned PyTorch validation commands.")
     distributed_stack = {str(item) for item in list(repo_mode.get("distributed_stack") or [])}
     if {"DeepSpeed", "DDP/FSDP"} & distributed_stack and not cuda_available:
         recommended_fixes.append("Some distributed PyTorch workflows in this repo usually expect CUDA, but the current runtime does not provide it.")
@@ -646,6 +657,7 @@ def detect_pytorch_runtime_status(workspace_path: str | Path) -> dict[str, Any]:
         "status": status,
         "summary": summary,
         "torch_installed": torch_installed,
+        "python_available": python_available,
         "cuda_available": cuda_available,
         "mps_available": mps_available,
         "device_count": device_count,
@@ -713,6 +725,7 @@ def build_pytorch_validation_plan(workspace_path: str | Path) -> dict[str, Any]:
 
     blockers = list(runtime.get("blockers") or [])
     recommended_fixes = list(runtime.get("recommended_fixes") or [])
+    python_available = bool(runtime.get("python_available", shutil.which("python")))
     has_execution_entry = any(
         repo_mode.get(key)
         for key in ("training_commands", "test_commands", "evaluation_commands", "inference_commands", "export_commands")
@@ -724,6 +737,9 @@ def build_pytorch_validation_plan(workspace_path: str | Path) -> dict[str, Any]:
             recommended_fixes.append("Promote the detected PyTorch notebook flow into a repo-owned script or test command so Mission Control can validate something repeatable.")
     elif not smoke_command:
         recommended_fixes.append("Document the smallest repo-owned train, eval, infer, or pytest command so Mission Control can run a real PyTorch smoke pass.")
+    if steps and not python_available and any(str(step.get("command") or "").startswith("python ") for step in steps):
+        blockers.append("Python is not available on PATH for the repo-owned PyTorch validation commands in this plan.")
+        recommended_fixes.append("Expose Python on PATH before running the generated PyTorch validation lane.")
     distributed_stack = {str(item) for item in list(repo_mode.get("distributed_stack") or [])}
     if {"DeepSpeed", "DDP/FSDP"} & distributed_stack and not runtime.get("cuda_available"):
         recommended_fixes.append("Some distributed PyTorch workflows in this repo usually expect GPUs, but the current runtime looks CPU-only.")

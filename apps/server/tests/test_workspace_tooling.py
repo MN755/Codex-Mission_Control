@@ -55,7 +55,10 @@ def test_detect_workspace_tooling_returns_stable_contract_for_missing_workspace(
     payload = detect_workspace_tooling(None, project_name="Missing")
 
     assert payload["available"] is False
+    assert payload["notebook_commands"] == []
     assert payload["deployment_commands"] == []
+    assert payload["artifact_inspection_commands"] == []
+    assert payload["config_review_paths"] == []
     assert payload["tensorflow_repo"]["enabled"] is False
     assert payload["tensorflow_validation_plan"]["status"] == "not_applicable"
     assert payload["pytorch_repo"]["enabled"] is False
@@ -67,7 +70,10 @@ def test_detect_workspace_tooling_returns_stable_contract_for_invalid_workspace(
     payload = detect_workspace_tooling(tmp_path / "does-not-exist", project_name="Invalid")
 
     assert payload["available"] is False
+    assert payload["notebook_commands"] == []
     assert payload["deployment_commands"] == []
+    assert payload["artifact_inspection_commands"] == []
+    assert payload["config_review_paths"] == []
     assert payload["tensorflow_repo"]["enabled"] is False
     assert payload["pytorch_repo"]["enabled"] is False
 
@@ -526,3 +532,24 @@ def test_detect_workspace_tooling_prefers_concrete_tensorflow_artifact_commands(
     assert "saved_model_cli show --dir . --all" in payload["deployment_commands"]
     assert any("model.tflite" in command and "size_bytes" in command for command in payload["deployment_commands"])
     assert "saved_model_cli show --dir <saved_model_dir> --all" not in payload["deployment_commands"]
+    assert "saved_model_cli show --dir . --all" in payload["artifact_inspection_commands"]
+
+
+def test_detect_workspace_tooling_surfaces_notebook_and_config_features(tmp_path: Path, monkeypatch) -> None:
+    (tmp_path / "services" / "model").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "services" / "model" / "pyproject.toml").write_text(
+        "[project]\nname='tf-nb'\ndependencies=['tensorflow']\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "services" / "model" / "train.py").write_text("import tensorflow as tf\n", encoding="utf-8")
+    (tmp_path / "services" / "model" / "notebooks").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "services" / "model" / "configs").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "services" / "model" / "notebooks" / "experiment.ipynb").write_text("{}\n", encoding="utf-8")
+    (tmp_path / "services" / "model" / "configs" / "train.yaml").write_text("epochs: 4\n", encoding="utf-8")
+    monkeypatch.setattr("workspace_tooling._which", lambda _command: None)
+
+    payload = detect_workspace_tooling(tmp_path, project_name="Notebook Feature Demo")
+
+    assert "jupyter nbconvert --to script services/model/notebooks/experiment.ipynb" in payload["notebook_commands"]
+    assert "services/model/configs/train.yaml" in payload["config_review_paths"]
+    assert "notebook flow(s) need scriptable rescue" in payload["summary"]
