@@ -252,6 +252,7 @@ def _apply_sqlite_migrations() -> None:
         _ensure_column("app_profile", "selected_provider", "selected_provider VARCHAR(40) NOT NULL DEFAULT 'codex'")
         _ensure_column("app_profile", "auth_mode", "auth_mode VARCHAR(40)")
         _ensure_column("app_profile", "connected_accounts_json", "connected_accounts_json JSON NOT NULL DEFAULT '{}'")
+        _ensure_column("app_profile", "integration_registry_json", "integration_registry_json JSON NOT NULL DEFAULT '{}'")
         _ensure_column("app_profile", "first_run_completed", "first_run_completed BOOLEAN NOT NULL DEFAULT 0")
         _ensure_column("app_profile", "setup_version_completed", "setup_version_completed VARCHAR(40)")
         _ensure_column("app_profile", "onboarding_completed", "onboarding_completed BOOLEAN NOT NULL DEFAULT 0")

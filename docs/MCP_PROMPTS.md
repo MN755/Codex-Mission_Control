@@ -38,3 +38,10 @@ Mission Control MCP prompts are reusable Codex-chat workflows. They describe how
 - Canonical names use underscores.
 - Legacy hyphenated names remain prompt aliases in the MCP catalog for compatibility.
 - Key aliases include `use-mission-control-for-this-repo`, `continue-orchestration`, `use-webwright-for-browser-task`, `review-project-capabilities`, `ask-manager-for-plan`, and `review-project-capability-section`.
+
+## Integration prompts
+
+- `review_integration_catalog`
+- `import_host_integrations`
+- `review_project_integrations`
+- `review_project_integration_family`

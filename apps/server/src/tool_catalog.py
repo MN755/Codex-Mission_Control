@@ -102,7 +102,22 @@ def _python_available() -> bool:
     return bool(shutil.which("python"))
 
 
-def _availability(tool_id: str, *, provider: str, connected_accounts: dict[str, Any], context: dict[str, Any]) -> tuple[str, list[str]]:
+def _integration_connection_status(integration_registry: dict[str, Any], family_id: str) -> dict[str, Any]:
+    connection = dict(dict(integration_registry or {}).get("connections", {}).get(family_id) or {})
+    connection.setdefault("status", "disconnected")
+    connection.setdefault("host_imported", False)
+    connection.setdefault("connection_source", "mission_control")
+    return connection
+
+
+def _availability(
+    tool_id: str,
+    *,
+    provider: str,
+    connected_accounts: dict[str, Any],
+    integration_registry: dict[str, Any],
+    context: dict[str, Any],
+) -> tuple[str, list[str]]:
     notes: list[str] = []
     if tool_id in {"file-search", "format-changer", "write-publishable-docs", "goal-reminder", "ascii-image-creator"}:
         return "available", notes
@@ -296,11 +311,17 @@ def _availability(tool_id: str, *, provider: str, connected_accounts: dict[str, 
     if tool_id == "python-audit-with-pip-audit":
         return ("available" if shutil.which("pip-audit") else "needs_setup"), ["Use pip-audit for Python dependency vulnerability checks."]
     if tool_id in {"github-wiki-creator", "github-deployment-creator"}:
+        source_control = _integration_connection_status(integration_registry, "source_control")
         github_status = connected_accounts.get("github", {})
-        return ("available" if github_status.get("status") == "connected" else "needs_setup"), notes
+        is_available = source_control.get("status") == "connected" or bool(source_control.get("host_imported")) or github_status.get("status") == "connected"
+        notes.append(f"Connection source: {source_control.get('connection_source')}.")
+        return ("available" if is_available else "needs_setup"), notes
     if tool_id == "deploy-with-vercel":
+        hosting = _integration_connection_status(integration_registry, "hosting_deploy")
         vercel_status = connected_accounts.get("vercel", {})
-        return ("available" if vercel_status.get("status") == "connected" else "needs_setup"), notes
+        is_available = hosting.get("status") == "connected" or bool(hosting.get("host_imported")) or vercel_status.get("status") == "connected"
+        notes.append(f"Connection source: {hosting.get('connection_source')}.")
+        return ("available" if is_available else "needs_setup"), notes
     if tool_id == "web-search-with-approval":
         notes.append("Web search stays approval-gated unless the user explicitly enables it.")
         return "needs_setup", notes
@@ -344,12 +365,19 @@ def catalog_with_permissions(
     *,
     provider: str,
     connected_accounts: dict[str, Any],
+    integration_registry: dict[str, Any] | None = None,
     permission_overrides: dict[str, Any],
 ) -> list[dict[str, Any]]:
     items: list[dict[str, Any]] = []
     context: dict[str, Any] = {}
     for item in TOOL_CATALOG:
-        availability, notes = _availability(item["id"], provider=provider, connected_accounts=connected_accounts, context=context)
+        availability, notes = _availability(
+            item["id"],
+            provider=provider,
+            connected_accounts=connected_accounts,
+            integration_registry=dict(integration_registry or {}),
+            context=context,
+        )
         permission_policy = str(permission_overrides.get(item["id"]) or default_permission_policy(item["id"]))
         items.append(
             {

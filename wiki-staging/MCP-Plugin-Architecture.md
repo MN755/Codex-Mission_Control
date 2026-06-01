@@ -119,3 +119,17 @@ The MCP layer should stay thin and predictable:
 ## Related pages
 
 Continue with [Skills and Prompts](Skills-and-Prompts), [MCP Resources Catalog](MCP-Resources-Catalog), [MCP Prompts Catalog](MCP-Prompts-Catalog), and [MCP Bridge Endpoints](MCP-Bridge-Endpoints).
+
+## Integration bridge additions
+
+- `mission_control_get_integrations_catalog`
+- `mission_control_get_integration_connections`
+- `mission_control_import_host_integrations`
+- `mission_control_get_project_integrations`
+- `mission_control_get_project_integration_family`
+- `mission_control_preview_integration_action`
+- `mission_control_execute_integration_action`
+- `mission-control://integrations/catalog`
+- `mission-control://integrations/connections`
+- `mission-control://projects/{project_id}/integrations`
+- `mission-control://projects/{project_id}/integrations/{family}`

@@ -502,6 +502,43 @@ class MissionControlDaemonClient:
     def get_workspace_tooling(self, project_id: int) -> dict[str, Any]:
         return self._request("GET", f"/api/projects/{project_id}/workspace-tooling")
 
+    def get_integrations_catalog(self) -> list[dict[str, Any]]:
+        return self._request("GET", "/api/integrations/catalog")
+
+    def get_integration_connections(self) -> list[dict[str, Any]]:
+        return self._request("GET", "/api/integrations/connections")
+
+    def import_host_integrations(self) -> dict[str, Any]:
+        return self._request("POST", "/api/integrations/import-host-state")
+
+    def get_project_integrations(self, project_id: int) -> dict[str, Any]:
+        return self._request("GET", f"/api/projects/{project_id}/integrations")
+
+    def get_project_integration_family(self, project_id: int, family: str) -> dict[str, Any]:
+        return self._request("GET", f"/api/projects/{project_id}/integrations/{family}")
+
+    def preview_project_integration_action(self, project_id: int, family: str, action_id: str, *, params: dict[str, Any] | None = None) -> dict[str, Any]:
+        return self._request(
+            "POST",
+            f"/api/projects/{project_id}/integrations/{family}/actions/{action_id}/preview",
+            json_body={"params": params or {}, "confirmed": False},
+        )
+
+    def execute_project_integration_action(
+        self,
+        project_id: int,
+        family: str,
+        action_id: str,
+        *,
+        params: dict[str, Any] | None = None,
+        confirmed: bool = False,
+    ) -> dict[str, Any]:
+        return self._request(
+            "POST",
+            f"/api/projects/{project_id}/integrations/{family}/actions/{action_id}/execute",
+            json_body={"params": params or {}, "confirmed": confirmed},
+        )
+
     def search_codebase(
         self,
         project_id: int,
@@ -1388,6 +1425,12 @@ class MissionControlDaemonClient:
         if not uri.startswith("mission-control://"):
             raise RuntimeError("Unsupported Mission Control resource URI.")
         parts = [segment for segment in uri.removeprefix("mission-control://").split("/") if segment]
+        if len(parts) >= 2 and parts[0] == "integrations":
+            kind = parts[1]
+            if kind == "catalog":
+                return {"integrations": self.get_integrations_catalog()}
+            if kind == "connections":
+                return {"connections": self.get_integration_connections()}
         if len(parts) >= 5 and parts[0] == "projects" and parts[2] == "orchestrations":
             project_id = int(parts[1])
             orchestration_id = int(parts[3])
@@ -1461,6 +1504,12 @@ class MissionControlDaemonClient:
                 return self._summarize_capability_report(project_id, self.get_capability_report(project_id))
             if kind == "workspace-tooling":
                 return self._summarize_workspace_tooling(project_id, self.get_workspace_tooling(project_id))
+            if kind == "integrations":
+                if project_id is None:
+                    raise ValueError("Project-scoped integration resources require a project id.")
+                if len(parts) == 4:
+                    return self.get_project_integration_family(project_id, parts[3])
+                return self.get_project_integrations(project_id)
             if kind == "webwright":
                 return self._summarize_webwright_status(project_id, self.get_webwright_status(project_id))
             if kind == "nvidia-dynamo":

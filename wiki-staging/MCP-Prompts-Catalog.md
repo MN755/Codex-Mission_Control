@@ -31,3 +31,10 @@ This page summarizes the current prompt workflows packaged for Mission Control b
 ## Related pages
 
 Continue with [MCP Plugin Architecture](MCP-Plugin-Architecture), [Skills and Prompts](Skills-and-Prompts), and [Quick Start](Quick-Start).
+
+## Integration additions
+
+- Review integration catalog
+- Import host integrations
+- Review project integrations
+- Review project integration family

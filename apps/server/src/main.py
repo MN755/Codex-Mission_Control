@@ -224,6 +224,13 @@ from schemas import (
     SwarmSpawnResponse,
     TaskRead,
     TaskGenerationResponse,
+    IntegrationActionExecutionRead,
+    IntegrationActionPreviewRead,
+    IntegrationActionRequest,
+    IntegrationCatalogEntryRead,
+    IntegrationConnectionRead,
+    ProjectIntegrationFamilyRead,
+    ProjectIntegrationsRead,
     ToolCatalogItemRead,
     ToolPermissionRead,
     ToolPermissionUpdate,
@@ -3309,6 +3316,95 @@ def diagnostics_reports(
 ) -> list[DiagnosticReportListItemRead]:
     project = _get_project_or_404(db, project_id) if project_id is not None else None
     return [DiagnosticReportListItemRead(**item) for item in service.recent_diagnostic_reports(project)]
+
+
+@app.get("/api/integrations/catalog", response_model=list[IntegrationCatalogEntryRead])
+def get_integrations_catalog(
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> list[IntegrationCatalogEntryRead]:
+    return [IntegrationCatalogEntryRead(**item) for item in service.get_integration_catalog(db)]
+
+
+@app.get("/api/integrations/connections", response_model=list[IntegrationConnectionRead])
+def get_integration_connections(
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> list[IntegrationConnectionRead]:
+    return [IntegrationConnectionRead(**item) for item in service.get_integration_connections(db)]
+
+
+@app.post("/api/integrations/import-host-state")
+def import_integration_host_state(
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> dict[str, Any]:
+    return service.import_host_integrations(db)
+
+
+@app.get("/api/projects/{project_id}/integrations", response_model=ProjectIntegrationsRead)
+def get_project_integrations(
+    project_id: int,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> ProjectIntegrationsRead:
+    project = _get_project_or_404(db, project_id)
+    return ProjectIntegrationsRead(**service.build_project_integrations(db, project))
+
+
+@app.get("/api/projects/{project_id}/integrations/{family}", response_model=ProjectIntegrationFamilyRead)
+def get_project_integration_family(
+    project_id: int,
+    family: str,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> ProjectIntegrationFamilyRead:
+    project = _get_project_or_404(db, project_id)
+    try:
+        return ProjectIntegrationFamilyRead(**service.build_project_integration_family(db, project, family))
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.post("/api/projects/{project_id}/integrations/{family}/actions/{action_id}/preview", response_model=IntegrationActionPreviewRead)
+def preview_project_integration_action(
+    project_id: int,
+    family: str,
+    action_id: str,
+    payload: IntegrationActionRequest,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> IntegrationActionPreviewRead:
+    project = _get_project_or_404(db, project_id)
+    try:
+        return IntegrationActionPreviewRead(**service.preview_project_integration_action(db, project, family=family, action_id=action_id, params=payload.params))
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.post("/api/projects/{project_id}/integrations/{family}/actions/{action_id}/execute", response_model=IntegrationActionExecutionRead)
+def execute_project_integration_action(
+    project_id: int,
+    family: str,
+    action_id: str,
+    payload: IntegrationActionRequest,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> IntegrationActionExecutionRead:
+    project = _get_project_or_404(db, project_id)
+    try:
+        return IntegrationActionExecutionRead(
+            **service.execute_project_integration_action(
+                db,
+                project,
+                family=family,
+                action_id=action_id,
+                params=payload.params,
+                confirmed=payload.confirmed,
+            )
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 @app.get("/api/tools", response_model=list[ToolCatalogItemRead])

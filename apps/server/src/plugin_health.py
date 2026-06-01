@@ -16,6 +16,7 @@ from daemon_state import daemon_dashboard_url, daemon_identity_snapshot, read_da
 from db import engine
 from device_profile import detect_device_profile, detect_performance_profile, platform_debug_commands
 from errors import MissionControlError, derive_health_status, format_health_check_item
+from integration_registry import integration_catalog, import_host_state
 from manager import service
 from nvidia_support import detect_project_nvidia_gpu_diagnostics
 from system_status import detect_codex_status
@@ -618,6 +619,23 @@ async def mission_control_plugin_health() -> dict[str, Any]:
                 "launch_command": webwright_status.get("launch_command"),
                 "workspace_signals": webwright_status.get("workspace_signals"),
                 "version": webwright_status.get("version"),
+            },
+        )
+    )
+
+    imported_hosts = import_host_state({})
+    imported_families = sum(len(dict(host or {})) for host in dict(imported_hosts.get("host_imports") or {}).values())
+    checks.append(
+        _check(
+            check_id="integration_spine_catalog",
+            label="Cross-host integration spine",
+            status="ready",
+            summary=f"Mission Control integration registry exposes {len(integration_catalog())} families and detected {imported_families} host-imported family hints.",
+            critical=False,
+            commands=["python -m pytest apps/server/tests/test_integrations.py -q"],
+            details={
+                "family_count": len(integration_catalog()),
+                "host_imports": dict(imported_hosts.get("host_imports") or {}),
             },
         )
     )

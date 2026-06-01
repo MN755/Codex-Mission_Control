@@ -54,6 +54,13 @@ class MissionControlMcpServer:
             "mission_control_get_capability_report": self._call_get_capability_report,
             "mission_control_get_capability_section": self._call_get_capability_section,
             "mission_control_get_workspace_tooling": self._call_get_workspace_tooling,
+            "mission_control_get_integrations_catalog": self._call_get_integrations_catalog,
+            "mission_control_get_integration_connections": self._call_get_integration_connections,
+            "mission_control_import_host_integrations": self._call_import_host_integrations,
+            "mission_control_get_project_integrations": self._call_get_project_integrations,
+            "mission_control_get_project_integration_family": self._call_get_project_integration_family,
+            "mission_control_preview_integration_action": self._call_preview_integration_action,
+            "mission_control_execute_integration_action": self._call_execute_integration_action,
             "mission_control_search_codebase": self._call_search_codebase,
             "mission_control_get_webwright_status": self._call_get_webwright_status,
             "mission_control_get_nvidia_dynamo_status": self._call_get_nvidia_dynamo_status,
@@ -309,6 +316,71 @@ class MissionControlMcpServer:
                 "name": "mission_control_get_workspace_tooling",
                 "description": "Fetch the project-scoped repo-native tooling summary covering intake, validation, and security helper lanes.",
                 "inputSchema": _object_schema({"project_id": {"type": "integer", "minimum": 1}}, required=["project_id"]),
+                "outputSchema": GENERIC_OUTPUT_SCHEMA,
+            },
+            {
+                "name": "mission_control_get_integrations_catalog",
+                "description": "Fetch the global Mission Control cross-host integration catalog.",
+                "inputSchema": _object_schema({}),
+                "outputSchema": {"type": "array", "items": {"type": "object", "additionalProperties": True}},
+            },
+            {
+                "name": "mission_control_get_integration_connections",
+                "description": "Fetch the normalized Mission Control integration connection registry.",
+                "inputSchema": _object_schema({}),
+                "outputSchema": {"type": "array", "items": {"type": "object", "additionalProperties": True}},
+            },
+            {
+                "name": "mission_control_import_host_integrations",
+                "description": "Import Codex or Claude host-discovered integration metadata into Mission Control.",
+                "inputSchema": _object_schema({}),
+                "outputSchema": GENERIC_OUTPUT_SCHEMA,
+            },
+            {
+                "name": "mission_control_get_project_integrations",
+                "description": "Fetch the project-scoped integration status across all supported families.",
+                "inputSchema": _object_schema({"project_id": {"type": "integer", "minimum": 1}}, required=["project_id"]),
+                "outputSchema": GENERIC_OUTPUT_SCHEMA,
+            },
+            {
+                "name": "mission_control_get_project_integration_family",
+                "description": "Fetch one project-scoped integration family lane such as source control, CI/CD, or observability.",
+                "inputSchema": _object_schema(
+                    {
+                        "project_id": {"type": "integer", "minimum": 1},
+                        "family": {"type": "string", "minLength": 1},
+                    },
+                    required=["project_id", "family"],
+                ),
+                "outputSchema": GENERIC_OUTPUT_SCHEMA,
+            },
+            {
+                "name": "mission_control_preview_integration_action",
+                "description": "Preview a project-scoped integration action before execution or approval.",
+                "inputSchema": _object_schema(
+                    {
+                        "project_id": {"type": "integer", "minimum": 1},
+                        "family": {"type": "string", "minLength": 1},
+                        "action_id": {"type": "string", "minLength": 1},
+                        "params": {"type": "object", "additionalProperties": True},
+                    },
+                    required=["project_id", "family", "action_id"],
+                ),
+                "outputSchema": GENERIC_OUTPUT_SCHEMA,
+            },
+            {
+                "name": "mission_control_execute_integration_action",
+                "description": "Execute a project-scoped integration action after explicit confirmation when required.",
+                "inputSchema": _object_schema(
+                    {
+                        "project_id": {"type": "integer", "minimum": 1},
+                        "family": {"type": "string", "minLength": 1},
+                        "action_id": {"type": "string", "minLength": 1},
+                        "params": {"type": "object", "additionalProperties": True},
+                        "confirmed": {"type": "boolean"},
+                    },
+                    required=["project_id", "family", "action_id"],
+                ),
                 "outputSchema": GENERIC_OUTPUT_SCHEMA,
             },
             {
@@ -722,6 +794,41 @@ class MissionControlMcpServer:
 
     def _call_get_workspace_tooling(self, args: dict[str, Any]) -> Any:
         return self.client.get_workspace_tooling(self._require_int(args, "project_id"))
+
+    def _call_get_integrations_catalog(self, _: dict[str, Any]) -> Any:
+        return self.client.get_integrations_catalog()
+
+    def _call_get_integration_connections(self, _: dict[str, Any]) -> Any:
+        return self.client.get_integration_connections()
+
+    def _call_import_host_integrations(self, _: dict[str, Any]) -> Any:
+        return self.client.import_host_integrations()
+
+    def _call_get_project_integrations(self, args: dict[str, Any]) -> Any:
+        return self.client.get_project_integrations(self._require_int(args, "project_id"))
+
+    def _call_get_project_integration_family(self, args: dict[str, Any]) -> Any:
+        return self.client.get_project_integration_family(
+            self._require_int(args, "project_id"),
+            self._require_string(args, "family"),
+        )
+
+    def _call_preview_integration_action(self, args: dict[str, Any]) -> Any:
+        return self.client.preview_project_integration_action(
+            self._require_int(args, "project_id"),
+            self._require_string(args, "family"),
+            self._require_string(args, "action_id"),
+            params=dict(args.get("params") or {}),
+        )
+
+    def _call_execute_integration_action(self, args: dict[str, Any]) -> Any:
+        return self.client.execute_project_integration_action(
+            self._require_int(args, "project_id"),
+            self._require_string(args, "family"),
+            self._require_string(args, "action_id"),
+            params=dict(args.get("params") or {}),
+            confirmed=bool(args.get("confirmed")),
+        )
 
     def _call_search_codebase(self, args: dict[str, Any]) -> Any:
         return self.client.search_codebase(

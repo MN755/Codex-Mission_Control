@@ -224,6 +224,9 @@ def test_runtime_and_project_control_routes_require_token(client) -> None:
         assert raw_client.get("/api/preferences").status_code == 401
         assert raw_client.get("/api/security/policy").status_code == 401
         assert raw_client.get("/api/tools").status_code == 401
+        assert raw_client.get("/api/integrations/catalog").status_code == 401
+        assert raw_client.get("/api/integrations/connections").status_code == 401
+        assert raw_client.post("/api/integrations/import-host-state").status_code == 401
         assert raw_client.get("/api/skills").status_code == 401
         assert raw_client.get("/api/handoffs").status_code == 401
         assert raw_client.get("/api/agent-archetypes").status_code == 401
@@ -235,6 +238,12 @@ def test_runtime_and_project_control_routes_require_token(client) -> None:
         assert raw_client.post(f"/api/projects/{project_id}/change-requests", json={"request_text": "Make it better"}).status_code == 401
         assert raw_client.get(f"/api/projects/{project_id}/context-packs").status_code == 401
         assert raw_client.get(f"/api/projects/{project_id}/workspace-tooling").status_code == 401
+        assert raw_client.get(f"/api/projects/{project_id}/integrations").status_code == 401
+        assert raw_client.get(f"/api/projects/{project_id}/integrations/source_control").status_code == 401
+        assert raw_client.post(
+            f"/api/projects/{project_id}/integrations/source_control/actions/create/preview",
+            json={"params": {"title": "x", "body": "y"}},
+        ).status_code == 401
         assert raw_client.get(f"/api/projects/{project_id}/tensorflow/features").status_code == 401
         assert raw_client.get(f"/api/projects/{project_id}/pytorch/features").status_code == 401
         assert raw_client.post(f"/api/projects/{project_id}/codebase/search", json={"pattern": "TODO"}).status_code == 401

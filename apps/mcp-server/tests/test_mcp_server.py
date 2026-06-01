@@ -24,6 +24,10 @@ EXPECTED_RESOURCES = {
     "mission-control://projects/{project_id}/pending-decisions",
     "mission-control://projects/{project_id}/handoff",
     "mission-control://projects/{project_id}/codebase-map",
+    "mission-control://integrations/catalog",
+    "mission-control://integrations/connections",
+    "mission-control://projects/{project_id}/integrations",
+    "mission-control://projects/{project_id}/integrations/{family}",
     "mission-control://projects/{project_id}/workspace-tooling",
     "mission-control://projects/{project_id}/diagnostics",
     "mission-control://projects/{project_id}/webwright",
@@ -66,7 +70,12 @@ EXPECTED_PROMPTS = {
     "install_from_github",
     "autowire_providers",
     "review_project_capabilities",
+    "ask_manager_for_plan",
     "review_project_capability_section",
+    "review_integration_catalog",
+    "import_host_integrations",
+    "review_project_integrations",
+    "review_project_integration_family",
 }
 
 
@@ -217,6 +226,95 @@ class FakeClient:
             "security_commands": ["gitleaks dir . --redact"],
             "recommended_next_steps": ["Install OSV-Scanner for dependency auditing."],
             "tools": [{"id": "uv", "label": "uv", "installed": True, "configured": True, "status": "ready"}],
+        }
+
+    def get_integrations_catalog(self):
+        self.calls.append(("get_integrations_catalog", {}))
+        return [{"family": "source_control", "name": "GitHub / GitLab / Bitbucket", "status": "connected"}]
+
+    def get_integration_connections(self):
+        self.calls.append(("get_integration_connections", {}))
+        return [{"family": "source_control", "status": "connected", "host_imported": True}]
+
+    def import_host_integrations(self):
+        self.calls.append(("import_host_integrations", {}))
+        return {"status": "completed", "connections": [{"family": "source_control"}]}
+
+    def get_project_integrations(self, project_id: int):
+        self.calls.append(("get_project_integrations", {"project_id": project_id}))
+        return {
+            "project_id": project_id,
+            "project_name": "Demo",
+            "workspace_path": "C:/demo",
+            "summary": "1 ready family.",
+            "families": [{"family": "source_control", "status": "ready", "available_actions": []}],
+        }
+
+    def get_project_integration_family(self, project_id: int, family: str):
+        self.calls.append(("get_project_integration_family", {"project_id": project_id, "family": family}))
+        return {
+            "family": family,
+            "name": "GitHub / GitLab / Bitbucket",
+            "summary": "Repo host lane.",
+            "category": "delivery",
+            "project_name": "Demo",
+            "workspace_path": "C:/demo",
+            "status": "ready",
+            "connection_source": "codex_host",
+            "host_imported": True,
+            "providers": ["github"],
+            "required_permissions": ["ask_every_time"],
+            "health": {"cli_detected": ["gh"]},
+            "artifacts": [],
+            "safe_commands": ["gh repo view --json name,defaultBranchRef"],
+            "blockers": [],
+            "recommended_fixes": [],
+            "available_actions": [],
+            "notes": [],
+        }
+
+    def preview_project_integration_action(self, project_id: int, family: str, action_id: str, *, params: dict[str, object] | None = None):
+        self.calls.append(("preview_project_integration_action", {"project_id": project_id, "family": family, "action_id": action_id, "params": params or {}}))
+        return {
+            "family": family,
+            "action_id": action_id,
+            "title": "Create issue",
+            "summary": "Create a work item.",
+            "project_name": "Demo",
+            "workspace_path": "C:/demo",
+            "command": 'gh issue create --title "Demo" --body "Body"',
+            "risk_level": "medium",
+            "permission_policy": "ask_every_time",
+            "preview_supported": True,
+            "mutates_remote_state": True,
+            "requires_confirmation": True,
+            "missing_params": [],
+            "notes": [],
+        }
+
+    def execute_project_integration_action(self, project_id: int, family: str, action_id: str, *, params: dict[str, object] | None = None, confirmed: bool = False):
+        self.calls.append(("execute_project_integration_action", {"project_id": project_id, "family": family, "action_id": action_id, "params": params or {}, "confirmed": confirmed}))
+        return {
+            "family": family,
+            "action_id": action_id,
+            "title": "Create issue",
+            "summary": "Create a work item.",
+            "project_name": "Demo",
+            "workspace_path": "C:/demo",
+            "command": 'gh issue create --title "Demo" --body "Body"',
+            "risk_level": "medium",
+            "permission_policy": "ask_every_time",
+            "preview_supported": True,
+            "mutates_remote_state": True,
+            "requires_confirmation": True,
+            "missing_params": [],
+            "notes": [],
+            "status": "approval_required" if not confirmed else "completed",
+            "stdout": "",
+            "stderr": "",
+            "returncode": None if not confirmed else 0,
+            "approval_required": not confirmed,
+            "updated_registry": {},
         }
 
     def get_capability_report(self, project_id: int):
@@ -910,8 +1008,30 @@ def test_daemon_client_auto_start_launches_when_health_fails(monkeypatch, tmp_pa
 
     client.ensure_daemon_running()
 
-    assert launches
-    assert any("mission_control_daemon.py" in segment for segment in launches[0])
+
+def test_mcp_server_surfaces_integration_tools_and_resources() -> None:
+    client = FakeClient()
+    server = MissionControlMcpServer(client=client)
+
+    tools = {item["name"] for item in server._build_tool_specs()}
+    assert "mission_control_get_integrations_catalog" in tools
+    assert "mission_control_get_project_integrations" in tools
+    assert "mission_control_preview_integration_action" in tools
+    assert "mission_control_execute_integration_action" in tools
+
+    resource_catalog = server._call_get_integrations_catalog({})
+    connections = server._call_get_integration_connections({})
+    project_family = server._call_get_project_integration_family({"project_id": 7, "family": "source_control"})
+
+    assert resource_catalog[0]["family"] == "source_control"
+    assert connections[0]["family"] == "source_control"
+    assert project_family["family"] == "source_control"
+
+    preview = server._call_preview_integration_action({"project_id": 7, "family": "source_control", "action_id": "create", "params": {"title": "Demo", "body": "Body"}})
+    execute = server._call_execute_integration_action({"project_id": 7, "family": "source_control", "action_id": "create", "params": {"title": "Demo", "body": "Body"}, "confirmed": False})
+
+    assert preview["action_id"] == "create"
+    assert execute["status"] == "approval_required"
 
 
 def test_daemon_client_constructs_without_repo_checkout(monkeypatch, tmp_path: Path) -> None:

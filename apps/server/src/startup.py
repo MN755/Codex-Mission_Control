@@ -12,6 +12,7 @@ from app_profile import complete_first_run, get_or_create_app_profile
 from config import DEFAULT_APPROVAL_POLICY, DEFAULT_RUNNER_MODE, DEFAULT_SANDBOX
 from diagnostics import write_diagnostic_report
 from errors import MissionControlError
+from integration_registry import normalize_integration_registry
 from models import AppProfile, Project
 from provider_support import normalize_provider
 from runtime_paths import ensure_runtime_paths
@@ -173,6 +174,7 @@ class StartupCoordinator:
             selected_provider="codex",
             auth_mode=None,
             connected_accounts_json={},
+            integration_registry_json=normalize_integration_registry({}, {}),
             first_run_completed=False,
             setup_version_completed=None,
             onboarding_completed=False,

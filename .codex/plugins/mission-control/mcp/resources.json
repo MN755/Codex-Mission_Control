@@ -217,6 +217,123 @@
       }
     },
     {
+      "uri_template": "mission-control://integrations/catalog",
+      "title": "Integration catalog",
+      "summary": "Global cross-host integration catalog covering supported Mission Control integration families, providers, and action lanes.",
+      "support_status": "implemented",
+      "source_hint": {
+        "rest_endpoints": [
+          "/api/integrations/catalog"
+        ]
+      },
+      "default_fields": [
+        "family",
+        "name",
+        "summary",
+        "category",
+        "providers",
+        "host_support",
+        "available_action_ids",
+        "status",
+        "connection_source",
+        "host_imported"
+      ],
+      "redaction": {
+        "omit_fields": [
+          "raw_tokens",
+          "secret_values",
+          "private_paths_outside_workspace"
+        ],
+        "notes": "Summarize the catalog and connection posture without exposing secrets or raw host auth artifacts."
+      }
+    },
+    {
+      "uri_template": "mission-control://integrations/connections",
+      "title": "Integration connections",
+      "summary": "Normalized Mission Control integration connection registry across imported host and native Mission Control lanes.",
+      "support_status": "implemented",
+      "source_hint": {
+        "rest_endpoints": [
+          "/api/integrations/connections"
+        ]
+      },
+      "default_fields": [
+        "family",
+        "status",
+        "providers",
+        "connection_source",
+        "host_imported",
+        "approval_policy",
+        "notes"
+      ],
+      "redaction": {
+        "omit_fields": [
+          "access_token",
+          "refresh_token",
+          "secret_values"
+        ],
+        "notes": "Expose normalized connection posture only, never raw credentials."
+      }
+    },
+    {
+      "uri_template": "mission-control://projects/{project_id}/integrations",
+      "title": "Project integrations",
+      "summary": "Project-scoped integration readiness view across supported provider families.",
+      "support_status": "implemented",
+      "source_hint": {
+        "rest_endpoints": [
+          "/api/projects/{project_id}/integrations"
+        ]
+      },
+      "default_fields": [
+        "project_id",
+        "project_name",
+        "workspace_path",
+        "summary",
+        "families"
+      ],
+      "redaction": {
+        "omit_fields": [
+          "raw_log",
+          "secret_env",
+          "private_paths_outside_workspace"
+        ],
+        "notes": "Return normalized integration status, safe commands, and blockers only."
+      }
+    },
+    {
+      "uri_template": "mission-control://projects/{project_id}/integrations/{family}",
+      "title": "Project integration family",
+      "summary": "One project-scoped integration family lane such as source control, CI/CD, observability, or release management.",
+      "support_status": "implemented",
+      "source_hint": {
+        "rest_endpoints": [
+          "/api/projects/{project_id}/integrations/{family}"
+        ]
+      },
+      "default_fields": [
+        "family",
+        "name",
+        "summary",
+        "status",
+        "connection_source",
+        "host_imported",
+        "health",
+        "safe_commands",
+        "blockers",
+        "recommended_fixes",
+        "available_actions"
+      ],
+      "redaction": {
+        "omit_fields": [
+          "raw_tokens",
+          "secret_values",
+          "private_paths_outside_workspace"
+        ],
+        "notes": "Expose family-level readiness, safe commands, and approval-relevant action metadata only."
+      }
+    },
+    {
       "uri_template": "mission-control://projects/{project_id}/workspace-tooling",
       "title": "Workspace tooling",
       "summary": "Project-scoped repo-native tooling summary covering intake, validation, and security helper lanes.",

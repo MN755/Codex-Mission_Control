@@ -128,3 +128,8 @@ Mission Control also exposes real project-scoped backend APIs that are not in th
 - `GET /api/projects/{project_id}/tensorflow/features/{feature_id}?variant=...`
 
 Those TensorFlow starter routes are daemon APIs today. The docs should describe them accurately instead of quietly pretending the plugin already exposes them.
+
+## Integration additions
+
+- Prompts: `review_integration_catalog`, `import_host_integrations`, `review_project_integrations`, `review_project_integration_family`
+- Resources: `mission-control://integrations/catalog`, `mission-control://integrations/connections`, `mission-control://projects/{project_id}/integrations`, `mission-control://projects/{project_id}/integrations/{family}`

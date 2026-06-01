@@ -41,6 +41,16 @@ from intelligence import planning_intelligence_service, reputation_service, scop
 from interview import INTERVIEW_CATEGORIES, select_fallback_questions
 from diagnostics import list_diagnostic_reports
 from imported_codebase import import_service
+from integration_registry import (
+    build_integration_catalog_with_connections,
+    build_project_integration_status,
+    execute_integration_action,
+    import_host_state,
+    list_connections,
+    normalize_integration_registry,
+    preview_integration_action,
+    registry_to_legacy_connected_accounts,
+)
 from pytorch_support import detect_pytorch_repo_mode
 from tensorflow_support import detect_tensorflow_repo_mode
 from models import (
@@ -52,6 +62,7 @@ from models import (
     AppProfile,
     AppEvent,
     ApprovalRequest,
+    ApprovalAuditLog,
     AgentContract,
     AgentExecutionTrace,
     AgentStuckSignal,
@@ -948,6 +959,7 @@ class MissionControlService:
             selected_provider="codex",
             auth_mode=None,
             connected_accounts_json={},
+            integration_registry_json=normalize_integration_registry({}, {}),
             first_run_completed=False,
             setup_version_completed=None,
             onboarding_completed=False,
@@ -5087,6 +5099,7 @@ class MissionControlService:
         tool_catalog = catalog_with_permissions(
             provider=settings.provider,
             connected_accounts=dict(profile.connected_accounts_json or {}),
+            integration_registry=normalize_integration_registry(profile.integration_registry_json, profile.connected_accounts_json),
             permission_overrides=dict(profile.tool_permission_overrides_json or {}),
         )
         availability_by_tool = {item["id"]: item for item in tool_catalog}
@@ -13988,11 +14001,150 @@ class MissionControlService:
             **build_workspace_nvidia_validation_plan(project.workspace_path),
         }
 
+    def get_integration_catalog(self, db: Session) -> list[dict[str, Any]]:
+        profile = self._app_profile_preview(db)
+        registry = normalize_integration_registry(
+            profile.integration_registry_json,
+            profile.connected_accounts_json,
+        )
+        if dict(profile.integration_registry_json or {}) != registry:
+            profile.integration_registry_json = registry
+            profile.connected_accounts_json = registry_to_legacy_connected_accounts(registry) | {
+                key: value for key, value in dict(profile.connected_accounts_json or {}).items() if key not in registry_to_legacy_connected_accounts(registry)
+            }
+            db.flush()
+        return build_integration_catalog_with_connections(profile.integration_registry_json)
+
+    def get_integration_connections(self, db: Session) -> list[dict[str, Any]]:
+        profile = self._app_profile_preview(db)
+        registry = normalize_integration_registry(
+            profile.integration_registry_json,
+            profile.connected_accounts_json,
+        )
+        if dict(profile.integration_registry_json or {}) != registry:
+            profile.integration_registry_json = registry
+            db.flush()
+        return list_connections(profile.integration_registry_json)
+
+    def import_host_integrations(self, db: Session) -> dict[str, Any]:
+        profile = self._app_profile(db)
+        imported = import_host_state(profile.integration_registry_json)
+        profile.integration_registry_json = imported
+        legacy = registry_to_legacy_connected_accounts(imported)
+        profile.connected_accounts_json = legacy | {
+            key: value for key, value in dict(profile.connected_accounts_json or {}).items() if key not in legacy
+        }
+        profile.last_opened_at = utc_now()
+        db.flush()
+        return {
+            "status": "completed",
+            "connections": list_connections(imported),
+            "host_imports": dict(imported.get("host_imports") or {}),
+        }
+
+    def build_project_integrations(self, db: Session, project: Project) -> dict[str, Any]:
+        profile = self._app_profile_preview(db)
+        registry = normalize_integration_registry(
+            profile.integration_registry_json,
+            profile.connected_accounts_json,
+        )
+        families = build_project_integration_status(
+            workspace_path=project.workspace_path,
+            project_name=project.name,
+            registry_payload=registry,
+        )
+        ready_count = sum(1 for item in families if item.get("status") == "ready")
+        return {
+            "project_id": project.id,
+            "project_name": project.name,
+            "workspace_path": project.workspace_path,
+            "summary": f"{ready_count} integration families are ready and {len(families) - ready_count} still need setup or host import.",
+            "families": families,
+        }
+
+    def build_project_integration_family(self, db: Session, project: Project, family: str) -> dict[str, Any]:
+        payload = self.build_project_integrations(db, project)
+        item = next((entry for entry in payload["families"] if entry.get("family") == family), None)
+        if item is None:
+            raise ValueError("Unknown integration family")
+        return item
+
+    def preview_project_integration_action(
+        self,
+        db: Session,
+        project: Project,
+        *,
+        family: str,
+        action_id: str,
+        params: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        profile = self._app_profile_preview(db)
+        return preview_integration_action(
+            family_id=family,
+            action_id=action_id,
+            params=params,
+            registry_payload=normalize_integration_registry(profile.integration_registry_json, profile.connected_accounts_json),
+            workspace_path=project.workspace_path,
+            project_name=project.name,
+        )
+
+    def execute_project_integration_action(
+        self,
+        db: Session,
+        project: Project,
+        *,
+        family: str,
+        action_id: str,
+        params: dict[str, Any] | None,
+        confirmed: bool,
+    ) -> dict[str, Any]:
+        profile = self._app_profile(db)
+        registry = normalize_integration_registry(profile.integration_registry_json, profile.connected_accounts_json)
+        result = execute_integration_action(
+            family_id=family,
+            action_id=action_id,
+            params=params,
+            registry_payload=registry,
+            workspace_path=project.workspace_path,
+            project_name=project.name,
+            confirmed=confirmed,
+        )
+        updated_registry = dict(result.get("updated_registry") or {})
+        if updated_registry:
+            profile.integration_registry_json = updated_registry
+            legacy = registry_to_legacy_connected_accounts(updated_registry)
+            profile.connected_accounts_json = legacy | {
+                key: value for key, value in dict(profile.connected_accounts_json or {}).items() if key not in legacy
+            }
+            profile.last_opened_at = utc_now()
+        audit = ApprovalAuditLog(
+            project_id=project.id,
+            orchestration_id=None,
+            decision_id=None,
+            action_type=f"integration.{family}.{action_id}",
+            action_summary=str(result.get("summary") or result.get("title") or action_id),
+            risk_level=str(result.get("risk_level") or "medium"),
+            decision="executed" if result.get("status") == "completed" else "approval_required" if result.get("status") == "approval_required" else "blocked",
+            decided_by="user" if confirmed else "policy",
+            reason=f"Integration action {action_id} on family {family}.",
+            metadata_json={
+                "family": family,
+                "action_id": action_id,
+                "status": result.get("status"),
+                "command": result.get("command"),
+                "returncode": result.get("returncode"),
+            },
+        )
+        db.add(audit)
+        db.flush()
+        return result
+
     def get_tool_catalog(self, db: Session) -> list[dict[str, Any]]:
         profile = self._app_profile_preview(db)
         return catalog_with_permissions(
             provider=normalize_provider(profile.selected_provider),
             connected_accounts=dict(profile.connected_accounts_json or {}),
+            integration_registry=normalize_integration_registry(profile.integration_registry_json, profile.connected_accounts_json),
             permission_overrides=dict(profile.tool_permission_overrides_json or {}),
         )
 

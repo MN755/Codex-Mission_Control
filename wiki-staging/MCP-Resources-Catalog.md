@@ -37,3 +37,10 @@ This page summarizes the current read-only MCP resources exposed for Mission Con
 ## Related pages
 
 Continue with [MCP Plugin Architecture](MCP-Plugin-Architecture), [MCP Prompts Catalog](MCP-Prompts-Catalog), and [Mission Control Daemon](Mission-Control-Daemon).
+
+## Integration additions
+
+- `mission-control://integrations/catalog`
+- `mission-control://integrations/connections`
+- `mission-control://projects/{project_id}/integrations`
+- `mission-control://projects/{project_id}/integrations/{family}`

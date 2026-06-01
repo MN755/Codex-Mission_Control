@@ -43,6 +43,7 @@ py-modules = [
   "gpu_support",
   "handoff_formatter",
   "imported_codebase",
+  "integration_registry",
   "interview",
   "main",
   "manager",

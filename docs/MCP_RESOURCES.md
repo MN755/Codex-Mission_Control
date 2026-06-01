@@ -65,3 +65,10 @@ Some project-scoped backend routes are real code, but they are not currently par
 - `GET /api/projects/{project_id}/tensorflow/features/{feature_id}?variant=...`
 
 Those TensorFlow starter endpoints are daemon APIs backed by `apps/server/src/tensorflow_starters.py`. They return typed starter bundles for Keras scaffolds, `tf.data`, TFX, serving, Lite export, and related product lanes. The bridge docs should call them what they are: backend APIs, not pretend MCP resources.
+
+## Integration additions
+
+- `mission-control://integrations/catalog`
+- `mission-control://integrations/connections`
+- `mission-control://projects/{project_id}/integrations`
+- `mission-control://projects/{project_id}/integrations/{family}`

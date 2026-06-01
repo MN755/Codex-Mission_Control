@@ -2894,6 +2894,7 @@ class AppProfileRead(BaseModel):
     selected_provider: ProviderId = "codex"
     auth_mode: str | None = None
     connected_accounts_json: dict[str, Any] = Field(default_factory=dict)
+    integration_registry_json: dict[str, Any] = Field(default_factory=dict)
     first_run_completed: bool = False
     setup_version_completed: str | None = None
     onboarding_completed: bool = False
@@ -3104,6 +3105,103 @@ class ToolCatalogItemRead(BaseModel):
     permission_policy: ToolPermissionPolicy
     risk_level: RiskLevel
     notes: list[str] = Field(default_factory=list)
+
+
+class IntegrationActionRead(BaseModel):
+    action_id: str
+    title: str
+    summary: str
+    risk_level: RiskLevel = "medium"
+    permission_policy: ToolPermissionPolicy = "ask_every_time"
+    preview_supported: bool = True
+    mutates_remote_state: bool = False
+    requires_confirmation: bool = False
+    required_params: list[str] = Field(default_factory=list)
+    status: ToolAvailability = "available"
+
+
+class IntegrationCatalogEntryRead(BaseModel):
+    family: str
+    name: str
+    summary: str
+    category: str
+    providers: list[str] = Field(default_factory=list)
+    host_support: list[str] = Field(default_factory=list)
+    available_action_ids: list[str] = Field(default_factory=list)
+    status: str = "disconnected"
+    connection_source: str = "mission_control"
+    host_imported: bool = False
+    notes: list[str] = Field(default_factory=list)
+
+
+class IntegrationConnectionRead(BaseModel):
+    family: str
+    status: str = "disconnected"
+    providers: list[str] = Field(default_factory=list)
+    connection_source: str = "mission_control"
+    host_imported: bool = False
+    approval_policy: str = "ask_every_time"
+    notes: list[str] = Field(default_factory=list)
+
+
+class ProjectIntegrationFamilyRead(BaseModel):
+    family: str
+    name: str
+    summary: str
+    category: str
+    project_name: str
+    workspace_path: str | None = None
+    status: str
+    connection_source: str = "mission_control"
+    host_imported: bool = False
+    providers: list[str] = Field(default_factory=list)
+    required_permissions: list[str] = Field(default_factory=list)
+    health: dict[str, Any] = Field(default_factory=dict)
+    artifacts: list[dict[str, Any]] = Field(default_factory=list)
+    safe_commands: list[str] = Field(default_factory=list)
+    blockers: list[str] = Field(default_factory=list)
+    recommended_fixes: list[str] = Field(default_factory=list)
+    available_actions: list[IntegrationActionRead] = Field(default_factory=list)
+    notes: list[str] = Field(default_factory=list)
+
+
+class ProjectIntegrationsRead(BaseModel):
+    project_id: int
+    project_name: str
+    workspace_path: str | None = None
+    summary: str
+    families: list[ProjectIntegrationFamilyRead] = Field(default_factory=list)
+
+
+class IntegrationActionRequest(BaseModel):
+    params: dict[str, Any] = Field(default_factory=dict)
+    confirmed: bool = False
+
+
+class IntegrationActionPreviewRead(BaseModel):
+    family: str
+    action_id: str
+    title: str
+    summary: str
+    project_name: str
+    workspace_path: str | None = None
+    command: str | None = None
+    risk_level: RiskLevel = "medium"
+    permission_policy: ToolPermissionPolicy = "ask_every_time"
+    preview_supported: bool = True
+    mutates_remote_state: bool = False
+    requires_confirmation: bool = False
+    missing_params: list[str] = Field(default_factory=list)
+    notes: list[str] = Field(default_factory=list)
+
+
+class IntegrationActionExecutionRead(IntegrationActionPreviewRead):
+    status: str
+    stdout: str = ""
+    stderr: str = ""
+    returncode: int | None = None
+    approval_required: bool = False
+    updated_registry: dict[str, Any] = Field(default_factory=dict)
 
 
 class ToolPermissionRead(BaseModel):

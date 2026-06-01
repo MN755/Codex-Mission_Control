@@ -6,6 +6,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from config import DEFAULT_APPROVAL_POLICY, DEFAULT_RUNNER_MODE, DEFAULT_SANDBOX
+from integration_registry import normalize_integration_registry, registry_to_legacy_connected_accounts
 from models import AppProfile, utc_now
 from provider_support import normalize_provider
 from project_settings import normalize_provider_adapter_settings, normalize_provider_endpoint
@@ -73,6 +74,19 @@ def get_or_create_app_profile(db: Session) -> AppProfile:
         if not profile.connected_accounts_json:
             profile.connected_accounts_json = {}
             updated = True
+        normalized_registry = normalize_integration_registry(
+            profile.integration_registry_json,
+            profile.connected_accounts_json,
+        )
+        if dict(profile.integration_registry_json or {}) != normalized_registry:
+            profile.integration_registry_json = normalized_registry
+            updated = True
+        normalized_legacy = registry_to_legacy_connected_accounts(profile.integration_registry_json)
+        merged_legacy = dict(normalized_legacy)
+        merged_legacy.update({key: value for key, value in dict(profile.connected_accounts_json or {}).items() if key not in merged_legacy})
+        if dict(profile.connected_accounts_json or {}) != merged_legacy:
+            profile.connected_accounts_json = merged_legacy
+            updated = True
         if not profile.adapter_args_json:
             profile.adapter_args_json = []
             updated = True
@@ -113,6 +127,7 @@ def get_or_create_app_profile(db: Session) -> AppProfile:
         selected_provider="codex",
         auth_mode=None,
         connected_accounts_json={},
+        integration_registry_json=normalize_integration_registry({}, {}),
         first_run_completed=False,
         setup_version_completed=None,
         onboarding_completed=False,
@@ -188,6 +203,10 @@ def complete_first_run(db: Session, payload: CompleteFirstRunRequest, *, setup_v
     profile.selected_provider = selected_provider
     profile.auth_mode = payload.auth_mode
     profile.connected_accounts_json = payload.connected_accounts_summary or {}
+    profile.integration_registry_json = normalize_integration_registry({}, profile.connected_accounts_json)
+    profile.connected_accounts_json = registry_to_legacy_connected_accounts(profile.integration_registry_json) | {
+        key: value for key, value in dict(payload.connected_accounts_summary or {}).items() if key not in registry_to_legacy_connected_accounts(profile.integration_registry_json)
+    }
     profile.first_run_completed = True
     profile.onboarding_completed = True
     profile.setup_version_completed = setup_version

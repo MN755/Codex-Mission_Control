@@ -229,6 +229,54 @@
       "prompt_text": "Ask Mission Control Manager for a plan for this project. Route the request through Mission Control, summarize the returned status and plan posture, and surface any pending decisions instead of improvising the plan in chat."
     },
     {
+      "name": "review_integration_catalog",
+      "aliases": ["review-integration-catalog"],
+      "title": "Review integration catalog",
+      "description": "Load the full cross-host integration catalog so Codex can summarize which Mission Control families are ready, imported, or still pretending.",
+      "required_arguments": ["USER_REQUEST"],
+      "tool_sequence": ["mission_control_get_integrations_catalog", "mission_control_get_integration_connections"],
+      "resource_sequence": ["mission-control://integrations/catalog", "mission-control://integrations/connections"],
+      "expected_chat_output": "A compact summary of ready families, missing host imports, and the most useful next connection or validation lanes.",
+      "safety_notes": "Summarize normalized status and blockers. Do not expose raw credentials or pretend a detected CLI is the same thing as a working remote integration.",
+      "prompt_text": "Review the Mission Control cross-host integration catalog and normalized connection registry. Summarize which integration families are already usable, which are host-imported only, which still need setup, and the highest-signal next fixes."
+    },
+    {
+      "name": "import_host_integrations",
+      "aliases": ["import-host-integrations"],
+      "title": "Import host integrations",
+      "description": "Import Codex or Claude-discovered integration metadata into Mission Control before the operator starts guessing what is connected.",
+      "required_arguments": ["USER_REQUEST"],
+      "tool_sequence": ["mission_control_import_host_integrations", "mission_control_get_integration_connections"],
+      "resource_sequence": ["mission-control://integrations/connections"],
+      "expected_chat_output": "A compact import summary showing what was discovered from host assets and what still needs native Mission Control setup.",
+      "safety_notes": "Report imported metadata and blockers only. Never claim host credentials were copied or verified unless the backend actually proved it.",
+      "prompt_text": "Import integration metadata from any detected Codex or Claude host assets into Mission Control. Then summarize what was discovered, what became connected or host-imported, and which high-value families still need real setup."
+    },
+    {
+      "name": "review_project_integrations",
+      "aliases": ["review-project-integrations"],
+      "title": "Review project integrations",
+      "description": "Load the project-scoped integration report when the operator needs the whole integration posture in one pass.",
+      "required_arguments": ["PROJECT_ID"],
+      "tool_sequence": ["mission_control_get_project_integrations"],
+      "resource_sequence": ["mission-control://projects/{project_id}/integrations"],
+      "expected_chat_output": "A compact project integration summary covering ready families, blockers, safe commands, and the next best connection or validation moves.",
+      "safety_notes": "Keep the output project-scoped and evidence-based. Do not treat a detected config file as proof that the live provider is actually usable.",
+      "prompt_text": "Review the project-scoped Mission Control integrations report. Summarize the ready families, the blocked or partial ones, the safest next commands, and the biggest gaps that still limit this project's integration posture."
+    },
+    {
+      "name": "review_project_integration_family",
+      "aliases": ["review-project-integration-family"],
+      "title": "Review project integration family",
+      "description": "Load one project-scoped integration family lane for focused review of status, actions, blockers, and safe commands.",
+      "required_arguments": ["PROJECT_ID", "FAMILY"],
+      "tool_sequence": ["mission_control_get_project_integration_family"],
+      "resource_sequence": ["mission-control://projects/{project_id}/integrations/{family}"],
+      "expected_chat_output": "A focused summary of one integration family, its readiness, safe commands, approval-relevant actions, and setup gaps.",
+      "safety_notes": "Keep the output scoped to the requested family and do not oversell host-imported metadata as a verified live connection.",
+      "prompt_text": "Review one project-scoped Mission Control integration family. Summarize its current status, imported host hints, safe commands, available actions, blockers, and the highest-signal next fix if the lane is still partial."
+    },
+    {
       "name": "review_project_capabilities",
       "aliases": ["review-project-capabilities"],
       "title": "Review project capabilities",

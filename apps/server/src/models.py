@@ -1404,6 +1404,7 @@ class AppProfile(Base):
     selected_provider: Mapped[str] = mapped_column(String(40), default="codex", nullable=False)
     auth_mode: Mapped[str | None] = mapped_column(String(40), nullable=True)
     connected_accounts_json: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
+    integration_registry_json: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
     first_run_completed: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     setup_version_completed: Mapped[str | None] = mapped_column(String(40), nullable=True)
     onboarding_completed: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)

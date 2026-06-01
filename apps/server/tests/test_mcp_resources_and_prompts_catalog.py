@@ -24,6 +24,10 @@ EXPECTED_RESOURCES = [
     "mission-control://projects/{project_id}/pending-decisions",
     "mission-control://projects/{project_id}/handoff",
     "mission-control://projects/{project_id}/codebase-map",
+    "mission-control://integrations/catalog",
+    "mission-control://integrations/connections",
+    "mission-control://projects/{project_id}/integrations",
+    "mission-control://projects/{project_id}/integrations/{family}",
     "mission-control://projects/{project_id}/workspace-tooling",
     "mission-control://projects/{project_id}/diagnostics",
     "mission-control://projects/{project_id}/webwright",
@@ -66,7 +70,12 @@ EXPECTED_PROMPTS = [
     "install_from_github",
     "autowire_providers",
     "review_project_capabilities",
+    "ask_manager_for_plan",
     "review_project_capability_section",
+    "review_integration_catalog",
+    "import_host_integrations",
+    "review_project_integrations",
+    "review_project_integration_family",
 ]
 
 
