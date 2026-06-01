@@ -365,3 +365,261 @@ def test_provider_specific_preview_prefers_github_actions_for_workflow_repo(monk
 
     assert preview["provider"] == "github_actions"
     assert preview["command"] == "gh run list --limit 10 --json databaseId,status,conclusion,name,workflowName"
+
+
+def test_provider_specific_preview_resolves_bitbucket_with_guided_lane(monkeypatch, tmp_path) -> None:
+    workspace = tmp_path / "bitbucket-repo"
+    workspace.mkdir(parents=True, exist_ok=True)
+    (workspace / "bitbucket-pipelines.yml").write_text("pipelines:\n  default: []\n", encoding="utf-8")
+    (workspace / ".git").mkdir()
+    (workspace / ".git" / "config").write_text(
+        '[remote "origin"]\n    url = git@bitbucket.org:demo/project.git\n',
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr("integration_registry.shutil.which", lambda _command: None)
+
+    preview = preview_integration_action(
+        family_id="source_control",
+        action_id="search",
+        params={},
+        registry_payload=normalize_integration_registry({}, {}),
+        workspace_path=str(workspace),
+        project_name="Bitbucket Demo",
+    )
+
+    assert preview["provider"] == "bitbucket"
+    assert preview["command"] is None
+    assert any("bitbucket" in note.lower() and "adapter" in note.lower() for note in preview["notes"])
+
+
+def test_provider_specific_preview_prefers_jira_over_generic_issue_lane(monkeypatch, tmp_path) -> None:
+    workspace = tmp_path / "jira-repo"
+    (workspace / ".jira").mkdir(parents=True, exist_ok=True)
+    (workspace / ".jira" / "config.json").write_text('{"project":"MC"}\n', encoding="utf-8")
+    (workspace / ".github" / "workflows").mkdir(parents=True, exist_ok=True)
+    (workspace / ".github" / "workflows" / "ci.yml").write_text("name: ci\n", encoding="utf-8")
+
+    monkeypatch.setattr(
+        "integration_registry.shutil.which",
+        lambda command: f"C:/tools/{command}.exe" if command == "acli" else None,
+    )
+
+    preview = preview_integration_action(
+        family_id="work_tracking",
+        action_id="search",
+        params={},
+        registry_payload=normalize_integration_registry({}, {}),
+        workspace_path=str(workspace),
+        project_name="Jira Demo",
+    )
+
+    assert preview["provider"] == "jira"
+    assert preview["command"] == 'acli jira workitem search --jql "order by updated DESC" --limit 20 --json'
+
+
+def test_provider_specific_preview_surfaces_jira_create_param_requirements(monkeypatch, tmp_path) -> None:
+    workspace = tmp_path / "jira-create-repo"
+    (workspace / ".jira").mkdir(parents=True, exist_ok=True)
+    (workspace / ".jira" / "config.json").write_text('{"project":"MC"}\n', encoding="utf-8")
+
+    monkeypatch.setattr(
+        "integration_registry.shutil.which",
+        lambda command: f"C:/tools/{command}.exe" if command == "acli" else None,
+    )
+
+    preview = preview_integration_action(
+        family_id="work_tracking",
+        action_id="create",
+        params={"title": "Broken deploy", "body": "Still not good enough."},
+        registry_payload=normalize_integration_registry({}, {}),
+        workspace_path=str(workspace),
+        project_name="Jira Create Demo",
+    )
+
+    assert preview["provider"] == "jira"
+    assert sorted(preview["missing_params"]) == ["issue_type", "project_key"]
+    assert 'acli jira workitem create' in str(preview["command"])
+
+
+def test_provider_specific_preview_surfaces_linear_guidance_without_fake_cli(monkeypatch, tmp_path) -> None:
+    workspace = tmp_path / "linear-repo"
+    (workspace / ".linear").mkdir(parents=True, exist_ok=True)
+    (workspace / ".linear" / "workspace.json").write_text('{"name":"MC"}\n', encoding="utf-8")
+
+    monkeypatch.setattr("integration_registry.shutil.which", lambda _command: None)
+
+    preview = preview_integration_action(
+        family_id="work_tracking",
+        action_id="create",
+        params={"title": "Agent drift", "body": "Still happening."},
+        registry_payload=normalize_integration_registry({}, {}),
+        workspace_path=str(workspace),
+        project_name="Linear Demo",
+    )
+
+    assert preview["provider"] == "linear"
+    assert preview["command"] is None
+    assert any("linear.new" in note.lower() or "graphql" in note.lower() for note in preview["notes"])
+
+
+def test_provider_specific_preview_uses_gitlab_ci_run_inspection(monkeypatch, tmp_path) -> None:
+    workspace = tmp_path / "gitlab-ci-repo"
+    workspace.mkdir(parents=True, exist_ok=True)
+    (workspace / ".gitlab-ci.yml").write_text("stages: [test]\n", encoding="utf-8")
+
+    monkeypatch.setattr(
+        "integration_registry.shutil.which",
+        lambda command: f"C:/tools/{command}.exe" if command == "glab" else None,
+    )
+
+    preview = preview_integration_action(
+        family_id="ci_cd",
+        action_id="inspect_run",
+        params={"run_id": "12345"},
+        registry_payload=normalize_integration_registry({}, {}),
+        workspace_path=str(workspace),
+        project_name="GitLab CI Demo",
+    )
+
+    assert preview["provider"] == "gitlab_ci"
+    assert preview["command"] == "glab ci get --pipeline-id 12345 --with-job-details --output json"
+
+
+def test_provider_specific_preview_uses_gitlab_ci_log_tail(monkeypatch, tmp_path) -> None:
+    workspace = tmp_path / "gitlab-ci-logs"
+    workspace.mkdir(parents=True, exist_ok=True)
+    (workspace / ".gitlab-ci.yml").write_text("stages: [test]\n", encoding="utf-8")
+
+    monkeypatch.setattr(
+        "integration_registry.shutil.which",
+        lambda command: f"C:/tools/{command}.exe" if command == "glab" else None,
+    )
+
+    preview = preview_integration_action(
+        family_id="ci_cd",
+        action_id="tail_logs",
+        params={"run_id": "987"},
+        registry_payload=normalize_integration_registry({}, {}),
+        workspace_path=str(workspace),
+        project_name="GitLab CI Logs",
+    )
+
+    assert preview["provider"] == "gitlab_ci"
+    assert preview["command"] == "glab ci trace --pipeline-id 987"
+
+
+def test_provider_specific_preview_uses_github_actions_run_inspection(monkeypatch, tmp_path) -> None:
+    workspace = tmp_path / "github-actions-run"
+    (workspace / ".github" / "workflows").mkdir(parents=True, exist_ok=True)
+    (workspace / ".github" / "workflows" / "ci.yml").write_text("name: ci\n", encoding="utf-8")
+
+    monkeypatch.setattr(
+        "integration_registry.shutil.which",
+        lambda command: f"C:/tools/{command}.exe" if command == "gh" else None,
+    )
+
+    preview = preview_integration_action(
+        family_id="ci_cd",
+        action_id="inspect_run",
+        params={"run_id": "654321"},
+        registry_payload=normalize_integration_registry({}, {}),
+        workspace_path=str(workspace),
+        project_name="GitHub Actions Run",
+    )
+
+    assert preview["provider"] == "github_actions"
+    assert preview["command"] == "gh run view 654321"
+
+
+def test_provider_specific_preview_inferrs_cloudflare_pages_deploy_directory(monkeypatch, tmp_path) -> None:
+    workspace = tmp_path / "cloudflare-pages-repo"
+    workspace.mkdir(parents=True, exist_ok=True)
+    (workspace / "wrangler.toml").write_text('pages_build_output_dir = "dist"\n', encoding="utf-8")
+    (workspace / "dist").mkdir()
+
+    monkeypatch.setattr(
+        "integration_registry.shutil.which",
+        lambda command: f"C:/tools/{command}.exe" if command == "wrangler" else None,
+    )
+
+    preview = preview_integration_action(
+        family_id="hosting_deploy",
+        action_id="deploy",
+        params={},
+        registry_payload=normalize_integration_registry({}, {}),
+        workspace_path=str(workspace),
+        project_name="Cloudflare Pages Demo",
+    )
+
+    assert preview["provider"] == "cloudflare_pages"
+    assert preview["command"] == "wrangler pages deploy dist"
+    assert any("directory" in note.lower() for note in preview["notes"])
+
+
+def test_provider_specific_preview_uses_railway_status_and_logs(monkeypatch, tmp_path) -> None:
+    workspace = tmp_path / "railway-repo"
+    workspace.mkdir(parents=True, exist_ok=True)
+    (workspace / "railway.json").write_text('{"build":{"builder":"NIXPACKS"}}\n', encoding="utf-8")
+
+    monkeypatch.setattr(
+        "integration_registry.shutil.which",
+        lambda command: f"C:/tools/{command}.exe" if command == "railway" else None,
+    )
+
+    inspect_preview = preview_integration_action(
+        family_id="hosting_deploy",
+        action_id="inspect",
+        params={},
+        registry_payload=normalize_integration_registry({}, {}),
+        workspace_path=str(workspace),
+        project_name="Railway Demo",
+    )
+    logs_preview = preview_integration_action(
+        family_id="hosting_deploy",
+        action_id="tail_logs",
+        params={},
+        registry_payload=normalize_integration_registry({}, {}),
+        workspace_path=str(workspace),
+        project_name="Railway Demo",
+    )
+
+    assert inspect_preview["provider"] == "railway"
+    assert inspect_preview["command"] == "railway status --json"
+    assert logs_preview["provider"] == "railway"
+    assert logs_preview["command"] == "railway logs --deployment --latest --lines 200 --json"
+
+
+def test_provider_specific_preview_requires_render_service_and_resource_ids(monkeypatch, tmp_path) -> None:
+    workspace = tmp_path / "render-repo"
+    workspace.mkdir(parents=True, exist_ok=True)
+    (workspace / "render.yaml").write_text("services: []\n", encoding="utf-8")
+
+    monkeypatch.setattr(
+        "integration_registry.shutil.which",
+        lambda command: f"C:/tools/{command}.exe" if command == "render" else None,
+    )
+
+    deploy_preview = preview_integration_action(
+        family_id="hosting_deploy",
+        action_id="deploy",
+        params={},
+        registry_payload=normalize_integration_registry({}, {}),
+        workspace_path=str(workspace),
+        project_name="Render Demo",
+    )
+    logs_preview = preview_integration_action(
+        family_id="hosting_deploy",
+        action_id="tail_logs",
+        params={},
+        registry_payload=normalize_integration_registry({}, {}),
+        workspace_path=str(workspace),
+        project_name="Render Demo",
+    )
+
+    assert deploy_preview["provider"] == "render"
+    assert deploy_preview["missing_params"] == ["service_id"]
+    assert "render deploys create {service_id} --wait" == deploy_preview["command"]
+    assert logs_preview["provider"] == "render"
+    assert logs_preview["missing_params"] == ["resource_id"]
+    assert "render logs --resources {resource_id} --limit 200 --output json" == logs_preview["command"]

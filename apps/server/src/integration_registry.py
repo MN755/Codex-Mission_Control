@@ -42,7 +42,7 @@ PROVIDER_CLIS: dict[str, tuple[str, ...]] = {
     "gitlab": ("glab",),
     "bitbucket": (),
     "github_issues": ("gh",),
-    "jira": (),
+    "jira": ("acli",),
     "linear": (),
     "docker": ("docker",),
     "devcontainer": ("devcontainer",),
@@ -55,7 +55,7 @@ PROVIDER_CLIS: dict[str, tuple[str, ...]] = {
     "netlify": ("netlify",),
     "cloudflare_pages": ("wrangler",),
     "railway": ("railway",),
-    "render": (),
+    "render": ("render",),
 }
 
 PROVIDER_WORKSPACE_MARKERS: dict[str, tuple[str, ...]] = {
@@ -98,6 +98,39 @@ PROVIDER_TOKEN_MARKERS: dict[str, tuple[str, ...]] = {
     "cloudflare_pages": ("cloudflare pages", "wrangler",),
     "railway": ("railway",),
     "render": ("render",),
+}
+
+PROVIDER_ACTION_GUIDANCE: dict[str, dict[str, str]] = {
+    "bitbucket": {
+        "search": "Bitbucket is resolved from git remote or pipeline config, but Mission Control currently expects a host-integrated or REST-backed adapter instead of pretending there is a bundled official Bitbucket CLI.",
+        "create": "Bitbucket mutations are not wired to a bundled CLI here. Use a host integration or an approval-gated REST adapter lane instead of fantasy tooling.",
+        "inspect": "Bitbucket inspection should route through a host integration or REST-backed adapter lane. The repo remote is enough to resolve the provider, not enough to fake a live API session.",
+    },
+    "jira": {
+        "search": "Jira search can use Atlassian CLI when available. Without `acli`, keep this lane host-imported or wire a project-scoped adapter with explicit auth.",
+        "create": "Jira creation supports Atlassian CLI when `project_key` and `issue_type` are supplied. Without `acli`, use a host-integrated or API-backed lane instead.",
+        "update": "Jira updates should route through Atlassian CLI or a verified host/API lane rather than an invented local CLI.",
+    },
+    "linear": {
+        "search": "Linear is resolved from workspace or host signals. Mission Control treats it as a host-import or GraphQL adapter lane because Linear does not ship a bundled local CLI here.",
+        "create": "Linear issue creation should use a host-integrated path or the Linear GraphQL API. If a browser-first fallback helps, `linear.new` is the honest escape hatch.",
+        "update": "Linear updates should route through a verified host-integrated or GraphQL adapter lane.",
+    },
+    "bitbucket_pipelines": {
+        "inspect": "Bitbucket Pipelines is resolved from workspace signals, but deeper execution currently expects a host-integrated or API-backed adapter instead of a bundled CLI.",
+        "inspect_run": "Inspect specific Bitbucket pipeline runs through a host-integrated or API-backed adapter lane.",
+        "tail_logs": "Bitbucket pipeline log tails currently require a host-integrated or API-backed adapter lane.",
+        "rerun": "Bitbucket reruns currently require a host-integrated or API-backed adapter lane.",
+    },
+    "render": {
+        "deploy": "Render deploys support the official Render CLI, but you still need a concrete service identifier before Mission Control should attempt to trigger anything.",
+    },
+}
+
+PROVIDER_ACTION_REQUIRED_PARAMS: dict[tuple[str, str], tuple[str, ...]] = {
+    ("jira", "create"): ("project_key", "issue_type"),
+    ("render", "deploy"): ("service_id",),
+    ("render", "tail_logs"): ("resource_id",),
 }
 
 
@@ -227,7 +260,7 @@ FAMILIES: tuple[IntegrationFamilyDefinition, ...] = (
         host_tokens=("linear", "jira", "issues"),
         config_files=(".linear", ".jira",),
         workspace_tokens=("linear", "jira", "github issue"),
-        cli_candidates=("gh",),
+        cli_candidates=("gh", "acli"),
         legacy_account_keys=(),
         actions=COMMON_ACTIONS + (
             _action("search", "Search work items", "Inspect tracked work items from the current host or CLI.", command_template="gh issue list --limit 20", risk_level="low", permission_policy="ask_once_per_project"),
@@ -259,10 +292,12 @@ FAMILIES: tuple[IntegrationFamilyDefinition, ...] = (
         host_tokens=("workflow", "pipeline", "ci"),
         config_files=(".github/workflows", ".gitlab-ci.yml", "bitbucket-pipelines.yml", ".circleci/config.yml"),
         workspace_tokens=("workflow", "pipeline", "ci"),
-        cli_candidates=("gh",),
+        cli_candidates=("gh", "glab"),
         legacy_account_keys=(),
         actions=COMMON_ACTIONS + (
             _action("inspect", "Inspect CI status", "Inspect CI workflow status.", command_template="gh run list --limit 10", risk_level="low", permission_policy="ask_once_per_project"),
+            _action("inspect_run", "Inspect CI run", "Inspect a specific CI run or pipeline.", command_template="gh run view {run_id}", risk_level="low", permission_policy="ask_once_per_project", required_params=("run_id",)),
+            _action("tail_logs", "Tail CI logs", "Inspect logs for a specific CI run or pipeline.", command_template="gh run view {run_id} --log", risk_level="low", permission_policy="ask_once_per_project", required_params=("run_id",)),
             _action("rerun", "Rerun pipeline", "Rerun the most recent CI pipeline.", command_template="gh run rerun {run_id}", mutates_remote_state=True, requires_confirmation=True, required_params=("run_id",)),
         ),
     ),
@@ -275,10 +310,11 @@ FAMILIES: tuple[IntegrationFamilyDefinition, ...] = (
         host_tokens=("vercel", "netlify", "cloudflare", "railway", "render"),
         config_files=("vercel.json", "netlify.toml", "wrangler.toml", "railway.json", "render.yaml"),
         workspace_tokens=("vercel", "netlify", "cloudflare pages", "railway", "render"),
-        cli_candidates=("vercel", "netlify", "wrangler"),
+        cli_candidates=("vercel", "netlify", "wrangler", "railway", "render"),
         legacy_account_keys=("vercel",),
         actions=COMMON_ACTIONS + (
             _action("inspect", "Inspect deployment", "Inspect deployment readiness or latest deployments.", command_template="vercel whoami", risk_level="low", permission_policy="ask_once_per_project"),
+            _action("tail_logs", "Tail deployment logs", "Tail the latest deployment or service logs.", risk_level="low", permission_policy="ask_once_per_project"),
             _action("deploy", "Deploy", "Trigger a deployment through the configured hosting CLI.", command_template="vercel deploy --yes", risk_level="high", mutates_remote_state=True, requires_confirmation=True),
         ),
     ),
@@ -760,6 +796,19 @@ def _command_is_available(command: str) -> bool:
     return shutil.which(executable) is not None
 
 
+def _provider_extra_required_params(provider: str | None, action_id: str) -> tuple[str, ...]:
+    if not provider:
+        return ()
+    return PROVIDER_ACTION_REQUIRED_PARAMS.get((provider, action_id), ())
+
+
+def _provider_guidance(provider: str | None, action_id: str) -> str | None:
+    if not provider:
+        return None
+    guidance = PROVIDER_ACTION_GUIDANCE.get(provider, {})
+    return guidance.get(action_id) or guidance.get("inspect")
+
+
 def _read_git_remote_url(root: Path | None) -> str:
     if root is None:
         return ""
@@ -787,9 +836,22 @@ def _provider_command_template(provider: str, action_id: str) -> str | None:
             "create": 'glab issue create --title "{title}" --description "{body}"',
             "inspect": "glab repo view",
         },
+        "bitbucket": {
+            "inspect": None,
+            "search": None,
+            "create": None,
+        },
         "github_issues": {
             "search": "gh issue list --limit 20",
             "create": 'gh issue create --title "{title}" --body "{body}"',
+        },
+        "jira": {
+            "search": 'acli jira workitem search --jql "order by updated DESC" --limit 20 --json',
+            "create": 'acli jira workitem create --summary "{title}" --description "{body}" --project "{project_key}" --type "{issue_type}" --json',
+        },
+        "linear": {
+            "search": None,
+            "create": None,
         },
         "docker": {
             "validate": "docker --version",
@@ -802,10 +864,14 @@ def _provider_command_template(provider: str, action_id: str) -> str | None:
         },
         "github_actions": {
             "inspect": "gh run list --limit 10 --json databaseId,status,conclusion,name,workflowName",
+            "inspect_run": "gh run view {run_id}",
+            "tail_logs": "gh run view {run_id} --log",
             "rerun": "gh run rerun {run_id}",
         },
         "gitlab_ci": {
-            "inspect": "glab ci status",
+            "inspect": "glab ci list --output json",
+            "inspect_run": "glab ci get --pipeline-id {run_id} --with-job-details --output json",
+            "tail_logs": "glab ci trace --pipeline-id {run_id}",
         },
         "vercel": {
             "inspect": "vercel whoami",
@@ -816,11 +882,19 @@ def _provider_command_template(provider: str, action_id: str) -> str | None:
             "deploy": "netlify deploy --prod",
         },
         "cloudflare_pages": {
-            "inspect": "wrangler whoami",
+            "inspect": "wrangler pages project list --json",
+            "tail_logs": "wrangler pages deployment tail",
+            "deploy": "wrangler pages deploy {directory}",
         },
         "railway": {
-            "inspect": "railway whoami",
+            "inspect": "railway status --json",
+            "tail_logs": "railway logs --deployment --latest --lines 200 --json",
             "deploy": "railway up",
+        },
+        "render": {
+            "inspect": "render services --output json",
+            "tail_logs": "render logs --resources {resource_id} --limit 200 --output json",
+            "deploy": "render deploys create {service_id} --wait",
         },
     }
     return commands.get(provider, {}).get(action_id)
@@ -835,18 +909,19 @@ def _provider_candidates_for_family(
     installed_clis: list[str],
     git_remote_url: str,
 ) -> list[str]:
-    candidates: list[str] = []
+    scores: dict[str, int] = {}
     connection_providers = [str(item) for item in list(connection.get("providers") or [])]
+    connection_source = str(connection.get("connection_source") or "mission_control")
     for provider in connection_providers:
         if provider in family.providers:
-            candidates.append(provider)
+            scores[provider] = scores.get(provider, 0) + (80 if connection_source in AUTHORITATIVE_CONNECTION_SOURCES else 40)
     if git_remote_url:
         if "github.com" in git_remote_url and "github" in family.providers:
-            candidates.append("github")
+            scores["github"] = scores.get("github", 0) + 70
         if "gitlab" in git_remote_url and "gitlab" in family.providers:
-            candidates.append("gitlab")
+            scores["gitlab"] = scores.get("gitlab", 0) + 70
         if "bitbucket" in git_remote_url and "bitbucket" in family.providers:
-            candidates.append("bitbucket")
+            scores["bitbucket"] = scores.get("bitbucket", 0) + 70
     lowered_files = [path.lower() for path in detected_files]
     lowered_hits = [hit.lower() for hit in token_hits]
     installed_cli_set = {item.lower() for item in installed_clis}
@@ -859,15 +934,19 @@ def _provider_candidates_for_family(
             for file_path in lowered_files
             for marker in markers
         ):
-            candidates.append(provider)
+            scores[provider] = scores.get(provider, 0) + 60
         tokens = PROVIDER_TOKEN_MARKERS.get(provider, ())
         if any(token in hit for hit in lowered_hits for token in tokens):
-            candidates.append(provider)
+            scores[provider] = scores.get(provider, 0) + 30
         required_clis = PROVIDER_CLIS.get(provider, ())
         if required_clis and all(cli.lower() in installed_cli_set for cli in required_clis):
-            candidates.append(provider)
+            scores[provider] = scores.get(provider, 0) + 10
     priority = PROVIDER_PRIORITY_BY_FAMILY.get(family.family_id, family.providers)
-    ordered = [provider for provider in priority if provider in candidates]
+    priority_index = {provider: index for index, provider in enumerate(priority)}
+    ordered = sorted(
+        scores,
+        key=lambda provider: (-scores[provider], priority_index.get(provider, len(priority_index)), provider),
+    )
     return _dedupe_strs(ordered)
 
 
@@ -899,7 +978,9 @@ def _resolve_provider_command(
         template = _provider_command_template(provider, action.action_id)
         if template:
             return template, candidates, provider
-    return action.command_template, candidates, candidates[0] if candidates else None
+    if candidates:
+        return None, candidates, candidates[0]
+    return action.command_template, candidates, None
 
 
 def _provider_status_from_legacy(account: dict[str, Any]) -> str:
@@ -1084,7 +1165,11 @@ def _relative_files(root: Path) -> list[str]:
         rel = path.relative_to(root)
         if any(part.lower() in SKIP_DIRS for part in rel.parts):
             continue
-        if any(part.startswith(".") and part not in {".github", ".storybook", ".devcontainer"} for part in rel.parts[:-1]):
+        if any(
+            part.startswith(".")
+            and part not in {".github", ".storybook", ".devcontainer", ".linear", ".jira", ".circleci", ".buildkite"}
+            for part in rel.parts[:-1]
+        ):
             continue
         results.append(rel.as_posix())
     return results
@@ -1094,9 +1179,58 @@ def _workspace_haystack(root: Path, relative_files: list[str]) -> str:
     chunks: list[str] = []
     for relative in relative_files:
         name = Path(relative).name.lower()
-        if name in {"package.json", "pyproject.toml", "requirements.txt", "readme.md", "firebase.json", "netlify.toml", "vercel.json"}:
+        if name in {
+            "package.json",
+            "pyproject.toml",
+            "requirements.txt",
+            "readme.md",
+            "firebase.json",
+            "netlify.toml",
+            "vercel.json",
+            "wrangler.toml",
+            "railway.json",
+            "render.yaml",
+            "bitbucket-pipelines.yml",
+            ".gitlab-ci.yml",
+        }:
             chunks.append(_safe_read_text(root / relative)[:4000])
     return "\n".join(chunks).lower()
+
+
+def _infer_cloudflare_pages_directory(root: Path | None, relative_files: list[str]) -> str | None:
+    if root is None or not root.exists():
+        return None
+    for relative in relative_files:
+        path = Path(relative)
+        if path.name.lower() != "wrangler.toml":
+            continue
+        text = _safe_read_text(root / relative)
+        for line in text.splitlines():
+            stripped = line.strip()
+            if not stripped.startswith("pages_build_output_dir"):
+                continue
+            _, _, raw_value = stripped.partition("=")
+            value = raw_value.strip().strip('"').strip("'")
+            if value:
+                return value
+    for candidate in ("dist", "build", "public", "out"):
+        if (root / candidate).exists():
+            return candidate
+    return None
+
+
+def _provider_default_params(
+    *,
+    provider: str | None,
+    action_id: str,
+    root: Path | None,
+    relative_files: list[str],
+) -> dict[str, Any]:
+    if provider == "cloudflare_pages" and action_id == "deploy":
+        directory = _infer_cloudflare_pages_directory(root, relative_files)
+        if directory:
+            return {"directory": directory}
+    return {}
 
 
 def _connection_status_for_family(registry: dict[str, Any], family: IntegrationFamilyDefinition) -> dict[str, Any]:
@@ -1340,7 +1474,6 @@ def preview_integration_action(
     if action is None:
         raise ValueError("Unknown integration action")
     params = dict(params or {})
-    missing = [name for name in action.required_params if name not in params or params[name] in {None, ""}]
     root = Path(workspace_path) if workspace_path else None
     relative_files = _relative_files(root) if root and root.exists() else []
     haystack = _workspace_haystack(root, relative_files) if root and root.exists() else ""
@@ -1369,13 +1502,39 @@ def preview_integration_action(
         installed_clis=installed_clis,
         git_remote_url=git_remote_url,
     )
+    effective_params = {
+        **_provider_default_params(
+            provider=resolved_provider,
+            action_id=action.action_id,
+            root=root,
+            relative_files=relative_files,
+        ),
+        **params,
+    }
+    missing = [
+        name
+        for name in (*action.required_params, *_provider_extra_required_params(resolved_provider, action.action_id))
+        if name not in effective_params or effective_params[name] in {None, ""}
+    ]
     command: str | None = None
     if command_template:
         if missing:
             command = command_template
         else:
-            command = _format_command(command_template, params)
+            command = _format_command(command_template, effective_params)
     executable_available = bool(command and _command_is_available(command))
+    provider_guidance = _provider_guidance(resolved_provider, action.action_id)
+    notes = [
+        "Mission Control previews the action before execution so approvals are tied to a concrete command or host import step.",
+        "Local execution stays shell-free and only runs when the previewed executable is actually present.",
+        "A host import is metadata, not proof of live remote authorization.",
+        f"Executable detected: {'yes' if executable_available else 'no'}.",
+        f"Resolved provider: {resolved_provider or 'none'}.",
+    ]
+    if provider_guidance:
+        notes.append(provider_guidance)
+    if effective_params != params:
+        notes.append(f"Provider defaults were inferred for preview params: {json.dumps({key: value for key, value in effective_params.items() if key not in params}, sort_keys=True)}")
     return {
         "family": family.family_id,
         "action_id": action.action_id,
@@ -1392,13 +1551,7 @@ def preview_integration_action(
         "missing_params": missing,
         "provider": resolved_provider,
         "provider_candidates": provider_candidates,
-        "notes": [
-            "Mission Control previews the action before execution so approvals are tied to a concrete command or host import step.",
-            "Local execution stays shell-free and only runs when the previewed executable is actually present.",
-            "A host import is metadata, not proof of live remote authorization.",
-            f"Executable detected: {'yes' if executable_available else 'no'}.",
-            f"Resolved provider: {resolved_provider or 'none'}.",
-        ],
+        "notes": notes,
     }
 
 
@@ -1501,11 +1654,12 @@ def execute_integration_action(
             "updated_registry": updated_registry,
         }
     if not preview.get("command"):
+        guidance = _provider_guidance(str(preview.get("provider") or ""), action.action_id)
         return {
             **preview,
             "status": "completed" if action.action_id == "connect" else "blocked",
             "stdout": "No executable local command is defined for this action." if action.action_id == "connect" else "",
-            "stderr": "",
+            "stderr": "" if action.action_id == "connect" else (guidance or "No executable local command is defined for this action."),
             "returncode": 0 if action.action_id == "connect" else None,
             "approval_required": False,
         }
