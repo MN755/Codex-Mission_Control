@@ -18,6 +18,17 @@ def _load_packaging_module():
     return module
 
 
+def _load_smoke_packaged_python_artifacts_module():
+    root = Path(__file__).resolve().parents[3]
+    module_path = root / "scripts" / "smoke-packaged-python-artifacts.py"
+    spec = importlib.util.spec_from_file_location("smoke_packaged_python_artifacts", module_path)
+    assert spec is not None
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+    return module
+
+
 def _load_desktop_app_module():
     root = Path(__file__).resolve().parents[3]
     module_path = root / "apps" / "desktop" / "src" / "mission_control_desktop" / "app.py"
@@ -204,6 +215,80 @@ def test_packaged_python_artifact_smoke_script_builds_and_installs_wheels() -> N
     assert "mission_control_desktop.app" in script_text
     assert ".codex-plugin" in script_text
     assert 'import_module("main")' in script_text
+
+
+def test_packaged_python_artifact_smoke_script_stages_sources_outside_checkout(tmp_path, monkeypatch) -> None:
+    module = _load_smoke_packaged_python_artifacts_module()
+    source_root = tmp_path / "readonly-checkout"
+    build_root = tmp_path / "build-sources"
+    wheelhouse = tmp_path / "wheelhouse"
+    package_dirs = []
+    for package_name in ("server", "desktop", "mcp-server"):
+        package_dir = source_root / package_name
+        package_dir.mkdir(parents=True, exist_ok=True)
+        (package_dir / "pyproject.toml").write_text("[build-system]\nrequires=[]\n", encoding="utf-8")
+        (package_dir / "README.md").write_text(f"{package_name}\n", encoding="utf-8")
+        package_dirs.append(package_dir)
+    build_root.mkdir(parents=True, exist_ok=True)
+    wheelhouse.mkdir(parents=True, exist_ok=True)
+
+    commands: list[tuple[list[str], Path]] = []
+
+    monkeypatch.setattr(module, "PACKAGE_DIRS", package_dirs)
+    monkeypatch.setattr(module, "_ensure_build_toolchain", lambda **_kwargs: None)
+
+    def fake_run(args: list[str], *, cwd: Path, env=None) -> None:
+        del env
+        commands.append((args, cwd))
+
+    monkeypatch.setattr(module, "_run", fake_run)
+
+    module._build_wheels(wheelhouse, build_root=build_root)
+
+    staged_dirs = sorted(path for path in build_root.iterdir() if path.is_dir())
+    assert [path.name for path in staged_dirs] == ["desktop", "mcp-server", "server"]
+    assert len(commands) == len(package_dirs)
+    for args, cwd in commands:
+        assert cwd in staged_dirs
+        assert cwd.parent == build_root
+        assert args[-1] == "."
+        assert "--wheel-dir" in args
+        assert str(wheelhouse) in args
+    assert not (source_root / "build").exists()
+
+
+def test_packaged_python_artifact_smoke_script_installs_wheels_from_temp_workspace(tmp_path, monkeypatch) -> None:
+    module = _load_smoke_packaged_python_artifacts_module()
+    wheelhouse = tmp_path / "wheelhouse"
+    target = tmp_path / "site-packages"
+    work_root = tmp_path / "work-root"
+    wheelhouse.mkdir(parents=True, exist_ok=True)
+    target.mkdir(parents=True, exist_ok=True)
+    work_root.mkdir(parents=True, exist_ok=True)
+    expected_wheels = []
+    for index in range(len(module.PACKAGE_DIRS)):
+        wheel_path = wheelhouse / f"pkg{index}-1.0.0-py3-none-any.whl"
+        wheel_path.write_bytes(b"wheel")
+        expected_wheels.append(wheel_path)
+
+    commands: list[tuple[list[str], Path]] = []
+
+    def fake_run(args: list[str], *, cwd: Path, env=None) -> None:
+        del env
+        commands.append((args, cwd))
+
+    monkeypatch.setattr(module, "_run", fake_run)
+
+    wheels = module._install_wheels(wheelhouse, target, work_root=work_root)
+
+    assert wheels == expected_wheels
+    assert len(commands) == 1
+    args, cwd = commands[0]
+    assert cwd == work_root
+    assert "--target" in args
+    assert str(target) in args
+    for wheel in expected_wheels:
+        assert str(wheel) in args
 
 
 def test_server_pyproject_exports_nvidia_devstack_module() -> None:

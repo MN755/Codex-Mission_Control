@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -20,15 +21,24 @@ def _run(args: list[str], *, cwd: Path, env: dict[str, str] | None = None) -> No
     subprocess.run(args, cwd=str(cwd), env=env, check=True)
 
 
-def _ensure_build_toolchain() -> None:
+def _ensure_build_toolchain(*, work_root: Path) -> None:
     if find_spec("wheel") is not None:
         return
-    _run([sys.executable, "-m", "pip", "install", "--no-cache-dir", "wheel"], cwd=ROOT)
+    _run([sys.executable, "-m", "pip", "install", "--no-cache-dir", "wheel"], cwd=work_root)
 
 
-def _build_wheels(wheelhouse: Path) -> None:
-    _ensure_build_toolchain()
+def _stage_package_sources(build_root: Path) -> list[Path]:
+    staged_dirs: list[Path] = []
     for package_dir in PACKAGE_DIRS:
+        staged_dir = build_root / package_dir.name
+        shutil.copytree(package_dir, staged_dir, dirs_exist_ok=True)
+        staged_dirs.append(staged_dir)
+    return staged_dirs
+
+
+def _build_wheels(wheelhouse: Path, *, build_root: Path) -> None:
+    _ensure_build_toolchain(work_root=build_root)
+    for staged_dir in _stage_package_sources(build_root):
         _run(
             [
                 sys.executable,
@@ -40,19 +50,19 @@ def _build_wheels(wheelhouse: Path) -> None:
                 "--no-deps",
                 "--wheel-dir",
                 str(wheelhouse),
-                str(package_dir),
+                ".",
             ],
-            cwd=ROOT,
+            cwd=staged_dir,
         )
 
 
-def _install_wheels(wheelhouse: Path, target: Path) -> list[Path]:
+def _install_wheels(wheelhouse: Path, target: Path, *, work_root: Path) -> list[Path]:
     wheels = sorted(wheelhouse.glob("*.whl"))
     if len(wheels) < len(PACKAGE_DIRS):
         raise RuntimeError(f"Expected at least {len(PACKAGE_DIRS)} wheels, found {len(wheels)} in {wheelhouse}.")
     _run(
         [sys.executable, "-m", "pip", "install", "--no-cache-dir", "--no-deps", "--target", str(target), *[str(path) for path in wheels]],
-        cwd=ROOT,
+        cwd=work_root,
     )
     return wheels
 
@@ -93,14 +103,16 @@ def main() -> int:
     with tempfile.TemporaryDirectory(prefix="mc-packaged-smoke-") as temp_dir:
         temp_root = Path(temp_dir)
         wheelhouse = temp_root / "wheelhouse"
+        build_root = temp_root / "build-sources"
         install_target = temp_root / "site-packages"
         smoke_cwd = temp_root / "outside-source-tree"
+        build_root.mkdir(parents=True, exist_ok=True)
         wheelhouse.mkdir(parents=True, exist_ok=True)
         install_target.mkdir(parents=True, exist_ok=True)
         smoke_cwd.mkdir(parents=True, exist_ok=True)
 
-        _build_wheels(wheelhouse)
-        wheels = _install_wheels(wheelhouse, install_target)
+        _build_wheels(wheelhouse, build_root=build_root)
+        wheels = _install_wheels(wheelhouse, install_target, work_root=temp_root)
         _smoke_packaged_install(install_target, cwd=smoke_cwd)
         print(f"Packaged smoke passed with {len(wheels)} built artifacts.")
     return 0
