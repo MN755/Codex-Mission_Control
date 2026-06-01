@@ -301,9 +301,12 @@ def test_verification_brief_endpoint_surfaces_notebook_config_and_artifact_follo
 
     def patched(project):
         payload = original(project)
+        payload["notebook_paths"] = ["notebooks/experiment.ipynb"]
         payload["notebook_commands"] = ["jupyter nbconvert --to script notebooks/experiment.ipynb"]
+        payload["artifact_paths"] = ["artifacts/exported_model/saved_model.pb"]
         payload["artifact_inspection_commands"] = ["saved_model_cli show --dir artifacts/exported_model --all"]
         payload["config_review_paths"] = ["configs/train.yaml"]
+        payload["config_review_commands"] = ['python -c "from pathlib import Path; p = Path(\\"configs/train.yaml\\"); print(p.read_text(encoding=\'utf-8\', errors=\'ignore\'))"']
         return payload
 
     monkeypatch.setattr(service, "build_workspace_tooling_status", patched)
@@ -314,5 +317,8 @@ def test_verification_brief_endpoint_surfaces_notebook_config_and_artifact_follo
 
     assert "saved_model_cli show --dir artifacts/exported_model --all" in payload["required_checks"]
     assert "jupyter nbconvert --to script notebooks/experiment.ipynb" in payload["recommended_checks"]
+    assert any("configs/train.yaml" in item and item.startswith("python -c ") for item in payload["recommended_checks"])
+    assert any(item == "Review artifact path: artifacts/exported_model/saved_model.pb" for item in payload["recommended_checks"])
     assert any("Config-driven ML path needs explicit review: configs/train.yaml" == item for item in payload["evidence_gaps"])
     assert any("Notebook-driven ML workflow still needs promotion" in item for item in payload["evidence_gaps"])
+    assert any("Artifact path still needs direct inspection evidence: artifacts/exported_model/saved_model.pb" == item for item in payload["evidence_gaps"])

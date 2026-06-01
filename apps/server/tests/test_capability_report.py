@@ -251,8 +251,14 @@ def test_capability_report_endpoint_returns_all_fifteen_sections(client, bridge_
             "packs": [],
             "recommended_next_steps": ["Install uv.", "Install pre-commit."],
             "intake_commands": ["rg --files", "tree-sitter parse src/worker.py"],
+            "notebook_paths": ["notebooks/experiment.ipynb"],
+            "notebook_commands": ["jupyter nbconvert --to script notebooks/experiment.ipynb"],
             "validation_commands": ["ruff check .", "playwright test", "python -m pytest apps/server/tests/test_capability_report.py -q"],
             "security_commands": ["gitleaks dir . --redact", "pip-audit"],
+            "artifact_paths": ["artifacts/exported_model/saved_model.pb"],
+            "artifact_inspection_commands": ["saved_model_cli show --dir artifacts/exported_model --all"],
+            "config_review_paths": ["configs/train.yaml"],
+            "config_review_commands": ['python -c "from pathlib import Path; p = Path(\\"configs/train.yaml\\"); print(p.read_text(encoding=\'utf-8\', errors=\'ignore\'))"'],
         },
     )
     monkeypatch.setattr(
@@ -355,6 +361,13 @@ def test_capability_report_endpoint_returns_all_fifteen_sections(client, bridge_
     )
     assert "CUDA mode" in " ".join(sections["repo_capability_auto_detection"]["details"])
     assert sections["workspace_tool_installer_bootstrap"]["status"] == "needs_setup"
+    assert sections["workspace_tool_installer_bootstrap"]["metadata_json"]["notebook_paths"] == ["notebooks/experiment.ipynb"]
+    assert sections["workspace_tool_installer_bootstrap"]["metadata_json"]["artifact_paths"] == ["artifacts/exported_model/saved_model.pb"]
+    assert sections["workspace_tool_installer_bootstrap"]["metadata_json"]["config_review_paths"] == ["configs/train.yaml"]
+    assert any(
+        "configs/train.yaml" in command
+        for command in sections["workspace_tool_installer_bootstrap"]["metadata_json"]["config_review_commands"]
+    )
     assert sections["browser_evidence_pipeline"]["status"] == "ready"
     assert sections["context_pack_diffing"]["status"] == "ready"
     assert "## Mission Control Capability Report" in payload["report_markdown"]

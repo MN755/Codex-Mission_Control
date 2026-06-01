@@ -55,10 +55,13 @@ def test_detect_workspace_tooling_returns_stable_contract_for_missing_workspace(
     payload = detect_workspace_tooling(None, project_name="Missing")
 
     assert payload["available"] is False
+    assert payload["notebook_paths"] == []
     assert payload["notebook_commands"] == []
     assert payload["deployment_commands"] == []
+    assert payload["artifact_paths"] == []
     assert payload["artifact_inspection_commands"] == []
     assert payload["config_review_paths"] == []
+    assert payload["config_review_commands"] == []
     assert payload["tensorflow_repo"]["enabled"] is False
     assert payload["tensorflow_validation_plan"]["status"] == "not_applicable"
     assert payload["pytorch_repo"]["enabled"] is False
@@ -70,10 +73,13 @@ def test_detect_workspace_tooling_returns_stable_contract_for_invalid_workspace(
     payload = detect_workspace_tooling(tmp_path / "does-not-exist", project_name="Invalid")
 
     assert payload["available"] is False
+    assert payload["notebook_paths"] == []
     assert payload["notebook_commands"] == []
     assert payload["deployment_commands"] == []
+    assert payload["artifact_paths"] == []
     assert payload["artifact_inspection_commands"] == []
     assert payload["config_review_paths"] == []
+    assert payload["config_review_commands"] == []
     assert payload["tensorflow_repo"]["enabled"] is False
     assert payload["pytorch_repo"]["enabled"] is False
 
@@ -529,6 +535,8 @@ def test_detect_workspace_tooling_prefers_concrete_tensorflow_artifact_commands(
 
     payload = detect_workspace_tooling(tmp_path, project_name="TensorFlow Artifact Demo")
 
+    assert "saved_model.pb" in " ".join(payload["artifact_paths"])
+    assert "model.tflite" in " ".join(payload["artifact_paths"])
     assert "saved_model_cli show --dir . --all" in payload["deployment_commands"]
     assert any("model.tflite" in command and "size_bytes" in command for command in payload["deployment_commands"])
     assert "saved_model_cli show --dir <saved_model_dir> --all" not in payload["deployment_commands"]
@@ -550,6 +558,11 @@ def test_detect_workspace_tooling_surfaces_notebook_and_config_features(tmp_path
 
     payload = detect_workspace_tooling(tmp_path, project_name="Notebook Feature Demo")
 
+    assert "services/model/notebooks/experiment.ipynb" in payload["notebook_paths"]
     assert "jupyter nbconvert --to script services/model/notebooks/experiment.ipynb" in payload["notebook_commands"]
     assert "services/model/configs/train.yaml" in payload["config_review_paths"]
+    assert any("services/model/configs/train.yaml" in command for command in payload["config_review_commands"])
     assert "notebook flow(s) need scriptable rescue" in payload["summary"]
+    packs = {pack["id"]: pack for pack in payload["packs"]}
+    assert packs["notebook_recovery_pack"]["status"] == "needs_setup"
+    assert packs["ml_config_audit_pack"]["status"] == "needs_setup"

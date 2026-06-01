@@ -200,7 +200,7 @@ def _availability(tool_id: str, *, provider: str, connected_accounts: dict[str, 
             notes.append("Notebook rescue only matters when the TensorFlow repo still hides real work inside notebooks.")
             return "experimental", notes
         notes.append("Use this lane to turn TensorFlow notebooks into repo-owned scripts before validation claims get theatrical.")
-        return "available", notes
+        return ("available" if shutil.which("jupyter") else "needs_setup"), notes
     if tool_id == "pytorch-project-scaffolding":
         mode = _cached_context_value(context, "pytorch_mode", lambda: detect_pytorch_repo_mode(REPO_ROOT))
         validation = _cached_context_value(context, "pytorch_validation_plan", lambda: build_pytorch_validation_plan(REPO_ROOT))
@@ -264,7 +264,7 @@ def _availability(tool_id: str, *, provider: str, connected_accounts: dict[str, 
             notes.append("Notebook rescue only matters when the PyTorch repo still hides real work inside notebooks.")
             return "experimental", notes
         notes.append("Use this lane to turn PyTorch notebooks into repo-owned scripts before validation claims become fiction.")
-        return "available", notes
+        return ("available" if shutil.which("jupyter") else "needs_setup"), notes
     if tool_id == "ml-config-audit":
         tensorflow_mode = _cached_context_value(context, "tensorflow_mode", lambda: detect_tensorflow_repo_mode(REPO_ROOT))
         pytorch_mode = _cached_context_value(context, "pytorch_mode", lambda: detect_pytorch_repo_mode(REPO_ROOT))
@@ -272,7 +272,7 @@ def _availability(tool_id: str, *, provider: str, connected_accounts: dict[str, 
             notes.append("Config audit only matters when the repo actually has ML config files worth treating seriously.")
             return "experimental", notes
         notes.append("Use config audit to tie validation evidence to the exact ML config files that drove the run.")
-        return "available", notes
+        return ("available" if shutil.which("python") else "needs_setup"), notes
     if tool_id == "secret-scan-with-gitleaks":
         return ("available" if shutil.which("gitleaks") else "needs_setup"), ["Redacted secret scanning is the sane default gate before handoff or release."]
     if tool_id == "dependency-audit-with-osv-scanner":

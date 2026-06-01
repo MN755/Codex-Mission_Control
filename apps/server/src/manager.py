@@ -11316,9 +11316,18 @@ class MissionControlService:
                 *list(tooling.get("intake_commands") or [])[:2],
                 *list(tooling.get("notebook_commands") or [])[:2],
                 *list(tooling.get("validation_commands") or [])[:3],
+                *list(tooling.get("config_review_commands") or [])[:3],
                 *[
                     f"Review config path: {item}"
                     for item in list(tooling.get("config_review_paths") or [])[:3]
+                ],
+                *[
+                    f"Review notebook path: {item}"
+                    for item in list(tooling.get("notebook_paths") or [])[:3]
+                ],
+                *[
+                    f"Review artifact path: {item}"
+                    for item in list(tooling.get("artifact_paths") or [])[:3]
                 ],
                 *list(tooling.get("artifact_inspection_commands") or [])[:2],
                 *list(tooling.get("security_commands") or [])[:2],
@@ -11378,8 +11387,20 @@ class MissionControlService:
                     else ""
                 ],
                 *[
+                    f"Notebook rescue path still needs review: {item}"
+                    for item in list(tooling.get("notebook_paths") or [])[:3]
+                ],
+                *[
                     f"Config-driven ML path needs explicit review: {item}"
                     for item in list(tooling.get("config_review_paths") or [])[:3]
+                ],
+                *[
+                    f"Config-driven ML path still lacks an executed review command: {item}"
+                    for item in list(tooling.get("config_review_commands") or [])[:3]
+                ],
+                *[
+                    f"Artifact path still needs direct inspection evidence: {item}"
+                    for item in list(tooling.get("artifact_paths") or [])[:3]
                 ],
                 *[
                     "Artifact inspection commands exist but no validated evidence has been attached yet."
@@ -13391,7 +13412,17 @@ class MissionControlService:
             summary="Mission Control can now tell the operator which missing repo-native tools are worth installing and exactly how to bootstrap them.",
             details=steps,
             commands=self._dedupe_strings(commands)[:8],
-            metadata={"recommended_next_steps": list(tooling.get("recommended_next_steps") or [])[:6]},
+            metadata={
+                "recommended_next_steps": list(tooling.get("recommended_next_steps") or [])[:6],
+                "notebook_paths": list(tooling.get("notebook_paths") or [])[:6],
+                "artifact_paths": list(tooling.get("artifact_paths") or [])[:6],
+                "config_review_paths": list(tooling.get("config_review_paths") or [])[:6],
+                "config_review_commands": list(tooling.get("config_review_commands") or [])[:6],
+                "pack_statuses": {
+                    str(pack.get("id")): str(pack.get("status"))
+                    for pack in list(tooling.get("packs") or [])
+                },
+            },
         )
 
     def _build_failure_replay_pack(self, db: Session, project: Project, snapshot: dict[str, Any]) -> dict[str, Any]:

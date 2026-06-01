@@ -21,7 +21,7 @@ def test_tool_catalog_surfaces_tensorflow_tools_when_repo_signals_exist(monkeypa
     )
     monkeypatch.setattr(
         "tool_catalog.shutil.which",
-        lambda command: f"C:/tools/{command}.exe" if command in {"tensorboard", "saved_model_cli", "tfx"} else None,
+        lambda command: f"C:/tools/{command}.exe" if command in {"tensorboard", "saved_model_cli", "tfx", "jupyter", "python"} else None,
     )
 
     payload = catalog_with_permissions(provider="codex", connected_accounts={}, permission_overrides={})
@@ -113,7 +113,7 @@ def test_tool_catalog_surfaces_pytorch_tools_when_repo_signals_exist(monkeypatch
     )
     monkeypatch.setattr(
         "tool_catalog.shutil.which",
-        lambda command: f"C:/tools/{command}.exe" if command in {"tensorboard", "torchrun", "accelerate", "python"} else None,
+        lambda command: f"C:/tools/{command}.exe" if command in {"tensorboard", "torchrun", "accelerate", "python", "jupyter"} else None,
     )
 
     payload = catalog_with_permissions(provider="codex", connected_accounts={}, permission_overrides={})
@@ -338,3 +338,48 @@ def test_tool_catalog_accepts_tensorflow_artifacts_without_repo_export_commands(
 
     assert tools["tensorflow-serving-export"]["availability"] == "available"
     assert tools["tensorflow-lite-export"]["availability"] == "available"
+
+
+def test_tool_catalog_requires_jupyter_for_notebook_rescue(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "tool_catalog.detect_tensorflow_repo_mode",
+        lambda _root: {
+            "enabled": True,
+            "mode": "tensorflow_product",
+            "frameworks": ["TensorFlow"],
+            "product_workflows": ["notebook_experiments"],
+        },
+    )
+    monkeypatch.setattr("tool_catalog.shutil.which", lambda command: "C:/tools/python.exe" if command == "python" else None)
+
+    payload = catalog_with_permissions(provider="codex", connected_accounts={}, permission_overrides={})
+    tools = {item["id"]: item for item in payload}
+
+    assert tools["tensorflow-notebook-rescue"]["availability"] == "needs_setup"
+
+
+def test_tool_catalog_requires_python_for_ml_config_audit(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "tool_catalog.detect_tensorflow_repo_mode",
+        lambda _root: {"enabled": False, "mode": None, "frameworks": [], "product_workflows": []},
+    )
+    monkeypatch.setattr(
+        "tool_catalog.detect_pytorch_repo_mode",
+        lambda _root: {
+            "enabled": True,
+            "mode": "pytorch_general",
+            "frameworks": ["PyTorch"],
+            "product_workflows": ["config_driven_runs"],
+            "distributed_stack": [],
+            "checkpoint_paths": [],
+            "training_commands": ["python train.py"],
+            "export_commands": [],
+            "observability_commands": [],
+        },
+    )
+    monkeypatch.setattr("tool_catalog.shutil.which", lambda command: "C:/tools/jupyter.exe" if command == "jupyter" else None)
+
+    payload = catalog_with_permissions(provider="codex", connected_accounts={}, permission_overrides={})
+    tools = {item["id"]: item for item in payload}
+
+    assert tools["ml-config-audit"]["availability"] == "needs_setup"
