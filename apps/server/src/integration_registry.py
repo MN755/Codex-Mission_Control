@@ -29,6 +29,77 @@ SKIP_DIRS = {
     "artifacts",
 }
 
+PROVIDER_PRIORITY_BY_FAMILY: dict[str, tuple[str, ...]] = {
+    "source_control": ("github", "gitlab", "bitbucket"),
+    "work_tracking": ("github_issues", "jira", "linear"),
+    "containers": ("devcontainer", "docker"),
+    "ci_cd": ("github_actions", "gitlab_ci", "bitbucket_pipelines", "circleci", "buildkite"),
+    "hosting_deploy": ("vercel", "netlify", "cloudflare_pages", "railway", "render"),
+}
+
+PROVIDER_CLIS: dict[str, tuple[str, ...]] = {
+    "github": ("gh",),
+    "gitlab": ("glab",),
+    "bitbucket": (),
+    "github_issues": ("gh",),
+    "jira": (),
+    "linear": (),
+    "docker": ("docker",),
+    "devcontainer": ("devcontainer",),
+    "github_actions": ("gh",),
+    "gitlab_ci": ("glab",),
+    "bitbucket_pipelines": (),
+    "circleci": (),
+    "buildkite": (),
+    "vercel": ("vercel",),
+    "netlify": ("netlify",),
+    "cloudflare_pages": ("wrangler",),
+    "railway": ("railway",),
+    "render": (),
+}
+
+PROVIDER_WORKSPACE_MARKERS: dict[str, tuple[str, ...]] = {
+    "github": (".github/workflows",),
+    "gitlab": (".gitlab-ci.yml",),
+    "bitbucket": ("bitbucket-pipelines.yml",),
+    "github_issues": (".github/workflows",),
+    "jira": (".jira",),
+    "linear": (".linear",),
+    "docker": ("Dockerfile", "docker-compose.yml", "docker-compose.yaml"),
+    "devcontainer": (".devcontainer/devcontainer.json",),
+    "github_actions": (".github/workflows",),
+    "gitlab_ci": (".gitlab-ci.yml",),
+    "bitbucket_pipelines": ("bitbucket-pipelines.yml",),
+    "circleci": (".circleci/config.yml",),
+    "buildkite": (".buildkite/pipeline.yml", ".buildkite/pipeline.yaml"),
+    "vercel": ("vercel.json",),
+    "netlify": ("netlify.toml",),
+    "cloudflare_pages": ("wrangler.toml",),
+    "railway": ("railway.json",),
+    "render": ("render.yaml",),
+}
+
+PROVIDER_TOKEN_MARKERS: dict[str, tuple[str, ...]] = {
+    "github": ("github",),
+    "gitlab": ("gitlab",),
+    "bitbucket": ("bitbucket",),
+    "github_issues": ("github issue", "gh issue", "github"),
+    "jira": ("jira",),
+    "linear": ("linear",),
+    "docker": ("docker",),
+    "devcontainer": ("devcontainer",),
+    "github_actions": ("github workflow", "github actions",),
+    "gitlab_ci": ("gitlab ci", "gitlab pipeline",),
+    "bitbucket_pipelines": ("bitbucket pipelines",),
+    "circleci": ("circleci",),
+    "buildkite": ("buildkite",),
+    "vercel": ("vercel",),
+    "netlify": ("netlify",),
+    "cloudflare_pages": ("cloudflare pages", "wrangler",),
+    "railway": ("railway",),
+    "render": ("render",),
+}
+
 
 @dataclass(frozen=True)
 class IntegrationActionDefinition:
@@ -689,6 +760,148 @@ def _command_is_available(command: str) -> bool:
     return shutil.which(executable) is not None
 
 
+def _read_git_remote_url(root: Path | None) -> str:
+    if root is None:
+        return ""
+    git_dir = root / ".git"
+    config_path = git_dir / "config"
+    if not config_path.exists():
+        return ""
+    text = _safe_read_text(config_path)
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("url ="):
+            return stripped.partition("=")[2].strip().lower()
+    return ""
+
+
+def _provider_command_template(provider: str, action_id: str) -> str | None:
+    commands: dict[str, dict[str, str]] = {
+        "github": {
+            "search": "gh repo view --json name,defaultBranchRef,isPrivate,url",
+            "create": 'gh issue create --title "{title}" --body "{body}"',
+            "inspect": "gh repo view --json name,defaultBranchRef,isPrivate,url",
+        },
+        "gitlab": {
+            "search": "glab repo view",
+            "create": 'glab issue create --title "{title}" --description "{body}"',
+            "inspect": "glab repo view",
+        },
+        "github_issues": {
+            "search": "gh issue list --limit 20",
+            "create": 'gh issue create --title "{title}" --body "{body}"',
+        },
+        "docker": {
+            "validate": "docker --version",
+            "inspect": "docker --version",
+        },
+        "devcontainer": {
+            "validate": "devcontainer read-configuration --workspace-folder .",
+            "open": "devcontainer up --workspace-folder .",
+            "inspect": "devcontainer read-configuration --workspace-folder .",
+        },
+        "github_actions": {
+            "inspect": "gh run list --limit 10 --json databaseId,status,conclusion,name,workflowName",
+            "rerun": "gh run rerun {run_id}",
+        },
+        "gitlab_ci": {
+            "inspect": "glab ci status",
+        },
+        "vercel": {
+            "inspect": "vercel whoami",
+            "deploy": "vercel deploy --yes",
+        },
+        "netlify": {
+            "inspect": "netlify status",
+            "deploy": "netlify deploy --prod",
+        },
+        "cloudflare_pages": {
+            "inspect": "wrangler whoami",
+        },
+        "railway": {
+            "inspect": "railway whoami",
+            "deploy": "railway up",
+        },
+    }
+    return commands.get(provider, {}).get(action_id)
+
+
+def _provider_candidates_for_family(
+    *,
+    family: IntegrationFamilyDefinition,
+    connection: dict[str, Any],
+    detected_files: list[str],
+    token_hits: list[str],
+    installed_clis: list[str],
+    git_remote_url: str,
+) -> list[str]:
+    candidates: list[str] = []
+    connection_providers = [str(item) for item in list(connection.get("providers") or [])]
+    for provider in connection_providers:
+        if provider in family.providers:
+            candidates.append(provider)
+    if git_remote_url:
+        if "github.com" in git_remote_url and "github" in family.providers:
+            candidates.append("github")
+        if "gitlab" in git_remote_url and "gitlab" in family.providers:
+            candidates.append("gitlab")
+        if "bitbucket" in git_remote_url and "bitbucket" in family.providers:
+            candidates.append("bitbucket")
+    lowered_files = [path.lower() for path in detected_files]
+    lowered_hits = [hit.lower() for hit in token_hits]
+    installed_cli_set = {item.lower() for item in installed_clis}
+    for provider in family.providers:
+        markers = PROVIDER_WORKSPACE_MARKERS.get(provider, ())
+        if any(
+            file_path == marker.lower()
+            or file_path.endswith("/" + marker.lower())
+            or file_path.startswith(marker.lower().rstrip("/") + "/")
+            for file_path in lowered_files
+            for marker in markers
+        ):
+            candidates.append(provider)
+        tokens = PROVIDER_TOKEN_MARKERS.get(provider, ())
+        if any(token in hit for hit in lowered_hits for token in tokens):
+            candidates.append(provider)
+        required_clis = PROVIDER_CLIS.get(provider, ())
+        if required_clis and all(cli.lower() in installed_cli_set for cli in required_clis):
+            candidates.append(provider)
+    priority = PROVIDER_PRIORITY_BY_FAMILY.get(family.family_id, family.providers)
+    ordered = [provider for provider in priority if provider in candidates]
+    return _dedupe_strs(ordered)
+
+
+def _resolve_provider_command(
+    *,
+    family: IntegrationFamilyDefinition,
+    action: IntegrationActionDefinition,
+    connection: dict[str, Any],
+    detected_files: list[str],
+    token_hits: list[str],
+    installed_clis: list[str],
+    git_remote_url: str,
+) -> tuple[str | None, list[str], str | None]:
+    candidates = _provider_candidates_for_family(
+        family=family,
+        connection=connection,
+        detected_files=detected_files,
+        token_hits=token_hits,
+        installed_clis=installed_clis,
+        git_remote_url=git_remote_url,
+    )
+    for provider in candidates:
+        template = _provider_command_template(provider, action.action_id)
+        if not template:
+            continue
+        if _command_is_available(template):
+            return template, candidates, provider
+    for provider in candidates:
+        template = _provider_command_template(provider, action.action_id)
+        if template:
+            return template, candidates, provider
+    return action.command_template, candidates, candidates[0] if candidates else None
+
+
 def _provider_status_from_legacy(account: dict[str, Any]) -> str:
     status = str(account.get("status") or "").strip().lower()
     if status == "connected":
@@ -917,6 +1130,7 @@ def build_project_integration_status(
     root = Path(workspace_path) if workspace_path else None
     relative_files = _relative_files(root) if root and root.exists() else []
     haystack = _workspace_haystack(root, relative_files) if root and root.exists() else ""
+    git_remote_url = _read_git_remote_url(root)
     statuses: list[dict[str, Any]] = []
     for family in FAMILIES:
         connection = _connection_status_for_family(registry, family)
@@ -934,6 +1148,15 @@ def build_project_integration_status(
         ]
         token_hits = [token for token in family.workspace_tokens if token and token.lower() in haystack]
         installed_clis = [cli for cli in family.cli_candidates if shutil.which(cli)]
+        provider_candidates = _provider_candidates_for_family(
+            family=family,
+            connection=connection,
+            detected_files=detected_files,
+            token_hits=token_hits,
+            installed_clis=installed_clis,
+            git_remote_url=git_remote_url,
+        )
+        resolved_provider = provider_candidates[0] if provider_candidates else None
         has_host_import = bool(connection.get("host_imported"))
         has_workspace_signal = bool(detected_files or token_hits)
         has_cli = bool(installed_clis)
@@ -960,12 +1183,21 @@ def build_project_integration_status(
             if has_workspace_signal and not has_connection:
                 recommended_fixes.append("Workspace signals exist, but Mission Control has not verified the live provider context yet.")
         for action in family.actions:
-            action_command_ready = bool(action.command_template and _command_is_available(action.command_template))
+            action_template, _, action_provider = _resolve_provider_command(
+                family=family,
+                action=action,
+                connection=connection,
+                detected_files=detected_files,
+                token_hits=token_hits,
+                installed_clis=installed_clis,
+                git_remote_url=git_remote_url,
+            )
+            action_command_ready = bool(action_template and _command_is_available(action_template))
             action_ready = bool(
                 action.action_id in {"import_host_state", "connect", "disconnect", "inspect_status"}
                 or action_command_ready
                 or (
-                    not action.command_template
+                    not action_template
                     and (has_connection or has_host_import or has_workspace_signal)
                 )
             )
@@ -981,12 +1213,25 @@ def build_project_integration_status(
                     "requires_confirmation": action.requires_confirmation,
                     "required_params": list(action.required_params),
                     "status": "available" if action_ready else "needs_setup",
+                    "provider": action_provider,
+                    "command_template": action_template,
                 }
             )
         safe_commands = [
-            action.command_template
+            template
             for action in family.actions
-            if action.command_template and not action.mutates_remote_state and _command_is_available(action.command_template)
+            for template, _, _provider in [
+                _resolve_provider_command(
+                    family=family,
+                    action=action,
+                    connection=connection,
+                    detected_files=detected_files,
+                    token_hits=token_hits,
+                    installed_clis=installed_clis,
+                    git_remote_url=git_remote_url,
+                )
+            ]
+            if template and not action.mutates_remote_state and _command_is_available(template)
         ]
         artifacts = [{"type": "config_file", "path": path} for path in detected_files]
         statuses.append(
@@ -1008,6 +1253,9 @@ def build_project_integration_status(
                     "workspace_token_hits": token_hits,
                     "host_imported": has_host_import,
                     "connection_status": connection_status,
+                    "resolved_provider": resolved_provider,
+                    "provider_candidates": provider_candidates,
+                    "git_remote_url": git_remote_url or None,
                 },
                 "artifacts": artifacts,
                 "safe_commands": safe_commands,
@@ -1093,12 +1341,40 @@ def preview_integration_action(
         raise ValueError("Unknown integration action")
     params = dict(params or {})
     missing = [name for name in action.required_params if name not in params or params[name] in {None, ""}]
+    root = Path(workspace_path) if workspace_path else None
+    relative_files = _relative_files(root) if root and root.exists() else []
+    haystack = _workspace_haystack(root, relative_files) if root and root.exists() else ""
+    git_remote_url = _read_git_remote_url(root)
+    registry = normalize_integration_registry(registry_payload, {})
+    connection = _connection_status_for_family(registry, family)
+    detected_files = [
+        path
+        for path in relative_files
+        if any(
+            path == item
+            or path.endswith("/" + item)
+            or path.startswith(item.rstrip("/") + "/")
+            or Path(path).name == item
+            for item in family.config_files
+        )
+    ]
+    token_hits = [token for token in family.workspace_tokens if token and token.lower() in haystack]
+    installed_clis = [cli for cli in family.cli_candidates if shutil.which(cli)]
+    command_template, provider_candidates, resolved_provider = _resolve_provider_command(
+        family=family,
+        action=action,
+        connection=connection,
+        detected_files=detected_files,
+        token_hits=token_hits,
+        installed_clis=installed_clis,
+        git_remote_url=git_remote_url,
+    )
     command: str | None = None
-    if action.command_template:
+    if command_template:
         if missing:
-            command = action.command_template
+            command = command_template
         else:
-            command = _format_command(action.command_template, params)
+            command = _format_command(command_template, params)
     executable_available = bool(command and _command_is_available(command))
     return {
         "family": family.family_id,
@@ -1114,11 +1390,14 @@ def preview_integration_action(
         "mutates_remote_state": action.mutates_remote_state,
         "requires_confirmation": action.requires_confirmation,
         "missing_params": missing,
+        "provider": resolved_provider,
+        "provider_candidates": provider_candidates,
         "notes": [
             "Mission Control previews the action before execution so approvals are tied to a concrete command or host import step.",
             "Local execution stays shell-free and only runs when the previewed executable is actually present.",
             "A host import is metadata, not proof of live remote authorization.",
             f"Executable detected: {'yes' if executable_available else 'no'}.",
+            f"Resolved provider: {resolved_provider or 'none'}.",
         ],
     }
 

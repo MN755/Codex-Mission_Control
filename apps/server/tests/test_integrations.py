@@ -7,6 +7,7 @@ from integration_registry import (
     execute_integration_action,
     import_host_state,
     normalize_integration_registry,
+    preview_integration_action,
 )
 from tool_catalog import catalog_with_permissions
 
@@ -267,3 +268,100 @@ def test_connect_and_disconnect_actions_update_registry_state() -> None:
     )
     assert disconnected["status"] == "completed"
     assert disconnected["updated_registry"]["connections"]["source_control"]["status"] == "disconnected"
+
+
+def test_provider_specific_preview_prefers_gitlab_for_gitlab_repo(monkeypatch, tmp_path) -> None:
+    workspace = tmp_path / "gitlab-repo"
+    workspace.mkdir(parents=True, exist_ok=True)
+    (workspace / ".gitlab-ci.yml").write_text("stages: [test]\n", encoding="utf-8")
+    (workspace / ".git").mkdir()
+    (workspace / ".git" / "config").write_text(
+        '[remote "origin"]\n    url = git@gitlab.com:demo/project.git\n',
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(
+        "integration_registry.shutil.which",
+        lambda command: f"C:/tools/{command}.exe" if command == "glab" else None,
+    )
+
+    preview = preview_integration_action(
+        family_id="source_control",
+        action_id="search",
+        params={},
+        registry_payload=normalize_integration_registry({}, {}),
+        workspace_path=str(workspace),
+        project_name="GitLab Demo",
+    )
+
+    assert preview["provider"] == "gitlab"
+    assert preview["command"] == "glab repo view"
+
+
+def test_provider_specific_preview_prefers_devcontainer_when_available(monkeypatch, tmp_path) -> None:
+    workspace = tmp_path / "devcontainer-repo"
+    (workspace / ".devcontainer").mkdir(parents=True, exist_ok=True)
+    (workspace / ".devcontainer" / "devcontainer.json").write_text('{"name":"demo"}\n', encoding="utf-8")
+
+    monkeypatch.setattr(
+        "integration_registry.shutil.which",
+        lambda command: f"C:/tools/{command}.exe" if command in {"docker", "devcontainer"} else None,
+    )
+
+    preview = preview_integration_action(
+        family_id="containers",
+        action_id="open",
+        params={},
+        registry_payload=normalize_integration_registry({}, {}),
+        workspace_path=str(workspace),
+        project_name="Devcontainer Demo",
+    )
+
+    assert preview["provider"] == "devcontainer"
+    assert preview["command"] == "devcontainer up --workspace-folder ."
+
+
+def test_provider_specific_preview_prefers_netlify_for_netlify_repo(monkeypatch, tmp_path) -> None:
+    workspace = tmp_path / "netlify-repo"
+    workspace.mkdir(parents=True, exist_ok=True)
+    (workspace / "netlify.toml").write_text("[build]\npublish='dist'\n", encoding="utf-8")
+
+    monkeypatch.setattr(
+        "integration_registry.shutil.which",
+        lambda command: f"C:/tools/{command}.exe" if command == "netlify" else None,
+    )
+
+    preview = preview_integration_action(
+        family_id="hosting_deploy",
+        action_id="deploy",
+        params={},
+        registry_payload=normalize_integration_registry({}, {}),
+        workspace_path=str(workspace),
+        project_name="Netlify Demo",
+    )
+
+    assert preview["provider"] == "netlify"
+    assert preview["command"] == "netlify deploy --prod"
+
+
+def test_provider_specific_preview_prefers_github_actions_for_workflow_repo(monkeypatch, tmp_path) -> None:
+    workspace = tmp_path / "workflow-repo"
+    (workspace / ".github" / "workflows").mkdir(parents=True, exist_ok=True)
+    (workspace / ".github" / "workflows" / "ci.yml").write_text("name: ci\n", encoding="utf-8")
+
+    monkeypatch.setattr(
+        "integration_registry.shutil.which",
+        lambda command: f"C:/tools/{command}.exe" if command == "gh" else None,
+    )
+
+    preview = preview_integration_action(
+        family_id="ci_cd",
+        action_id="inspect",
+        params={},
+        registry_payload=normalize_integration_registry({}, {}),
+        workspace_path=str(workspace),
+        project_name="GitHub Actions Demo",
+    )
+
+    assert preview["provider"] == "github_actions"
+    assert preview["command"] == "gh run list --limit 10 --json databaseId,status,conclusion,name,workflowName"

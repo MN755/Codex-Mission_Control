@@ -3118,6 +3118,8 @@ class IntegrationActionRead(BaseModel):
     requires_confirmation: bool = False
     required_params: list[str] = Field(default_factory=list)
     status: ToolAvailability = "available"
+    provider: str | None = None
+    command_template: str | None = None
 
 
 class IntegrationCatalogEntryRead(BaseModel):
@@ -3203,6 +3205,8 @@ class IntegrationActionPreviewRead(BaseModel):
     mutates_remote_state: bool = False
     requires_confirmation: bool = False
     missing_params: list[str] = Field(default_factory=list)
+    provider: str | None = None
+    provider_candidates: list[str] = Field(default_factory=list)
     notes: list[str] = Field(default_factory=list)
 
 
