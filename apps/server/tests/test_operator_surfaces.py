@@ -301,6 +301,10 @@ def test_verification_brief_endpoint_surfaces_notebook_config_and_artifact_follo
 
     def patched(project):
         payload = original(project)
+        payload["important_paths"] = ["train.py", "configs/train.yaml"]
+        payload["execution_entrypoints"] = ["python train.py", "python export.py"]
+        payload["runtime_blockers"] = ["Python is not available on PATH for the repo-owned TensorFlow commands this workspace expects to run."]
+        payload["validation_evidence_targets"] = ["Capture TensorBoard evidence instead of motivational speeches."]
         payload["notebook_paths"] = ["notebooks/experiment.ipynb"]
         payload["notebook_commands"] = ["jupyter nbconvert --to script notebooks/experiment.ipynb"]
         payload["artifact_paths"] = ["artifacts/exported_model/saved_model.pb"]
@@ -315,10 +319,14 @@ def test_verification_brief_endpoint_surfaces_notebook_config_and_artifact_follo
     assert response.status_code == 200, response.text
     payload = response.json()
 
+    assert "python train.py" in payload["required_checks"]
+    assert any(item == "Focus path: train.py" for item in payload["recommended_checks"])
     assert "saved_model_cli show --dir artifacts/exported_model --all" in payload["required_checks"]
     assert "jupyter nbconvert --to script notebooks/experiment.ipynb" in payload["recommended_checks"]
     assert any("configs/train.yaml" in item and item.startswith("python -c ") for item in payload["recommended_checks"])
     assert any(item == "Review artifact path: artifacts/exported_model/saved_model.pb" for item in payload["recommended_checks"])
+    assert any("Runtime blocker: Python is not available on PATH" in item for item in payload["evidence_gaps"])
+    assert any("Evidence target still needs proof: Capture TensorBoard evidence instead of motivational speeches." == item for item in payload["evidence_gaps"])
     assert any("Config-driven ML path needs explicit review: configs/train.yaml" == item for item in payload["evidence_gaps"])
     assert any("Notebook-driven ML workflow still needs promotion" in item for item in payload["evidence_gaps"])
     assert any("Artifact path still needs direct inspection evidence: artifacts/exported_model/saved_model.pb" == item for item in payload["evidence_gaps"])

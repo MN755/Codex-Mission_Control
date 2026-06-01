@@ -11297,6 +11297,7 @@ class MissionControlService:
         tooling = self.build_workspace_tooling_status(project)
         required_checks = self._dedupe_strings(
             [
+                *list(tooling.get("execution_entrypoints") or [])[:6],
                 *list(tooling.get("validation_commands") or []),
                 *list(tooling.get("security_commands") or []),
                 *list(tooling.get("artifact_inspection_commands") or []),
@@ -11313,23 +11314,28 @@ class MissionControlService:
         )
         recommended_checks = self._dedupe_strings(
             [
-                *list(tooling.get("intake_commands") or [])[:2],
-                *list(tooling.get("notebook_commands") or [])[:2],
-                *list(tooling.get("validation_commands") or [])[:3],
-                *list(tooling.get("config_review_commands") or [])[:3],
+                *list(tooling.get("intake_commands") or [])[:1],
+                *[
+                    f"Focus path: {item}"
+                    for item in list(tooling.get("important_paths") or [])[:2]
+                ],
+                *list(tooling.get("notebook_commands") or [])[:1],
+                *list(tooling.get("config_review_commands") or [])[:2],
+                *[
+                    f"Review artifact path: {item}"
+                    for item in list(tooling.get("artifact_paths") or [])[:2]
+                ],
                 *[
                     f"Review config path: {item}"
-                    for item in list(tooling.get("config_review_paths") or [])[:3]
+                    for item in list(tooling.get("config_review_paths") or [])[:2]
                 ],
                 *[
                     f"Review notebook path: {item}"
-                    for item in list(tooling.get("notebook_paths") or [])[:3]
-                ],
-                *[
-                    f"Review artifact path: {item}"
-                    for item in list(tooling.get("artifact_paths") or [])[:3]
+                    for item in list(tooling.get("notebook_paths") or [])[:2]
                 ],
                 *list(tooling.get("artifact_inspection_commands") or [])[:2],
+                *list(tooling.get("execution_entrypoints") or [])[:2],
+                *list(tooling.get("validation_commands") or [])[:2],
                 *list(tooling.get("security_commands") or [])[:2],
                 *[
                     str(step.get("title") or step.get("command") or "").strip()
@@ -11380,6 +11386,14 @@ class MissionControlService:
                     f"Workspace tooling gap: {tool['label']} is referenced by the repo but not installed in the current runtime."
                     for tool in tooling.get("tools", [])
                     if tool.get("configured") and not tool.get("installed")
+                ],
+                *[
+                    f"Runtime blocker: {item}"
+                    for item in list(tooling.get("runtime_blockers") or [])[:4]
+                ],
+                *[
+                    f"Evidence target still needs proof: {item}"
+                    for item in list(tooling.get("validation_evidence_targets") or [])[:4]
                 ],
                 *[
                     "Notebook-driven ML workflow still needs promotion into a repo-owned script before validation evidence is trustworthy."
@@ -13414,6 +13428,11 @@ class MissionControlService:
             commands=self._dedupe_strings(commands)[:8],
             metadata={
                 "recommended_next_steps": list(tooling.get("recommended_next_steps") or [])[:6],
+                "repo_mode_summaries": list(tooling.get("repo_mode_summaries") or [])[:4],
+                "important_paths": list(tooling.get("important_paths") or [])[:8],
+                "execution_entrypoints": list(tooling.get("execution_entrypoints") or [])[:8],
+                "runtime_blockers": list(tooling.get("runtime_blockers") or [])[:6],
+                "validation_evidence_targets": list(tooling.get("validation_evidence_targets") or [])[:8],
                 "notebook_paths": list(tooling.get("notebook_paths") or [])[:6],
                 "artifact_paths": list(tooling.get("artifact_paths") or [])[:6],
                 "config_review_paths": list(tooling.get("config_review_paths") or [])[:6],

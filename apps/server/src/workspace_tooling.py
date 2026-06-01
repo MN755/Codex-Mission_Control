@@ -457,6 +457,11 @@ def _base_workspace_tooling_payload(
         "tools": [],
         "packs": [],
         "recommended_next_steps": recommended_next_steps,
+        "repo_mode_summaries": [],
+        "important_paths": [],
+        "execution_entrypoints": [],
+        "runtime_blockers": [],
+        "validation_evidence_targets": [],
         "intake_commands": [],
         "notebook_paths": [],
         "notebook_commands": [],
@@ -517,6 +522,26 @@ def detect_workspace_tooling(workspace_path: str | Path | None, *, project_name:
     tensorflow_plan = build_tensorflow_validation_plan(root)
     pytorch_runtime = detect_pytorch_runtime_status(root)
     pytorch_plan = build_pytorch_validation_plan(root)
+    repo_mode_summaries = _dedupe(
+        [
+            (
+                f"TensorFlow mode `{tensorflow_mode.get('mode')}` with frameworks: "
+                f"{', '.join(str(item) for item in list(tensorflow_mode.get('frameworks') or [])[:5])}"
+            )
+            if tensorflow_mode.get("enabled")
+            else "",
+            (
+                f"PyTorch mode `{pytorch_mode.get('mode')}` with frameworks: "
+                f"{', '.join(str(item) for item in list(pytorch_mode.get('frameworks') or [])[:5])}"
+            )
+            if pytorch_mode.get("enabled")
+            else "",
+        ]
+    )
+    important_paths = _dedupe(
+        [str(item) for item in list(tensorflow_mode.get("important_paths") or [])]
+        + [str(item) for item in list(pytorch_mode.get("important_paths") or [])]
+    )
     notebook_paths = _dedupe(
         [str(item) for item in list(tensorflow_mode.get("notebook_paths") or [])]
         + [str(item) for item in list(pytorch_mode.get("notebook_paths") or [])]
@@ -533,6 +558,25 @@ def detect_workspace_tooling(workspace_path: str | Path | None, *, project_name:
         + [str(item) for item in list(pytorch_mode.get("config_paths") or [])]
     )
     config_review_commands = [_config_review_command(path) for path in config_review_paths[:6]]
+    execution_entrypoints = _dedupe(
+        [str(item) for item in list(tensorflow_mode.get("test_commands") or [])]
+        + [str(item) for item in list(tensorflow_mode.get("training_commands") or [])]
+        + [str(item) for item in list(tensorflow_mode.get("export_commands") or [])]
+        + [str(item) for item in list(pytorch_mode.get("test_commands") or [])]
+        + [str(item) for item in list(pytorch_mode.get("training_commands") or [])]
+        + [str(item) for item in list(pytorch_mode.get("evaluation_commands") or [])]
+        + [str(item) for item in list(pytorch_mode.get("inference_commands") or [])]
+        + [str(item) for item in list(pytorch_mode.get("export_commands") or [])]
+    )
+    runtime_blockers = _dedupe(
+        [str(item) for item in list(tensorflow_plan.get("blockers") or [])]
+        + [str(item) for item in list(pytorch_runtime.get("blockers") or [])]
+        + [str(item) for item in list(pytorch_plan.get("blockers") or [])]
+    )
+    validation_evidence_targets = _dedupe(
+        [str(item) for item in list(tensorflow_plan.get("evidence_targets") or [])]
+        + [str(item) for item in list(pytorch_plan.get("evidence_targets") or [])]
+    )
     notebook_commands: list[str] = [
         f"jupyter nbconvert --to script {path}" for path in notebook_paths[:4]
     ]
@@ -718,6 +762,10 @@ def detect_workspace_tooling(workspace_path: str | Path | None, *, project_name:
         summary_parts.append(f"{len(artifact_paths)} artifact path(s) are ready for direct inspection")
     if config_review_paths:
         summary_parts.append(f"{len(config_review_paths)} config-driven path(s) detected")
+    if runtime_blockers:
+        summary_parts.append(f"{len(runtime_blockers)} runtime blocker(s) still need attention")
+    if execution_entrypoints:
+        summary_parts.append(f"{len(execution_entrypoints)} repo-owned execution path(s) are explicitly mapped")
     if intake_commands:
         summary_parts.append("fast intake ready")
     if validation_commands:
@@ -738,6 +786,11 @@ def detect_workspace_tooling(workspace_path: str | Path | None, *, project_name:
         "tools": tools,
         "packs": packs,
         "recommended_next_steps": recommended_next_steps[:8],
+        "repo_mode_summaries": repo_mode_summaries[:4],
+        "important_paths": important_paths[:12],
+        "execution_entrypoints": execution_entrypoints[:12],
+        "runtime_blockers": runtime_blockers[:8],
+        "validation_evidence_targets": validation_evidence_targets[:12],
         "intake_commands": _dedupe(intake_commands)[:6],
         "notebook_paths": notebook_paths[:8],
         "notebook_commands": notebook_commands[:6],

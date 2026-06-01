@@ -55,6 +55,11 @@ def test_detect_workspace_tooling_returns_stable_contract_for_missing_workspace(
     payload = detect_workspace_tooling(None, project_name="Missing")
 
     assert payload["available"] is False
+    assert payload["repo_mode_summaries"] == []
+    assert payload["important_paths"] == []
+    assert payload["execution_entrypoints"] == []
+    assert payload["runtime_blockers"] == []
+    assert payload["validation_evidence_targets"] == []
     assert payload["notebook_paths"] == []
     assert payload["notebook_commands"] == []
     assert payload["deployment_commands"] == []
@@ -73,6 +78,11 @@ def test_detect_workspace_tooling_returns_stable_contract_for_invalid_workspace(
     payload = detect_workspace_tooling(tmp_path / "does-not-exist", project_name="Invalid")
 
     assert payload["available"] is False
+    assert payload["repo_mode_summaries"] == []
+    assert payload["important_paths"] == []
+    assert payload["execution_entrypoints"] == []
+    assert payload["runtime_blockers"] == []
+    assert payload["validation_evidence_targets"] == []
     assert payload["notebook_paths"] == []
     assert payload["notebook_commands"] == []
     assert payload["deployment_commands"] == []
@@ -253,6 +263,11 @@ def test_detect_workspace_tooling_surfaces_pytorch_training_pack(tmp_path: Path,
     assert payload["pytorch_repo"]["enabled"] is True
     assert payload["pytorch_runtime_status"]["status"] == "ready"
     assert payload["pytorch_validation_plan"]["available"] is True
+    assert any("PyTorch mode" in item for item in payload["repo_mode_summaries"])
+    assert "train.py" in " ".join(payload["important_paths"])
+    assert any(command == "python train.py" for command in payload["execution_entrypoints"])
+    assert payload["runtime_blockers"] == []
+    assert payload["validation_evidence_targets"]
     assert "artifacts/model.onnx" in payload["artifact_paths"]
     tools = {tool["id"]: tool for tool in payload["tools"]}
     assert tools["accelerate"]["configured"] is True
@@ -561,11 +576,15 @@ def test_detect_workspace_tooling_surfaces_notebook_and_config_features(tmp_path
 
     payload = detect_workspace_tooling(tmp_path, project_name="Notebook Feature Demo")
 
+    assert any("TensorFlow mode" in item for item in payload["repo_mode_summaries"])
+    assert "services/model/train.py" in payload["important_paths"]
+    assert "python services/model/train.py" in payload["execution_entrypoints"]
     assert "services/model/notebooks/experiment.ipynb" in payload["notebook_paths"]
     assert "jupyter nbconvert --to script services/model/notebooks/experiment.ipynb" in payload["notebook_commands"]
     assert "services/model/configs/train.yaml" in payload["config_review_paths"]
     assert any("services/model/configs/train.yaml" in command for command in payload["config_review_commands"])
     assert "notebook flow(s) need scriptable rescue" in payload["summary"]
+    assert payload["validation_evidence_targets"]
     packs = {pack["id"]: pack for pack in payload["packs"]}
     assert packs["notebook_recovery_pack"]["status"] == "needs_setup"
     assert packs["ml_config_audit_pack"]["status"] == "needs_setup"

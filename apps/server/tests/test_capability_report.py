@@ -250,6 +250,11 @@ def test_capability_report_endpoint_returns_all_fifteen_sections(client, bridge_
             ],
             "packs": [],
             "recommended_next_steps": ["Install uv.", "Install pre-commit."],
+            "repo_mode_summaries": ["TensorFlow mode `tensorflow_product` with frameworks: TensorFlow, SavedModel / Serving"],
+            "important_paths": ["train.py", "configs/train.yaml"],
+            "execution_entrypoints": ["python train.py", "python export.py"],
+            "runtime_blockers": ["Python is not available on PATH for the repo-owned TensorFlow commands this workspace expects to run."],
+            "validation_evidence_targets": ["Capture TensorBoard evidence instead of motivational speeches."],
             "intake_commands": ["rg --files", "tree-sitter parse src/worker.py"],
             "notebook_paths": ["notebooks/experiment.ipynb"],
             "notebook_commands": ["jupyter nbconvert --to script notebooks/experiment.ipynb"],
@@ -361,6 +366,17 @@ def test_capability_report_endpoint_returns_all_fifteen_sections(client, bridge_
     )
     assert "CUDA mode" in " ".join(sections["repo_capability_auto_detection"]["details"])
     assert sections["workspace_tool_installer_bootstrap"]["status"] == "needs_setup"
+    assert sections["workspace_tool_installer_bootstrap"]["metadata_json"]["repo_mode_summaries"] == [
+        "TensorFlow mode `tensorflow_product` with frameworks: TensorFlow, SavedModel / Serving"
+    ]
+    assert sections["workspace_tool_installer_bootstrap"]["metadata_json"]["important_paths"] == ["train.py", "configs/train.yaml"]
+    assert sections["workspace_tool_installer_bootstrap"]["metadata_json"]["execution_entrypoints"] == ["python train.py", "python export.py"]
+    assert sections["workspace_tool_installer_bootstrap"]["metadata_json"]["runtime_blockers"] == [
+        "Python is not available on PATH for the repo-owned TensorFlow commands this workspace expects to run."
+    ]
+    assert sections["workspace_tool_installer_bootstrap"]["metadata_json"]["validation_evidence_targets"] == [
+        "Capture TensorBoard evidence instead of motivational speeches."
+    ]
     assert sections["workspace_tool_installer_bootstrap"]["metadata_json"]["notebook_paths"] == ["notebooks/experiment.ipynb"]
     assert sections["workspace_tool_installer_bootstrap"]["metadata_json"]["artifact_paths"] == ["artifacts/exported_model/saved_model.pb"]
     assert sections["workspace_tool_installer_bootstrap"]["metadata_json"]["config_review_paths"] == ["configs/train.yaml"]
