@@ -255,14 +255,20 @@ def test_capability_report_endpoint_returns_all_fifteen_sections(client, bridge_
             "execution_entrypoints": ["python train.py", "python export.py"],
             "runtime_blockers": ["Python is not available on PATH for the repo-owned TensorFlow commands this workspace expects to run."],
             "validation_evidence_targets": ["Capture TensorBoard evidence instead of motivational speeches."],
+            "product_lane_statuses": ["tensorflow:blocked"],
+            "execution_lane_summaries": ["TensorFlow lane `tensorflow_product` has 5 planned validation step(s)."],
+            "artifact_kind_summaries": ["savedmodel:1"],
             "intake_commands": ["rg --files", "tree-sitter parse src/worker.py"],
             "notebook_paths": ["notebooks/experiment.ipynb"],
             "notebook_commands": ["jupyter nbconvert --to script notebooks/experiment.ipynb"],
             "validation_commands": ["ruff check .", "playwright test", "python -m pytest apps/server/tests/test_capability_report.py -q"],
+            "observability_commands": ["tensorboard --logdir artifacts/tensorboard"],
             "security_commands": ["gitleaks dir . --redact", "pip-audit"],
             "deployment_commands": ["python export.py"],
             "artifact_paths": ["artifacts/exported_model/saved_model.pb"],
             "artifact_inspection_commands": ["saved_model_cli show --dir artifacts/exported_model --all"],
+            "checkpoint_commands": [],
+            "distributed_launcher_commands": [],
             "config_review_paths": ["configs/train.yaml"],
             "config_review_commands": ['python -c "from pathlib import Path; p = Path(\\"configs/train.yaml\\"); print(p.read_text(encoding=\'utf-8\', errors=\'ignore\'))"'],
         },
@@ -378,14 +384,24 @@ def test_capability_report_endpoint_returns_all_fifteen_sections(client, bridge_
     assert sections["workspace_tool_installer_bootstrap"]["metadata_json"]["validation_evidence_targets"] == [
         "Capture TensorBoard evidence instead of motivational speeches."
     ]
+    assert sections["workspace_tool_installer_bootstrap"]["metadata_json"]["product_lane_statuses"] == ["tensorflow:blocked"]
+    assert sections["workspace_tool_installer_bootstrap"]["metadata_json"]["execution_lane_summaries"] == [
+        "TensorFlow lane `tensorflow_product` has 5 planned validation step(s)."
+    ]
+    assert sections["workspace_tool_installer_bootstrap"]["metadata_json"]["artifact_kind_summaries"] == ["savedmodel:1"]
     assert sections["workspace_tool_installer_bootstrap"]["metadata_json"]["notebook_paths"] == ["notebooks/experiment.ipynb"]
     assert sections["workspace_tool_installer_bootstrap"]["metadata_json"]["notebook_commands"] == [
         "jupyter nbconvert --to script notebooks/experiment.ipynb"
+    ]
+    assert sections["workspace_tool_installer_bootstrap"]["metadata_json"]["observability_commands"] == [
+        "tensorboard --logdir artifacts/tensorboard"
     ]
     assert sections["workspace_tool_installer_bootstrap"]["metadata_json"]["artifact_paths"] == ["artifacts/exported_model/saved_model.pb"]
     assert sections["workspace_tool_installer_bootstrap"]["metadata_json"]["artifact_inspection_commands"] == [
         "saved_model_cli show --dir artifacts/exported_model --all"
     ]
+    assert sections["workspace_tool_installer_bootstrap"]["metadata_json"]["checkpoint_commands"] == []
+    assert sections["workspace_tool_installer_bootstrap"]["metadata_json"]["distributed_launcher_commands"] == []
     assert sections["workspace_tool_installer_bootstrap"]["metadata_json"]["config_review_paths"] == ["configs/train.yaml"]
     assert any(
         "configs/train.yaml" in command

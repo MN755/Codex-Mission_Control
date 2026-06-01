@@ -149,6 +149,19 @@ def _append_unique(target: list[str], values: list[str]) -> None:
             target.append(value)
 
 
+def _shell_quote(value: str) -> str:
+    text = str(value or "")
+    if not text:
+        return "''"
+    if all(char.isalnum() or char in "._/-:=+@" for char in text):
+        return text
+    return "'" + text.replace("'", "''") + "'"
+
+
+def _python_script_command(relative_path: str) -> str:
+    return f"python {_shell_quote(relative_path)}"
+
+
 def _first_existing_command(root: Path, candidates: list[str]) -> str | None:
     return _find_workspace_candidate(root, candidates)
 
@@ -438,32 +451,32 @@ def detect_tensorflow_repo_mode(workspace_path: str | Path) -> dict[str, Any]:
 
     training_entry = _first_existing_command(root, TRAINING_FILE_CANDIDATES)
     if training_entry:
-        training_commands.append(f"python {training_entry}")
+        training_commands.append(_python_script_command(training_entry))
         important_paths.append(training_entry)
 
     tuning_entry = _first_existing_command(root, TUNING_FILE_CANDIDATES)
     if tuning_entry:
-        training_commands.append(f"python {tuning_entry}")
+        training_commands.append(_python_script_command(tuning_entry))
         important_paths.append(tuning_entry)
 
     export_entry = _first_existing_command(root, EXPORT_FILE_CANDIDATES)
     if export_entry:
-        export_commands.append(f"python {export_entry}")
+        export_commands.append(_python_script_command(export_entry))
         important_paths.append(export_entry)
 
     serving_entry = _first_existing_command(root, SERVING_FILE_CANDIDATES)
     if serving_entry and "SavedModel / Serving" in frameworks:
-        export_commands.append(f"python {serving_entry}")
+        export_commands.append(_python_script_command(serving_entry))
         important_paths.append(serving_entry)
 
     tfx_entry = _first_existing_command(root, TFX_FILE_CANDIDATES)
     if tfx_entry and "TFX" in frameworks:
-        training_commands.append(f"python {tfx_entry}")
+        training_commands.append(_python_script_command(tfx_entry))
         important_paths.append(tfx_entry)
 
     if "TensorBoard" in frameworks:
         logdir = _find_workspace_directory_candidate(root, OBSERVABILITY_DIR_CANDIDATES) or "artifacts/tensorboard"
-        observability_commands.append(f"tensorboard --logdir {logdir}")
+        observability_commands.append(f"tensorboard --logdir {_shell_quote(logdir)}")
     for relative in artifact_paths:
         relative_path = Path(relative)
         if relative_path.suffix.lower() == ".tflite":
@@ -612,7 +625,7 @@ def build_tensorflow_validation_plan(workspace_path: str | Path) -> dict[str, An
     if saved_model_artifacts:
         saved_model_dir = Path(saved_model_artifacts[0]).parent.as_posix() or "."
         if shutil.which("saved_model_cli"):
-            command = f"saved_model_cli show --dir {saved_model_dir} --all"
+            command = f"saved_model_cli show --dir {_shell_quote(saved_model_dir)} --all"
         else:
             literal = json.dumps(saved_model_dir)
             command = (

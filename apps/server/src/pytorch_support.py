@@ -170,6 +170,19 @@ def _append_unique(target: list[str], values: list[str]) -> None:
             target.append(value)
 
 
+def _shell_quote(value: str) -> str:
+    text = str(value or "")
+    if not text:
+        return "''"
+    if all(char.isalnum() or char in "._/-:=+@" for char in text):
+        return text
+    return "'" + text.replace("'", "''") + "'"
+
+
+def _python_script_command(relative_path: str) -> str:
+    return f"python {_shell_quote(relative_path)}"
+
+
 def _first_existing_command(root: Path, candidates: list[str]) -> str | None:
     return _find_workspace_candidate(root, candidates)
 
@@ -500,40 +513,40 @@ def detect_pytorch_repo_mode(workspace_path: str | Path) -> dict[str, Any]:
 
     training_entry = _first_existing_command(root, TRAINING_FILE_CANDIDATES)
     if training_entry:
-        training_commands.append(f"python {training_entry}")
+        training_commands.append(_python_script_command(training_entry))
         important_paths.append(training_entry)
     eval_entry = _first_existing_command(root, EVAL_FILE_CANDIDATES)
     if eval_entry:
-        evaluation_commands.append(f"python {eval_entry}")
+        evaluation_commands.append(_python_script_command(eval_entry))
         important_paths.append(eval_entry)
     inference_entry = _first_existing_command(root, INFERENCE_FILE_CANDIDATES)
     if inference_entry:
-        inference_commands.append(f"python {inference_entry}")
+        inference_commands.append(_python_script_command(inference_entry))
         important_paths.append(inference_entry)
     export_entry = _first_existing_command(root, EXPORT_FILE_CANDIDATES)
     if export_entry:
-        export_commands.append(f"python {export_entry}")
+        export_commands.append(_python_script_command(export_entry))
         important_paths.append(export_entry)
 
     if "training_observability" in product_workflows:
         if "torch.profiler" in combined_text and training_entry:
-            observability_commands.append(f"python -m torch.utils.bottleneck {training_entry}")
+            observability_commands.append(f"python -m torch.utils.bottleneck {_shell_quote(training_entry)}")
         logdir = _find_workspace_directory_candidate(root, OBSERVABILITY_DIR_CANDIDATES) or "artifacts/tensorboard"
         if "tensorboard" in combined_text or "torch.profiler" in combined_text:
-            observability_commands.append(f"python -m tensorboard.main --logdir {logdir}")
+            observability_commands.append(f"python -m tensorboard.main --logdir {_shell_quote(logdir)}")
         if "wandb" in combined_text:
             wandb_dir = _find_workspace_directory_candidate(root, ["wandb"]) or "wandb"
-            observability_commands.append(f"wandb sync {wandb_dir}")
+            observability_commands.append(f"wandb sync {_shell_quote(wandb_dir)}")
         if "mlflow" in combined_text:
             mlruns_dir = _find_workspace_directory_candidate(root, ["mlruns"]) or "mlruns"
-            observability_commands.append(f"mlflow ui --backend-store-uri {mlruns_dir}")
+            observability_commands.append(f"mlflow ui --backend-store-uri {_shell_quote(mlruns_dir)}")
     if "distributed_training" in product_workflows and training_entry:
         if "Accelerate" in distributed_stack:
-            training_commands.append(f"accelerate launch {training_entry}")
+            training_commands.append(f"accelerate launch {_shell_quote(training_entry)}")
         if "DeepSpeed" in distributed_stack:
-            training_commands.append(f"deepspeed {training_entry} --deepspeed ds_config.json")
+            training_commands.append(f"deepspeed {_shell_quote(training_entry)} --deepspeed ds_config.json")
         if "DDP/FSDP" in distributed_stack:
-            training_commands.append(f"torchrun --nproc_per_node 2 {training_entry}")
+            training_commands.append(f"torchrun --nproc_per_node 2 {_shell_quote(training_entry)}")
 
     for relative in relative_paths:
         path_obj = Path(relative)

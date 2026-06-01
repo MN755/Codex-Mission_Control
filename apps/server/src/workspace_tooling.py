@@ -462,14 +462,20 @@ def _base_workspace_tooling_payload(
         "execution_entrypoints": [],
         "runtime_blockers": [],
         "validation_evidence_targets": [],
+        "product_lane_statuses": [],
+        "execution_lane_summaries": [],
+        "artifact_kind_summaries": [],
         "intake_commands": [],
         "notebook_paths": [],
         "notebook_commands": [],
         "validation_commands": [],
+        "observability_commands": [],
         "security_commands": [],
         "deployment_commands": [],
         "artifact_paths": [],
         "artifact_inspection_commands": [],
+        "checkpoint_commands": [],
+        "distributed_launcher_commands": [],
         "config_review_paths": [],
         "config_review_commands": [],
         "tensorflow_repo": {"enabled": False, "frameworks": [], "product_workflows": []},
@@ -487,6 +493,63 @@ def _config_review_command(path: str) -> str:
         f"\"from pathlib import Path; p = Path({path_literal}); "
         "print(p.read_text(encoding='utf-8', errors='ignore'))\""
     )
+
+
+def _shell_quote(value: str) -> str:
+    text = str(value or "")
+    if not text:
+        return "''"
+    if all(char.isalnum() or char in "._/-:=+@" for char in text):
+        return text
+    return "'" + text.replace("'", "''") + "'"
+
+
+def _notebook_rescue_command(path: str) -> str:
+    return f"jupyter nbconvert --to script {_shell_quote(path)}"
+
+
+def _is_placeholder_command(command: str) -> bool:
+    text = str(command or "")
+    return "<" in text and ">" in text
+
+
+def _is_repo_execution_command(command: str) -> bool:
+    text = str(command or "").strip()
+    if not text or _is_placeholder_command(text):
+        return False
+    prefixes = ("python ", "python -m pytest", "accelerate ", "deepspeed ", "torchrun ")
+    return text.startswith(prefixes)
+
+
+def _is_inspection_step(step: dict[str, Any]) -> bool:
+    title = str(step.get("title") or "").strip().lower()
+    step_type = str(step.get("type") or "").strip().lower()
+    return step_type == "checkpoint" or (step_type == "export" and "inspect" in title)
+
+
+def _artifact_kind_summaries(artifact_paths: list[str]) -> list[str]:
+    counts = {
+        "savedmodel": 0,
+        "tflite": 0,
+        "checkpoint": 0,
+        "onnx": 0,
+        "torchscript": 0,
+    }
+    for relative in artifact_paths:
+        path = Path(str(relative))
+        name = path.name.lower()
+        suffix = path.suffix.lower()
+        if suffix == ".tflite":
+            counts["tflite"] += 1
+        elif suffix == ".onnx":
+            counts["onnx"] += 1
+        elif suffix == ".torchscript" or name in {"model.torchscript", "scripted_model.pt", "traced_model.pt", "model_jit.pt", "torchscript_model.pt"}:
+            counts["torchscript"] += 1
+        elif suffix in {".pt", ".pth", ".ckpt", ".bin", ".safetensors"} or any(part.lower() in {"checkpoints", "checkpoint", "ckpt", "weights"} for part in path.parts):
+            counts["checkpoint"] += 1
+        elif name in {"saved_model.pb", "keras_metadata.pb"}:
+            counts["savedmodel"] += 1
+    return [f"{kind}:{count}" for kind, count in counts.items() if count]
 
 
 def detect_workspace_tooling(workspace_path: str | Path | None, *, project_name: str | None = None) -> dict[str, Any]:
@@ -577,9 +640,7 @@ def detect_workspace_tooling(workspace_path: str | Path | None, *, project_name:
         [str(item) for item in list(tensorflow_plan.get("evidence_targets") or [])]
         + [str(item) for item in list(pytorch_plan.get("evidence_targets") or [])]
     )
-    notebook_commands: list[str] = [
-        f"jupyter nbconvert --to script {path}" for path in notebook_paths[:4]
-    ]
+    notebook_commands: list[str] = [_notebook_rescue_command(path) for path in notebook_paths[:4]]
     if "jupyter" in tooling_by_id and notebook_paths:
         tooling_by_id["jupyter"]["configured"] = True
         tooling_by_id["jupyter"]["status"] = "ready" if tooling_by_id["jupyter"]["installed"] else "needs_setup"
@@ -596,6 +657,7 @@ def detect_workspace_tooling(workspace_path: str | Path | None, *, project_name:
             + ["Python-backed review commands are needed for config or artifact inspection in this workspace."]
         )[:6]
     validation_commands = []
+    observability_commands = []
     if tooling_by_id["ruff"]["installed"] and (tooling_by_id["ruff"]["configured"] or repo_profile.get("python_repo")):
         validation_commands.extend(["ruff check .", "ruff format --check ."])
     if tooling_by_id["pre-commit"]["installed"] and tooling_by_id["pre-commit"]["configured"]:
@@ -610,11 +672,21 @@ def detect_workspace_tooling(workspace_path: str | Path | None, *, project_name:
             for step in list(tensorflow_plan.get("steps") or [])
             if step.get("type") in {"test", "train", "observability", "sanity"} and step.get("command")
         )
+        observability_commands.extend(
+            str(step.get("command"))
+            for step in list(tensorflow_plan.get("steps") or [])
+            if step.get("type") == "observability" and step.get("command")
+        )
     if pytorch_mode.get("enabled"):
         validation_commands.extend(
             str(step.get("command"))
             for step in list(pytorch_plan.get("steps") or [])
             if step.get("type") in {"train", "eval", "inference", "observability", "checkpoint", "sanity"} and step.get("command")
+        )
+        observability_commands.extend(
+            str(step.get("command"))
+            for step in list(pytorch_plan.get("steps") or [])
+            if step.get("type") == "observability" and step.get("command")
         )
     if tooling_by_id["tensorboard"]["installed"] and tooling_by_id["tensorboard"]["configured"] and not _has_prefixed_command(
         validation_commands,
@@ -638,6 +710,7 @@ def detect_workspace_tooling(workspace_path: str | Path | None, *, project_name:
     if tooling_by_id["trufflehog"]["installed"]:
         security_commands.append("trufflehog filesystem .")
     deployment_commands = []
+    checkpoint_commands = []
     if tensorflow_mode.get("enabled"):
         deployment_commands.extend(
             str(step.get("command"))
@@ -646,16 +719,21 @@ def detect_workspace_tooling(workspace_path: str | Path | None, *, project_name:
         )
     if pytorch_mode.get("enabled"):
         deployment_commands.extend(str(step.get("command")) for step in list(pytorch_plan.get("steps") or []) if step.get("type") == "export" and step.get("command"))
+        checkpoint_commands.extend(
+            str(step.get("command"))
+            for step in list(pytorch_plan.get("steps") or [])
+            if step.get("type") == "checkpoint" and step.get("command")
+        )
     artifact_inspection_commands = _dedupe(
         [
             str(step.get("command"))
             for step in list(tensorflow_plan.get("steps") or [])
-            if step.get("type") == "export" and step.get("command")
+            if step.get("command") and _is_inspection_step(step)
         ]
         + [
             str(step.get("command"))
             for step in list(pytorch_plan.get("steps") or [])
-            if step.get("type") in {"checkpoint", "export"} and step.get("command")
+            if step.get("command") and _is_inspection_step(step)
         ]
     )
     if tooling_by_id["saved_model_cli"]["installed"] and tooling_by_id["saved_model_cli"]["configured"] and not _has_prefixed_command(
@@ -673,6 +751,38 @@ def detect_workspace_tooling(workspace_path: str | Path | None, *, project_name:
         ("tfx pipeline list",),
     ):
         deployment_commands.append("tfx pipeline list")
+    execution_entrypoints = _dedupe([command for command in execution_entrypoints if _is_repo_execution_command(command)])
+    distributed_launcher_commands = _dedupe(
+        [
+            command
+            for command in execution_entrypoints
+            if str(command).startswith(("accelerate ", "deepspeed ", "torchrun "))
+        ]
+    )
+    artifact_kind_summaries = _artifact_kind_summaries(artifact_paths)
+    product_lane_statuses = _dedupe(
+        [
+            f"tensorflow:{tensorflow_plan.get('status') or 'not_applicable'}"
+            if tensorflow_mode.get("enabled")
+            else "",
+            f"pytorch:{pytorch_plan.get('status') or 'not_applicable'}"
+            if pytorch_mode.get("enabled")
+            else "",
+        ]
+    )
+    execution_lane_summaries = _dedupe(
+        [
+            f"TensorFlow lane `{tensorflow_mode.get('mode')}` has {len(list(tensorflow_plan.get('steps') or []))} planned validation step(s)."
+            if tensorflow_mode.get("enabled")
+            else "",
+            f"PyTorch lane `{pytorch_mode.get('mode')}` has {len(list(pytorch_plan.get('steps') or []))} planned validation step(s)."
+            if pytorch_mode.get("enabled")
+            else "",
+            f"Distributed launcher paths detected: {', '.join(distributed_launcher_commands[:3])}."
+            if distributed_launcher_commands
+            else "",
+        ]
+    )
     packs = [
         _pack_status(
             tools,
@@ -791,14 +901,20 @@ def detect_workspace_tooling(workspace_path: str | Path | None, *, project_name:
         "execution_entrypoints": execution_entrypoints[:12],
         "runtime_blockers": runtime_blockers[:8],
         "validation_evidence_targets": validation_evidence_targets[:12],
+        "product_lane_statuses": product_lane_statuses[:4],
+        "execution_lane_summaries": execution_lane_summaries[:6],
+        "artifact_kind_summaries": artifact_kind_summaries[:8],
         "intake_commands": _dedupe(intake_commands)[:6],
         "notebook_paths": notebook_paths[:8],
         "notebook_commands": notebook_commands[:6],
         "validation_commands": _dedupe(validation_commands)[:8],
+        "observability_commands": _dedupe(observability_commands)[:8],
         "security_commands": _dedupe(security_commands)[:8],
         "deployment_commands": _dedupe(deployment_commands)[:8],
         "artifact_paths": artifact_paths[:8],
         "artifact_inspection_commands": artifact_inspection_commands[:8],
+        "checkpoint_commands": _dedupe(checkpoint_commands)[:6],
+        "distributed_launcher_commands": distributed_launcher_commands[:6],
         "config_review_paths": config_review_paths[:8],
         "config_review_commands": config_review_commands[:6],
         "tensorflow_repo": tensorflow_mode,

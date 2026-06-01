@@ -13433,12 +13433,18 @@ class MissionControlService:
                 "execution_entrypoints": list(tooling.get("execution_entrypoints") or [])[:8],
                 "runtime_blockers": list(tooling.get("runtime_blockers") or [])[:6],
                 "validation_evidence_targets": list(tooling.get("validation_evidence_targets") or [])[:8],
+                "product_lane_statuses": list(tooling.get("product_lane_statuses") or [])[:4],
+                "execution_lane_summaries": list(tooling.get("execution_lane_summaries") or [])[:6],
+                "artifact_kind_summaries": list(tooling.get("artifact_kind_summaries") or [])[:8],
                 "notebook_paths": list(tooling.get("notebook_paths") or [])[:6],
                 "notebook_commands": list(tooling.get("notebook_commands") or [])[:6],
                 "artifact_paths": list(tooling.get("artifact_paths") or [])[:6],
                 "artifact_inspection_commands": list(tooling.get("artifact_inspection_commands") or [])[:6],
+                "checkpoint_commands": list(tooling.get("checkpoint_commands") or [])[:6],
+                "distributed_launcher_commands": list(tooling.get("distributed_launcher_commands") or [])[:6],
                 "config_review_paths": list(tooling.get("config_review_paths") or [])[:6],
                 "config_review_commands": list(tooling.get("config_review_commands") or [])[:6],
+                "observability_commands": list(tooling.get("observability_commands") or [])[:6],
                 "deployment_commands": list(tooling.get("deployment_commands") or [])[:6],
                 "pack_statuses": {
                     str(pack.get("id")): str(pack.get("status"))

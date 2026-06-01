@@ -60,11 +60,17 @@ def test_detect_workspace_tooling_returns_stable_contract_for_missing_workspace(
     assert payload["execution_entrypoints"] == []
     assert payload["runtime_blockers"] == []
     assert payload["validation_evidence_targets"] == []
+    assert payload["product_lane_statuses"] == []
+    assert payload["execution_lane_summaries"] == []
+    assert payload["artifact_kind_summaries"] == []
     assert payload["notebook_paths"] == []
     assert payload["notebook_commands"] == []
+    assert payload["observability_commands"] == []
     assert payload["deployment_commands"] == []
     assert payload["artifact_paths"] == []
     assert payload["artifact_inspection_commands"] == []
+    assert payload["checkpoint_commands"] == []
+    assert payload["distributed_launcher_commands"] == []
     assert payload["config_review_paths"] == []
     assert payload["config_review_commands"] == []
     assert payload["tensorflow_repo"]["enabled"] is False
@@ -83,11 +89,17 @@ def test_detect_workspace_tooling_returns_stable_contract_for_invalid_workspace(
     assert payload["execution_entrypoints"] == []
     assert payload["runtime_blockers"] == []
     assert payload["validation_evidence_targets"] == []
+    assert payload["product_lane_statuses"] == []
+    assert payload["execution_lane_summaries"] == []
+    assert payload["artifact_kind_summaries"] == []
     assert payload["notebook_paths"] == []
     assert payload["notebook_commands"] == []
+    assert payload["observability_commands"] == []
     assert payload["deployment_commands"] == []
     assert payload["artifact_paths"] == []
     assert payload["artifact_inspection_commands"] == []
+    assert payload["checkpoint_commands"] == []
+    assert payload["distributed_launcher_commands"] == []
     assert payload["config_review_paths"] == []
     assert payload["config_review_commands"] == []
     assert payload["tensorflow_repo"]["enabled"] is False
@@ -268,13 +280,18 @@ def test_detect_workspace_tooling_surfaces_pytorch_training_pack(tmp_path: Path,
     assert any(command == "python train.py" for command in payload["execution_entrypoints"])
     assert payload["runtime_blockers"] == []
     assert payload["validation_evidence_targets"]
+    assert "pytorch:ready" in payload["product_lane_statuses"]
+    assert any("PyTorch lane `pytorch_distributed`" in item for item in payload["execution_lane_summaries"])
     assert "artifacts/model.onnx" in payload["artifact_paths"]
+    assert "checkpoint:1" in payload["artifact_kind_summaries"]
+    assert "onnx:1" in payload["artifact_kind_summaries"]
     tools = {tool["id"]: tool for tool in payload["tools"]}
     assert tools["accelerate"]["configured"] is True
     assert tools["torchrun"]["configured"] is False
     packs = {pack["id"]: pack for pack in payload["packs"]}
     assert packs["pytorch_training_pack"]["status"] == "ready"
     assert any(command.startswith("python train.py") for command in payload["validation_commands"])
+    assert any(command.startswith("accelerate launch train.py") for command in payload["distributed_launcher_commands"])
 
 
 def test_detect_workspace_tooling_distinguishes_accelerate_from_torchrun(tmp_path: Path, monkeypatch) -> None:
@@ -536,6 +553,7 @@ def test_detect_workspace_tooling_prefers_concrete_tensorboard_command(tmp_path:
 
     assert "tensorboard --logdir services/model/artifacts/tensorboard" in payload["validation_commands"]
     assert "tensorboard --logdir logs" not in payload["validation_commands"]
+    assert "tensorboard --logdir services/model/artifacts/tensorboard" in payload["observability_commands"]
 
 
 def test_detect_workspace_tooling_prefers_concrete_tensorflow_artifact_commands(tmp_path: Path, monkeypatch) -> None:
@@ -559,6 +577,9 @@ def test_detect_workspace_tooling_prefers_concrete_tensorflow_artifact_commands(
     assert any("model.tflite" in command and "size_bytes" in command for command in payload["deployment_commands"])
     assert "saved_model_cli show --dir <saved_model_dir> --all" not in payload["deployment_commands"]
     assert "saved_model_cli show --dir . --all" in payload["artifact_inspection_commands"]
+    assert payload["execution_entrypoints"] == []
+    assert "savedmodel:1" in payload["artifact_kind_summaries"]
+    assert "tflite:1" in payload["artifact_kind_summaries"]
 
 
 def test_detect_workspace_tooling_surfaces_notebook_and_config_features(tmp_path: Path, monkeypatch) -> None:
@@ -588,3 +609,70 @@ def test_detect_workspace_tooling_surfaces_notebook_and_config_features(tmp_path
     packs = {pack["id"]: pack for pack in payload["packs"]}
     assert packs["notebook_recovery_pack"]["status"] == "needs_setup"
     assert packs["ml_config_audit_pack"]["status"] == "needs_setup"
+
+
+def test_detect_workspace_tooling_quotes_spacey_ml_paths_and_surfaces_lane_features(tmp_path: Path, monkeypatch) -> None:
+    (tmp_path / "services model").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "services model" / "pyproject.toml").write_text(
+        "[project]\nname='hybrid-demo'\ndependencies=['tensorflow','torch','tensorboard','accelerate']\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "services model" / "train.py").write_text(
+        "import tensorflow as tf\nfrom keras.callbacks import TensorBoard\nimport torch\nimport accelerate\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "services model" / "export.py").write_text("import tensorflow as tf\n", encoding="utf-8")
+    (tmp_path / "services model" / "notebooks").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "services model" / "notebooks" / "experiment plan.ipynb").write_text("{}\n", encoding="utf-8")
+    (tmp_path / "services model" / "artifacts" / "tensorboard").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "services model" / "artifacts" / "saved model").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "services model" / "artifacts" / "saved model" / "saved_model.pb").write_text("artifact\n", encoding="utf-8")
+    (tmp_path / "services model" / "artifacts" / "model export.onnx").write_text("artifact\n", encoding="utf-8")
+    (tmp_path / "services model" / "checkpoints").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "services model" / "checkpoints" / "model final.pt").write_text("weights\n", encoding="utf-8")
+    monkeypatch.setattr(
+        "workspace_tooling._which",
+        lambda command: f"C:/tools/{command}.exe" if command in {"tensorboard", "saved_model_cli", "accelerate"} else None,
+    )
+    monkeypatch.setattr(
+        "tensorflow_support.shutil.which",
+        lambda command: f"C:/tools/{command}.exe" if command in {"tensorboard", "saved_model_cli"} else None,
+    )
+    monkeypatch.setattr(
+        "pytorch_support.shutil.which",
+        lambda command: f"C:/tools/{command}.exe" if command in {"python", "accelerate"} else None,
+    )
+    monkeypatch.setattr(
+        "workspace_tooling.detect_pytorch_runtime_status",
+        lambda _workspace: {
+            "available": True,
+            "status": "ready",
+            "summary": "PyTorch runtime is ready.",
+            "torch_installed": True,
+            "cuda_available": False,
+            "mps_available": False,
+            "device_count": 0,
+            "torch_version": "2.7.0",
+            "cuda_version": None,
+            "cudnn_available": False,
+            "distributed_backends": ["gloo"],
+            "blockers": [],
+            "recommended_fixes": [],
+        },
+    )
+
+    payload = detect_workspace_tooling(tmp_path, project_name="Spacey ML Demo")
+
+    assert "python 'services model/train.py'" in payload["execution_entrypoints"]
+    assert "python 'services model/export.py'" in payload["execution_entrypoints"]
+    assert "jupyter nbconvert --to script 'services model/notebooks/experiment plan.ipynb'" in payload["notebook_commands"]
+    assert "tensorboard --logdir 'services model/artifacts/tensorboard'" in payload["observability_commands"]
+    assert any("services model/artifacts/saved model" in command for command in payload["artifact_inspection_commands"])
+    assert any(command.startswith("accelerate launch 'services model/train.py'") for command in payload["distributed_launcher_commands"])
+    assert "tensorflow:ready" in payload["product_lane_statuses"]
+    assert any(item.startswith("pytorch:") for item in payload["product_lane_statuses"])
+    assert any("TensorFlow lane `tensorflow_product`" in item for item in payload["execution_lane_summaries"])
+    assert any("Distributed launcher paths detected:" in item for item in payload["execution_lane_summaries"])
+    assert "savedmodel:1" in payload["artifact_kind_summaries"]
+    assert "checkpoint:1" in payload["artifact_kind_summaries"]
+    assert "onnx:1" in payload["artifact_kind_summaries"]
