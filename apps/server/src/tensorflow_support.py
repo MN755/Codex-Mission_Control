@@ -21,6 +21,18 @@ SKIPPED_SCAN_DIRS = {
     "build",
     "artifacts",
 }
+SKIPPED_DISCOVERY_DIRS = {
+    ".git",
+    ".hg",
+    ".svn",
+    ".venv",
+    "venv",
+    "__pycache__",
+    "node_modules",
+    ".runtime",
+    "dist",
+    "build",
+}
 MODEL_FILE_HINTS = {"saved_model.pb", "keras_metadata.pb"}
 EXPORT_FILE_EXTENSIONS = {".tflite"}
 PROJECT_TEXT_CANDIDATES = [
@@ -60,6 +72,29 @@ TFX_FILE_CANDIDATES = [
 SERVING_FILE_CANDIDATES = [
     "serve.py",
     "serving/serve.py",
+    "api/server.py",
+    "app.py",
+]
+OBSERVABILITY_DIR_CANDIDATES = [
+    "artifacts/tensorboard",
+    "artifacts/logs",
+    "logs",
+    "runs",
+]
+PRIORITY_SIGNAL_FILE_CANDIDATES = [
+    "train.py",
+    "export.py",
+    "serve.py",
+    "pipeline.py",
+    "tfx_pipeline.py",
+    "scripts/train.py",
+    "scripts/tune.py",
+    "scripts/export.py",
+    "training/train.py",
+    "training/tune.py",
+    "serving/export.py",
+    "deployment/export.py",
+    "pipelines/pipeline.py",
     "api/server.py",
     "app.py",
 ]
@@ -111,10 +146,98 @@ def _append_unique(target: list[str], values: list[str]) -> None:
 
 
 def _first_existing_command(root: Path, candidates: list[str]) -> str | None:
-    for candidate in candidates:
+    return _find_workspace_candidate(root, candidates)
+
+
+def _relative_workspace_entries(root: Path) -> list[str]:
+    entries: set[str] = set()
+    for path in _scan_files(root):
+        relative = path.relative_to(root)
+        entries.add(relative.as_posix())
+        for parent in relative.parents:
+            if str(parent) != ".":
+                entries.add(parent.as_posix())
+    return sorted(entries)
+
+
+def _find_workspace_candidate(root: Path, candidates: list[str]) -> str | None:
+    normalized_candidates = [candidate.replace("\\", "/") for candidate in candidates]
+    entries = _relative_workspace_entries(root)
+    entry_set = set(entries)
+    for candidate in normalized_candidates:
+        if candidate in entry_set:
+            return candidate
         path = root / candidate
         if path.exists():
-            return candidate.replace("\\", "/")
+            return candidate
+    for candidate in normalized_candidates:
+        suffix = f"/{candidate}"
+        for entry in entries:
+            if entry.endswith(suffix):
+                return entry
+            if "/" not in candidate and Path(entry).name == candidate:
+                return entry
+    return None
+
+
+def _find_workspace_directory_candidate(root: Path, candidates: list[str]) -> str | None:
+    normalized_candidates = [candidate.replace("\\", "/") for candidate in candidates]
+    dirs: list[str] = []
+    try:
+        for path in root.rglob("*"):
+            if not path.is_dir():
+                continue
+            relative = path.relative_to(root)
+            if any(part.lower() in SKIPPED_DISCOVERY_DIRS for part in relative.parts):
+                continue
+            dirs.append(relative.as_posix())
+    except OSError:
+        return None
+    dir_set = set(dirs)
+    for candidate in normalized_candidates:
+        if candidate in dir_set:
+            return candidate
+        suffix = f"/{candidate}"
+        for entry in dirs:
+            if entry.endswith(suffix):
+                return entry
+            if "/" not in candidate and Path(entry).name == candidate:
+                return entry
+    return None
+
+
+def _priority_signal_paths(root: Path, files: list[Path]) -> list[Path]:
+    by_relative = {path.relative_to(root).as_posix(): path for path in files}
+    ordered: list[Path] = []
+    seen: set[Path] = set()
+    for candidate in PRIORITY_SIGNAL_FILE_CANDIDATES:
+        path = by_relative.get(candidate)
+        if path is not None and path not in seen:
+            ordered.append(path)
+            seen.add(path)
+    for path in sorted(files, key=lambda item: item.relative_to(root).as_posix()):
+        if path.suffix.lower() not in PYTHON_FILE_EXTENSIONS:
+            continue
+        if path in seen:
+            continue
+        ordered.append(path)
+        seen.add(path)
+    return ordered
+
+
+def _build_python_install_command(root: Path) -> str | None:
+    root_pyproject = root / "pyproject.toml"
+    root_setup = root / "setup.py"
+    if root_pyproject.exists() or root_setup.exists():
+        return "python -m pip install -e ."
+    nested_editable = _find_workspace_candidate(root, ["pyproject.toml", "setup.py"])
+    if nested_editable:
+        install_root = Path(nested_editable).parent.as_posix()
+        install_root = "." if install_root == "." else install_root
+        return f"python -m pip install -e {install_root}"
+    nested_requirements = _find_workspace_candidate(root, ["requirements.txt", "requirements-dev.txt", "requirements.in"])
+    if nested_requirements:
+        return f"python -m pip install -r {nested_requirements}"
     return None
 
 
@@ -151,6 +274,8 @@ def detect_tensorflow_repo_mode(workspace_path: str | Path) -> dict[str, Any]:
     validation_notes: list[str] = []
     signals: list[str] = []
     important_paths: list[str] = []
+    existing_tflite_artifacts: list[str] = []
+    existing_savedmodel_artifacts: list[str] = []
 
     if any(path.suffix.lower() in PYTHON_FILE_EXTENSIONS for path in files):
         languages.append("Python")
@@ -166,9 +291,7 @@ def detect_tensorflow_repo_mode(workspace_path: str | Path) -> dict[str, Any]:
             else:
                 project_texts.append(_safe_read_text(path))
     code_texts: list[str] = []
-    for path in files:
-        if path.suffix.lower() not in PYTHON_FILE_EXTENSIONS:
-            continue
+    for path in _priority_signal_paths(root, files):
         code_texts.append(_safe_read_text(path))
         if len(code_texts) >= 24:
             break
@@ -216,44 +339,41 @@ def detect_tensorflow_repo_mode(workspace_path: str | Path) -> dict[str, Any]:
             "important_paths": [],
         }
 
-    if any(token in supporting_text for token in ("keras_tuner", "keras-tuner", "hyperband", "bayesianoptimization")):
+    if any(token in combined_text for token in ("keras_tuner", "keras-tuner", "hyperband", "bayesianoptimization")):
         frameworks.append("KerasTuner")
         product_workflows.append("hyperparameter_tuning")
         signals.append("Detected KerasTuner or hyperparameter search signals.")
-    if "tensorboard" in supporting_text:
+    if "tensorboard" in combined_text:
         frameworks.append("TensorBoard")
         product_workflows.append("training_observability")
         signals.append("Detected TensorBoard observability signals.")
-    if any(token in supporting_text for token in ("tensorflow_hub", "tfhub")):
+    if any(token in combined_text for token in ("tensorflow_hub", "tfhub")):
         frameworks.append("TensorFlow Hub")
         product_workflows.append("transfer_learning")
         signals.append("Detected TensorFlow Hub or transfer-learning signals.")
-    if any(token in supporting_text for token in ("tfx", "tensorflow_data_validation", "tensorflow_transform", "tensorflow_model_analysis")):
+    if any(token in combined_text for token in ("tfx", "tensorflow_data_validation", "tensorflow_transform", "tensorflow_model_analysis")):
         frameworks.append("TFX")
         product_workflows.append("production_ml_pipelines")
         signals.append("Detected TFX or TensorFlow Extended pipeline signals.")
-    if any(token in supporting_text for token in ("tensorflow-serving", "tensorflow_serving", "saved_model_cli", "tf.saved_model")):
+    if any(token in combined_text for token in ("tensorflow-serving", "tensorflow_serving", "saved_model_cli", "tf.saved_model")):
         frameworks.append("SavedModel / Serving")
         product_workflows.append("serving_export")
         signals.append("Detected SavedModel or serving/export signals.")
-    if any(token in supporting_text for token in ("tflite", "tensorflow_lite", "tf.lite")) or any(path.endswith(".tflite") for path in relative_paths):
+    if any(token in combined_text for token in ("tflite", "tensorflow_lite", "tf.lite")) or any(path.endswith(".tflite") for path in relative_paths):
         frameworks.append("TensorFlow Lite")
         product_workflows.append("edge_deployment")
         signals.append("Detected TensorFlow Lite export or edge deployment signals.")
-    if any(token in supporting_text for token in ("tfmot", "model_optimization", "quantization", "pruning")):
+    if any(token in combined_text for token in ("tfmot", "model_optimization", "quantization", "pruning")):
         frameworks.append("Model Optimization Toolkit")
         product_workflows.append("model_optimization")
         signals.append("Detected TensorFlow model-optimization signals.")
-    if any(token in supporting_text for token in ("tf.data", "from_tensor_slices", "tfrecord", "image_dataset_from_directory", "text_dataset_from_directory")):
+    if any(token in combined_text for token in ("tf.data", "from_tensor_slices", "tfrecord", "image_dataset_from_directory", "text_dataset_from_directory")):
         product_workflows.append("data_pipelines")
         signals.append("Detected tf.data or TensorFlow dataset pipeline signals.")
 
-    requirements_exists = any((root / name).exists() for name in ("requirements.txt", "requirements-dev.txt", "requirements.in"))
-    pyproject_exists = (root / "pyproject.toml").exists()
-    if pyproject_exists or (root / "setup.py").exists():
-        build_commands.append("python -m pip install -e .")
-    elif requirements_exists:
-        build_commands.append("python -m pip install -r requirements.txt")
+    build_command = _build_python_install_command(root)
+    if build_command:
+        build_commands.append(build_command)
 
     if "pytest" in combined_text or any("test" in path.lower() and path.endswith(".py") for path in relative_paths):
         test_commands.append("python -m pytest")
@@ -286,7 +406,14 @@ def detect_tensorflow_repo_mode(workspace_path: str | Path) -> dict[str, Any]:
         important_paths.append(tfx_entry)
 
     if "TensorBoard" in frameworks:
-        observability_commands.append("tensorboard --logdir logs")
+        logdir = _find_workspace_directory_candidate(root, OBSERVABILITY_DIR_CANDIDATES) or "artifacts/tensorboard"
+        observability_commands.append(f"tensorboard --logdir {logdir}")
+    for relative in relative_paths:
+        relative_path = Path(relative)
+        if relative_path.suffix.lower() == ".tflite":
+            existing_tflite_artifacts.append(relative)
+        if relative_path.name == "saved_model.pb" or relative_path.name == "keras_metadata.pb":
+            existing_savedmodel_artifacts.append(relative)
     if "SavedModel / Serving" in frameworks and shutil.which("saved_model_cli"):
         export_commands.append("saved_model_cli show --dir <saved_model_dir> --all")
     if "TensorFlow Lite" in frameworks and shutil.which("tflite_convert"):
@@ -328,6 +455,8 @@ def detect_tensorflow_repo_mode(workspace_path: str | Path) -> dict[str, Any]:
         "product_workflows": _dedupe(product_workflows),
         "validation_notes": _dedupe(validation_notes),
         "important_paths": _dedupe(important_paths),
+        "existing_tflite_artifacts": _dedupe(existing_tflite_artifacts),
+        "existing_savedmodel_artifacts": _dedupe(existing_savedmodel_artifacts),
     }
 
 
@@ -359,11 +488,42 @@ def build_tensorflow_validation_plan(workspace_path: str | Path) -> dict[str, An
     for command in list(repo_mode.get("export_commands") or []):
         steps.append({"title": "Validate export or serving artifacts", "command": command, "type": "export", "status": "pending"})
 
+    repo_owned_execution_commands = [
+        command
+        for command in (
+            list(repo_mode.get("training_commands") or [])
+            + list(repo_mode.get("test_commands") or [])
+            + list(repo_mode.get("export_commands") or [])
+        )
+        if str(command).strip().startswith("python ")
+    ]
+
+    smoke_command = next(
+        iter(
+            list(repo_mode.get("test_commands") or [])
+            or list(repo_mode.get("training_commands") or [])
+            or repo_owned_execution_commands
+        ),
+        None,
+    )
+    if smoke_command:
+        steps.append(
+            {
+                "title": "Run the smallest repo-owned TensorFlow smoke command",
+                "command": smoke_command,
+                "type": "sanity",
+                "status": "pending",
+            }
+        )
+
     blockers: list[str] = []
     recommended_fixes: list[str] = []
-    if not repo_mode.get("training_commands") and not repo_mode.get("test_commands"):
-        blockers.append("No obvious TensorFlow training or test entry point was detected yet.")
-        recommended_fixes.append("Add or document a concrete train, evaluate, or pytest command so Mission Control can validate TensorFlow changes honestly.")
+    has_execution_entry = bool(repo_mode.get("training_commands") or repo_mode.get("test_commands") or repo_owned_execution_commands)
+    if not has_execution_entry:
+        blockers.append("No obvious TensorFlow train, test, or repo-owned export entry point was detected yet.")
+        recommended_fixes.append("Add or document a concrete TensorFlow train, test, export, or pytest command so Mission Control can validate changes honestly.")
+    elif not smoke_command:
+        recommended_fixes.append("Document the smallest repo-owned TensorFlow train, test, or export command so Mission Control can run a real smoke pass.")
     if "TensorBoard" in list(repo_mode.get("frameworks") or []) and not shutil.which("tensorboard"):
         recommended_fixes.append("Install TensorBoard if you expect Mission Control to review training curves instead of pretending logs explain themselves.")
     if "TFX" in list(repo_mode.get("frameworks") or []) and not shutil.which("tfx"):
@@ -372,6 +532,14 @@ def build_tensorflow_validation_plan(workspace_path: str | Path) -> dict[str, An
         recommended_fixes.append("Install TensorFlow Lite conversion tooling if this repo is supposed to ship edge artifacts.")
     if "SavedModel / Serving" in list(repo_mode.get("frameworks") or []) and not shutil.which("saved_model_cli"):
         recommended_fixes.append("Install TensorFlow SavedModel tooling so export inspection does not depend on blind faith.")
+    if "SavedModel / Serving" in list(repo_mode.get("frameworks") or []) and not (
+        repo_mode.get("export_commands") or repo_mode.get("existing_savedmodel_artifacts")
+    ):
+        recommended_fixes.append("Add or document a concrete TensorFlow export entry point or checked-in SavedModel artifact so Mission Control can validate serving artifacts instead of just talking about them.")
+    if "TensorFlow Lite" in list(repo_mode.get("frameworks") or []) and not (
+        repo_mode.get("export_commands") or repo_mode.get("existing_tflite_artifacts")
+    ):
+        recommended_fixes.append("Add or document a concrete TensorFlow export entry point so Mission Control can validate deployment artifacts instead of just talking about them.")
 
     evidence_targets = _dedupe(
         [

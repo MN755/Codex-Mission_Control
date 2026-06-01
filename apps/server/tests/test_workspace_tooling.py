@@ -18,7 +18,13 @@ def test_detect_workspace_tooling_summarizes_repo_native_helpers(tmp_path: Path,
     (tmp_path / ".pre-commit-config.yaml").write_text("repos: []\n", encoding="utf-8")
     (tmp_path / "noxfile.py").write_text("import nox\n", encoding="utf-8")
     (tmp_path / "package.json").write_text(
-        json.dumps({"devDependencies": {"@playwright/test": "^1.55.0"}}),
+        json.dumps(
+            {
+                "devDependencies": {"@playwright/test": "^1.55.0"},
+                "optionalDependencies": {"mlflow": "^2.0.0"},
+                "peerDependencies": {"ruff": "^0.5.0"},
+            }
+        ),
         encoding="utf-8",
     )
     monkeypatch.setattr(
@@ -43,6 +49,27 @@ def test_detect_workspace_tooling_summarizes_repo_native_helpers(tmp_path: Path,
     packs = {pack["id"]: pack for pack in payload["packs"]}
     assert packs["validation_evidence_pack"]["status"] == "needs_setup"
     assert "Install OSV-Scanner" in " ".join(payload["recommended_next_steps"])
+
+
+def test_detect_workspace_tooling_returns_stable_contract_for_missing_workspace() -> None:
+    payload = detect_workspace_tooling(None, project_name="Missing")
+
+    assert payload["available"] is False
+    assert payload["deployment_commands"] == []
+    assert payload["tensorflow_repo"]["enabled"] is False
+    assert payload["tensorflow_validation_plan"]["status"] == "not_applicable"
+    assert payload["pytorch_repo"]["enabled"] is False
+    assert payload["pytorch_runtime_status"]["status"] == "not_applicable"
+    assert payload["pytorch_validation_plan"]["status"] == "not_applicable"
+
+
+def test_detect_workspace_tooling_returns_stable_contract_for_invalid_workspace(tmp_path: Path) -> None:
+    payload = detect_workspace_tooling(tmp_path / "does-not-exist", project_name="Invalid")
+
+    assert payload["available"] is False
+    assert payload["deployment_commands"] == []
+    assert payload["tensorflow_repo"]["enabled"] is False
+    assert payload["pytorch_repo"]["enabled"] is False
 
 
 def test_search_codebase_uses_ripgrep_when_available(monkeypatch, tmp_path: Path) -> None:
@@ -157,13 +184,13 @@ def test_detect_workspace_tooling_surfaces_pytorch_training_pack(tmp_path: Path,
         "[project]\nname='torch-demo'\ndependencies=['torch','torchvision','accelerate','transformers','onnx']\n",
         encoding="utf-8",
     )
-    (tmp_path / "train.py").write_text("import torch\n", encoding="utf-8")
+    (tmp_path / "train.py").write_text("import torch\nimport accelerate\n", encoding="utf-8")
     (tmp_path / "export.py").write_text("import torch\n", encoding="utf-8")
     (tmp_path / "checkpoints").mkdir()
     (tmp_path / "checkpoints" / "model.pt").write_text("weights\n", encoding="utf-8")
     monkeypatch.setattr(
         "workspace_tooling._which",
-        lambda command: f"C:/tools/{command}.exe" if command in {"torchrun", "tensorboard"} else None,
+        lambda command: f"C:/tools/{command}.exe" if command in {"accelerate", "tensorboard"} else None,
     )
     monkeypatch.setattr(
         "pytorch_support.shutil.which",
@@ -213,11 +240,137 @@ def test_detect_workspace_tooling_surfaces_pytorch_training_pack(tmp_path: Path,
     assert payload["pytorch_runtime_status"]["status"] == "ready"
     assert payload["pytorch_validation_plan"]["available"] is True
     tools = {tool["id"]: tool for tool in payload["tools"]}
-    assert tools["torchrun"]["configured"] is True
-    assert tools["torchrun"]["installed"] is True
+    assert tools["accelerate"]["configured"] is True
+    assert tools["torchrun"]["configured"] is False
     packs = {pack["id"]: pack for pack in payload["packs"]}
     assert packs["pytorch_training_pack"]["status"] == "ready"
     assert any(command.startswith("python train.py") for command in payload["validation_commands"])
+
+
+def test_detect_workspace_tooling_distinguishes_accelerate_from_torchrun(tmp_path: Path, monkeypatch) -> None:
+    (tmp_path / "pyproject.toml").write_text(
+        "[project]\nname='torch-accelerate'\ndependencies=['torch','accelerate']\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "train.py").write_text("import accelerate\n", encoding="utf-8")
+    monkeypatch.setattr(
+        "workspace_tooling._which",
+        lambda command: f"C:/tools/{command}.exe" if command == "accelerate" else None,
+    )
+    monkeypatch.setattr(
+        "workspace_tooling.detect_pytorch_runtime_status",
+        lambda _workspace: {
+            "available": True,
+            "status": "partial",
+            "summary": "CPU-only runtime is fine for this check.",
+            "torch_installed": True,
+            "cuda_available": False,
+            "mps_available": False,
+            "device_count": 0,
+            "torch_version": "2.7.0",
+            "cuda_version": None,
+            "cudnn_available": False,
+            "distributed_backends": ["gloo"],
+            "blockers": [],
+            "recommended_fixes": [],
+        },
+    )
+
+    payload = detect_workspace_tooling(tmp_path, project_name="Accelerate Demo")
+
+    tools = {tool["id"]: tool for tool in payload["tools"]}
+    assert tools["accelerate"]["configured"] is True
+    assert tools["accelerate"]["installed"] is True
+    assert tools["torchrun"]["configured"] is False
+    packs = {pack["id"]: pack for pack in payload["packs"]}
+    assert packs["pytorch_training_pack"]["status"] == "ready"
+
+
+def test_detect_workspace_tooling_surfaces_wandb_and_mlflow_signals(tmp_path: Path, monkeypatch) -> None:
+    (tmp_path / "pyproject.toml").write_text("[project]\nname='obs-demo'\n", encoding="utf-8")
+    (tmp_path / "package.json").write_text(
+        json.dumps({"optionalDependencies": {"mlflow": "^2.0.0"}, "peerDependencies": {"wandb": "^0.17.0"}}),
+        encoding="utf-8",
+    )
+    (tmp_path / "train.py").write_text("import wandb\nimport mlflow\n", encoding="utf-8")
+    monkeypatch.setattr(
+        "workspace_tooling._which",
+        lambda command: f"C:/tools/{command}.exe" if command in {"wandb", "mlflow"} else None,
+    )
+
+    payload = detect_workspace_tooling(tmp_path, project_name="Observability Demo")
+
+    tools = {tool["id"]: tool for tool in payload["tools"]}
+    assert tools["wandb"]["configured"] is True
+    assert tools["wandb"]["installed"] is True
+    assert tools["mlflow"]["configured"] is True
+    assert tools["mlflow"]["installed"] is True
+
+
+def test_detect_workspace_tooling_detects_nested_repo_profiles_and_lockfiles(tmp_path: Path, monkeypatch) -> None:
+    (tmp_path / "apps" / "api").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "apps" / "web").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "services" / "rust").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "services" / "go").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "apps" / "api" / "pyproject.toml").write_text("[project]\nname='api'\n", encoding="utf-8")
+    (tmp_path / "apps" / "api" / "uv.lock").write_text("version = 1\n", encoding="utf-8")
+    (tmp_path / "apps" / "web" / "package.json").write_text(json.dumps({"name": "web"}), encoding="utf-8")
+    (tmp_path / "apps" / "web" / "pnpm-lock.yaml").write_text("lockfileVersion: 9\n", encoding="utf-8")
+    (tmp_path / "services" / "rust" / "Cargo.toml").write_text("[package]\nname='svc'\nversion='0.1.0'\n", encoding="utf-8")
+    (tmp_path / "services" / "rust" / "Cargo.lock").write_text("# lock\n", encoding="utf-8")
+    (tmp_path / "services" / "go" / "go.mod").write_text("module example.com/service\n", encoding="utf-8")
+    (tmp_path / "services" / "go" / "go.sum").write_text("example.com dep\n", encoding="utf-8")
+    monkeypatch.setattr("workspace_tooling._which", lambda _command: None)
+
+    payload = detect_workspace_tooling(tmp_path, project_name="Monorepo")
+
+    assert payload["repo_profile"]["python_repo"] is True
+    assert payload["repo_profile"]["node_repo"] is True
+    assert payload["repo_profile"]["rust_repo"] is True
+    assert payload["repo_profile"]["go_repo"] is True
+    assert "apps/api/uv.lock" in payload["repo_profile"]["lockfiles"]
+    assert "apps/web/pnpm-lock.yaml" in payload["repo_profile"]["lockfiles"]
+    assert "services/rust/Cargo.lock" in payload["repo_profile"]["lockfiles"]
+    assert "services/go/go.sum" in payload["repo_profile"]["lockfiles"]
+
+
+def test_detect_workspace_tooling_detects_nested_workspace_configs_and_packages(tmp_path: Path, monkeypatch) -> None:
+    (tmp_path / "apps" / "api").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "apps" / "web").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "apps" / "api" / "pyproject.toml").write_text(
+        "[project]\nname='api'\n[tool.ruff]\nline-length = 88\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "apps" / "api" / "noxfile.py").write_text("import nox\n", encoding="utf-8")
+    (tmp_path / "apps" / "web" / "package.json").write_text(
+        json.dumps(
+            {
+                "devDependencies": {"@playwright/test": "^1.55.0"},
+                "optionalDependencies": {"mlflow": "^2.0.0"},
+                "peerDependencies": {"wandb": "^0.17.0"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    (tmp_path / "apps" / "web" / "playwright.config.ts").write_text("export default {};\n", encoding="utf-8")
+    monkeypatch.setattr(
+        "workspace_tooling._which",
+        lambda command: f"C:/tools/{command}.exe" if command in {"ruff", "nox", "playwright", "wandb", "mlflow"} else None,
+    )
+
+    payload = detect_workspace_tooling(tmp_path, project_name="Nested Config Demo")
+
+    tools = {tool["id"]: tool for tool in payload["tools"]}
+    assert tools["ruff"]["configured"] is True
+    assert "apps/api/pyproject.toml" in tools["ruff"]["config_files"]
+    assert tools["nox"]["configured"] is True
+    assert "apps/api/noxfile.py" in tools["nox"]["config_files"]
+    assert tools["playwright"]["configured"] is True
+    assert "apps/web/playwright.config.ts" in tools["playwright"]["config_files"]
+    assert tools["wandb"]["configured"] is True
+    assert "package.json::wandb" in tools["wandb"]["config_files"]
+    assert tools["mlflow"]["configured"] is True
+    assert "package.json::mlflow" in tools["mlflow"]["config_files"]
 
 
 def test_detect_workspace_tooling_uses_code_signals_and_survives_binary_config_files(tmp_path: Path, monkeypatch) -> None:
@@ -258,3 +411,62 @@ def test_detect_workspace_tooling_uses_code_signals_and_survives_binary_config_f
     assert tools["tensorboard"]["configured"] is True
     assert tools["saved_model_cli"]["configured"] is True
     assert tools["torchrun"]["configured"] is True
+
+
+def test_detect_workspace_tooling_ignores_node_modules_signal_noise(tmp_path: Path, monkeypatch) -> None:
+    (tmp_path / "pyproject.toml").write_text("[project]\nname='clean-repo'\n", encoding="utf-8")
+    node_modules = tmp_path / "node_modules" / "fake-package"
+    node_modules.mkdir(parents=True, exist_ok=True)
+    (node_modules / "index.js").write_text(
+        "import wandb from 'wandb';\nimport mlflow from 'mlflow';\nconst token = 'tensorboard';\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr("workspace_tooling._which", lambda _command: None)
+
+    payload = detect_workspace_tooling(tmp_path, project_name="Noise Demo")
+
+    tools = {tool["id"]: tool for tool in payload["tools"]}
+    assert tools["wandb"]["configured"] is False
+    assert tools["mlflow"]["configured"] is False
+    assert tools["tensorboard"]["configured"] is False
+
+
+def test_detect_workspace_tooling_reuses_repo_detection_results(tmp_path: Path, monkeypatch) -> None:
+    (tmp_path / "pyproject.toml").write_text("[project]\nname='reuse-demo'\ndependencies=['tensorflow','torch']\n", encoding="utf-8")
+    tensorflow_calls = {"count": 0}
+    pytorch_calls = {"count": 0}
+
+    def fake_tensorflow(_root: Path) -> dict[str, object]:
+        tensorflow_calls["count"] += 1
+        return {"enabled": True, "mode": "tensorflow_product", "frameworks": ["TensorFlow"], "product_workflows": []}
+
+    def fake_pytorch(_root: Path) -> dict[str, object]:
+        pytorch_calls["count"] += 1
+        return {"enabled": True, "mode": "pytorch_general", "frameworks": ["PyTorch"], "product_workflows": [], "distributed_stack": []}
+
+    monkeypatch.setattr("workspace_tooling.detect_tensorflow_repo_mode", fake_tensorflow)
+    monkeypatch.setattr("workspace_tooling.build_tensorflow_validation_plan", lambda _root: {"available": True, "status": "ready", "steps": [], "recommended_fixes": []})
+    monkeypatch.setattr("workspace_tooling.detect_pytorch_repo_mode", fake_pytorch)
+    monkeypatch.setattr("workspace_tooling.detect_pytorch_runtime_status", lambda _root: {"available": True, "status": "ready", "recommended_fixes": []})
+    monkeypatch.setattr("workspace_tooling.build_pytorch_validation_plan", lambda _root: {"available": True, "status": "ready", "steps": [], "recommended_fixes": []})
+    monkeypatch.setattr("workspace_tooling._which", lambda _command: None)
+
+    payload = detect_workspace_tooling(tmp_path, project_name="Reuse Demo")
+
+    assert payload["available"] is True
+    assert tensorflow_calls["count"] == 1
+    assert pytorch_calls["count"] == 1
+
+
+def test_detect_workspace_tooling_includes_tensorflow_plan_commands_and_dedupes(tmp_path: Path, monkeypatch) -> None:
+    (tmp_path / "requirements.txt").write_text("tensorflow\npytest\n", encoding="utf-8")
+    (tmp_path / "train.py").write_text("import tensorflow as tf\n", encoding="utf-8")
+    (tmp_path / "export.py").write_text("import tensorflow as tf\n", encoding="utf-8")
+    monkeypatch.setattr("workspace_tooling._which", lambda command: "C:/tools/tensorboard.exe" if command == "tensorboard" else None)
+
+    payload = detect_workspace_tooling(tmp_path, project_name="TensorFlow Commands")
+
+    assert "python -m pytest" in payload["validation_commands"]
+    assert "python train.py" in payload["validation_commands"]
+    assert payload["validation_commands"].count("python -m pytest") == 1
+    assert "python export.py" in payload["deployment_commands"]

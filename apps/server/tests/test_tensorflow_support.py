@@ -108,3 +108,134 @@ def test_detect_tensorflow_repo_mode_ignores_artifact_flood_and_finds_real_repo_
 
     assert payload["enabled"] is True
     assert "python train.py" in payload["training_commands"]
+
+
+def test_detect_tensorflow_repo_mode_prioritizes_real_entrypoints_in_large_repo(tmp_path: Path) -> None:
+    workspace = tmp_path / "tensorflow-priority-signals"
+    workspace.mkdir(parents=True, exist_ok=True)
+    _write(workspace / "pyproject.toml", "[project]\ndependencies=['tensorflow','tensorboard']\n")
+    for index in range(40):
+        _write(workspace / f"module_{index:02d}.py", "print('noise')\n")
+    _write(workspace / "train.py", "import tensorflow as tf\nfrom keras.callbacks import TensorBoard\n")
+
+    payload = detect_tensorflow_repo_mode(workspace)
+
+    assert payload["enabled"] is True
+    assert "TensorBoard" in payload["frameworks"]
+    assert "python train.py" in payload["training_commands"]
+
+
+def test_detect_tensorflow_repo_mode_discovers_nested_entrypoints_and_subproject_install(tmp_path: Path) -> None:
+    workspace = tmp_path / "tensorflow-nested-entrypoints"
+    workspace.mkdir(parents=True, exist_ok=True)
+    _write(
+        workspace / "services" / "model" / "pyproject.toml",
+        "[project]\ndependencies=['tensorflow','tensorboard','tfx']\n",
+    )
+    _write(workspace / "services" / "model" / "train.py", "import tensorflow as tf\nfrom keras.callbacks import TensorBoard\n")
+    _write(workspace / "services" / "model" / "tune.py", "import keras_tuner\n")
+    _write(workspace / "services" / "model" / "export.py", "tf.saved_model.save\n")
+    _write(workspace / "services" / "model" / "serve.py", "print('serve')\n")
+    _write(workspace / "services" / "model" / "pipeline.py", "import tfx\n")
+
+    payload = detect_tensorflow_repo_mode(workspace)
+
+    assert "python -m pip install -e services/model" in payload["build_commands"]
+    assert "python services/model/train.py" in payload["training_commands"]
+    assert "python services/model/tune.py" in payload["training_commands"]
+    assert "python services/model/pipeline.py" in payload["training_commands"]
+    assert "python services/model/export.py" in payload["export_commands"]
+    assert "python services/model/serve.py" in payload["export_commands"]
+
+
+def test_detect_tensorflow_repo_mode_uses_real_nested_tensorboard_logdir(tmp_path: Path) -> None:
+    workspace = tmp_path / "tensorflow-nested-logs"
+    workspace.mkdir(parents=True, exist_ok=True)
+    _write(workspace / "pyproject.toml", "[project]\ndependencies=['tensorflow','tensorboard']\n")
+    _write(workspace / "train.py", "from keras.callbacks import TensorBoard\n",)
+    (workspace / "services" / "model" / "artifacts" / "tensorboard").mkdir(parents=True, exist_ok=True)
+
+    payload = detect_tensorflow_repo_mode(workspace)
+
+    assert "tensorboard --logdir services/model/artifacts/tensorboard" in payload["observability_commands"]
+
+
+def test_detect_tensorflow_repo_mode_ignores_readme_hype_for_advanced_frameworks(tmp_path: Path) -> None:
+    workspace = tmp_path / "tensorflow-readme-hype"
+    workspace.mkdir(parents=True, exist_ok=True)
+    _write(workspace / "pyproject.toml", "[project]\ndependencies=['tensorflow']\n")
+    _write(workspace / "train.py", "import tensorflow as tf\n")
+    _write(workspace / "README.md", "This repo definitely uses TFX, TensorBoard, TensorFlow Lite, and TensorFlow Hub.\n")
+
+    payload = detect_tensorflow_repo_mode(workspace)
+
+    assert payload["enabled"] is True
+    assert "TFX" not in payload["frameworks"]
+    assert "TensorBoard" not in payload["frameworks"]
+    assert "TensorFlow Lite" not in payload["frameworks"]
+    assert "TensorFlow Hub" not in payload["frameworks"]
+
+
+def test_tensorflow_validation_plan_adds_sanity_step_and_export_fix(monkeypatch, tmp_path: Path) -> None:
+    workspace = tmp_path / "tensorflow-export-signals"
+    workspace.mkdir(parents=True, exist_ok=True)
+    _write(workspace / "requirements.txt", "tensorflow\npytest\n")
+    _write(workspace / "train.py", "import tensorflow as tf\n")
+    _write(workspace / "notes.py", "tf.saved_model.save(model, 'artifacts/exported_model')\n")
+
+    monkeypatch.setattr("tensorflow_support.shutil.which", lambda _command: None)
+
+    payload = build_tensorflow_validation_plan(workspace)
+
+    assert any(step["type"] == "sanity" and step["command"] == "python -m pytest" for step in payload["steps"])
+    assert any("export entry point" in item.lower() for item in payload["recommended_fixes"])
+
+
+def test_tensorflow_validation_plan_allows_export_only_repo(monkeypatch, tmp_path: Path) -> None:
+    workspace = tmp_path / "tensorflow-export-only"
+    workspace.mkdir(parents=True, exist_ok=True)
+    _write(workspace / "requirements.txt", "tensorflow\n")
+    _write(workspace / "export.py", "import tensorflow as tf\n")
+    _write(workspace / "notes.py", "tf.saved_model.save(model, 'artifacts/exported_model')\n")
+
+    monkeypatch.setattr("tensorflow_support.shutil.which", lambda _command: None)
+
+    payload = build_tensorflow_validation_plan(workspace)
+
+    assert payload["status"] == "ready"
+    assert payload["blockers"] == []
+    assert any(step["type"] == "export" and step["command"] == "python export.py" for step in payload["steps"])
+
+
+def test_tensorflow_validation_plan_does_not_treat_placeholder_cli_export_as_real_execution(monkeypatch, tmp_path: Path) -> None:
+    workspace = tmp_path / "tensorflow-placeholder-export"
+    workspace.mkdir(parents=True, exist_ok=True)
+    _write(workspace / "requirements.txt", "tensorflow\n",)
+    _write(workspace / "notes.py", "tf.saved_model.save(model, 'artifacts/exported_model')\n")
+
+    monkeypatch.setattr(
+        "tensorflow_support.shutil.which",
+        lambda command: f"C:/tools/{command}.exe" if command == "saved_model_cli" else None,
+    )
+
+    payload = build_tensorflow_validation_plan(workspace)
+
+    assert payload["status"] == "blocked"
+    assert any("repo-owned export entry point" in blocker.lower() for blocker in payload["blockers"])
+
+
+def test_tensorflow_validation_plan_accepts_existing_artifacts_without_repo_export_command(monkeypatch, tmp_path: Path) -> None:
+    workspace = tmp_path / "tensorflow-existing-artifacts"
+    workspace.mkdir(parents=True, exist_ok=True)
+    _write(workspace / "requirements.txt", "tensorflow\n",)
+    _write(workspace / "saved_model.pb", "artifact\n")
+    _write(workspace / "model.tflite", "artifact\n")
+
+    monkeypatch.setattr(
+        "tensorflow_support.shutil.which",
+        lambda command: f"C:/tools/{command}.exe" if command in {"saved_model_cli", "tflite_convert"} else None,
+    )
+
+    payload = build_tensorflow_validation_plan(workspace)
+
+    assert not any("deployment artifacts instead of just talking about them" in item for item in payload["recommended_fixes"])

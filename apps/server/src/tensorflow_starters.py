@@ -461,6 +461,60 @@ def _tf_data_bundle(variant: str) -> TensorFlowFeatureBundle:
         raise ValueError(f"Unsupported tf.data variant `{variant}`.")
     source_code = builders[variant]
     already_batched = variant in {"csv", "images", "text"}
+    tfrecord_parse_block = ""
+    if variant == "tfrecord":
+        tfrecord_parse_block = dedent(
+            """
+            FEATURE_SPEC = {
+                "features": tf.io.FixedLenFeature([32], tf.float32),
+                "label": tf.io.FixedLenFeature([], tf.int64),
+            }
+
+
+            def parse_example(serialized_example):
+                parsed = tf.io.parse_single_example(serialized_example, FEATURE_SPEC)
+                return parsed["features"], parsed["label"]
+            """
+        ).strip()
+    pipeline_lines = [
+        "import tensorflow as tf",
+        "import keras",
+        "",
+        "",
+        "def generator_fn():",
+        "    for _ in range(32):",
+        "        yield tf.zeros((32,), dtype=tf.float32), tf.constant(0, dtype=tf.int32)",
+        "",
+        "",
+        "output_signature = (",
+        "    tf.TensorSpec(shape=(32,), dtype=tf.float32),",
+        "    tf.TensorSpec(shape=(), dtype=tf.int32),",
+        ")",
+    ]
+    if tfrecord_parse_block:
+        pipeline_lines.extend(["", "", *tfrecord_parse_block.splitlines()])
+    pipeline_lines.extend(
+        [
+            "",
+            "",
+            "def build_dataset():",
+            f"    dataset = {source_code}",
+            "    if isinstance(dataset, tuple):",
+            "        dataset = dataset[0]",
+        ]
+    )
+    if variant == "tfrecord":
+        pipeline_lines.append("    dataset = dataset.map(parse_example, num_parallel_calls=tf.data.AUTOTUNE)")
+    pipeline_lines.extend(
+        [
+            "    dataset = dataset.cache()",
+            "    dataset = dataset.shuffle(1024, reshuffle_each_iteration=True)",
+            f"    dataset = dataset if {already_batched!r} else dataset.batch(64)",
+            "    dataset = dataset.prefetch(tf.data.AUTOTUNE)",
+            "    return dataset",
+        ]
+    )
+    pipeline_content = "\n".join(pipeline_lines)
     return _bundle(
         "tf_data_pipeline",
         variant,
@@ -468,38 +522,23 @@ def _tf_data_bundle(variant: str) -> TensorFlowFeatureBundle:
         "A tf.data starter with batching, shuffling, caching, and prefetching already in place.",
         ["tensorflow", "keras"],
         {
-            "tensorflow_starters/data_pipeline.py": f"""
-                import tensorflow as tf
-                import keras
-
-
-                def generator_fn():
-                    for _ in range(32):
-                        yield tf.zeros((32,), dtype=tf.float32), tf.constant(0, dtype=tf.int32)
-
-
-                output_signature = (
-                    tf.TensorSpec(shape=(32,), dtype=tf.float32),
-                    tf.TensorSpec(shape=(), dtype=tf.int32),
-                )
-
-
-                def build_dataset():
-                    dataset = {source_code}
-                    if isinstance(dataset, tuple):
-                        dataset = dataset[0]
-                    dataset = dataset.shuffle(1024)
-                    dataset = dataset.cache()
-                    dataset = dataset if {already_batched!r} else dataset.batch(64)
-                    dataset = dataset.prefetch(tf.data.AUTOTUNE)
-                    return dataset
-            """,
+            "tensorflow_starters/data_pipeline.py": pipeline_content,
             "tensorflow_starters/data_validation.py": """
                 import tensorflow as tf
 
 
-                def inspect_element_spec(dataset: tf.data.Dataset) -> dict[str, str]:
-                    return {key: str(value) for key, value in dataset.element_spec._asdict().items()} if hasattr(dataset.element_spec, "_asdict") else {"spec": str(dataset.element_spec)}
+                def _spec_to_strings(spec):
+                    if isinstance(spec, dict):
+                        return {key: _spec_to_strings(value) for key, value in spec.items()}
+                    if hasattr(spec, "_asdict"):
+                        return {key: _spec_to_strings(value) for key, value in spec._asdict().items()}
+                    if isinstance(spec, (tuple, list)):
+                        return [_spec_to_strings(value) for value in spec]
+                    return str(spec)
+
+
+                def inspect_element_spec(dataset: tf.data.Dataset) -> object:
+                    return _spec_to_strings(dataset.element_spec)
             """,
         },
         [
@@ -559,8 +598,9 @@ def _finetuning_bundle(variant: str) -> TensorFlowFeatureBundle:
                     )
             """,
             "tensorflow_starters/baseline_eval.py": """
-                def baseline_metrics() -> dict[str, float]:
-                    return {"accuracy": 0.0}
+                def baseline_metrics(model, dataset) -> dict[str, float]:
+                    metrics = model.evaluate(dataset, return_dict=True, verbose=0)
+                    return {str(key): float(value) for key, value in dict(metrics).items()}
             """,
         },
         [
@@ -599,7 +639,14 @@ def _training_loop_bundle(variant: str) -> TensorFlowFeatureBundle:
                         predictions = model(features, training=True)
                         loss = loss_fn(labels, predictions)
                     gradients = tape.gradient(loss, model.trainable_variables)
-                    optimizer.apply_gradients(zip(gradients, model.trainable_variables))
+                    pairs = [
+                        (gradient, variable)
+                        for gradient, variable in zip(gradients, model.trainable_variables)
+                        if gradient is not None
+                    ]
+                    if not pairs:
+                        raise ValueError("GradientTape produced no gradients for the current step.")
+                    optimizer.apply_gradients(pairs)
                     return loss
             """,
         }
@@ -629,9 +676,15 @@ def _distributed_bundle(variant: str) -> TensorFlowFeatureBundle:
             import tensorflow as tf
 
 
-            strategy = tf.distribute.MirroredStrategy()
-            with strategy.scope():
-                model = build_model()
+            def build_strategy():
+                return tf.distribute.MirroredStrategy()
+
+
+            def build_distributed_model():
+                strategy = build_strategy()
+                with strategy.scope():
+                    model = build_model()
+                return strategy, model
         """
     elif variant == "multi_worker":
         content = """
@@ -640,13 +693,26 @@ def _distributed_bundle(variant: str) -> TensorFlowFeatureBundle:
             import tensorflow as tf
 
 
-            os.environ.setdefault("TF_CONFIG", json.dumps({
-                "cluster": {"worker": ["host0:12345", "host1:12345"]},
-                "task": {"type": "worker", "index": 0},
-            }))
-            strategy = tf.distribute.MultiWorkerMirroredStrategy()
-            with strategy.scope():
-                model = build_model()
+            def require_tf_config():
+                raw = os.environ.get("TF_CONFIG")
+                if not raw:
+                    raise RuntimeError("Set TF_CONFIG before starting multi-worker TensorFlow; fake host placeholders are not a strategy.")
+                try:
+                    return json.loads(raw)
+                except json.JSONDecodeError as exc:
+                    raise RuntimeError("TF_CONFIG must be valid JSON before starting MultiWorkerMirroredStrategy.") from exc
+
+
+            def build_strategy():
+                require_tf_config()
+                return tf.distribute.MultiWorkerMirroredStrategy()
+
+
+            def build_distributed_model():
+                strategy = build_strategy()
+                with strategy.scope():
+                    model = build_model()
+                return strategy, model
         """
     else:
         raise ValueError(f"Unsupported distributed-training variant `{variant}`.")
@@ -803,9 +869,26 @@ def _export_bundle(_variant: str) -> TensorFlowFeatureBundle:
 
 
                 def build_serving_signature(model: keras.Model):
-                    @tf.function(input_signature=[tf.TensorSpec(shape=[None, 32], dtype=tf.float32, name="features")])
-                    def serve_fn(features):
-                        return {"predictions": model(features, training=False)}
+                    def _normalized_input_name(tensor, index):
+                        raw_name = tensor.name.split(":")[0].replace("/", "_")
+                        return raw_name or f"input_{index}"
+
+                    input_specs = []
+                    input_names = []
+                    for index, model_input in enumerate(model.inputs):
+                        input_shape = [None, *list(model_input.shape[1:])]
+                        input_dtype = tf.as_dtype(model_input.dtype)
+                        input_name = _normalized_input_name(model_input, index)
+                        input_specs.append(tf.TensorSpec(shape=input_shape, dtype=input_dtype, name=input_name))
+                        input_names.append(input_name)
+
+                    @tf.function(input_signature=input_specs)
+                    def serve_fn(*features):
+                        if len(features) == 1:
+                            model_inputs = features[0]
+                        else:
+                            model_inputs = {name: value for name, value in zip(input_names, features)}
+                        return {"predictions": model(model_inputs, training=False)}
 
                     return serve_fn
 
@@ -853,7 +936,7 @@ def _serving_bundle(_variant: str) -> TensorFlowFeatureBundle:
             """,
             "tensorflow_starters/serving/api.py": """
                 import requests
-                from fastapi import FastAPI
+                from fastapi import FastAPI, HTTPException
 
 
                 app = FastAPI()
@@ -862,9 +945,15 @@ def _serving_bundle(_variant: str) -> TensorFlowFeatureBundle:
 
                 @app.post("/predict")
                 def predict(payload: dict) -> dict:
-                    response = requests.post(TF_SERVING_URL, json=payload, timeout=10)
-                    response.raise_for_status()
-                    return response.json()
+                    try:
+                        response = requests.post(TF_SERVING_URL, json=payload, timeout=10)
+                        response.raise_for_status()
+                    except requests.RequestException as exc:
+                        raise HTTPException(status_code=502, detail=f"TensorFlow Serving request failed: {exc}") from exc
+                    try:
+                        return response.json()
+                    except ValueError as exc:
+                        raise HTTPException(status_code=502, detail="TensorFlow Serving returned a non-JSON response.") from exc
             """,
         },
         [
@@ -887,11 +976,14 @@ def _tfx_bundle(_variant: str) -> TensorFlowFeatureBundle:
         ["tensorflow", "tfx", "tensorflow_data_validation", "tensorflow_transform", "tensorflow_model_analysis"],
         {
             "tensorflow_starters/tfx_pipeline.py": """
+                from pathlib import Path
+
                 from tfx import v1 as tfx
                 import tensorflow_model_analysis as tfma
 
 
                 def create_pipeline(pipeline_root: str, data_root: str, serving_model_dir: str):
+                    module_root = Path(__file__).resolve().parent
                     example_gen = tfx.components.CsvExampleGen(input_base=data_root)
                     statistics_gen = tfx.components.StatisticsGen(examples=example_gen.outputs["examples"])
                     schema_gen = tfx.components.SchemaGen(statistics=statistics_gen.outputs["statistics"], infer_feature_shape=True)
@@ -902,17 +994,17 @@ def _tfx_bundle(_variant: str) -> TensorFlowFeatureBundle:
                     transform = tfx.components.Transform(
                         examples=example_gen.outputs["examples"],
                         schema=schema_gen.outputs["schema"],
-                        module_file="tensorflow_starters/preprocessing.py",
+                        module_file=str(module_root / "preprocessing.py"),
                     )
                     tuner = tfx.components.Tuner(
-                        module_file="tensorflow_starters/trainer.py",
+                        module_file=str(module_root / "trainer.py"),
                         examples=transform.outputs["transformed_examples"],
                         transform_graph=transform.outputs["transform_graph"],
                         train_args=tfx.proto.TrainArgs(num_steps=500),
                         eval_args=tfx.proto.EvalArgs(num_steps=100),
                     )
                     trainer = tfx.components.Trainer(
-                        module_file="tensorflow_starters/trainer.py",
+                        module_file=str(module_root / "trainer.py"),
                         examples=transform.outputs["transformed_examples"],
                         transform_graph=transform.outputs["transform_graph"],
                         schema=schema_gen.outputs["schema"],
@@ -957,12 +1049,14 @@ def _tfx_bundle(_variant: str) -> TensorFlowFeatureBundle:
             """,
             "tensorflow_starters/trainer.py": """
                 import keras
+                import keras_tuner
+                from tfx import v1 as tfx
 
 
-                def run_fn(fn_args):
+                def _build_model(units: int = 32):
                     model = keras.Sequential([
                         keras.layers.Input(shape=(32,)),
-                        keras.layers.Dense(32, activation="relu"),
+                        keras.layers.Dense(units, activation="relu"),
                         keras.layers.Dense(3, activation="softmax"),
                     ])
                     model.compile(
@@ -970,6 +1064,25 @@ def _tfx_bundle(_variant: str) -> TensorFlowFeatureBundle:
                         loss=keras.losses.SparseCategoricalCrossentropy(),
                         metrics=["accuracy"],
                     )
+                    return model
+
+
+                def tuner_fn(fn_args):
+                    tuner = keras_tuner.RandomSearch(
+                        hypermodel=lambda hp: _build_model(hp.Int("units", min_value=32, max_value=96, step=32)),
+                        objective="val_accuracy",
+                        max_trials=4,
+                        directory=fn_args.working_dir,
+                        project_name="starter_tuner",
+                    )
+                    return tfx.components.TunerFnResult(
+                        tuner=tuner,
+                        fit_kwargs={"epochs": 5},
+                    )
+
+
+                def run_fn(fn_args):
+                    model = _build_model()
                     model.export(fn_args.serving_model_dir)
             """,
             "tensorflow_starters/preprocessing.py": """
@@ -1040,11 +1153,14 @@ def _skew_prevention_bundle(_variant: str) -> TensorFlowFeatureBundle:
                     return outputs
             """,
             "tensorflow_starters/trainer.py": """
+                import tensorflow as tf
+
+
                 def transformed_feature_spec():
                     return {
-                        "age_xf": "float32",
-                        "country_xf": "int64",
-                        "label": "int64",
+                        "age_xf": tf.io.FixedLenFeature([1], tf.float32),
+                        "country_xf": tf.io.FixedLenFeature([1], tf.int64),
+                        "label": tf.io.FixedLenFeature([1], tf.int64),
                     }
             """,
         },
@@ -1108,15 +1224,31 @@ def _tflite_bundle(_variant: str) -> TensorFlowFeatureBundle:
                 import tensorflow as tf
 
 
-                def representative_dataset():
+                def _representative_sample(sample_spec):
+                    if isinstance(sample_spec, dict):
+                        return {key: tf.random.uniform(shape, dtype=tf.float32) for key, shape in sample_spec.items()}
+                    if isinstance(sample_spec, (list, tuple)) and sample_spec and all(isinstance(dim, int) for dim in sample_spec):
+                        return tf.random.uniform(tuple(sample_spec), dtype=tf.float32)
+                    if isinstance(sample_spec, (list, tuple)):
+                        return [tf.random.uniform(tuple(shape), dtype=tf.float32) for shape in sample_spec]
+                    raise ValueError("Use a tensor shape tuple, a list of shape tuples, or a dict of named shapes for TFLite representative data.")
+
+
+                def representative_dataset(sample_spec=(1, 32)):
                     for _ in range(100):
-                        yield [tf.random.uniform((1, 32), dtype=tf.float32)]
+                        sample = _representative_sample(sample_spec)
+                        if isinstance(sample, dict):
+                            yield sample
+                        elif isinstance(sample, list):
+                            yield sample
+                        else:
+                            yield [sample]
 
 
-                def export_tflite(saved_model_dir: str, output_path: str) -> None:
+                def export_tflite(saved_model_dir: str, output_path: str, sample_spec=(1, 32)) -> None:
                     converter = tf.lite.TFLiteConverter.from_saved_model(saved_model_dir)
                     converter.optimizations = [tf.lite.Optimize.DEFAULT]
-                    converter.representative_dataset = representative_dataset
+                    converter.representative_dataset = lambda: representative_dataset(sample_spec)
                     tflite_model = converter.convert()
                     Path(output_path).parent.mkdir(parents=True, exist_ok=True)
                     with open(output_path, "wb") as handle:
@@ -1124,16 +1256,28 @@ def _tflite_bundle(_variant: str) -> TensorFlowFeatureBundle:
             """,
             "tensorflow_starters/mobile_integration.kt": """
                 // Kotlin integration sketch
+                import android.content.Context
+                import java.io.FileInputStream
                 import java.nio.MappedByteBuffer
+                import java.nio.channels.FileChannel
                 import org.tensorflow.lite.Interpreter
 
 
-                fun loadModelFile(name: String): MappedByteBuffer {
-                    TODO("Provide an asset-backed model file loader for your Android app.")
+                fun Context.loadModelFile(name: String): MappedByteBuffer {
+                    val descriptor = assets.openFd(name)
+                    FileInputStream(descriptor.fileDescriptor).use { input ->
+                        return input.channel.map(
+                            FileChannel.MapMode.READ_ONLY,
+                            descriptor.startOffset,
+                            descriptor.declaredLength,
+                        )
+                    }
                 }
 
                 val options = Interpreter.Options()
-                val interpreter = Interpreter(loadModelFile("model.tflite"), options)
+                fun buildInterpreter(context: Context): Interpreter {
+                    return Interpreter(context.loadModelFile("model.tflite"), options)
+                }
             """,
         },
         [

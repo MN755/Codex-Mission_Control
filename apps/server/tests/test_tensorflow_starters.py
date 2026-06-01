@@ -62,6 +62,8 @@ def test_generate_tf_data_csv_pipeline_contains_cache_and_prefetch() -> None:
     assert "make_csv_dataset" in content
     assert ".shuffle(" in content
     assert ".cache()" in content
+    assert "reshuffle_each_iteration=True" in content
+    assert content.index(".cache()") < content.index(".shuffle(")
     assert "prefetch(tf.data.AUTOTUNE)" in content
 
 
@@ -72,6 +74,18 @@ def test_generate_tf_data_generator_pipeline_batches_generated_records() -> None
     assert "def generator_fn()" in content
     assert "output_signature" in content
     assert "dataset = dataset if False else dataset.batch(64)" in content
+    assert "def _spec_to_strings(spec):" in bundle["files"]["tensorflow_starters/data_validation.py"]
+    assert "if hasattr(spec, \"_asdict\"):" in bundle["files"]["tensorflow_starters/data_validation.py"]
+
+
+def test_generate_tf_data_tfrecord_pipeline_parses_examples_before_batching() -> None:
+    bundle = generate_tensorflow_feature_bundle("tf_data_pipeline", variant="tfrecord")
+    content = bundle["files"]["tensorflow_starters/data_pipeline.py"]
+
+    assert "FEATURE_SPEC" in content
+    assert "def parse_example(serialized_example):" in content
+    assert "tf.io.parse_single_example" in content
+    assert "dataset = dataset.map(parse_example, num_parallel_calls=tf.data.AUTOTUNE)" in content
 
 
 def test_generate_finetuning_and_custom_loop_bundles_cover_transfer_learning_and_escape_hatch() -> None:
@@ -80,17 +94,26 @@ def test_generate_finetuning_and_custom_loop_bundles_cover_transfer_learning_and
 
     assert "hub.KerasLayer" in finetune["files"]["tensorflow_starters/finetune.py"]
     assert "trainable = False" in finetune["files"]["tensorflow_starters/finetune.py"]
+    assert "model.evaluate(dataset, return_dict=True, verbose=0)" in finetune["files"]["tensorflow_starters/baseline_eval.py"]
+    assert "return {str(key): float(value) for key, value in dict(metrics).items()}" in finetune["files"]["tensorflow_starters/baseline_eval.py"]
     assert "tf.GradientTape()" in custom_loop["files"]["tensorflow_starters/custom_loop.py"]
+    assert "if gradient is not None" in custom_loop["files"]["tensorflow_starters/custom_loop.py"]
+    assert 'raise ValueError("GradientTape produced no gradients for the current step.")' in custom_loop["files"]["tensorflow_starters/custom_loop.py"]
 
 
 def test_generate_distribution_observability_tuning_and_export_bundles_cover_key_runtime_features() -> None:
     distributed = generate_tensorflow_feature_bundle("distributed_training", variant="multi_worker")
+    mirrored = generate_tensorflow_feature_bundle("distributed_training", variant="mirrored")
     observability = generate_tensorflow_feature_bundle("tensorboard_observability")
     tuning = generate_tensorflow_feature_bundle("hyperparameter_tuning", variant="hyperband")
     export = generate_tensorflow_feature_bundle("model_export_guardrails")
 
-    assert "TF_CONFIG" in distributed["files"]["tensorflow_starters/distribute.py"]
+    assert "def require_tf_config():" in distributed["files"]["tensorflow_starters/distribute.py"]
+    assert "def build_strategy():" in distributed["files"]["tensorflow_starters/distribute.py"]
     assert "MultiWorkerMirroredStrategy" in distributed["files"]["tensorflow_starters/distribute.py"]
+    assert "fake host placeholders are not a strategy" in distributed["files"]["tensorflow_starters/distribute.py"]
+    assert "def build_distributed_model():" in mirrored["files"]["tensorflow_starters/distribute.py"]
+    assert "MirroredStrategy" in mirrored["files"]["tensorflow_starters/distribute.py"]
     assert "keras.callbacks.TensorBoard" in observability["files"]["tensorflow_starters/observability.py"]
     assert 'Path("artifacts/metrics").mkdir(parents=True, exist_ok=True)' in observability["files"]["tensorflow_starters/observability.py"]
     assert "keras_tuner.Hyperband" in tuning["files"]["tensorflow_starters/tune.py"]
@@ -99,6 +122,11 @@ def test_generate_distribution_observability_tuning_and_export_bundles_cover_key
     assert "max_trials=12" not in tuning["files"]["tensorflow_starters/tune.py"]
     assert "model.save(\"artifacts/model.keras\")" in export["files"]["tensorflow_starters/export.py"]
     assert "def build_serving_signature(model: keras.Model):" in export["files"]["tensorflow_starters/export.py"]
+    assert "def _normalized_input_name(tensor, index):" in export["files"]["tensorflow_starters/export.py"]
+    assert "for index, model_input in enumerate(model.inputs):" in export["files"]["tensorflow_starters/export.py"]
+    assert "input_specs.append(tf.TensorSpec(shape=input_shape, dtype=input_dtype, name=input_name))" in export["files"]["tensorflow_starters/export.py"]
+    assert "@tf.function(input_signature=input_specs)" in export["files"]["tensorflow_starters/export.py"]
+    assert "model_inputs = {name: value for name, value in zip(input_names, features)}" in export["files"]["tensorflow_starters/export.py"]
     assert "tf.saved_model.save(model, \"artifacts/exported_model\"" in export["files"]["tensorflow_starters/export.py"]
 
 
@@ -113,14 +141,30 @@ def test_generate_serving_tfx_validation_skew_slice_lite_and_optimization_bundle
 
     assert "base_path" in serving["files"]["tensorflow_starters/serving/models.config"]
     assert "FastAPI" in serving["files"]["tensorflow_starters/serving/api.py"]
+    assert "HTTPException" in serving["files"]["tensorflow_starters/serving/api.py"]
+    assert "TensorFlow Serving request failed" in serving["files"]["tensorflow_starters/serving/api.py"]
+    assert "TensorFlow Serving returned a non-JSON response." in serving["files"]["tensorflow_starters/serving/api.py"]
     assert "ExampleValidator" in tfx["files"]["tensorflow_starters/tfx_pipeline.py"]
     assert "InfraValidator" in tfx["files"]["tensorflow_starters/tfx_pipeline.py"]
+    assert 'module_file=str(module_root / "trainer.py")' in tfx["files"]["tensorflow_starters/tfx_pipeline.py"]
+    assert 'module_file=str(module_root / "preprocessing.py")' in tfx["files"]["tensorflow_starters/tfx_pipeline.py"]
+    assert "def tuner_fn(fn_args):" in tfx["files"]["tensorflow_starters/trainer.py"]
+    assert "keras_tuner.RandomSearch" in tfx["files"]["tensorflow_starters/trainer.py"]
+    assert "tfx.components.TunerFnResult" in tfx["files"]["tensorflow_starters/trainer.py"]
     assert "model.export(fn_args.serving_model_dir)" in tfx["files"]["tensorflow_starters/trainer.py"]
     assert "tfdv.infer_schema" in validation["files"]["tensorflow_starters/data_validation.py"]
     assert "tft.compute_and_apply_vocabulary" in skew["files"]["tensorflow_starters/preprocessing.py"]
+    assert "tf.io.FixedLenFeature([1], tf.float32)" in skew["files"]["tensorflow_starters/trainer.py"]
     assert "tfma.SlicingSpec" in slices["files"]["tensorflow_starters/eval_config.py"]
     assert "tf.lite.TFLiteConverter" in lite["files"]["tensorflow_starters/tflite_export.py"]
     assert "Path(output_path).parent.mkdir(parents=True, exist_ok=True)" in lite["files"]["tensorflow_starters/tflite_export.py"]
+    assert "def _representative_sample(sample_spec):" in lite["files"]["tensorflow_starters/tflite_export.py"]
+    assert "return {key: tf.random.uniform(shape, dtype=tf.float32) for key, shape in sample_spec.items()}" in lite["files"]["tensorflow_starters/tflite_export.py"]
+    assert "return [tf.random.uniform(tuple(shape), dtype=tf.float32) for shape in sample_spec]" in lite["files"]["tensorflow_starters/tflite_export.py"]
+    assert "def representative_dataset(sample_spec=(1, 32)):" in lite["files"]["tensorflow_starters/tflite_export.py"]
+    assert "converter.representative_dataset = lambda: representative_dataset(sample_spec)" in lite["files"]["tensorflow_starters/tflite_export.py"]
+    assert "Context.loadModelFile" in lite["files"]["tensorflow_starters/mobile_integration.kt"]
+    assert "TODO(" not in lite["files"]["tensorflow_starters/mobile_integration.kt"]
     assert "MappedByteBuffer" in lite["files"]["tensorflow_starters/mobile_integration.kt"]
     assert "Interpreter" in lite["files"]["tensorflow_starters/mobile_integration.kt"]
     assert "Path(output_path).parent.mkdir(parents=True, exist_ok=True)" in optimize["files"]["tensorflow_starters/quantize.py"]

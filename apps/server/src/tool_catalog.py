@@ -89,7 +89,13 @@ def _is_linux() -> bool:
     return platform.system().lower() == "linux"
 
 
-def _availability(tool_id: str, *, provider: str, connected_accounts: dict[str, Any]) -> tuple[str, list[str]]:
+def _cached_context_value(context: dict[str, Any], key: str, factory) -> Any:
+    if key not in context:
+        context[key] = factory()
+    return context[key]
+
+
+def _availability(tool_id: str, *, provider: str, connected_accounts: dict[str, Any], context: dict[str, Any]) -> tuple[str, list[str]]:
     notes: list[str] = []
     if tool_id in {"file-search", "format-changer", "write-publishable-docs", "goal-reminder", "ascii-image-creator"}:
         return "available", notes
@@ -112,7 +118,7 @@ def _availability(tool_id: str, *, provider: str, connected_accounts: dict[str, 
         notes.append("Browser availability depends on local Chromium or browser tooling.")
         return "available", notes
     if tool_id == "browser-automation-with-webwright":
-        status = detect_webwright_status()
+        status = _cached_context_value(context, "webwright_status", detect_webwright_status)
         notes.append(str(status.get("summary") or "Webwright runtime status is unknown."))
         if status.get("workspace_signals"):
             notes.append("Project-specific Webwright readiness is available through the dedicated Mission Control Webwright status surface.")
@@ -120,36 +126,36 @@ def _availability(tool_id: str, *, provider: str, connected_accounts: dict[str, 
             return "available", notes
         return ("needs_setup" if status.get("install_status") in {"missing", "partial"} else "coming_soon"), notes
     if tool_id == "nvidia-dynamo-inference":
-        status = detect_nvidia_dynamo_status()
+        status = _cached_context_value(context, "nvidia_dynamo_status", detect_nvidia_dynamo_status)
         notes.append(str(status.get("summary") or "NVIDIA Dynamo status is unknown."))
         return ("available" if status.get("reachable") else "needs_setup"), notes
     if tool_id == "nvidia-nim-inference":
-        status = detect_nvidia_nim_status()
+        status = _cached_context_value(context, "nvidia_nim_status", detect_nvidia_nim_status)
         notes.append(str(status.get("summary") or "NVIDIA NIM status is unknown."))
         return ("available" if status.get("reachable") else "needs_setup"), notes
     if tool_id == "nvidia-aiq-deep-research":
-        status = detect_nvidia_aiq_status()
+        status = _cached_context_value(context, "nvidia_aiq_status", detect_nvidia_aiq_status)
         notes.append(str(status.get("summary") or "NVIDIA AI-Q status is unknown."))
         return ("available" if status.get("available") else "needs_setup"), notes
     if tool_id == "nvidia-gpu-cluster-diagnostics":
-        status = detect_project_nvidia_gpu_diagnostics(REPO_ROOT)
+        status = _cached_context_value(context, "nvidia_gpu_diag_status", lambda: detect_project_nvidia_gpu_diagnostics(REPO_ROOT))
         notes.append(str(status.get("summary") or "NVIDIA GPU diagnostics status is unknown."))
         if status.get("available"):
             return "available", notes
         return ("needs_setup" if status.get("status") in {"missing", "unreachable", "unknown"} else "experimental"), notes
     if tool_id == "nvidia-local-runtime":
-        status = detect_nvidia_local_runtime_status(REPO_ROOT)
+        status = _cached_context_value(context, "nvidia_local_runtime_status", lambda: detect_nvidia_local_runtime_status(REPO_ROOT))
         notes.append(str(status.get("summary") or "NVIDIA local runtime status is unknown."))
         return ("available" if status.get("available") else "needs_setup"), notes
     if tool_id == "nvidia-validation-plan":
-        status = build_nvidia_validation_plan(REPO_ROOT)
+        status = _cached_context_value(context, "nvidia_validation_plan", lambda: build_nvidia_validation_plan(REPO_ROOT))
         notes.append(str(status.get("summary") or "NVIDIA validation plan status is unknown."))
         if status.get("status") == "not_applicable":
             return "experimental", notes
         return ("available" if status.get("available") else "needs_setup"), notes
     if tool_id == "tensorflow-project-scaffolding":
-        mode = detect_tensorflow_repo_mode(REPO_ROOT)
-        validation = build_tensorflow_validation_plan(REPO_ROOT)
+        mode = _cached_context_value(context, "tensorflow_mode", lambda: detect_tensorflow_repo_mode(REPO_ROOT))
+        validation = _cached_context_value(context, "tensorflow_validation_plan", lambda: build_tensorflow_validation_plan(REPO_ROOT))
         if mode.get("enabled"):
             notes.append(f"Detected TensorFlow mode `{mode.get('mode')}` with frameworks: {', '.join(list(mode.get('frameworks') or [])[:4])}.")
             notes.append(str(validation.get("summary") or "TensorFlow validation planning is available."))
@@ -157,34 +163,37 @@ def _availability(tool_id: str, *, provider: str, connected_accounts: dict[str, 
         notes.append("No TensorFlow or Keras repo signals were detected in the current workspace.")
         return "needs_setup", notes
     if tool_id == "tensorboard-observability":
-        mode = detect_tensorflow_repo_mode(REPO_ROOT)
-        if not mode.get("enabled"):
-            notes.append("TensorBoard only matters when the repo actually signals TensorFlow or Keras work.")
+        tensorflow_mode = _cached_context_value(context, "tensorflow_mode", lambda: detect_tensorflow_repo_mode(REPO_ROOT))
+        pytorch_mode = _cached_context_value(context, "pytorch_mode", lambda: detect_pytorch_repo_mode(REPO_ROOT))
+        if not tensorflow_mode.get("enabled") and "training_observability" not in list(pytorch_mode.get("product_workflows") or []):
+            notes.append("TensorBoard only matters when the repo actually signals TensorFlow, Keras, or PyTorch observability work.")
             return "experimental", notes
         tensorboard_path = shutil.which("tensorboard")
         notes.append("Use TensorBoard to prove training behavior with logs and curves instead of optimistic narration.")
         return ("available" if tensorboard_path else "needs_setup"), notes
     if tool_id == "tensorflow-serving-export":
-        mode = detect_tensorflow_repo_mode(REPO_ROOT)
+        mode = _cached_context_value(context, "tensorflow_mode", lambda: detect_tensorflow_repo_mode(REPO_ROOT))
         notes.append("SavedModel export checks keep training artifacts and serving artifacts from being treated like the same thing.")
         if "SavedModel / Serving" not in list(mode.get("frameworks") or []):
             return "experimental", notes
-        return ("available" if shutil.which("saved_model_cli") else "needs_setup"), notes
+        has_repo_export = bool(mode.get("export_commands"))
+        return ("available" if shutil.which("saved_model_cli") or has_repo_export else "needs_setup"), notes
     if tool_id == "tfx-pipeline-validation":
-        mode = detect_tensorflow_repo_mode(REPO_ROOT)
+        mode = _cached_context_value(context, "tensorflow_mode", lambda: detect_tensorflow_repo_mode(REPO_ROOT))
         notes.append("TFX validation is only interesting when the repo actually carries production-pipeline signals.")
         if "TFX" not in list(mode.get("frameworks") or []):
             return "experimental", notes
         return ("available" if shutil.which("tfx") else "needs_setup"), notes
     if tool_id == "tensorflow-lite-export":
-        mode = detect_tensorflow_repo_mode(REPO_ROOT)
+        mode = _cached_context_value(context, "tensorflow_mode", lambda: detect_tensorflow_repo_mode(REPO_ROOT))
         notes.append("Lite export checks matter for edge or mobile targets, not every model repo under the sun.")
         if "TensorFlow Lite" not in list(mode.get("frameworks") or []):
             return "experimental", notes
-        return ("available" if shutil.which("tflite_convert") else "needs_setup"), notes
+        has_repo_export = bool(mode.get("export_commands"))
+        return ("available" if shutil.which("tflite_convert") or has_repo_export else "needs_setup"), notes
     if tool_id == "pytorch-project-scaffolding":
-        mode = detect_pytorch_repo_mode(REPO_ROOT)
-        validation = build_pytorch_validation_plan(REPO_ROOT)
+        mode = _cached_context_value(context, "pytorch_mode", lambda: detect_pytorch_repo_mode(REPO_ROOT))
+        validation = _cached_context_value(context, "pytorch_validation_plan", lambda: build_pytorch_validation_plan(REPO_ROOT))
         if mode.get("enabled"):
             notes.append(f"Detected PyTorch mode `{mode.get('mode')}` with frameworks: {', '.join(list(mode.get('frameworks') or [])[:4])}.")
             notes.append(str(validation.get("summary") or "PyTorch validation planning is available."))
@@ -192,36 +201,47 @@ def _availability(tool_id: str, *, provider: str, connected_accounts: dict[str, 
         notes.append("No PyTorch repo signals were detected in the current workspace.")
         return "needs_setup", notes
     if tool_id == "pytorch-runtime-readiness":
-        runtime = detect_pytorch_runtime_status(REPO_ROOT)
+        runtime = _cached_context_value(context, "pytorch_runtime_status", lambda: detect_pytorch_runtime_status(REPO_ROOT))
         notes.append(str(runtime.get("summary") or "PyTorch runtime status is unknown."))
         if runtime.get("status") == "not_applicable":
             return "experimental", notes
-        return ("available" if runtime.get("status") == "ready" else "needs_setup"), notes
+        return ("available" if runtime.get("status") in {"ready", "partial"} else "needs_setup"), notes
     if tool_id == "pytorch-profiler-observability":
-        mode = detect_pytorch_repo_mode(REPO_ROOT)
+        mode = _cached_context_value(context, "pytorch_mode", lambda: detect_pytorch_repo_mode(REPO_ROOT))
         notes.append("Profiler evidence matters more than performance storytelling for PyTorch work.")
         if not mode.get("enabled"):
             return "experimental", notes
         if "training_observability" not in list(mode.get("product_workflows") or []):
             return "available", notes
-        return ("available" if shutil.which("tensorboard") else "needs_setup"), notes
+        observability_cli_detected = any(shutil.which(command) for command in ("tensorboard", "wandb", "mlflow"))
+        has_repo_observability_command = bool(mode.get("observability_commands"))
+        return ("available" if observability_cli_detected or has_repo_observability_command else "needs_setup"), notes
     if tool_id == "pytorch-checkpoint-validation":
-        mode = detect_pytorch_repo_mode(REPO_ROOT)
+        mode = _cached_context_value(context, "pytorch_mode", lambda: detect_pytorch_repo_mode(REPO_ROOT))
         notes.append("Checkpoint validation keeps resume claims attached to reality instead of wishful config files.")
         if not mode.get("enabled"):
             return "experimental", notes
         return ("available" if mode.get("checkpoint_paths") or mode.get("training_commands") else "needs_setup"), notes
     if tool_id == "pytorch-distributed-readiness":
-        mode = detect_pytorch_repo_mode(REPO_ROOT)
-        runtime = detect_pytorch_runtime_status(REPO_ROOT)
+        mode = _cached_context_value(context, "pytorch_mode", lambda: detect_pytorch_repo_mode(REPO_ROOT))
+        runtime = _cached_context_value(context, "pytorch_runtime_status", lambda: detect_pytorch_runtime_status(REPO_ROOT))
         notes.append("Distributed readiness checks should prove launcher and device assumptions before torchrun starts acting expensive.")
         if "distributed_training" not in list(mode.get("product_workflows") or []):
             return "experimental", notes
         if runtime.get("status") == "not_applicable":
             return "needs_setup", notes
-        return ("available" if shutil.which("torchrun") or runtime.get("cuda_available") else "needs_setup"), notes
+        distributed_stack = {str(item) for item in list(mode.get("distributed_stack") or [])}
+        missing_requirements: list[str] = []
+        if "Accelerate" in distributed_stack and not shutil.which("accelerate"):
+            missing_requirements.append("accelerate")
+        if "DeepSpeed" in distributed_stack and not shutil.which("deepspeed"):
+            missing_requirements.append("deepspeed")
+        if "DDP/FSDP" in distributed_stack:
+            if not shutil.which("torchrun"):
+                missing_requirements.append("torchrun")
+        return ("needs_setup" if missing_requirements else "available"), notes
     if tool_id == "pytorch-export-validation":
-        mode = detect_pytorch_repo_mode(REPO_ROOT)
+        mode = _cached_context_value(context, "pytorch_mode", lambda: detect_pytorch_repo_mode(REPO_ROOT))
         notes.append("Export checks matter when TorchScript or ONNX artifacts are part of the product path.")
         if not mode.get("enabled"):
             return "experimental", notes
@@ -286,8 +306,9 @@ def catalog_with_permissions(
     permission_overrides: dict[str, Any],
 ) -> list[dict[str, Any]]:
     items: list[dict[str, Any]] = []
+    context: dict[str, Any] = {}
     for item in TOOL_CATALOG:
-        availability, notes = _availability(item["id"], provider=provider, connected_accounts=connected_accounts)
+        availability, notes = _availability(item["id"], provider=provider, connected_accounts=connected_accounts, context=context)
         permission_policy = str(permission_overrides.get(item["id"]) or default_permission_policy(item["id"]))
         items.append(
             {

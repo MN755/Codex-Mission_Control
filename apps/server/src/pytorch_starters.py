@@ -356,7 +356,7 @@ def _dataset_dataloader_bundle(variant: str) -> PyTorchFeatureBundle:
     sample_block = {
         "tabular": dedent(
             """
-            features = torch.zeros(32, dtype=torch.float32)
+            features = torch.zeros(128, dtype=torch.float32)
             return features, torch.tensor(index % 2, dtype=torch.long)
             """
         ).strip(),
@@ -379,7 +379,11 @@ def _dataset_dataloader_bundle(variant: str) -> PyTorchFeatureBundle:
                 max_length=32,
                 return_tensors="pt",
             )
-            return tokens["input_ids"].squeeze(0), torch.tensor(index % 2, dtype=torch.long)
+            return {
+                "input_ids": tokens["input_ids"].squeeze(0),
+                "attention_mask": tokens["attention_mask"].squeeze(0),
+                "labels": torch.tensor(index % 2, dtype=torch.long),
+            }
             """
         ).strip(),
     }[variant]
@@ -441,16 +445,74 @@ def _training_loop_bundle(variant: str) -> PyTorchFeatureBundle:
             import torch
 
 
+            def _move_to_device(value, device):
+                if isinstance(value, torch.Tensor):
+                    return value.to(device)
+                if isinstance(value, dict):
+                    return {key: _move_to_device(item, device) for key, item in value.items()}
+                if isinstance(value, (list, tuple)):
+                    return type(value)(_move_to_device(item, device) for item in value)
+                return value
+
+
+            def _split_supervised_batch(batch):
+                if isinstance(batch, dict):
+                    labels = batch.get("labels", batch.get("label"))
+                    features = {key: value for key, value in batch.items() if key not in {"labels", "label"}}
+                    if labels is None:
+                        raise ValueError("Expected a label-bearing dict batch with `labels` or `label`.")
+                    if set(features) == {"inputs"}:
+                        return features["inputs"], labels
+                    if not features:
+                        raise ValueError("Expected at least one model input alongside labels in the dict batch.")
+                    return features, labels
+                if isinstance(batch, (list, tuple)):
+                    if len(batch) < 2:
+                        raise ValueError("Expected at least one feature tensor and one label tensor in the batch.")
+                    labels = batch[-1]
+                    features = batch[0] if len(batch) == 2 else batch[:-1]
+                    return features, labels
+                raise ValueError("Unsupported batch structure for the generated training loop.")
+
+
+            def _run_model(model, features):
+                if isinstance(features, dict):
+                    return model(**features)
+                if isinstance(features, (list, tuple)):
+                    return model(*features)
+                return model(features)
+
+
+            def _extract_logits(outputs):
+                if isinstance(outputs, torch.Tensor):
+                    return outputs
+                if isinstance(outputs, dict):
+                    if isinstance(outputs.get("logits"), torch.Tensor):
+                        return outputs["logits"]
+                    for value in outputs.values():
+                        if isinstance(value, torch.Tensor):
+                            return value
+                logits = getattr(outputs, "logits", None)
+                if isinstance(logits, torch.Tensor):
+                    return logits
+                if isinstance(outputs, (list, tuple)):
+                    for value in outputs:
+                        if isinstance(value, torch.Tensor):
+                            return value
+                raise ValueError("Expected the model to return a tensor-like logits output for the generated training loop.")
+
+
             def run_epoch(model, loader, optimizer, criterion, device):
                 model.train()
                 model.to(device)
                 scaler = torch.cuda.amp.GradScaler(enabled=device.type == "cuda")
-                for features, labels in loader:
-                    features = features.to(device)
-                    labels = labels.to(device)
+                for batch in loader:
+                    features, labels = _split_supervised_batch(batch)
+                    features = _move_to_device(features, device)
+                    labels = _move_to_device(labels, device)
                     optimizer.zero_grad(set_to_none=True)
                     with torch.cuda.amp.autocast(enabled=device.type == "cuda"):
-                        logits = model(features)
+                        logits = _extract_logits(_run_model(model, features))
                         loss = criterion(logits, labels)
                     scaler.scale(loss).backward()
                     scaler.step(optimizer)
@@ -462,10 +524,11 @@ def _training_loop_bundle(variant: str) -> PyTorchFeatureBundle:
                 model.eval()
                 model.to(device)
                 total_loss = 0.0
-                for features, labels in loader:
-                    features = features.to(device)
-                    labels = labels.to(device)
-                    logits = model(features)
+                for batch in loader:
+                    features, labels = _split_supervised_batch(batch)
+                    features = _move_to_device(features, device)
+                    labels = _move_to_device(labels, device)
+                    logits = _extract_logits(_run_model(model, features))
                     total_loss += float(criterion(logits, labels).item())
                 return total_loss / max(len(loader), 1)
             """
@@ -476,14 +539,72 @@ def _training_loop_bundle(variant: str) -> PyTorchFeatureBundle:
             import torch
 
 
+            def _move_to_device(value, device):
+                if isinstance(value, torch.Tensor):
+                    return value.to(device)
+                if isinstance(value, dict):
+                    return {key: _move_to_device(item, device) for key, item in value.items()}
+                if isinstance(value, (list, tuple)):
+                    return type(value)(_move_to_device(item, device) for item in value)
+                return value
+
+
+            def _split_supervised_batch(batch):
+                if isinstance(batch, dict):
+                    labels = batch.get("labels", batch.get("label"))
+                    features = {key: value for key, value in batch.items() if key not in {"labels", "label"}}
+                    if labels is None:
+                        raise ValueError("Expected a label-bearing dict batch with `labels` or `label`.")
+                    if set(features) == {"inputs"}:
+                        return features["inputs"], labels
+                    if not features:
+                        raise ValueError("Expected at least one model input alongside labels in the dict batch.")
+                    return features, labels
+                if isinstance(batch, (list, tuple)):
+                    if len(batch) < 2:
+                        raise ValueError("Expected at least one feature tensor and one label tensor in the batch.")
+                    labels = batch[-1]
+                    features = batch[0] if len(batch) == 2 else batch[:-1]
+                    return features, labels
+                raise ValueError("Unsupported batch structure for the generated training loop.")
+
+
+            def _run_model(model, features):
+                if isinstance(features, dict):
+                    return model(**features)
+                if isinstance(features, (list, tuple)):
+                    return model(*features)
+                return model(features)
+
+
+            def _extract_logits(outputs):
+                if isinstance(outputs, torch.Tensor):
+                    return outputs
+                if isinstance(outputs, dict):
+                    if isinstance(outputs.get("logits"), torch.Tensor):
+                        return outputs["logits"]
+                    for value in outputs.values():
+                        if isinstance(value, torch.Tensor):
+                            return value
+                logits = getattr(outputs, "logits", None)
+                if isinstance(logits, torch.Tensor):
+                    return logits
+                if isinstance(outputs, (list, tuple)):
+                    for value in outputs:
+                        if isinstance(value, torch.Tensor):
+                            return value
+                raise ValueError("Expected the model to return a tensor-like logits output for the generated training loop.")
+
+
             def run_epoch(model, loader, optimizer, criterion, device):
                 model.train()
                 model.to(device)
-                for features, labels in loader:
-                    features = features.to(device)
-                    labels = labels.to(device)
+                for batch in loader:
+                    features, labels = _split_supervised_batch(batch)
+                    features = _move_to_device(features, device)
+                    labels = _move_to_device(labels, device)
                     optimizer.zero_grad(set_to_none=True)
-                    logits = model(features)
+                    logits = _extract_logits(_run_model(model, features))
                     loss = criterion(logits, labels)
                     loss.backward()
                     optimizer.step()
@@ -494,10 +615,11 @@ def _training_loop_bundle(variant: str) -> PyTorchFeatureBundle:
                 model.eval()
                 model.to(device)
                 total_loss = 0.0
-                for features, labels in loader:
-                    features = features.to(device)
-                    labels = labels.to(device)
-                    logits = model(features)
+                for batch in loader:
+                    features, labels = _split_supervised_batch(batch)
+                    features = _move_to_device(features, device)
+                    labels = _move_to_device(labels, device)
+                    logits = _extract_logits(_run_model(model, features))
                     total_loss += float(criterion(logits, labels).item())
                 return total_loss / max(len(loader), 1)
             """
@@ -535,25 +657,36 @@ def _distributed_training_bundle(variant: str) -> PyTorchFeatureBundle:
 
             def setup() -> tuple[int, int]:
                 backend = "nccl" if torch.cuda.is_available() else "gloo"
-                dist.init_process_group(backend)
-                rank = int(os.environ["RANK"])
+                rank = int(os.environ.get("RANK", "0"))
+                world_size = int(os.environ.get("WORLD_SIZE", "1"))
                 local_rank = int(os.environ.get("LOCAL_RANK", "0"))
+                if world_size <= 1:
+                    return rank, local_rank
+                if not os.environ.get("MASTER_ADDR") or not os.environ.get("MASTER_PORT"):
+                    raise RuntimeError("Set MASTER_ADDR and MASTER_PORT before starting DDP with more than one process.")
+                if not dist.is_initialized():
+                    dist.init_process_group(backend=backend, rank=rank, world_size=world_size)
                 if torch.cuda.is_available():
                     torch.cuda.set_device(local_rank)
                 return rank, local_rank
 
 
             def wrap(model: torch.nn.Module) -> torch.nn.Module:
-                _, local_rank = setup()
+                local_rank = int(os.environ.get("LOCAL_RANK", "0"))
+                if not dist.is_initialized():
+                    return model.to(local_rank) if torch.cuda.is_available() else model
                 if torch.cuda.is_available():
                     return DDP(model.to(local_rank), device_ids=[local_rank])
                 return DDP(model)
         """,
         "accelerate": """
+            import torch
             from accelerate import Accelerator
 
 
-            accelerator = Accelerator(mixed_precision="bf16")
+            accelerator = Accelerator(
+                mixed_precision="bf16" if torch.cuda.is_available() and torch.cuda.is_bf16_supported() else "no"
+            )
 
 
             def prepare(model, optimizer, loader):
@@ -653,8 +786,66 @@ def _profiler_observability_bundle(variant: str) -> PyTorchFeatureBundle:
                 import torch
 
 
+                def _move_to_device(value, device):
+                    if isinstance(value, torch.Tensor):
+                        return value.to(device)
+                    if isinstance(value, dict):
+                        return {key: _move_to_device(item, device) for key, item in value.items()}
+                    if isinstance(value, (list, tuple)):
+                        return type(value)(_move_to_device(item, device) for item in value)
+                    return value
+
+
+                def _model_inputs_from_batch(batch):
+                    if isinstance(batch, dict):
+                        features = {key: value for key, value in batch.items() if key not in {"labels", "label"}}
+                        if set(features) == {"inputs"}:
+                            return features["inputs"]
+                        return features
+                    if isinstance(batch, (list, tuple)):
+                        if len(batch) >= 2:
+                            return batch[0] if len(batch) == 2 else batch[:-1]
+                    return batch
+
+
+                def _forward_model(model, batch, device):
+                    features = _move_to_device(_model_inputs_from_batch(batch), device)
+                    if isinstance(features, dict):
+                        return model(**features)
+                    if isinstance(features, (list, tuple)):
+                        return model(*features)
+                    return model(features)
+
+
+                def _extract_tensor_output(outputs):
+                    if isinstance(outputs, torch.Tensor):
+                        return outputs
+                    if isinstance(outputs, dict):
+                        if isinstance(outputs.get("loss"), torch.Tensor):
+                            return outputs["loss"]
+                        if isinstance(outputs.get("logits"), torch.Tensor):
+                            return outputs["logits"]
+                        for value in outputs.values():
+                            if isinstance(value, torch.Tensor):
+                                return value
+                    loss = getattr(outputs, "loss", None)
+                    if isinstance(loss, torch.Tensor):
+                        return loss
+                    logits = getattr(outputs, "logits", None)
+                    if isinstance(logits, torch.Tensor):
+                        return logits
+                    if isinstance(outputs, (list, tuple)):
+                        for value in outputs:
+                            if isinstance(value, torch.Tensor):
+                                return value
+                    raise ValueError("Expected a tensor-like model output for profiler backpropagation.")
+
+
                 def profile_step(model, batch, logdir="artifacts/tensorboard"):
                     Path(logdir).mkdir(parents=True, exist_ok=True)
+                    model.train()
+                    first_parameter = next(model.parameters(), None)
+                    device = first_parameter.device if first_parameter is not None else torch.device("cpu")
                     activities = [torch.profiler.ProfilerActivity.CPU]
                     if torch.cuda.is_available():
                         activities.append(torch.profiler.ProfilerActivity.CUDA)
@@ -666,9 +857,9 @@ def _profiler_observability_bundle(variant: str) -> PyTorchFeatureBundle:
                         profile_memory=True,
                     ) as prof:
                         for _ in range(4):
-                            outputs = model(batch)
-                            if isinstance(outputs, torch.Tensor):
-                                outputs.sum().backward()
+                            model.zero_grad(set_to_none=True)
+                            outputs = _extract_tensor_output(_forward_model(model, batch, device))
+                            outputs.sum().backward()
                             prof.step()
             """,
         },
@@ -698,18 +889,54 @@ def _export_inference_bundle(variant: str) -> PyTorchFeatureBundle:
                 import torch
 
 
-                def export_artifacts(model: torch.nn.Module, sample: torch.Tensor) -> None:
+                def _move_to_device(value, device):
+                    if isinstance(value, torch.Tensor):
+                        return value.to(device)
+                    if isinstance(value, (list, tuple)):
+                        return type(value)(_move_to_device(item, device) for item in value)
+                    raise ValueError("Use tensor or tuple/list tensor samples for the generated export helper.")
+
+
+                def _normalize_sample(sample, device):
+                    if isinstance(sample, dict):
+                        raise ValueError("Dict-style export samples need a repo-specific wrapper; pass tensor or tuple/list inputs here.")
+                    if isinstance(sample, (list, tuple)) and not sample:
+                        raise ValueError("Provide at least one sample tensor before tracing or ONNX export.")
+                    return _move_to_device(sample, device)
+
+
+                def _input_names(sample):
+                    if isinstance(sample, torch.Tensor):
+                        return ["inputs"]
+                    return [f"inputs_{index}" for index, _value in enumerate(sample)]
+
+
+                def _dynamic_axes(sample, output_name="logits"):
+                    axes = {name: {0: "batch"} for name in _input_names(sample)}
+                    axes[output_name] = {0: "batch"}
+                    return axes
+
+
+                def export_artifacts(model: torch.nn.Module, sample) -> None:
                     Path("artifacts").mkdir(parents=True, exist_ok=True)
                     model.eval()
+                    first_parameter = next(model.parameters(), None)
+                    default_device = first_parameter.device if first_parameter is not None else torch.device("cpu")
+                    sample = _normalize_sample(sample, default_device)
+                    device = first_parameter.device if first_parameter is not None else (
+                        sample.device if isinstance(sample, torch.Tensor) else sample[0].device
+                    )
+                    model = model.to(device)
                     scripted = torch.jit.trace(model, sample)
                     scripted.save("artifacts/model.ts")
+                    input_names = _input_names(sample)
                     torch.onnx.export(
                         model,
                         sample,
                         "artifacts/model.onnx",
-                        input_names=["inputs"],
+                        input_names=input_names,
                         output_names=["logits"],
-                        dynamic_axes={"inputs": {0: "batch"}, "logits": {0: "batch"}},
+                        dynamic_axes=_dynamic_axes(sample),
                     )
             """,
             "pytorch_starters/infer.py": """
@@ -747,7 +974,7 @@ def _peft_finetuning_bundle(variant: str) -> PyTorchFeatureBundle:
                 from transformers import AutoModelForCausalLM
 
 
-                def build_model(model_name: str = "distilbert/distilgpt2"):
+                def build_model(model_name: str = "distilgpt2"):
                     model = AutoModelForCausalLM.from_pretrained(model_name)
                     config = LoraConfig(
                         r=16,

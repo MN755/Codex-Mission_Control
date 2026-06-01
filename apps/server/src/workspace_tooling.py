@@ -102,8 +102,38 @@ _TOOL_SPECS: dict[str, dict[str, Any]] = {
         "label": "torchrun",
         "category": "validation",
         "commands": ["torchrun --nproc_per_node 2 train.py"],
-        "workspace_tokens": ["torchrun", "torch.distributed", "accelerate", "deepspeed", "fsdp"],
+        "workspace_tokens": ["torchrun", "torch.distributed", "ddp", "fsdp"],
         "notes": ["Distributed PyTorch launcher and readiness lane."],
+    },
+    "accelerate": {
+        "label": "Accelerate",
+        "category": "validation",
+        "commands": ["accelerate launch train.py"],
+        "workspace_tokens": ["accelerate"],
+        "notes": ["Launcher-aware distributed and mixed-precision PyTorch helper."],
+    },
+    "deepspeed": {
+        "label": "DeepSpeed",
+        "category": "validation",
+        "commands": ["deepspeed train.py --deepspeed ds_config.json"],
+        "workspace_tokens": ["deepspeed", "zero stage", "zero_stage", "ds_config"],
+        "notes": ["Large-model distributed launcher and optimizer/runtime stack."],
+    },
+    "wandb": {
+        "label": "Weights & Biases",
+        "category": "validation",
+        "commands": ["wandb sync wandb"],
+        "workspace_tokens": ["wandb"],
+        "package_names": ["wandb"],
+        "notes": ["Experiment tracking and observability for training runs."],
+    },
+    "mlflow": {
+        "label": "MLflow",
+        "category": "validation",
+        "commands": ["mlflow ui --backend-store-uri mlruns"],
+        "workspace_tokens": ["mlflow", "mlruns"],
+        "package_names": ["mlflow"],
+        "notes": ["Model training metadata, experiment tracking, and artifact review."],
     },
     "gitleaks": {
         "label": "Gitleaks",
@@ -155,6 +185,19 @@ _SECURITY_LOCKFILES = [
     "go.sum",
     "Cargo.lock",
 ]
+_WORKSPACE_SIGNAL_SKIP_DIRS = {
+    ".git",
+    ".hg",
+    ".svn",
+    ".venv",
+    "venv",
+    "__pycache__",
+    "node_modules",
+    ".runtime",
+    "dist",
+    "build",
+    "artifacts",
+}
 
 
 def _which(command: str) -> str | None:
@@ -168,18 +211,59 @@ def _safe_read_text(path: Path) -> str:
         return ""
 
 
-def _package_json_package_names(root: Path) -> set[str]:
-    package_json = root / "package.json"
-    if not package_json.exists():
+def _dedupe(values: list[str]) -> list[str]:
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for value in values:
+        if not value or value in seen:
+            continue
+        seen.add(value)
+        ordered.append(value)
+    return ordered
+
+
+def _workspace_relative_files(root: Path) -> list[str]:
+    relative_paths: list[str] = []
+    for path in sorted(root.rglob("*")):
+        if not path.is_file():
+            continue
+        relative = path.relative_to(root)
+        parts = relative.parts
+        parent_parts = parts[:-1]
+        if any(part.lower() in _WORKSPACE_SIGNAL_SKIP_DIRS for part in parts):
+            continue
+        if any(part.startswith(".") and part not in {".github"} for part in parent_parts):
+            continue
+        relative_paths.append(relative.as_posix())
+    return relative_paths
+
+
+def _matching_relative_paths(relative_files: list[str], expected: str) -> list[str]:
+    normalized_expected = expected.replace("\\", "/")
+    if "/" in normalized_expected:
+        return [path for path in relative_files if path == normalized_expected]
+    return [path for path in relative_files if Path(path).name == normalized_expected]
+
+
+def _package_json_package_names(root: Path, relative_files: list[str] | None = None) -> set[str]:
+    relative_files = relative_files or _workspace_relative_files(root)
+    package_json_paths = _matching_relative_paths(relative_files, "package.json")
+    if not package_json_paths:
         return set()
-    try:
-        payload = json.loads(package_json.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return set()
-    deps = {}
-    deps.update(dict(payload.get("dependencies") or {}))
-    deps.update(dict(payload.get("devDependencies") or {}))
-    return {str(name) for name in deps}
+    package_names: set[str] = set()
+    for relative_name in package_json_paths:
+        package_json = root / relative_name
+        try:
+            payload = json.loads(package_json.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        deps = {}
+        deps.update(dict(payload.get("dependencies") or {}))
+        deps.update(dict(payload.get("devDependencies") or {}))
+        deps.update(dict(payload.get("optionalDependencies") or {}))
+        deps.update(dict(payload.get("peerDependencies") or {}))
+        package_names.update(str(name) for name in deps)
+    return package_names
 
 
 def _workspace_signal_haystack(root: Path) -> str:
@@ -193,60 +277,73 @@ def _workspace_signal_haystack(root: Path) -> str:
             break
         if not path.is_file():
             continue
+        relative_parts = path.relative_to(root).parts
+        if any(part.lower() in _WORKSPACE_SIGNAL_SKIP_DIRS for part in relative_parts):
+            continue
         if path.suffix.lower() not in {".py", ".ipynb", ".js", ".jsx", ".ts", ".tsx", ".json", ".toml", ".yaml", ".yml"}:
             continue
-        if any(part.startswith(".") and part not in {".github"} for part in path.relative_to(root).parts):
+        if any(part.startswith(".") and part not in {".github"} for part in relative_parts):
             continue
         text_parts.append(_safe_read_text(path).lower())
     return "\n".join(text_parts)
 
 
-def _config_matches(root: Path, spec: dict[str, Any]) -> tuple[list[str], list[str]]:
+def _config_matches(
+    root: Path,
+    spec: dict[str, Any],
+    *,
+    relative_files: list[str] | None = None,
+    workspace_package_names: set[str] | None = None,
+    haystack: str | None = None,
+) -> tuple[list[str], list[str]]:
+    relative_files = relative_files or _workspace_relative_files(root)
     matched_files: list[str] = []
     matched_sections: list[str] = []
     for relative_name in spec.get("config_files", []):
-        candidate = root / relative_name
-        if candidate.exists():
-            matched_files.append(relative_name)
+        matched_files.extend(_matching_relative_paths(relative_files, str(relative_name)))
     pyproject_sections = list(spec.get("pyproject_sections", []))
     if pyproject_sections:
-        pyproject = root / "pyproject.toml"
-        text = _safe_read_text(pyproject).lower()
-        for section in pyproject_sections:
-            lowered = str(section).lower()
-            if lowered and lowered in text:
-                matched_sections.append(section)
-    package_names = set(spec.get("package_names", []))
-    if package_names:
-        installed_names = _package_json_package_names(root)
-        for name in sorted(package_names & installed_names):
+        for pyproject_relative in _matching_relative_paths(relative_files, "pyproject.toml"):
+            text = _safe_read_text(root / pyproject_relative).lower()
+            for section in pyproject_sections:
+                lowered = str(section).lower()
+                if lowered and lowered in text:
+                    matched_sections.append(section)
+    declared_package_names = set(spec.get("package_names", []))
+    if declared_package_names:
+        installed_names = set(workspace_package_names or ())
+        for name in sorted(declared_package_names & installed_names):
             matched_files.append(f"package.json::{name}")
     workspace_tokens = [str(token).strip().lower() for token in spec.get("workspace_tokens", []) if str(token).strip()]
     if workspace_tokens:
-        haystack = _workspace_signal_haystack(root)
+        workspace_haystack = haystack or ""
         for token in workspace_tokens:
-            if token in haystack:
+            if token in workspace_haystack:
                 matched_sections.append(f"signal:{token}")
     return sorted(set(matched_files)), sorted(set(matched_sections))
 
 
-def _repo_profile(root: Path) -> dict[str, Any]:
-    try:
-        files = {entry.name for entry in root.iterdir()} if root.exists() else set()
-    except OSError:
-        files = set()
-    python_repo = any(name in files for name in _PYTHON_SIGNALS)
-    node_repo = any(name in files for name in _NODE_SIGNALS)
-    rust_repo = "Cargo.toml" in files
-    go_repo = "go.mod" in files
-    tensorflow_mode = detect_tensorflow_repo_mode(root)
-    pytorch_mode = detect_pytorch_repo_mode(root)
+def _repo_profile(
+    root: Path,
+    *,
+    relative_files: list[str] | None = None,
+    tensorflow_mode: dict[str, Any] | None = None,
+    pytorch_mode: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    relative_files = relative_files or _workspace_relative_files(root)
+    filenames = {Path(path).name for path in relative_files}
+    python_repo = any(name in filenames for name in _PYTHON_SIGNALS)
+    node_repo = any(name in filenames for name in _NODE_SIGNALS)
+    rust_repo = "Cargo.toml" in filenames
+    go_repo = "go.mod" in filenames
+    tensorflow_mode = tensorflow_mode or detect_tensorflow_repo_mode(root)
+    pytorch_mode = pytorch_mode or detect_pytorch_repo_mode(root)
     return {
         "python_repo": python_repo,
         "node_repo": node_repo,
         "rust_repo": rust_repo,
         "go_repo": go_repo,
-        "lockfiles": sorted(name for name in _SECURITY_LOCKFILES if name in files),
+        "lockfiles": sorted(path for path in relative_files if Path(path).name in _SECURITY_LOCKFILES),
         "tensorflow_repo": bool(tensorflow_mode.get("enabled")),
         "tensorflow_mode": tensorflow_mode.get("mode"),
         "tensorflow_frameworks": list(tensorflow_mode.get("frameworks") or []),
@@ -256,10 +353,23 @@ def _repo_profile(root: Path) -> dict[str, Any]:
     }
 
 
-def _tool_signal_summary(tool_id: str, *, root: Path) -> dict[str, Any]:
+def _tool_signal_summary(
+    tool_id: str,
+    *,
+    root: Path,
+    relative_files: list[str],
+    package_names: set[str],
+    haystack: str,
+) -> dict[str, Any]:
     spec = _TOOL_SPECS[tool_id]
     binary_path = _which(tool_id)
-    config_files, config_sections = _config_matches(root, spec)
+    config_files, config_sections = _config_matches(
+        root,
+        spec,
+        relative_files=relative_files,
+        workspace_package_names=package_names,
+        haystack=haystack,
+    )
     configured = bool(config_files or config_sections)
     installed = bool(binary_path)
     commands = list(spec.get("commands", []))
@@ -324,6 +434,12 @@ def detect_workspace_tooling(workspace_path: str | Path | None, *, project_name:
             "intake_commands": [],
             "validation_commands": [],
             "security_commands": [],
+            "deployment_commands": [],
+            "tensorflow_repo": {"enabled": False, "frameworks": [], "product_workflows": []},
+            "tensorflow_validation_plan": {"available": False, "status": "not_applicable", "steps": [], "recommended_fixes": []},
+            "pytorch_repo": {"enabled": False, "frameworks": [], "product_workflows": [], "distributed_stack": []},
+            "pytorch_runtime_status": {"available": False, "status": "not_applicable", "recommended_fixes": []},
+            "pytorch_validation_plan": {"available": False, "status": "not_applicable", "steps": [], "recommended_fixes": []},
         }
     try:
         root = resolve_local_path(workspace_path, must_exist=True, must_be_dir=True)
@@ -340,13 +456,25 @@ def detect_workspace_tooling(workspace_path: str | Path | None, *, project_name:
             "intake_commands": [],
             "validation_commands": [],
             "security_commands": [],
+            "deployment_commands": [],
+            "tensorflow_repo": {"enabled": False, "frameworks": [], "product_workflows": []},
+            "tensorflow_validation_plan": {"available": False, "status": "not_applicable", "steps": [], "recommended_fixes": []},
+            "pytorch_repo": {"enabled": False, "frameworks": [], "product_workflows": [], "distributed_stack": []},
+            "pytorch_runtime_status": {"available": False, "status": "not_applicable", "recommended_fixes": []},
+            "pytorch_validation_plan": {"available": False, "status": "not_applicable", "steps": [], "recommended_fixes": []},
         }
-    repo_profile = _repo_profile(root)
-    tools = [_tool_signal_summary(tool_id, root=root) for tool_id in _TOOL_SPECS]
-    tooling_by_id = {tool["id"]: tool for tool in tools}
     tensorflow_mode = detect_tensorflow_repo_mode(root)
-    tensorflow_plan = build_tensorflow_validation_plan(root)
     pytorch_mode = detect_pytorch_repo_mode(root)
+    relative_files = _workspace_relative_files(root)
+    repo_profile = _repo_profile(root, relative_files=relative_files, tensorflow_mode=tensorflow_mode, pytorch_mode=pytorch_mode)
+    package_names = _package_json_package_names(root, relative_files)
+    haystack = _workspace_signal_haystack(root)
+    tools = [
+        _tool_signal_summary(tool_id, root=root, relative_files=relative_files, package_names=package_names, haystack=haystack)
+        for tool_id in _TOOL_SPECS
+    ]
+    tooling_by_id = {tool["id"]: tool for tool in tools}
+    tensorflow_plan = build_tensorflow_validation_plan(root)
     pytorch_runtime = detect_pytorch_runtime_status(root)
     pytorch_plan = build_pytorch_validation_plan(root)
     validation_commands = []
@@ -360,8 +488,18 @@ def detect_workspace_tooling(workspace_path: str | Path | None, *, project_name:
         validation_commands.append("playwright test")
     if tooling_by_id["tensorboard"]["installed"] and tooling_by_id["tensorboard"]["configured"]:
         validation_commands.append("tensorboard --logdir logs")
+    if tensorflow_mode.get("enabled"):
+        validation_commands.extend(
+            str(step.get("command"))
+            for step in list(tensorflow_plan.get("steps") or [])
+            if step.get("type") in {"test", "train", "observability", "sanity"} and step.get("command")
+        )
     if pytorch_mode.get("enabled"):
-        validation_commands.extend(str(step.get("command")) for step in list(pytorch_plan.get("steps") or []) if step.get("type") in {"train", "eval", "observability", "checkpoint"} and step.get("command"))
+        validation_commands.extend(
+            str(step.get("command"))
+            for step in list(pytorch_plan.get("steps") or [])
+            if step.get("type") in {"train", "eval", "inference", "observability", "checkpoint", "sanity"} and step.get("command")
+        )
     if tooling_by_id["uv"]["installed"] and repo_profile.get("python_repo"):
         validation_commands.insert(0, "uv run pytest")
     intake_commands = []
@@ -385,6 +523,12 @@ def detect_workspace_tooling(workspace_path: str | Path | None, *, project_name:
         deployment_commands.append("tflite_convert --saved_model_dir <saved_model_dir> --output_file model.tflite")
     if tooling_by_id["tfx"]["installed"] and tooling_by_id["tfx"]["configured"]:
         deployment_commands.append("tfx pipeline list")
+    if tensorflow_mode.get("enabled"):
+        deployment_commands.extend(
+            str(step.get("command"))
+            for step in list(tensorflow_plan.get("steps") or [])
+            if step.get("type") == "export" and step.get("command")
+        )
     if pytorch_mode.get("enabled"):
         deployment_commands.extend(str(step.get("command")) for step in list(pytorch_plan.get("steps") or []) if step.get("type") == "export" and step.get("command"))
     packs = [
@@ -414,7 +558,7 @@ def detect_workspace_tooling(workspace_path: str | Path | None, *, project_name:
         ),
         _pack_status(
             tools,
-            ["tensorboard", "torchrun"],
+            ["tensorboard", "wandb", "mlflow", "torchrun", "accelerate", "deepspeed"],
             title="PyTorch Training Pack",
             summary="PyTorch training, checkpoint, profiler, and distributed-readiness helpers.",
         ),
@@ -426,6 +570,14 @@ def detect_workspace_tooling(workspace_path: str | Path | None, *, project_name:
         recommended_next_steps.append("Install Ruff so Python lint and format checks can become a real validation gate.")
     if tooling_by_id["pre-commit"]["configured"] and not tooling_by_id["pre-commit"]["installed"]:
         recommended_next_steps.append("Install pre-commit so Mission Control can run the repo's declared hook contract before handoff.")
+    if tooling_by_id["accelerate"]["configured"] and not tooling_by_id["accelerate"]["installed"]:
+        recommended_next_steps.append("Install Accelerate so Mission Control can validate the repo's actual PyTorch launcher path instead of pretending torchrun covers everything.")
+    if tooling_by_id["deepspeed"]["configured"] and not tooling_by_id["deepspeed"]["installed"]:
+        recommended_next_steps.append("Install DeepSpeed so Mission Control can run the repo's distributed training path instead of stopping at config-file archaeology.")
+    if tooling_by_id["wandb"]["configured"] and not tooling_by_id["wandb"]["installed"]:
+        recommended_next_steps.append("Install the Weights & Biases CLI so experiment-tracking evidence can be synced and inspected instead of hand-waved.")
+    if tooling_by_id["mlflow"]["configured"] and not tooling_by_id["mlflow"]["installed"]:
+        recommended_next_steps.append("Install MLflow so Mission Control can inspect experiment artifacts and tracking metadata without improvising.")
     if repo_profile.get("lockfiles") and not tooling_by_id["osv-scanner"]["installed"]:
         recommended_next_steps.append("Install OSV-Scanner to turn dependency-risk claims into an actual scan instead of optimistic storytelling.")
     if repo_profile.get("python_repo") and not tooling_by_id["pip-audit"]["installed"]:
@@ -460,10 +612,10 @@ def detect_workspace_tooling(workspace_path: str | Path | None, *, project_name:
         "tools": tools,
         "packs": packs,
         "recommended_next_steps": recommended_next_steps[:8],
-        "intake_commands": intake_commands[:6],
-        "validation_commands": validation_commands[:8],
-        "security_commands": security_commands[:8],
-        "deployment_commands": deployment_commands[:8],
+        "intake_commands": _dedupe(intake_commands)[:6],
+        "validation_commands": _dedupe(validation_commands)[:8],
+        "security_commands": _dedupe(security_commands)[:8],
+        "deployment_commands": _dedupe(deployment_commands)[:8],
         "tensorflow_repo": tensorflow_mode,
         "tensorflow_validation_plan": tensorflow_plan,
         "pytorch_repo": pytorch_mode,

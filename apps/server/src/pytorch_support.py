@@ -23,6 +23,18 @@ SKIPPED_SCAN_DIRS = {
     "build",
     "artifacts",
 }
+SKIPPED_DISCOVERY_DIRS = {
+    ".git",
+    ".hg",
+    ".svn",
+    ".venv",
+    "venv",
+    "__pycache__",
+    "node_modules",
+    ".runtime",
+    "dist",
+    "build",
+}
 PROJECT_TEXT_CANDIDATES = [
     "pyproject.toml",
     "requirements.txt",
@@ -62,6 +74,34 @@ INFERENCE_FILE_CANDIDATES = [
 ]
 CHECKPOINT_DIR_HINTS = {"checkpoints", "checkpoint", "ckpt", "weights", "artifacts"}
 CHECKPOINT_FILE_EXTENSIONS = {".pt", ".pth", ".ckpt", ".bin", ".safetensors"}
+OBSERVABILITY_DIR_CANDIDATES = [
+    "artifacts/tensorboard",
+    "artifacts/logs",
+    "runs",
+    "logs",
+    "mlruns",
+    "wandb",
+]
+PRIORITY_SIGNAL_FILE_CANDIDATES = [
+    "train.py",
+    "eval.py",
+    "evaluate.py",
+    "infer.py",
+    "inference.py",
+    "serve.py",
+    "export.py",
+    "scripts/train.py",
+    "scripts/eval.py",
+    "scripts/evaluate.py",
+    "scripts/infer.py",
+    "scripts/inference.py",
+    "scripts/export.py",
+    "training/train.py",
+    "training/eval.py",
+    "training/evaluate.py",
+    "deployment/export.py",
+    "serving/export.py",
+]
 
 
 def _scan_files(root: Path) -> list[Path]:
@@ -120,10 +160,102 @@ def _append_unique(target: list[str], values: list[str]) -> None:
 
 
 def _first_existing_command(root: Path, candidates: list[str]) -> str | None:
-    for candidate in candidates:
+    return _find_workspace_candidate(root, candidates)
+
+
+def _relative_workspace_entries(root: Path) -> list[str]:
+    entries: set[str] = set()
+    for path in _scan_files(root):
+        relative = path.relative_to(root)
+        entries.add(relative.as_posix())
+        for parent in relative.parents:
+            if str(parent) != ".":
+                entries.add(parent.as_posix())
+    return sorted(entries)
+
+
+def _find_workspace_candidate(root: Path, candidates: list[str]) -> str | None:
+    normalized_candidates = [candidate.replace("\\", "/") for candidate in candidates]
+    entries = _relative_workspace_entries(root)
+    entry_set = set(entries)
+    for candidate in normalized_candidates:
+        if candidate in entry_set:
+            return candidate
         path = root / candidate
         if path.exists():
-            return candidate.replace("\\", "/")
+            return candidate
+    for candidate in normalized_candidates:
+        suffix = f"/{candidate}"
+        for entry in entries:
+            if entry.endswith(suffix):
+                return entry
+            if "/" not in candidate and Path(entry).name == candidate:
+                return entry
+    return None
+
+
+def _find_workspace_directory_candidate(root: Path, candidates: list[str]) -> str | None:
+    normalized_candidates = [candidate.replace("\\", "/") for candidate in candidates]
+    dirs: list[str] = []
+    try:
+        for path in root.rglob("*"):
+            if not path.is_dir():
+                continue
+            relative = path.relative_to(root)
+            if any(part.lower() in SKIPPED_DISCOVERY_DIRS for part in relative.parts):
+                continue
+            dirs.append(relative.as_posix())
+    except OSError:
+        return None
+    dir_set = set(dirs)
+    for candidate in normalized_candidates:
+        if candidate in dir_set:
+            return candidate
+        suffix = f"/{candidate}"
+        for entry in dirs:
+            if entry.endswith(suffix):
+                return entry
+            if "/" not in candidate and Path(entry).name == candidate:
+                return entry
+    return None
+
+
+def _first_existing_path(root: Path, candidates: list[str]) -> str | None:
+    return _find_workspace_candidate(root, candidates)
+
+
+def _priority_signal_paths(root: Path, files: list[Path]) -> list[Path]:
+    by_relative = {path.relative_to(root).as_posix(): path for path in files}
+    ordered: list[Path] = []
+    seen: set[Path] = set()
+    for candidate in PRIORITY_SIGNAL_FILE_CANDIDATES:
+        path = by_relative.get(candidate)
+        if path is not None and path not in seen:
+            ordered.append(path)
+            seen.add(path)
+    for path in sorted(files, key=lambda item: item.relative_to(root).as_posix()):
+        if path.suffix.lower() not in PYTHON_FILE_EXTENSIONS:
+            continue
+        if path in seen:
+            continue
+        ordered.append(path)
+        seen.add(path)
+    return ordered
+
+
+def _build_python_install_command(root: Path) -> str | None:
+    root_pyproject = root / "pyproject.toml"
+    root_setup = root / "setup.py"
+    if root_pyproject.exists() or root_setup.exists():
+        return "python -m pip install -e ."
+    nested_editable = _find_workspace_candidate(root, ["pyproject.toml", "setup.py"])
+    if nested_editable:
+        install_root = Path(nested_editable).parent.as_posix()
+        install_root = "." if install_root == "." else install_root
+        return f"python -m pip install -e {install_root}"
+    nested_requirements = _find_workspace_candidate(root, ["requirements.txt", "requirements-dev.txt", "requirements.in"])
+    if nested_requirements:
+        return f"python -m pip install -r {nested_requirements}"
     return None
 
 
@@ -182,9 +314,7 @@ def detect_pytorch_repo_mode(workspace_path: str | Path) -> dict[str, Any]:
             else:
                 project_texts.append(_safe_read_text(path))
     code_texts: list[str] = []
-    for path in files:
-        if path.suffix.lower() not in PYTHON_FILE_EXTENSIONS:
-            continue
+    for path in _priority_signal_paths(root, files):
         code_texts.append(_safe_read_text(path))
         if len(code_texts) >= 24:
             break
@@ -239,53 +369,50 @@ def detect_pytorch_repo_mode(workspace_path: str | Path) -> dict[str, Any]:
             "distributed_stack": [],
         }
 
-    if any(token in supporting_text for token in ("torchvision", "imagenet", "albumentations", "timm")):
+    if any(token in combined_text for token in ("torchvision", "imagenet", "albumentations", "timm")):
         frameworks.append("TorchVision")
         product_workflows.append("vision_training")
         signals.append("Detected TorchVision or vision-training signals.")
-    if any(token in supporting_text for token in ("torchaudio", "librosa", "wav2vec", "whisper")):
+    if any(token in combined_text for token in ("torchaudio", "librosa", "wav2vec", "whisper")):
         frameworks.append("TorchAudio")
         product_workflows.append("audio_training")
         signals.append("Detected TorchAudio or audio-model signals.")
-    if any(token in supporting_text for token in ("pytorch-lightning", "lightning.pytorch")):
+    if any(token in combined_text for token in ("pytorch-lightning", "lightning.pytorch")):
         frameworks.append("Lightning")
         product_workflows.append("structured_training")
         signals.append("Detected Lightning trainer signals.")
-    if "accelerate" in supporting_text:
+    if "accelerate" in combined_text:
         frameworks.append("Accelerate")
         distributed_stack.append("Accelerate")
         product_workflows.append("distributed_training")
         signals.append("Detected Accelerate launch or config signals.")
-    if any(token in supporting_text for token in ("deepspeed", "zero stage", "zero_stage", "ds_config")):
+    if any(token in combined_text for token in ("deepspeed", "zero stage", "zero_stage", "ds_config")):
         frameworks.append("DeepSpeed")
         distributed_stack.append("DeepSpeed")
         product_workflows.append("distributed_training")
         signals.append("Detected DeepSpeed distributed-training signals.")
-    if any(token in supporting_text for token in ("torch.distributed", "torchrun", "ddp", "fsdp")):
+    if any(token in combined_text for token in ("torch.distributed", "torchrun", "ddp", "fsdp")):
         distributed_stack.append("DDP/FSDP")
         product_workflows.append("distributed_training")
         signals.append("Detected DDP or FSDP distributed-training signals.")
-    if any(token in supporting_text for token in ("diffusers", "stable diffusion")):
+    if any(token in combined_text for token in ("diffusers", "stable diffusion")):
         frameworks.append("Diffusers")
         product_workflows.append("diffusion_inference")
         signals.append("Detected Diffusers or image-generation signals.")
-    if any(token in supporting_text for token in ("transformers", "peft", "lora")):
+    if any(token in combined_text for token in ("transformers", "peft", "lora")):
         frameworks.append("Transformers / PEFT")
         product_workflows.append("llm_finetuning")
         signals.append("Detected Hugging Face Transformers or PEFT signals.")
-    if any(token in supporting_text for token in ("onnx", "torchscript", "jit.trace", "jit.script")):
+    if any(token in combined_text for token in ("onnx", "torchscript", "jit.trace", "jit.script")):
         product_workflows.append("model_export")
         signals.append("Detected TorchScript or ONNX export signals.")
-    if any(token in supporting_text for token in ("torch.profiler", "tensorboard", "wandb", "mlflow")):
+    if any(token in combined_text for token in ("torch.profiler", "tensorboard", "wandb", "mlflow")):
         product_workflows.append("training_observability")
         signals.append("Detected training observability or profiler signals.")
 
-    requirements_exists = any((root / name).exists() for name in ("requirements.txt", "requirements-dev.txt", "requirements.in"))
-    pyproject_exists = (root / "pyproject.toml").exists()
-    if pyproject_exists or (root / "setup.py").exists():
-        build_commands.append("python -m pip install -e .")
-    elif requirements_exists:
-        build_commands.append("python -m pip install -r requirements.txt")
+    build_command = _build_python_install_command(root)
+    if build_command:
+        build_commands.append(build_command)
 
     if "pytest" in combined_text or any("test" in path.lower() and path.endswith(".py") for path in relative_paths):
         test_commands.append("python -m pytest")
@@ -308,16 +435,24 @@ def detect_pytorch_repo_mode(workspace_path: str | Path) -> dict[str, Any]:
         important_paths.append(export_entry)
 
     if "training_observability" in product_workflows:
-        observability_commands.extend(
-            [
-                "python -m torch.utils.bottleneck <train_script>",
-                "python -m tensorboard.main --logdir runs",
-            ]
-        )
+        if "torch.profiler" in combined_text and training_entry:
+            observability_commands.append(f"python -m torch.utils.bottleneck {training_entry}")
+        logdir = _find_workspace_directory_candidate(root, OBSERVABILITY_DIR_CANDIDATES) or "artifacts/tensorboard"
+        if "tensorboard" in combined_text or "torch.profiler" in combined_text:
+            observability_commands.append(f"python -m tensorboard.main --logdir {logdir}")
+        if "wandb" in combined_text:
+            wandb_dir = _find_workspace_directory_candidate(root, ["wandb"]) or "wandb"
+            observability_commands.append(f"wandb sync {wandb_dir}")
+        if "mlflow" in combined_text:
+            mlruns_dir = _find_workspace_directory_candidate(root, ["mlruns"]) or "mlruns"
+            observability_commands.append(f"mlflow ui --backend-store-uri {mlruns_dir}")
     if "distributed_training" in product_workflows and training_entry:
-        training_commands.append(f"torchrun --nproc_per_node 2 {training_entry}")
-    if "model_export" in product_workflows and not export_entry:
-        export_commands.append("python -c \"import torch; print('wire your export entry point here')\"")
+        if "Accelerate" in distributed_stack:
+            training_commands.append(f"accelerate launch {training_entry}")
+        if "DeepSpeed" in distributed_stack:
+            training_commands.append(f"deepspeed {training_entry} --deepspeed ds_config.json")
+        if "DDP/FSDP" in distributed_stack:
+            training_commands.append(f"torchrun --nproc_per_node 2 {training_entry}")
 
     for relative in relative_paths:
         path_obj = Path(relative)
@@ -434,12 +569,22 @@ def detect_pytorch_runtime_status(workspace_path: str | Path) -> dict[str, Any]:
     if not torch_installed:
         blockers.append(f"PyTorch runtime probe failed: {payload.get('error') or 'unknown error'}")
         recommended_fixes.append("Install a working PyTorch build for this Python environment before asking Mission Control to validate training or inference.")
-    if repo_mode.get("distributed_stack") and not cuda_available:
-        recommended_fixes.append("Distributed PyTorch signals were detected, but CUDA is not available in the current runtime.")
+    distributed_stack = {str(item) for item in list(repo_mode.get("distributed_stack") or [])}
+    if {"DeepSpeed", "DDP/FSDP"} & distributed_stack and not cuda_available:
+        recommended_fixes.append("Some distributed PyTorch workflows in this repo usually expect CUDA, but the current runtime does not provide it.")
+    if "Accelerate" in distributed_stack and not shutil.which("accelerate"):
+        recommended_fixes.append("Install the Accelerate CLI if this repo expects accelerate launch flows instead of pretending torchrun covers everything.")
+    if "DeepSpeed" in distributed_stack and not shutil.which("deepspeed"):
+        recommended_fixes.append("Install the DeepSpeed CLI if this repo expects deepspeed launch flows.")
+    if "DDP/FSDP" in distributed_stack and not shutil.which("torchrun"):
+        recommended_fixes.append("Install or expose torchrun on PATH before treating DDP or FSDP validation like a real option.")
     if "model_export" in list(repo_mode.get("product_workflows") or []) and not shutil.which("python"):
         recommended_fixes.append("Python is not available on PATH for export validation, which would be a deeply creative way to fail.")
     if not shutil.which("nvidia-smi") and cuda_available:
         recommended_fixes.append("CUDA appears available through torch, but nvidia-smi is missing, so lower-level GPU diagnostics may be annoyingly incomplete.")
+    if cuda_available and device_count <= 0:
+        blockers.append("PyTorch reported CUDA availability, but no visible CUDA devices were detected.")
+        recommended_fixes.append("Fix the CUDA runtime or device visibility before trusting GPU validation results from this environment.")
 
     status = "ready"
     if blockers:
@@ -504,22 +649,50 @@ def build_pytorch_validation_plan(workspace_path: str | Path) -> dict[str, Any]:
     for command in list(repo_mode.get("observability_commands") or []):
         steps.append({"title": "Inspect PyTorch profiler or observability evidence", "command": command, "type": "observability", "status": "pending"})
 
-    steps.extend(
-        [
-            {"title": "Run a one-step forward/backward smoke pass", "command": "python -c \"print('wire repo-specific forward/backward smoke here')\"", "type": "sanity", "status": "pending"},
-            {"title": "Verify checkpoint load/save behavior", "command": "python -c \"print('wire repo-specific checkpoint round-trip here')\"", "type": "checkpoint", "status": "pending"},
-        ]
+    smoke_command = next(
+        iter(
+            list(repo_mode.get("evaluation_commands") or [])
+            or list(repo_mode.get("inference_commands") or [])
+            or list(repo_mode.get("training_commands") or [])
+            or list(repo_mode.get("test_commands") or [])
+        ),
+        None,
     )
+    if smoke_command:
+        steps.append(
+            {
+                "title": "Run the smallest repo-owned PyTorch smoke command",
+                "command": smoke_command,
+                "type": "sanity",
+                "status": "pending",
+            }
+        )
 
     blockers = list(runtime.get("blockers") or [])
     recommended_fixes = list(runtime.get("recommended_fixes") or [])
-    if not repo_mode.get("training_commands") and not repo_mode.get("test_commands"):
-        blockers.append("No obvious PyTorch training or test entry point was detected yet.")
-        recommended_fixes.append("Add or document a concrete train, evaluate, or pytest command so Mission Control can validate PyTorch work honestly.")
-    if repo_mode.get("distributed_stack") and not runtime.get("cuda_available"):
-        recommended_fixes.append("Distributed PyTorch workflows are configured, but the current runtime looks CPU-only.")
+    has_execution_entry = any(
+        repo_mode.get(key)
+        for key in ("training_commands", "test_commands", "evaluation_commands", "inference_commands", "export_commands")
+    )
+    if not has_execution_entry:
+        blockers.append("No obvious PyTorch train, test, eval, infer, or export entry point was detected yet.")
+        recommended_fixes.append("Add or document a concrete train, evaluate, infer, export, or pytest command so Mission Control can validate PyTorch work honestly.")
+    elif not smoke_command:
+        recommended_fixes.append("Document the smallest repo-owned train, eval, infer, or pytest command so Mission Control can run a real PyTorch smoke pass.")
+    distributed_stack = {str(item) for item in list(repo_mode.get("distributed_stack") or [])}
+    if {"DeepSpeed", "DDP/FSDP"} & distributed_stack and not runtime.get("cuda_available"):
+        recommended_fixes.append("Some distributed PyTorch workflows in this repo usually expect GPUs, but the current runtime looks CPU-only.")
     if repo_mode.get("checkpoint_paths"):
-        steps.append({"title": "Inspect existing checkpoints", "command": "python -c \"print('inspect checkpoint metadata and compatibility')\"", "type": "checkpoint", "status": "pending"})
+        checkpoint_path = str(list(repo_mode.get("checkpoint_paths") or [])[0]).replace("\\", "/")
+        checkpoint_literal = json.dumps(checkpoint_path)
+        steps.append(
+            {
+                "title": "Inspect existing checkpoints",
+                "command": f"python -c \"import torch; payload = torch.load({checkpoint_literal}, map_location='cpu', weights_only=False); print(sorted(payload.keys()) if hasattr(payload, 'keys') else type(payload).__name__)\"",
+                "type": "checkpoint",
+                "status": "pending",
+            }
+        )
     else:
         recommended_fixes.append("Document where checkpoints are written so Mission Control can verify resume behavior without rummaging blindly.")
 
