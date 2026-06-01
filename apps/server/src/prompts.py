@@ -192,6 +192,25 @@ def _gpu_mode_block(project: Project) -> str:
     return "\n".join(lines)
 
 
+def _validation_step_commands(validation: dict[str, object], *, include_types: set[str], inspect_only: bool = False) -> list[str]:
+    commands: list[str] = []
+    for step in list(validation.get("steps") or []):
+        if not isinstance(step, dict):
+            continue
+        command = str(step.get("command") or "").strip()
+        step_type = str(step.get("type") or "").strip().lower()
+        title = str(step.get("title") or "").strip().lower()
+        if not command or step_type not in include_types:
+            continue
+        if inspect_only and "inspect" not in title:
+            continue
+        if not inspect_only and "inspect" in title and step_type == "export":
+            continue
+        if command not in commands:
+            commands.append(command)
+    return commands
+
+
 def _tensorflow_mode_block(project: Project) -> str:
     from tensorflow_support import build_tensorflow_validation_plan, detect_tensorflow_repo_mode
 
@@ -199,6 +218,15 @@ def _tensorflow_mode_block(project: Project) -> str:
     if not mode.get("enabled"):
         return ""
     validation = build_tensorflow_validation_plan(project.workspace_path)
+    execution_entrypoints = _validation_step_commands(
+        validation,
+        include_types={"sanity", "test", "train", "export"},
+    )
+    artifact_inspection_commands = _validation_step_commands(
+        validation,
+        include_types={"export"},
+        inspect_only=True,
+    )
     lines = [
         "TensorFlow product mode:",
         f"- Detected TensorFlow repo mode: {mode.get('mode')}.",
@@ -210,6 +238,10 @@ def _tensorflow_mode_block(project: Project) -> str:
         lines.append(f"- Detected TensorFlow stack: {', '.join(str(item) for item in list(mode.get('frameworks') or [])[:5])}.")
     if mode.get("product_workflows"):
         lines.append(f"- Expected product workflows: {', '.join(str(item) for item in list(mode.get('product_workflows') or [])[:6])}.")
+    if mode.get("important_paths"):
+        lines.append(f"- Critical TensorFlow paths to keep in scope: {', '.join(str(item) for item in list(mode.get('important_paths') or [])[:4])}.")
+    if execution_entrypoints:
+        lines.append(f"- Repo-owned TensorFlow execution entrypoints: {', '.join(str(item) for item in execution_entrypoints[:4])}.")
     if mode.get("notebook_paths"):
         lines.append(f"- Notebook rescue needed for: {', '.join(str(item) for item in list(mode.get('notebook_paths') or [])[:3])}.")
     if mode.get("config_paths"):
@@ -217,6 +249,12 @@ def _tensorflow_mode_block(project: Project) -> str:
     if mode.get("existing_savedmodel_artifacts") or mode.get("existing_tflite_artifacts"):
         artifacts = list(mode.get("existing_savedmodel_artifacts") or []) + list(mode.get("existing_tflite_artifacts") or [])
         lines.append(f"- Existing TensorFlow artifacts already in repo: {', '.join(str(item) for item in artifacts[:3])}.")
+    if artifact_inspection_commands:
+        lines.append(f"- TensorFlow artifact inspection commands already available: {', '.join(str(item) for item in artifact_inspection_commands[:2])}.")
+    if validation.get("blockers"):
+        lines.append(f"- TensorFlow runtime blockers right now: {' '.join(str(item) for item in list(validation.get('blockers') or [])[:2])}")
+    if validation.get("evidence_targets"):
+        lines.append(f"- TensorFlow evidence to capture before claiming success: {' '.join(str(item) for item in list(validation.get('evidence_targets') or [])[:2])}")
     if validation.get("recommended_fixes"):
         lines.append(f"- Current TensorFlow validation gaps: {' '.join(str(item) for item in list(validation.get('recommended_fixes') or [])[:3])}")
     return "\n".join(lines)
@@ -229,6 +267,15 @@ def _pytorch_mode_block(project: Project) -> str:
     if not mode.get("enabled"):
         return ""
     validation = build_pytorch_validation_plan(project.workspace_path)
+    execution_entrypoints = _validation_step_commands(
+        validation,
+        include_types={"sanity", "test", "train", "eval", "inference", "export"},
+    )
+    artifact_inspection_commands = _validation_step_commands(
+        validation,
+        include_types={"checkpoint", "export"},
+        inspect_only=True,
+    )
     lines = [
         "PyTorch product mode:",
         f"- Detected PyTorch repo mode: {mode.get('mode')}.",
@@ -240,6 +287,10 @@ def _pytorch_mode_block(project: Project) -> str:
         lines.append(f"- Detected PyTorch stack: {', '.join(str(item) for item in list(mode.get('frameworks') or [])[:5])}.")
     if mode.get("product_workflows"):
         lines.append(f"- Expected product workflows: {', '.join(str(item) for item in list(mode.get('product_workflows') or [])[:6])}.")
+    if mode.get("important_paths"):
+        lines.append(f"- Critical PyTorch paths to keep in scope: {', '.join(str(item) for item in list(mode.get('important_paths') or [])[:4])}.")
+    if execution_entrypoints:
+        lines.append(f"- Repo-owned PyTorch execution entrypoints: {', '.join(str(item) for item in execution_entrypoints[:5])}.")
     if mode.get("notebook_paths"):
         lines.append(f"- Notebook rescue needed for: {', '.join(str(item) for item in list(mode.get('notebook_paths') or [])[:3])}.")
     if mode.get("config_paths"):
@@ -249,6 +300,12 @@ def _pytorch_mode_block(project: Project) -> str:
     export_artifacts = list(mode.get("existing_onnx_artifacts") or []) + list(mode.get("existing_torchscript_artifacts") or [])
     if export_artifacts:
         lines.append(f"- Existing PyTorch export artifacts already in repo: {', '.join(str(item) for item in export_artifacts[:3])}.")
+    if artifact_inspection_commands:
+        lines.append(f"- PyTorch artifact inspection commands already available: {', '.join(str(item) for item in artifact_inspection_commands[:3])}.")
+    if validation.get("blockers"):
+        lines.append(f"- PyTorch runtime blockers right now: {' '.join(str(item) for item in list(validation.get('blockers') or [])[:2])}")
+    if validation.get("evidence_targets"):
+        lines.append(f"- PyTorch evidence to capture before claiming success: {' '.join(str(item) for item in list(validation.get('evidence_targets') or [])[:2])}")
     if validation.get("recommended_fixes"):
         lines.append(f"- Current PyTorch validation gaps: {' '.join(str(item) for item in list(validation.get('recommended_fixes') or [])[:3])}")
     return "\n".join(lines)

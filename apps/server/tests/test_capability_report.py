@@ -260,6 +260,7 @@ def test_capability_report_endpoint_returns_all_fifteen_sections(client, bridge_
             "notebook_commands": ["jupyter nbconvert --to script notebooks/experiment.ipynb"],
             "validation_commands": ["ruff check .", "playwright test", "python -m pytest apps/server/tests/test_capability_report.py -q"],
             "security_commands": ["gitleaks dir . --redact", "pip-audit"],
+            "deployment_commands": ["python export.py"],
             "artifact_paths": ["artifacts/exported_model/saved_model.pb"],
             "artifact_inspection_commands": ["saved_model_cli show --dir artifacts/exported_model --all"],
             "config_review_paths": ["configs/train.yaml"],
@@ -378,12 +379,19 @@ def test_capability_report_endpoint_returns_all_fifteen_sections(client, bridge_
         "Capture TensorBoard evidence instead of motivational speeches."
     ]
     assert sections["workspace_tool_installer_bootstrap"]["metadata_json"]["notebook_paths"] == ["notebooks/experiment.ipynb"]
+    assert sections["workspace_tool_installer_bootstrap"]["metadata_json"]["notebook_commands"] == [
+        "jupyter nbconvert --to script notebooks/experiment.ipynb"
+    ]
     assert sections["workspace_tool_installer_bootstrap"]["metadata_json"]["artifact_paths"] == ["artifacts/exported_model/saved_model.pb"]
+    assert sections["workspace_tool_installer_bootstrap"]["metadata_json"]["artifact_inspection_commands"] == [
+        "saved_model_cli show --dir artifacts/exported_model --all"
+    ]
     assert sections["workspace_tool_installer_bootstrap"]["metadata_json"]["config_review_paths"] == ["configs/train.yaml"]
     assert any(
         "configs/train.yaml" in command
         for command in sections["workspace_tool_installer_bootstrap"]["metadata_json"]["config_review_commands"]
     )
+    assert sections["workspace_tool_installer_bootstrap"]["metadata_json"]["deployment_commands"] == ["python export.py"]
     assert sections["browser_evidence_pipeline"]["status"] == "ready"
     assert sections["context_pack_diffing"]["status"] == "ready"
     assert "## Mission Control Capability Report" in payload["report_markdown"]

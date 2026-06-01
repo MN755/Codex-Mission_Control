@@ -13434,9 +13434,12 @@ class MissionControlService:
                 "runtime_blockers": list(tooling.get("runtime_blockers") or [])[:6],
                 "validation_evidence_targets": list(tooling.get("validation_evidence_targets") or [])[:8],
                 "notebook_paths": list(tooling.get("notebook_paths") or [])[:6],
+                "notebook_commands": list(tooling.get("notebook_commands") or [])[:6],
                 "artifact_paths": list(tooling.get("artifact_paths") or [])[:6],
+                "artifact_inspection_commands": list(tooling.get("artifact_inspection_commands") or [])[:6],
                 "config_review_paths": list(tooling.get("config_review_paths") or [])[:6],
                 "config_review_commands": list(tooling.get("config_review_commands") or [])[:6],
+                "deployment_commands": list(tooling.get("deployment_commands") or [])[:6],
                 "pack_statuses": {
                     str(pack.get("id")): str(pack.get("status"))
                     for pack in list(tooling.get("packs") or [])

@@ -333,9 +333,13 @@ def test_worker_task_prompt_switches_into_tensorflow_product_mode_for_tf_repo() 
     assert "TensorFlow product mode:" in prompt
     assert "Treat data pipelines, training, evaluation, export, and serving checks as separate work" in prompt
     assert "TensorBoard" in prompt
+    assert "Critical TensorFlow paths to keep in scope:" in prompt
+    assert "Repo-owned TensorFlow execution entrypoints:" in prompt
     assert "Notebook rescue needed for:" in prompt
     assert "Review TensorFlow config files explicitly:" in prompt
     assert "Existing TensorFlow artifacts already in repo:" in prompt
+    assert "TensorFlow artifact inspection commands already available:" in prompt
+    assert "TensorFlow evidence to capture before claiming success:" in prompt
 
 
 def test_worker_task_prompt_switches_into_pytorch_product_mode_for_torch_repo() -> None:
@@ -389,7 +393,128 @@ def test_worker_task_prompt_switches_into_pytorch_product_mode_for_torch_repo() 
     assert "PyTorch product mode:" in prompt
     assert "Treat dataloaders, training, evaluation, checkpoints, and export as separate validation lanes" in prompt
     assert "device, precision, and batch size" in prompt
+    assert "Critical PyTorch paths to keep in scope:" in prompt
+    assert "Repo-owned PyTorch execution entrypoints:" in prompt
     assert "Notebook rescue needed for:" in prompt
     assert "Review PyTorch config files explicitly:" in prompt
     assert "Existing checkpoint evidence in repo:" in prompt
     assert "Existing PyTorch export artifacts already in repo:" in prompt
+    assert "PyTorch artifact inspection commands already available:" in prompt
+    assert "PyTorch evidence to capture before claiming success:" in prompt
+
+
+def test_manager_action_prompt_surfaces_tensorflow_runtime_blockers_and_evidence(monkeypatch) -> None:
+    import tensorflow_support
+
+    project = Project(name="Prompt Demo", idea="Stabilize TensorFlow validation", workspace_path=sample_workspace("prompt-tf-blockers"), status="building", runner_mode="auto", manager_mode="auto")
+
+    monkeypatch.setattr(
+        tensorflow_support,
+        "detect_tensorflow_repo_mode",
+        lambda _: {
+            "enabled": True,
+            "mode": "tensorflow_product",
+            "frameworks": ["TensorFlow", "SavedModel / Serving"],
+            "product_workflows": ["training", "serving_export"],
+            "important_paths": ["train.py", "artifacts/exported_model/saved_model.pb"],
+            "notebook_paths": [],
+            "config_paths": [],
+            "existing_savedmodel_artifacts": ["artifacts/exported_model/saved_model.pb"],
+            "existing_tflite_artifacts": [],
+        },
+    )
+    monkeypatch.setattr(
+        tensorflow_support,
+        "build_tensorflow_validation_plan",
+        lambda _: {
+            "available": True,
+            "status": "blocked",
+            "steps": [
+                {"title": "Run the training or pipeline entry point", "command": "python train.py", "type": "train", "status": "pending"},
+                {"title": "Inspect the existing SavedModel artifact", "command": "saved_model_cli show --dir artifacts/exported_model --all", "type": "export", "status": "pending"},
+            ],
+            "blockers": ["Python is not available on PATH for the repo-owned TensorFlow commands this workspace expects to run."],
+            "recommended_fixes": ["Expose Python on PATH before asking Mission Control to run repo-owned TensorFlow validation commands."],
+            "evidence_targets": ["Show the produced artifact path for SavedModel exports when deployment claims are made."],
+            "product_workflows": ["training", "serving_export"],
+        },
+    )
+
+    prompt = manager_action_prompt(
+        project,
+        docs_path=f"{project.workspace_path}/mission-control",
+        action="plan.generate",
+        objective="Generate the next TensorFlow validation plan.",
+        response_schema={"summary_markdown": "string"},
+        payload={"goal": "Fix the TensorFlow path honestly."},
+        user_name="Operator",
+        provider="codex",
+        model="gpt-5.5",
+        reasoning_effort="high",
+    )
+
+    assert "Critical TensorFlow paths to keep in scope:" in prompt
+    assert "Repo-owned TensorFlow execution entrypoints:" in prompt
+    assert "TensorFlow artifact inspection commands already available:" in prompt
+    assert "TensorFlow runtime blockers right now:" in prompt
+    assert "TensorFlow evidence to capture before claiming success:" in prompt
+
+
+def test_manager_action_prompt_surfaces_pytorch_runtime_blockers_and_evidence(monkeypatch) -> None:
+    import pytorch_support
+
+    project = Project(name="Prompt Demo", idea="Stabilize PyTorch validation", workspace_path=sample_workspace("prompt-torch-blockers"), status="building", runner_mode="auto", manager_mode="auto")
+
+    monkeypatch.setattr(
+        pytorch_support,
+        "detect_pytorch_repo_mode",
+        lambda _: {
+            "enabled": True,
+            "mode": "pytorch_distributed",
+            "frameworks": ["TorchVision", "Accelerate"],
+            "product_workflows": ["distributed_training", "model_export"],
+            "important_paths": ["train.py", "artifacts/model.onnx"],
+            "notebook_paths": [],
+            "config_paths": [],
+            "checkpoint_paths": ["checkpoints/model.pt"],
+            "existing_onnx_artifacts": ["artifacts/model.onnx"],
+            "existing_torchscript_artifacts": [],
+        },
+    )
+    monkeypatch.setattr(
+        pytorch_support,
+        "build_pytorch_validation_plan",
+        lambda _: {
+            "available": True,
+            "status": "blocked",
+            "runtime_status": "blocked",
+            "steps": [
+                {"title": "Run the training entry point", "command": "python train.py", "type": "train", "status": "pending"},
+                {"title": "Inspect existing checkpoints", "command": "python -c \"print('checkpoint')\"", "type": "checkpoint", "status": "pending"},
+                {"title": "Inspect existing ONNX export artifact", "command": "python -c \"print('onnx')\"", "type": "export", "status": "pending"},
+            ],
+            "blockers": ["Python is not available on PATH for the repo-owned PyTorch validation commands in this plan."],
+            "recommended_fixes": ["Expose Python on PATH before running the generated PyTorch validation lane."],
+            "evidence_targets": ["Show checkpoint artifact paths and whether resume or load actually succeeded."],
+            "product_workflows": ["distributed_training", "model_export"],
+        },
+    )
+
+    prompt = manager_action_prompt(
+        project,
+        docs_path=f"{project.workspace_path}/mission-control",
+        action="plan.generate",
+        objective="Generate the next PyTorch validation plan.",
+        response_schema={"summary_markdown": "string"},
+        payload={"goal": "Fix the PyTorch path honestly."},
+        user_name="Operator",
+        provider="codex",
+        model="gpt-5.5",
+        reasoning_effort="high",
+    )
+
+    assert "Critical PyTorch paths to keep in scope:" in prompt
+    assert "Repo-owned PyTorch execution entrypoints:" in prompt
+    assert "PyTorch artifact inspection commands already available:" in prompt
+    assert "PyTorch runtime blockers right now:" in prompt
+    assert "PyTorch evidence to capture before claiming success:" in prompt
