@@ -3114,6 +3114,7 @@ class DiagnosticReportListItemRead(BaseModel):
 
 ToolAvailability = Literal["available", "needs_setup", "experimental", "unsupported_on_device", "coming_soon"]
 ToolPermissionPolicy = Literal["ask_every_time", "ask_once_per_project", "allow_for_project", "never_allow"]
+IntegrationProviderResolutionState = Literal["resolved", "suppressed_cli_only", "unresolved"]
 
 
 class ToolCatalogItemRead(BaseModel):
@@ -3142,6 +3143,8 @@ class IntegrationActionRead(BaseModel):
     command_template: str | None = None
     command_ready: bool = False
     execution_mode: str = "unavailable"
+    context_required: bool = False
+    suppressed_command_reason: str | None = None
 
 
 class IntegrationCatalogEntryRead(BaseModel):
@@ -3236,9 +3239,17 @@ class IntegrationActionPreviewRead(BaseModel):
     missing_params: list[str] = Field(default_factory=list)
     provider: str | None = None
     provider_candidates: list[str] = Field(default_factory=list)
+    provider_signal_breakdown: dict[str, Any] = Field(default_factory=dict)
+    resolved_provider_evidence: dict[str, Any] = Field(default_factory=dict)
+    cli_only_candidates_suppressed: list[str] = Field(default_factory=list)
+    provider_resolution_state: IntegrationProviderResolutionState = "unresolved"
     defaulted_params: dict[str, Any] = Field(default_factory=dict)
     command_ready: bool = False
     execution_mode: str = "unavailable"
+    context_required: bool = False
+    context_available: bool = False
+    suppressed_command_reason: str | None = None
+    provider_guidance: str | None = None
     notes: list[str] = Field(default_factory=list)
 
 

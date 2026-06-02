@@ -96,10 +96,21 @@ def test_project_integrations_and_action_preview_flow(client, bridge_headers, mo
         headers=bridge_headers,
     )
     assert preview.status_code == 200
-    assert preview.json()["command"] == 'gh issue create --title "Bridge it" --body "Stop lying about status."'
-    assert preview.json()["requires_confirmation"] is True
-    assert preview.json()["command_ready"] is True
-    assert preview.json()["execution_mode"] == "local_cli"
+    preview_payload = preview.json()
+    assert preview_payload["command"] == 'gh issue create --title "Bridge it" --body "Stop lying about status."'
+    assert preview_payload["requires_confirmation"] is True
+    assert preview_payload["command_ready"] is True
+    assert preview_payload["execution_mode"] == "local_cli"
+    assert preview_payload["provider"] == "github"
+    assert preview_payload["provider_resolution_state"] == "resolved"
+    assert preview_payload["context_required"] is False
+    assert preview_payload["context_available"] is True
+    assert preview_payload["suppressed_command_reason"] is None
+    assert preview_payload["cli_only_candidates_suppressed"] == []
+    assert preview_payload["provider_signal_breakdown"]["github"]["has_non_cli_evidence"] is True
+    assert preview_payload["resolved_provider_evidence"]["has_non_cli_evidence"] is True
+    assert "GitHub" in preview_payload["provider_guidance"]
+    assert preview_payload["provider_guidance"] == preview_payload["notes"][-1]
 
     execute = client.post(
         f"/api/projects/{project_id}/integrations/source_control/actions/create/execute",
@@ -107,7 +118,76 @@ def test_project_integrations_and_action_preview_flow(client, bridge_headers, mo
         headers=bridge_headers,
     )
     assert execute.status_code == 200
-    assert execute.json()["status"] == "approval_required"
+    execute_payload = execute.json()
+    assert execute_payload["status"] == "approval_required"
+    assert execute_payload["provider"] == "github"
+    assert execute_payload["provider_resolution_state"] == "resolved"
+    assert execute_payload["context_required"] is False
+    assert execute_payload["context_available"] is True
+    assert execute_payload["suppressed_command_reason"] is None
+    assert execute_payload["cli_only_candidates_suppressed"] == []
+    assert execute_payload["provider_signal_breakdown"]["github"]["has_non_cli_evidence"] is True
+    assert execute_payload["resolved_provider_evidence"]["has_non_cli_evidence"] is True
+    assert execute_payload["provider_guidance"] == preview_payload["provider_guidance"]
+
+
+def test_project_integration_api_surfaces_context_suppression_metadata(client, bridge_headers, monkeypatch, tmp_path) -> None:
+    workspace = str(tmp_path / "integrations-no-context")
+    Path(workspace).mkdir(parents=True, exist_ok=True)
+    Path(workspace, "README.md").write_text("# no signals here\n", encoding="utf-8")
+
+    monkeypatch.setattr(
+        "integration_registry.shutil.which",
+        lambda command: f"C:/tools/{command}.exe"
+        if command in {"gh", "vercel", "supabase", "aws", "playwright", "gitleaks", "ollama", "stripe"}
+        else None,
+    )
+
+    project = client.post(
+        "/api/projects",
+        json={
+            "name": "No Context Demo",
+            "idea": "Catch CLI-only provider pollution",
+            "workspace_path": workspace,
+            "provider": "codex",
+            "runner_mode": "dry_run",
+            "manager_mode": "auto",
+        },
+    ).json()
+    project_id = project["id"]
+
+    project_integrations = client.get(f"/api/projects/{project_id}/integrations", headers=bridge_headers)
+    assert project_integrations.status_code == 200
+    families = {item["family"]: item for item in project_integrations.json()["families"]}
+
+    payments = families["payments"]
+    inspect_action = next(item for item in payments["available_actions"] if item["action_id"] == "inspect")
+    assert payments["health"]["provider_resolution_state"] == "suppressed_cli_only"
+    assert inspect_action["status"] == "needs_setup"
+    assert inspect_action["command_template"] is None
+    assert inspect_action["context_required"] is True
+    assert inspect_action["suppressed_command_reason"] == "provider_context_missing"
+
+    preview = client.post(
+        f"/api/projects/{project_id}/integrations/payments/actions/inspect/preview",
+        json={"params": {}},
+        headers=bridge_headers,
+    )
+    assert preview.status_code == 200
+    preview_payload = preview.json()
+    assert preview_payload["provider"] is None
+    assert preview_payload["command"] is None
+    assert preview_payload["command_ready"] is False
+    assert preview_payload["execution_mode"] == "unavailable"
+    assert preview_payload["provider_resolution_state"] == "suppressed_cli_only"
+    assert preview_payload["context_required"] is True
+    assert preview_payload["context_available"] is False
+    assert preview_payload["suppressed_command_reason"] == "provider_context_missing"
+    assert preview_payload["provider_guidance"] is None
+    assert preview_payload["cli_only_candidates_suppressed"] == ["stripe"]
+    assert preview_payload["provider_signal_breakdown"]["stripe"]["suppressed_cli_only"] is True
+    assert preview_payload["resolved_provider_evidence"] == {}
+    assert any("suppressed until Mission Control has real provider context" in note for note in preview_payload["notes"])
 
 
 def test_import_host_state_endpoint_persists_registry(client, bridge_headers, monkeypatch) -> None:
