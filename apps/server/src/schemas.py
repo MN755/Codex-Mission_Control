@@ -3267,10 +3267,18 @@ class ProjectIntegrationFamilyRead(BaseModel):
     available_execution_action_count: int = 0
     available_execution_action_ids: list[str] = Field(default_factory=list)
     execution_required_permissions: list[str] = Field(default_factory=list)
+    execution_permission_policy_counts: dict[str, int] = Field(default_factory=dict)
+    execution_permission_policy_action_ids: dict[str, list[str]] = Field(default_factory=dict)
     available_execution_permission_policy_counts: dict[str, int] = Field(default_factory=dict)
     available_execution_permission_policy_action_ids: dict[str, list[str]] = Field(default_factory=dict)
+    blocked_execution_permission_policy_counts: dict[str, int] = Field(default_factory=dict)
+    blocked_execution_permission_policy_action_ids: dict[str, list[str]] = Field(default_factory=dict)
+    execution_risk_level_counts: dict[str, int] = Field(default_factory=dict)
+    execution_risk_level_action_ids: dict[str, list[str]] = Field(default_factory=dict)
     available_execution_risk_level_counts: dict[str, int] = Field(default_factory=dict)
     available_execution_risk_level_action_ids: dict[str, list[str]] = Field(default_factory=dict)
+    blocked_execution_risk_level_counts: dict[str, int] = Field(default_factory=dict)
+    blocked_execution_risk_level_action_ids: dict[str, list[str]] = Field(default_factory=dict)
     local_action_count: int = 0
     available_action_ids: list[str] = Field(default_factory=list)
     blocked_action_ids: list[str] = Field(default_factory=list)

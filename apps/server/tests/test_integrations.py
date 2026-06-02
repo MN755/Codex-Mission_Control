@@ -5997,12 +5997,34 @@ def test_project_integrations_surface_permission_and_risk_inventories(monkeypatc
     assert ci_status["available_execution_action_count"] == 1
     assert ci_status["available_execution_action_ids"] == ["inspect"]
     assert ci_status["execution_required_permissions"] == ["ask_once_per_project"]
+    assert ci_status["execution_permission_policy_counts"] == {"ask_once_per_project": 3, "ask_every_time": 1}
+    assert ci_status["execution_permission_policy_action_ids"] == {
+        "ask_once_per_project": ["inspect", "inspect_run", "tail_logs"],
+        "ask_every_time": ["rerun"],
+    }
     assert ci_status["available_execution_permission_policy_counts"] == {"ask_once_per_project": 1}
     assert ci_status["available_execution_permission_policy_action_ids"] == {"ask_once_per_project": ["inspect"]}
+    assert ci_status["blocked_execution_permission_policy_counts"] == {"ask_once_per_project": 2, "ask_every_time": 1}
+    assert ci_status["blocked_execution_permission_policy_action_ids"] == {
+        "ask_once_per_project": ["inspect_run", "tail_logs"],
+        "ask_every_time": ["rerun"],
+    }
+    assert ci_status["execution_risk_level_counts"] == {"low": 3, "medium": 1}
+    assert ci_status["execution_risk_level_action_ids"] == {
+        "low": ["inspect", "inspect_run", "tail_logs"],
+        "medium": ["rerun"],
+    }
     assert ci_status["available_execution_risk_level_counts"] == {"low": 1}
     assert ci_status["available_execution_risk_level_action_ids"] == {"low": ["inspect"]}
+    assert ci_status["blocked_execution_risk_level_counts"] == {"low": 2, "medium": 1}
+    assert ci_status["blocked_execution_risk_level_action_ids"] == {
+        "low": ["inspect_run", "tail_logs"],
+        "medium": ["rerun"],
+    }
     assert ci_status["health"]["available_execution_permission_policy_counts"] == {"ask_once_per_project": 1}
     assert ci_status["health"]["available_execution_risk_level_counts"] == {"low": 1}
+    assert ci_status["health"]["blocked_execution_permission_policy_counts"] == {"ask_once_per_project": 2, "ask_every_time": 1}
+    assert ci_status["health"]["blocked_execution_risk_level_counts"] == {"low": 2, "medium": 1}
 
     assert package_status["required_permissions"] == ["ask_once_per_project", "ask_every_time"]
     assert package_status["permission_policy_counts"]["ask_once_per_project"] >= 1
@@ -6023,12 +6045,25 @@ def test_project_integrations_surface_permission_and_risk_inventories(monkeypatc
     assert package_status["available_execution_action_count"] == 1
     assert package_status["available_execution_action_ids"] == ["inspect"]
     assert package_status["execution_required_permissions"] == ["ask_once_per_project"]
+    assert package_status["execution_permission_policy_counts"] == {"ask_once_per_project": 1, "ask_every_time": 1}
+    assert package_status["execution_permission_policy_action_ids"] == {
+        "ask_once_per_project": ["inspect"],
+        "ask_every_time": ["publish"],
+    }
     assert package_status["available_execution_permission_policy_counts"] == {"ask_once_per_project": 1}
     assert package_status["available_execution_permission_policy_action_ids"] == {"ask_once_per_project": ["inspect"]}
+    assert package_status["blocked_execution_permission_policy_counts"] == {"ask_every_time": 1}
+    assert package_status["blocked_execution_permission_policy_action_ids"] == {"ask_every_time": ["publish"]}
+    assert package_status["execution_risk_level_counts"] == {"low": 1, "high": 1}
+    assert package_status["execution_risk_level_action_ids"] == {"low": ["inspect"], "high": ["publish"]}
     assert package_status["available_execution_risk_level_counts"] == {"low": 1}
     assert package_status["available_execution_risk_level_action_ids"] == {"low": ["inspect"]}
+    assert package_status["blocked_execution_risk_level_counts"] == {"high": 1}
+    assert package_status["blocked_execution_risk_level_action_ids"] == {"high": ["publish"]}
     assert package_status["health"]["blocked_permission_policy_action_ids"]["ask_every_time"] == ["publish"]
     assert package_status["health"]["blocked_risk_level_counts"] == {"high": 1}
+    assert package_status["health"]["blocked_execution_permission_policy_counts"] == {"ask_every_time": 1}
+    assert package_status["health"]["blocked_execution_risk_level_counts"] == {"high": 1}
 
 
 def test_project_integrations_surface_action_mode_and_support_ids(monkeypatch, tmp_path) -> None:

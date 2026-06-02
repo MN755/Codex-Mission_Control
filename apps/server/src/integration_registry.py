@@ -3201,10 +3201,19 @@ def build_project_integration_status(
         available_execution_action_count = len(available_execution_actions)
         available_execution_action_ids = [str(item["action_id"]) for item in available_execution_actions]
         execution_required_permissions = _dedupe_strs([str(item["permission_policy"]) for item in available_execution_actions])
+        execution_permission_policy_counts = _count_by_key(execution_actions, "permission_policy")
+        execution_permission_policy_action_ids = _action_ids_by_key(execution_actions, "permission_policy")
         available_execution_permission_policy_counts = _count_by_key(available_execution_actions, "permission_policy")
         available_execution_permission_policy_action_ids = _action_ids_by_key(available_execution_actions, "permission_policy")
+        blocked_execution_actions = [item for item in execution_actions if item["status"] != "available"]
+        blocked_execution_permission_policy_counts = _count_by_key(blocked_execution_actions, "permission_policy")
+        blocked_execution_permission_policy_action_ids = _action_ids_by_key(blocked_execution_actions, "permission_policy")
+        execution_risk_level_counts = _count_by_key(execution_actions, "risk_level")
+        execution_risk_level_action_ids = _action_ids_by_key(execution_actions, "risk_level")
         available_execution_risk_level_counts = _count_by_key(available_execution_actions, "risk_level")
         available_execution_risk_level_action_ids = _action_ids_by_key(available_execution_actions, "risk_level")
+        blocked_execution_risk_level_counts = _count_by_key(blocked_execution_actions, "risk_level")
+        blocked_execution_risk_level_action_ids = _action_ids_by_key(blocked_execution_actions, "risk_level")
         local_execution_action_count = sum(1 for item in execution_actions if item["execution_mode"] == "local_cli")
         local_execution_action_ids = [
             str(item["action_id"])
@@ -3570,10 +3579,18 @@ def build_project_integration_status(
                 "available_execution_action_count": available_execution_action_count,
                 "available_execution_action_ids": available_execution_action_ids,
                 "execution_required_permissions": execution_required_permissions,
+                "execution_permission_policy_counts": execution_permission_policy_counts,
+                "execution_permission_policy_action_ids": execution_permission_policy_action_ids,
                 "available_execution_permission_policy_counts": available_execution_permission_policy_counts,
                 "available_execution_permission_policy_action_ids": available_execution_permission_policy_action_ids,
+                "blocked_execution_permission_policy_counts": blocked_execution_permission_policy_counts,
+                "blocked_execution_permission_policy_action_ids": blocked_execution_permission_policy_action_ids,
+                "execution_risk_level_counts": execution_risk_level_counts,
+                "execution_risk_level_action_ids": execution_risk_level_action_ids,
                 "available_execution_risk_level_counts": available_execution_risk_level_counts,
                 "available_execution_risk_level_action_ids": available_execution_risk_level_action_ids,
+                "blocked_execution_risk_level_counts": blocked_execution_risk_level_counts,
+                "blocked_execution_risk_level_action_ids": blocked_execution_risk_level_action_ids,
                 "local_action_count": local_action_count,
                 "available_action_ids": available_action_ids,
                 "blocked_action_ids": blocked_action_ids,
@@ -3712,10 +3729,18 @@ def build_project_integration_status(
                     "available_execution_action_count": available_execution_action_count,
                     "available_execution_action_ids": available_execution_action_ids,
                     "execution_required_permissions": execution_required_permissions,
+                    "execution_permission_policy_counts": execution_permission_policy_counts,
+                    "execution_permission_policy_action_ids": execution_permission_policy_action_ids,
                     "available_execution_permission_policy_counts": available_execution_permission_policy_counts,
                     "available_execution_permission_policy_action_ids": available_execution_permission_policy_action_ids,
+                    "blocked_execution_permission_policy_counts": blocked_execution_permission_policy_counts,
+                    "blocked_execution_permission_policy_action_ids": blocked_execution_permission_policy_action_ids,
+                    "execution_risk_level_counts": execution_risk_level_counts,
+                    "execution_risk_level_action_ids": execution_risk_level_action_ids,
                     "available_execution_risk_level_counts": available_execution_risk_level_counts,
                     "available_execution_risk_level_action_ids": available_execution_risk_level_action_ids,
+                    "blocked_execution_risk_level_counts": blocked_execution_risk_level_counts,
+                    "blocked_execution_risk_level_action_ids": blocked_execution_risk_level_action_ids,
                     "available_action_ids": available_action_ids,
                     "blocked_action_ids": blocked_action_ids,
                     "local_action_ids": local_action_ids,
