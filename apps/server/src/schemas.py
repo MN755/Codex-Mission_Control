@@ -3224,7 +3224,26 @@ class ProjectIntegrationFamilyRead(BaseModel):
     provider_candidates: list[str] = Field(default_factory=list)
     resolved_cli_candidates: list[str] = Field(default_factory=list)
     required_permissions: list[str] = Field(default_factory=list)
+    permission_policy_counts: dict[str, int] = Field(default_factory=dict)
+    available_permission_policy_counts: dict[str, int] = Field(default_factory=dict)
+    blocked_permission_policy_counts: dict[str, int] = Field(default_factory=dict)
+    permission_policy_action_ids: dict[str, list[str]] = Field(default_factory=dict)
+    available_permission_policy_action_ids: dict[str, list[str]] = Field(default_factory=dict)
+    blocked_permission_policy_action_ids: dict[str, list[str]] = Field(default_factory=dict)
+    risk_level_counts: dict[str, int] = Field(default_factory=dict)
+    available_risk_level_counts: dict[str, int] = Field(default_factory=dict)
+    blocked_risk_level_counts: dict[str, int] = Field(default_factory=dict)
+    risk_level_action_ids: dict[str, list[str]] = Field(default_factory=dict)
+    available_risk_level_action_ids: dict[str, list[str]] = Field(default_factory=dict)
+    blocked_risk_level_action_ids: dict[str, list[str]] = Field(default_factory=dict)
     available_action_count: int = 0
+    available_execution_action_count: int = 0
+    available_execution_action_ids: list[str] = Field(default_factory=list)
+    execution_required_permissions: list[str] = Field(default_factory=list)
+    available_execution_permission_policy_counts: dict[str, int] = Field(default_factory=dict)
+    available_execution_permission_policy_action_ids: dict[str, list[str]] = Field(default_factory=dict)
+    available_execution_risk_level_counts: dict[str, int] = Field(default_factory=dict)
+    available_execution_risk_level_action_ids: dict[str, list[str]] = Field(default_factory=dict)
     local_action_count: int = 0
     guided_action_count: int = 0
     registry_action_count: int = 0

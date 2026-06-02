@@ -5957,6 +5957,80 @@ def test_project_integrations_surface_confirmation_and_safe_reason_inventories(m
     assert "inspect" in status["health"]["safe_command_action_ids"]
 
 
+def test_project_integrations_surface_permission_and_risk_inventories(monkeypatch, tmp_path) -> None:
+    workspace = tmp_path / "policy-risk-demo"
+    workspace.mkdir(parents=True, exist_ok=True)
+    (workspace / ".github" / "workflows").mkdir(parents=True, exist_ok=True)
+    (workspace / ".github" / "workflows" / "ci.yml").write_text("name: ci\n", encoding="utf-8")
+    (workspace / "package.json").write_text('{"name":"policy-risk-demo"}\n', encoding="utf-8")
+
+    monkeypatch.setattr(
+        "integration_registry.shutil.which",
+        lambda command: f"C:/tools/{command}.exe" if command in {"gh", "npm"} else None,
+    )
+
+    statuses = {
+        item["family"]: item
+        for item in build_project_integration_status(
+            registry_payload=normalize_integration_registry({}, {}),
+            workspace_path=str(workspace),
+            project_name="Policy Risk Demo",
+        )
+    }
+
+    ci_status = statuses["ci_cd"]
+    package_status = statuses["package_registries"]
+
+    assert ci_status["required_permissions"] == ["ask_once_per_project", "ask_every_time"]
+    assert ci_status["permission_policy_counts"]["ask_once_per_project"] >= 3
+    assert ci_status["permission_policy_counts"]["ask_every_time"] >= 1
+    assert ci_status["available_permission_policy_counts"]["ask_once_per_project"] >= 1
+    assert ci_status["available_permission_policy_counts"]["ask_every_time"] >= 1
+    assert ci_status["blocked_permission_policy_counts"]["ask_every_time"] >= 1
+    assert "inspect" in ci_status["available_permission_policy_action_ids"]["ask_once_per_project"]
+    assert "rerun" in ci_status["blocked_permission_policy_action_ids"]["ask_every_time"]
+    assert ci_status["risk_level_counts"]["low"] >= 3
+    assert ci_status["risk_level_counts"]["medium"] >= 1
+    assert ci_status["available_risk_level_counts"]["low"] >= 1
+    assert "inspect" in ci_status["available_risk_level_action_ids"]["low"]
+    assert "rerun" in ci_status["blocked_risk_level_action_ids"]["medium"]
+    assert ci_status["available_execution_action_count"] == 1
+    assert ci_status["available_execution_action_ids"] == ["inspect"]
+    assert ci_status["execution_required_permissions"] == ["ask_once_per_project"]
+    assert ci_status["available_execution_permission_policy_counts"] == {"ask_once_per_project": 1}
+    assert ci_status["available_execution_permission_policy_action_ids"] == {"ask_once_per_project": ["inspect"]}
+    assert ci_status["available_execution_risk_level_counts"] == {"low": 1}
+    assert ci_status["available_execution_risk_level_action_ids"] == {"low": ["inspect"]}
+    assert ci_status["health"]["available_execution_permission_policy_counts"] == {"ask_once_per_project": 1}
+    assert ci_status["health"]["available_execution_risk_level_counts"] == {"low": 1}
+
+    assert package_status["required_permissions"] == ["ask_once_per_project", "ask_every_time"]
+    assert package_status["permission_policy_counts"]["ask_once_per_project"] >= 1
+    assert package_status["permission_policy_counts"]["ask_every_time"] >= 1
+    assert package_status["available_permission_policy_counts"]["ask_once_per_project"] >= 1
+    assert package_status["available_permission_policy_counts"]["ask_every_time"] >= 1
+    assert package_status["blocked_permission_policy_counts"] == {"ask_every_time": 1}
+    assert "inspect" in package_status["permission_policy_action_ids"]["ask_once_per_project"]
+    assert package_status["blocked_permission_policy_action_ids"]["ask_every_time"] == ["publish"]
+    assert package_status["risk_level_counts"]["low"] >= 1
+    assert package_status["risk_level_counts"]["medium"] >= 1
+    assert package_status["risk_level_counts"]["high"] == 1
+    assert package_status["available_risk_level_counts"]["low"] >= 1
+    assert package_status["available_risk_level_counts"]["medium"] >= 1
+    assert package_status["blocked_risk_level_counts"] == {"high": 1}
+    assert "inspect" in package_status["available_risk_level_action_ids"]["low"]
+    assert package_status["blocked_risk_level_action_ids"]["high"] == ["publish"]
+    assert package_status["available_execution_action_count"] == 1
+    assert package_status["available_execution_action_ids"] == ["inspect"]
+    assert package_status["execution_required_permissions"] == ["ask_once_per_project"]
+    assert package_status["available_execution_permission_policy_counts"] == {"ask_once_per_project": 1}
+    assert package_status["available_execution_permission_policy_action_ids"] == {"ask_once_per_project": ["inspect"]}
+    assert package_status["available_execution_risk_level_counts"] == {"low": 1}
+    assert package_status["available_execution_risk_level_action_ids"] == {"low": ["inspect"]}
+    assert package_status["health"]["blocked_permission_policy_action_ids"]["ask_every_time"] == ["publish"]
+    assert package_status["health"]["blocked_risk_level_counts"] == {"high": 1}
+
+
 def test_project_integrations_surface_multi_blocked_action_inventories(monkeypatch, tmp_path) -> None:
     pypi_workspace = tmp_path / "pypi-demo"
     pypi_workspace.mkdir(parents=True, exist_ok=True)
