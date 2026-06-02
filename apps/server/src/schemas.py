@@ -3192,7 +3192,12 @@ class ProjectIntegrationFamilyRead(BaseModel):
     providers: list[str] = Field(default_factory=list)
     resolved_provider: str | None = None
     provider_candidates: list[str] = Field(default_factory=list)
+    resolved_cli_candidates: list[str] = Field(default_factory=list)
     required_permissions: list[str] = Field(default_factory=list)
+    available_action_count: int = 0
+    local_action_count: int = 0
+    guided_action_count: int = 0
+    registry_action_count: int = 0
     health: dict[str, Any] = Field(default_factory=dict)
     artifacts: list[dict[str, Any]] = Field(default_factory=list)
     safe_commands: list[str] = Field(default_factory=list)

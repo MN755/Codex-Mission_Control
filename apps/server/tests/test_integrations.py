@@ -221,6 +221,107 @@ def test_project_integrations_report_partial_when_only_host_or_workspace_signals
     assert hosting["provider_candidates"] == ["vercel"]
 
 
+def test_project_integrations_treat_connected_linear_lane_as_ready_without_cli(monkeypatch) -> None:
+    registry = normalize_integration_registry(
+        {
+            "connections": {
+                "work_tracking": {
+                    "family": "work_tracking",
+                    "status": "connected",
+                    "providers": ["linear"],
+                    "connection_source": "mission_control",
+                    "host_imported": False,
+                }
+            }
+        },
+        {},
+    )
+
+    monkeypatch.setattr("integration_registry.shutil.which", lambda _command: None)
+
+    status = {
+        item["family"]: item
+        for item in build_project_integration_status(
+            workspace_path=None,
+            project_name="Linear Ready Demo",
+            registry_payload=registry,
+        )
+    }["work_tracking"]
+
+    assert status["status"] == "ready"
+    assert status["resolved_provider"] == "linear"
+    assert status["resolved_cli_candidates"] == []
+    assert status["guided_action_count"] >= 1
+    assert not any("install one of" in item.lower() for item in status["recommended_fixes"])
+
+
+def test_project_integrations_treat_connected_bitbucket_lane_as_ready_without_cli(monkeypatch) -> None:
+    registry = normalize_integration_registry(
+        {
+            "connections": {
+                "source_control": {
+                    "family": "source_control",
+                    "status": "connected",
+                    "providers": ["bitbucket"],
+                    "connection_source": "mission_control",
+                    "host_imported": False,
+                }
+            }
+        },
+        {},
+    )
+
+    monkeypatch.setattr("integration_registry.shutil.which", lambda _command: None)
+
+    status = {
+        item["family"]: item
+        for item in build_project_integration_status(
+            workspace_path=None,
+            project_name="Bitbucket Ready Demo",
+            registry_payload=registry,
+        )
+    }["source_control"]
+
+    assert status["status"] == "ready"
+    assert status["resolved_provider"] == "bitbucket"
+    assert status["guided_action_count"] >= 1
+    assert not any("install one of" in item.lower() for item in status["recommended_fixes"])
+
+
+def test_project_integrations_treat_connected_notion_lane_as_ready_without_cli(monkeypatch) -> None:
+    registry = normalize_integration_registry(
+        {
+            "connections": {
+                "docs_systems": {
+                    "family": "docs_systems",
+                    "status": "connected",
+                    "providers": ["notion"],
+                    "connection_source": "mission_control",
+                    "host_imported": False,
+                }
+            }
+        },
+        {},
+    )
+
+    monkeypatch.setattr("integration_registry.shutil.which", lambda _command: None)
+
+    status = {
+        item["family"]: item
+        for item in build_project_integration_status(
+            workspace_path=None,
+            project_name="Notion Ready Demo",
+            registry_payload=registry,
+        )
+    }["docs_systems"]
+
+    assert status["status"] == "ready"
+    assert status["resolved_provider"] == "notion"
+    assert status["guided_action_count"] >= 1
+    assert status["resolved_cli_candidates"] == []
+    assert not any("install one of" in item.lower() for item in status["recommended_fixes"])
+
+
 def test_execute_integration_action_is_shell_free_and_blocks_missing_executable(monkeypatch) -> None:
     monkeypatch.setattr("integration_registry.shutil.which", lambda _command: None)
 
@@ -1293,6 +1394,9 @@ def test_project_integrations_surface_provider_specific_required_params_and_host
 
     assert status["resolved_provider"] == "jira"
     assert status["providers"] == ["jira"]
+    assert status["resolved_cli_candidates"] == ["acli"]
+    assert status["available_action_count"] >= 1
+    assert status["local_action_count"] >= 1
     assert any(item["type"] == "host_import_path" and item["host"] == "codex" for item in status["artifacts"])
     assert create_action["required_params"] == ["title", "body", "project_key", "issue_type"]
     assert create_action["command_ready"] is True

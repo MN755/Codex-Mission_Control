@@ -990,6 +990,26 @@ def _provider_command_template(provider: str, action_id: str) -> str | None:
             "inspect": "docker info --format {{json .}}",
             "publish": "docker push {image_q}",
         },
+        "terraform": {
+            "validate": "terraform validate",
+            "deploy": "terraform apply -auto-approve",
+        },
+        "aws": {
+            "inspect": "aws sts get-caller-identity",
+            "open": "aws configure list",
+        },
+        "mintlify": {
+            "inspect": "mintlify --help",
+        },
+        "playwright": {
+            "validate": "playwright test",
+        },
+        "gitleaks": {
+            "scan": "gitleaks dir . --redact",
+        },
+        "ollama": {
+            "inspect": "ollama list",
+        },
         "snyk": {
             "scan": "snyk test --json",
         },
@@ -1054,6 +1074,12 @@ def _execution_mode(*, action_id: str, command_template: str | None, provider: s
     if provider:
         return "guided_remote"
     return "unavailable"
+
+
+def _provider_cli_candidates(provider: str | None) -> tuple[str, ...]:
+    if not provider:
+        return ()
+    return PROVIDER_CLIS.get(provider, ())
 
 
 def _provider_candidates_for_family(
@@ -1452,29 +1478,12 @@ def build_project_integration_status(
         displayed_providers = provider_candidates or list(connection.get("providers") or []) or list(family.providers)
         has_host_import = bool(connection.get("host_imported"))
         has_workspace_signal = bool(detected_files or token_hits)
-        has_cli = bool(installed_clis)
         has_connection = connection_status == "connected"
+        provider_cli_candidates = list(_provider_cli_candidates(resolved_provider))
+        installed_provider_clis = [cli for cli in provider_cli_candidates if shutil.which(cli)]
         available_actions: list[dict[str, Any]] = []
         blockers: list[str] = []
         recommended_fixes: list[str] = []
-        if not has_cli and not has_host_import and not has_workspace_signal and not has_connection:
-            blockers.append("No host import, local CLI, or workspace signals were detected for this family.")
-            recommended_fixes.append("Connect the provider in Mission Control or install the relevant local CLI before expecting a serious integration lane.")
-            status = "needs_setup"
-        elif has_connection and (has_cli or has_host_import or not family.cli_candidates):
-            status = "ready"
-        elif has_cli and (has_workspace_signal or has_host_import):
-            status = "ready"
-        else:
-            status = "partial"
-            if not has_cli and family.cli_candidates:
-                blockers.append("A local CLI is still missing for the actionable lane in this family.")
-                recommended_fixes.append(f"Install one of: {', '.join(family.cli_candidates)}")
-            if not has_connection and has_host_import:
-                blockers.append("Only host-imported metadata is present. Mission Control has not verified a live provider session yet.")
-                recommended_fixes.append("Refresh the connection in Mission Control or use a verified local CLI before treating this lane as live.")
-            if has_workspace_signal and not has_connection:
-                recommended_fixes.append("Workspace signals exist, but Mission Control has not verified the live provider context yet.")
         for action in family.actions:
             action_template, _, action_provider = _resolve_provider_command(
                 family=family,
@@ -1519,6 +1528,46 @@ def build_project_integration_status(
                     "execution_mode": execution_mode,
                 }
             )
+        available_action_count = sum(1 for item in available_actions if item["status"] == "available")
+        local_action_count = sum(
+            1
+            for item in available_actions
+            if item["status"] == "available" and item["execution_mode"] == "local_cli"
+        )
+        guided_action_count = sum(
+            1
+            for item in available_actions
+            if item["status"] == "available" and item["execution_mode"] == "guided_remote"
+        )
+        registry_action_count = sum(
+            1
+            for item in available_actions
+            if item["status"] == "available" and item["execution_mode"] == "registry_state"
+        )
+        has_actionable_lane = available_action_count > registry_action_count
+        has_provider_cli = not provider_cli_candidates or len(installed_provider_clis) == len(provider_cli_candidates)
+        has_any_cli_signal = bool(installed_clis)
+        if not has_any_cli_signal and not has_host_import and not has_workspace_signal and not has_connection:
+            blockers.append("No host import, local CLI, or workspace signals were detected for this family.")
+            recommended_fixes.append("Connect the provider in Mission Control or install the relevant local CLI before expecting a serious integration lane.")
+            status = "needs_setup"
+        elif has_connection and (has_actionable_lane or not provider_cli_candidates or guided_action_count > 0):
+            status = "ready"
+        elif local_action_count > 0 and (has_workspace_signal or has_host_import or has_connection):
+            status = "ready"
+        else:
+            status = "partial"
+            if provider_cli_candidates and not has_provider_cli and (has_connection or has_workspace_signal or has_host_import):
+                blockers.append("A local CLI is still missing for the actionable lane in this family.")
+                recommended_fixes.append(f"Install one of: {', '.join(provider_cli_candidates)}")
+            elif family.cli_candidates and not has_any_cli_signal and (has_connection or has_workspace_signal or has_host_import):
+                blockers.append("A local CLI is still missing for the actionable lane in this family.")
+                recommended_fixes.append(f"Install one of: {', '.join(family.cli_candidates)}")
+            if not has_connection and has_host_import:
+                blockers.append("Only host-imported metadata is present. Mission Control has not verified a live provider session yet.")
+                recommended_fixes.append("Refresh the connection in Mission Control or use a verified local CLI before treating this lane as live.")
+            if has_workspace_signal and not has_connection:
+                recommended_fixes.append("Workspace signals exist, but Mission Control has not verified the live provider context yet.")
         safe_commands = [
             template
             for action in family.actions
@@ -1558,9 +1607,15 @@ def build_project_integration_status(
                 "providers": displayed_providers,
                 "resolved_provider": resolved_provider,
                 "provider_candidates": provider_candidates,
+                "resolved_cli_candidates": provider_cli_candidates,
                 "required_permissions": _dedupe_strs([action.permission_policy for action in family.actions]),
+                "available_action_count": available_action_count,
+                "local_action_count": local_action_count,
+                "guided_action_count": guided_action_count,
+                "registry_action_count": registry_action_count,
                 "health": {
                     "cli_detected": installed_clis,
+                    "resolved_cli_detected": installed_provider_clis,
                     "workspace_config_files": detected_files,
                     "workspace_token_hits": token_hits,
                     "host_imported": has_host_import,
