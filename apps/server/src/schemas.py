@@ -3157,6 +3157,7 @@ class IntegrationActionRead(BaseModel):
     provider_context_verified: bool = False
     provider_context_source: str = "none"
     provider_context_status: IntegrationProviderContextStatus = "missing"
+    context_available: bool = False
     provider_verification_required: bool = False
     provider_verification_reason: str | None = None
     verification_scope: IntegrationVerificationScope | None = None
@@ -3172,6 +3173,7 @@ class IntegrationActionRead(BaseModel):
     context_required: bool = False
     context_requirement_reason: str | None = None
     suppressed_command_reason: str | None = None
+    provider_guidance: str | None = None
 
 
 class IntegrationCatalogEntryRead(BaseModel):
@@ -3283,8 +3285,12 @@ class ProjectIntegrationFamilyRead(BaseModel):
     ready_to_execute_action_ids: list[str] = Field(default_factory=list)
     safe_command_action_count: int = 0
     safe_command_action_ids: list[str] = Field(default_factory=list)
+    command_ready_action_count: int = 0
+    command_ready_action_ids: list[str] = Field(default_factory=list)
     parameterized_execution_action_count: int = 0
+    parameterized_execution_action_ids: list[str] = Field(default_factory=list)
     params_complete_action_count: int = 0
+    params_complete_action_ids: list[str] = Field(default_factory=list)
     defaulted_param_action_count: int = 0
     missing_params_action_count: int = 0
     missing_params_action_ids: list[str] = Field(default_factory=list)
@@ -3294,6 +3300,12 @@ class ProjectIntegrationFamilyRead(BaseModel):
     no_local_command_action_ids: list[str] = Field(default_factory=list)
     provider_context_blocked_action_count: int = 0
     provider_context_blocked_action_ids: list[str] = Field(default_factory=list)
+    provider_context_verified_action_count: int = 0
+    provider_context_verified_action_ids: list[str] = Field(default_factory=list)
+    provider_context_inferred_action_count: int = 0
+    provider_context_inferred_action_ids: list[str] = Field(default_factory=list)
+    provider_context_missing_action_count: int = 0
+    provider_context_missing_action_ids: list[str] = Field(default_factory=list)
     defaulted_param_action_ids: list[str] = Field(default_factory=list)
     execution_block_reason_counts: dict[str, int] = Field(default_factory=dict)
     blocking_reason_counts: dict[str, int] = Field(default_factory=dict)

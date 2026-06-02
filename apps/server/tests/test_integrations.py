@@ -6102,6 +6102,97 @@ def test_project_integrations_surface_action_mode_and_support_ids(monkeypatch, t
     assert docs_status["health"]["available_mutating_action_ids"] == ["sync"]
 
 
+def test_project_integrations_surface_context_and_preflight_inventory_ids(monkeypatch, tmp_path) -> None:
+    package_workspace = tmp_path / "context-preflight-package"
+    package_workspace.mkdir(parents=True, exist_ok=True)
+    (package_workspace / "package.json").write_text('{"name":"context-preflight-package"}\n', encoding="utf-8")
+
+    monkeypatch.setattr(
+        "integration_registry.shutil.which",
+        lambda command: f"C:/tools/{command}.exe" if command == "npm" else None,
+    )
+
+    package_status = next(
+        item
+        for item in build_project_integration_status(
+            registry_payload=normalize_integration_registry({}, {}),
+            workspace_path=str(package_workspace),
+            project_name="Context Preflight Package Demo",
+        )
+        if item["family"] == "package_registries"
+    )
+
+    inspect_action = next(item for item in package_status["available_actions"] if item["action_id"] == "inspect")
+    publish_action = next(item for item in package_status["available_actions"] if item["action_id"] == "publish")
+
+    assert inspect_action["context_available"] is True
+    assert inspect_action["provider_guidance"]
+    assert publish_action["context_available"] is True
+    assert publish_action["provider_guidance"]
+    assert package_status["command_ready_action_ids"] == ["inspect", "publish"]
+    assert package_status["parameterized_execution_action_ids"] == []
+    assert package_status["params_complete_action_ids"] == ["inspect", "publish"]
+    assert package_status["provider_context_verified_action_ids"] == []
+    assert package_status["provider_context_inferred_action_ids"] == ["inspect", "publish"]
+    assert package_status["provider_context_missing_action_ids"] == ["import_host_state", "inspect_status", "connect", "disconnect"]
+    assert package_status["health"]["command_ready_action_ids"] == ["inspect", "publish"]
+    assert package_status["health"]["provider_context_inferred_action_ids"] == ["inspect", "publish"]
+
+    docs_workspace = tmp_path / "context-preflight-docs"
+    docs_workspace.mkdir(parents=True, exist_ok=True)
+    (docs_workspace / "README.md").write_text("Notion keeps docs synced.\n", encoding="utf-8")
+
+    monkeypatch.setattr("integration_registry.shutil.which", lambda _command: None)
+
+    docs_registry = normalize_integration_registry(
+        {
+            "connections": {
+                "docs_systems": {
+                    "family": "docs_systems",
+                    "status": "connected",
+                    "providers": [],
+                    "connection_source": "manual",
+                    "host_imported": False,
+                }
+            }
+        },
+        {},
+    )
+
+    docs_status = next(
+        item
+        for item in build_project_integration_status(
+            registry_payload=docs_registry,
+            workspace_path=str(docs_workspace),
+            project_name="Context Preflight Docs Demo",
+        )
+        if item["family"] == "docs_systems"
+    )
+
+    assert docs_status["provider_context_verified_action_ids"] == []
+    assert docs_status["provider_context_inferred_action_ids"] == ["inspect", "sync"]
+    assert docs_status["provider_context_missing_action_ids"] == ["import_host_state", "inspect_status", "connect", "disconnect"]
+    assert docs_status["health"]["provider_context_inferred_action_ids"] == ["inspect", "sync"]
+
+    source_control_status = next(
+        item
+        for item in build_project_integration_status(
+            registry_payload=normalize_integration_registry({}, {}),
+            workspace_path=None,
+            project_name="Context Preflight Source Demo",
+        )
+        if item["family"] == "source_control"
+    )
+
+    create_action = next(item for item in source_control_status["available_actions"] if item["action_id"] == "create")
+    assert create_action["context_available"] is False
+    assert create_action["provider_guidance"] is None
+    assert source_control_status["parameterized_execution_action_ids"] == ["create"]
+    assert source_control_status["params_complete_action_ids"] == ["search"]
+    assert source_control_status["provider_context_missing_action_ids"] == ["import_host_state", "inspect_status", "connect", "disconnect", "search", "create"]
+    assert source_control_status["health"]["parameterized_execution_action_ids"] == ["create"]
+
+
 def test_project_integrations_surface_multi_blocked_action_inventories(monkeypatch, tmp_path) -> None:
     pypi_workspace = tmp_path / "pypi-demo"
     pypi_workspace.mkdir(parents=True, exist_ok=True)

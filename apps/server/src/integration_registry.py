@@ -3030,6 +3030,7 @@ def build_project_integration_status(
                     "provider_context_verified": provider_context_verified,
                     "provider_context_source": provider_context_source,
                     "provider_context_status": provider_context_status,
+                    "context_available": has_context_signal,
                     "provider_verification_required": provider_verification_required,
                     "provider_verification_reason": provider_verification_reason,
                     "verification_scope": verification_scope,
@@ -3045,6 +3046,13 @@ def build_project_integration_status(
                     "context_required": context_required,
                     "context_requirement_reason": context_requirement_reason,
                     "suppressed_command_reason": suppressed_command_reason,
+                    "provider_guidance": _provider_guidance(action_provider, action.action_id)
+                    or _default_provider_guidance(
+                        provider=action_provider,
+                        action=action,
+                        action_metadata=action_metadata,
+                        command_template=action_template,
+                    ),
                 }
             )
         available_action_count = sum(1 for item in available_actions if item["status"] == "available")
@@ -3205,13 +3213,47 @@ def build_project_integration_status(
             for item in execution_actions
             if item["safe_command_eligible"]
         ]
+        command_ready_action_count = sum(1 for item in execution_actions if item["command_ready"])
+        command_ready_action_ids = [
+            str(item["action_id"])
+            for item in execution_actions
+            if item["command_ready"]
+        ]
         parameterized_execution_action_count = sum(1 for item in execution_actions if item["required_params"])
+        parameterized_execution_action_ids = [
+            str(item["action_id"])
+            for item in execution_actions
+            if item["required_params"]
+        ]
         params_complete_action_count = sum(1 for item in execution_actions if item["params_complete"])
+        params_complete_action_ids = [
+            str(item["action_id"])
+            for item in execution_actions
+            if item["params_complete"]
+        ]
         defaulted_param_action_count = sum(1 for item in execution_actions if item["defaulted_params"])
         missing_params_action_count = sum(1 for item in execution_actions if item.get("execution_block_reason") == "missing_params")
         missing_executable_action_count = sum(1 for item in execution_actions if item.get("execution_block_reason") == "missing_executable")
         no_local_command_action_count = sum(1 for item in execution_actions if item.get("execution_block_reason") == "no_local_command")
         provider_context_blocked_action_count = sum(1 for item in execution_actions if item.get("execution_block_reason") == "provider_context_missing")
+        provider_context_verified_action_count = sum(1 for item in available_actions if item["provider_context_status"] == "verified")
+        provider_context_verified_action_ids = [
+            str(item["action_id"])
+            for item in available_actions
+            if item["provider_context_status"] == "verified"
+        ]
+        provider_context_inferred_action_count = sum(1 for item in available_actions if item["provider_context_status"] == "inferred")
+        provider_context_inferred_action_ids = [
+            str(item["action_id"])
+            for item in available_actions
+            if item["provider_context_status"] == "inferred"
+        ]
+        provider_context_missing_action_count = sum(1 for item in available_actions if item["provider_context_status"] == "missing")
+        provider_context_missing_action_ids = [
+            str(item["action_id"])
+            for item in available_actions
+            if item["provider_context_status"] == "missing"
+        ]
         context_blocked_action_ids = [
             str(item["action_id"])
             for item in available_actions
@@ -3412,8 +3454,12 @@ def build_project_integration_status(
                 "ready_to_execute_action_ids": ready_to_execute_action_ids,
                 "safe_command_action_count": safe_command_action_count,
                 "safe_command_action_ids": safe_command_action_ids,
+                "command_ready_action_count": command_ready_action_count,
+                "command_ready_action_ids": command_ready_action_ids,
                 "parameterized_execution_action_count": parameterized_execution_action_count,
+                "parameterized_execution_action_ids": parameterized_execution_action_ids,
                 "params_complete_action_count": params_complete_action_count,
+                "params_complete_action_ids": params_complete_action_ids,
                 "defaulted_param_action_count": defaulted_param_action_count,
                 "missing_params_action_count": missing_params_action_count,
                 "missing_params_action_ids": missing_params_action_ids,
@@ -3423,6 +3469,12 @@ def build_project_integration_status(
                 "no_local_command_action_ids": no_local_command_action_ids,
                 "provider_context_blocked_action_count": provider_context_blocked_action_count,
                 "provider_context_blocked_action_ids": provider_context_blocked_action_ids,
+                "provider_context_verified_action_count": provider_context_verified_action_count,
+                "provider_context_verified_action_ids": provider_context_verified_action_ids,
+                "provider_context_inferred_action_count": provider_context_inferred_action_count,
+                "provider_context_inferred_action_ids": provider_context_inferred_action_ids,
+                "provider_context_missing_action_count": provider_context_missing_action_count,
+                "provider_context_missing_action_ids": provider_context_missing_action_ids,
                 "defaulted_param_action_ids": defaulted_param_action_ids,
                 "execution_block_reason_counts": execution_block_reason_counts,
                 "blocking_reason_counts": blocking_reason_counts,
@@ -3502,8 +3554,12 @@ def build_project_integration_status(
                     "ready_to_execute_action_ids": ready_to_execute_action_ids,
                     "safe_command_action_count": safe_command_action_count,
                     "safe_command_action_ids": safe_command_action_ids,
+                    "command_ready_action_count": command_ready_action_count,
+                    "command_ready_action_ids": command_ready_action_ids,
                     "parameterized_execution_action_count": parameterized_execution_action_count,
+                    "parameterized_execution_action_ids": parameterized_execution_action_ids,
                     "params_complete_action_count": params_complete_action_count,
+                    "params_complete_action_ids": params_complete_action_ids,
                     "defaulted_param_action_count": defaulted_param_action_count,
                     "missing_params_action_count": missing_params_action_count,
                     "missing_params_action_ids": missing_params_action_ids,
@@ -3513,6 +3569,12 @@ def build_project_integration_status(
                     "no_local_command_action_ids": no_local_command_action_ids,
                     "provider_context_blocked_action_count": provider_context_blocked_action_count,
                     "provider_context_blocked_action_ids": provider_context_blocked_action_ids,
+                    "provider_context_verified_action_count": provider_context_verified_action_count,
+                    "provider_context_verified_action_ids": provider_context_verified_action_ids,
+                    "provider_context_inferred_action_count": provider_context_inferred_action_count,
+                    "provider_context_inferred_action_ids": provider_context_inferred_action_ids,
+                    "provider_context_missing_action_count": provider_context_missing_action_count,
+                    "provider_context_missing_action_ids": provider_context_missing_action_ids,
                     "context_blocked_action_ids": context_blocked_action_ids,
                     "defaulted_param_action_ids": defaulted_param_action_ids,
                     "execution_block_reason_counts": execution_block_reason_counts,
