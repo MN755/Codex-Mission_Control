@@ -228,6 +228,13 @@ PROVIDER_TOKEN_MARKERS: dict[str, tuple[str, ...]] = {
     "cypress": ("cypress",),
     "changesets": ("changesets", ".changeset",),
     "launchnotes": ("launchnotes", "launch notes"),
+    "dependabot": ("dependabot", "dependabot alerts"),
+    "pinecone": ("pinecone", "pinecone index"),
+    "weaviate": ("weaviate", "weaviate cluster"),
+    "qdrant": ("qdrant", "qdrant cloud"),
+    "chroma": ("chroma", "chroma db"),
+    "milvus": ("milvus", "milvus vector db"),
+    "opengrok": ("opengrok", "open grok"),
 }
 
 PROVIDER_ACTION_GUIDANCE: dict[str, dict[str, str]] = {
@@ -362,6 +369,32 @@ PROVIDER_ACTION_GUIDANCE: dict[str, dict[str, str]] = {
     "launchnotes": {
         "draft": "LaunchNotes drafting should route through a verified host or API-backed release lane instead of a fake local CLI.",
         "create": "LaunchNotes release publishing should use a verified host or API-backed lane.",
+    },
+    "dependabot": {
+        "scan": "Dependabot is intentionally a guided remote lane here. Use GitHub's hosted Dependabot/alerts lane instead of pretending there is a bundled local CLI.",
+    },
+    "pinecone": {
+        "inspect": "Pinecone inspection should route through a verified host or API-backed vector-store lane instead of a fake local CLI.",
+        "search": "Pinecone retrieval smoke checks should use a verified host or API-backed vector-store lane.",
+    },
+    "weaviate": {
+        "inspect": "Weaviate inspection should route through a verified host or API-backed vector-store lane instead of a fake local CLI.",
+        "search": "Weaviate retrieval smoke checks should use a verified host or API-backed vector-store lane.",
+    },
+    "qdrant": {
+        "inspect": "Qdrant inspection should route through a verified host or API-backed vector-store lane instead of a fake local CLI.",
+        "search": "Qdrant retrieval smoke checks should use a verified host or API-backed vector-store lane.",
+    },
+    "chroma": {
+        "inspect": "Chroma inspection should route through a verified host or API-backed vector-store lane instead of a fake local CLI.",
+        "search": "Chroma retrieval smoke checks should use a verified host or API-backed vector-store lane.",
+    },
+    "milvus": {
+        "inspect": "Milvus inspection should route through a verified host or API-backed vector-store lane instead of a fake local CLI.",
+        "search": "Milvus retrieval smoke checks should use a verified host or API-backed vector-store lane.",
+    },
+    "opengrok": {
+        "search": "OpenGrok search should route through a verified host or API-backed code-search lane instead of a fake local CLI.",
     },
 }
 
@@ -812,7 +845,7 @@ FAMILIES: tuple[IntegrationFamilyDefinition, ...] = (
         providers=("pinecone", "weaviate", "qdrant", "chroma", "milvus"),
         host_tokens=("pinecone", "weaviate", "qdrant", "chroma", "milvus"),
         config_files=(),
-        workspace_tokens=("pinecone", "weaviate", "qdrant", "chroma", "milvus"),
+        workspace_tokens=("pinecone", "pinecone index", "weaviate", "weaviate cluster", "qdrant", "qdrant cloud", "chroma", "chroma db", "milvus", "milvus vector db"),
         cli_candidates=(),
         legacy_account_keys=(),
         actions=COMMON_ACTIONS + (
@@ -828,7 +861,7 @@ FAMILIES: tuple[IntegrationFamilyDefinition, ...] = (
         providers=("sourcegraph", "opengrok", "zoekt"),
         host_tokens=("sourcegraph", "opengrok", "zoekt"),
         config_files=(),
-        workspace_tokens=("sourcegraph", "opengrok", "zoekt"),
+        workspace_tokens=("sourcegraph", "opengrok", "open grok", "zoekt"),
         cli_candidates=("src", "zoekt-query"),
         legacy_account_keys=(),
         actions=COMMON_ACTIONS + (
@@ -1281,6 +1314,9 @@ def _provider_command_template(provider: str, action_id: str) -> str | None:
             "inspect": "kubectl config current-context",
             "deploy": "kubectl apply -f {path_q}",
         },
+        "dependabot": {
+            "scan": None,
+        },
         "terraform": {
             "validate": "terraform validate",
             "deploy": "terraform apply -auto-approve",
@@ -1359,8 +1395,31 @@ def _provider_command_template(provider: str, action_id: str) -> str | None:
         "sourcegraph": {
             "search": "src search -json {query_q}",
         },
+        "opengrok": {
+            "search": None,
+        },
         "zoekt": {
             "search": "zoekt-query {query_q}",
+        },
+        "pinecone": {
+            "inspect": None,
+            "search": None,
+        },
+        "weaviate": {
+            "inspect": None,
+            "search": None,
+        },
+        "qdrant": {
+            "inspect": None,
+            "search": None,
+        },
+        "chroma": {
+            "inspect": None,
+            "search": None,
+        },
+        "milvus": {
+            "inspect": None,
+            "search": None,
         },
         "chrome_devtools": {
             "inspect": "chrome --version",

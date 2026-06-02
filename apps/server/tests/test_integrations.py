@@ -1383,6 +1383,76 @@ def test_guided_preview_surfaces_feature_flag_and_analytics_guidance(monkeypatch
     assert any("analytics lane" in note.lower() for note in analytics_preview["notes"])
 
 
+def test_guided_preview_surfaces_dependabot_and_opengrok_guidance(monkeypatch) -> None:
+    monkeypatch.setattr("integration_registry.shutil.which", lambda _command: None)
+
+    dependabot_preview = preview_integration_action(
+        family_id="security_scanners",
+        action_id="scan",
+        params={},
+        registry_payload=normalize_integration_registry(
+            {"connections": {"security_scanners": {"family": "security_scanners", "status": "connected", "providers": ["dependabot"], "connection_source": "mission_control", "host_imported": False}}},
+            {},
+        ),
+        workspace_path=None,
+        project_name="Dependabot Demo",
+    )
+    opengrok_preview = preview_integration_action(
+        family_id="code_search",
+        action_id="search",
+        params={"query": "TODO"},
+        registry_payload=normalize_integration_registry(
+            {"connections": {"code_search": {"family": "code_search", "status": "connected", "providers": ["opengrok"], "connection_source": "mission_control", "host_imported": False}}},
+            {},
+        ),
+        workspace_path=None,
+        project_name="OpenGrok Demo",
+    )
+
+    assert dependabot_preview["provider"] == "dependabot"
+    assert dependabot_preview["command"] is None
+    assert dependabot_preview["execution_mode"] == "guided_remote"
+    assert any("dependabot" in note.lower() and "guided remote lane" in note.lower() for note in dependabot_preview["notes"])
+    assert opengrok_preview["provider"] == "opengrok"
+    assert opengrok_preview["command"] is None
+    assert opengrok_preview["execution_mode"] == "guided_remote"
+    assert any("code-search lane" in note.lower() for note in opengrok_preview["notes"])
+
+
+def test_guided_preview_surfaces_vector_database_guidance(monkeypatch) -> None:
+    monkeypatch.setattr("integration_registry.shutil.which", lambda _command: None)
+
+    pinecone_preview = preview_integration_action(
+        family_id="vector_databases",
+        action_id="inspect",
+        params={},
+        registry_payload=normalize_integration_registry(
+            {"connections": {"vector_databases": {"family": "vector_databases", "status": "connected", "providers": ["pinecone"], "connection_source": "mission_control", "host_imported": False}}},
+            {},
+        ),
+        workspace_path=None,
+        project_name="Pinecone Demo",
+    )
+    qdrant_preview = preview_integration_action(
+        family_id="vector_databases",
+        action_id="search",
+        params={},
+        registry_payload=normalize_integration_registry(
+            {"connections": {"vector_databases": {"family": "vector_databases", "status": "connected", "providers": ["qdrant"], "connection_source": "mission_control", "host_imported": False}}},
+            {},
+        ),
+        workspace_path=None,
+        project_name="Qdrant Demo",
+    )
+
+    assert pinecone_preview["provider"] == "pinecone"
+    assert pinecone_preview["command"] is None
+    assert any("vector-store lane" in note.lower() for note in pinecone_preview["notes"])
+    assert qdrant_preview["provider"] == "qdrant"
+    assert qdrant_preview["command"] is None
+    assert any("vector-store lane" in note.lower() for note in qdrant_preview["notes"])
+
+
 def test_guided_preview_surfaces_support_auth_payment_release_and_runtime_guidance(monkeypatch) -> None:
     monkeypatch.setattr("integration_registry.shutil.which", lambda _command: None)
 
@@ -1534,6 +1604,40 @@ def test_workspace_token_aliases_detect_teams_and_lemon_squeezy(monkeypatch, tmp
     assert teams_status["status"] == "partial"
     assert lemon_status["resolved_provider"] == "lemon_squeezy"
     assert lemon_status["status"] == "partial"
+
+
+def test_workspace_token_aliases_detect_opengrok_and_chroma(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr("integration_registry.shutil.which", lambda _command: None)
+
+    opengrok_workspace = tmp_path / "opengrok-repo"
+    opengrok_workspace.mkdir(parents=True, exist_ok=True)
+    (opengrok_workspace / "README.md").write_text("Open Grok powers legacy code search here.\n", encoding="utf-8")
+
+    chroma_workspace = tmp_path / "chroma-repo"
+    chroma_workspace.mkdir(parents=True, exist_ok=True)
+    (chroma_workspace / "README.md").write_text("Chroma DB stores local embeddings for fast retrieval.\n", encoding="utf-8")
+
+    opengrok_status = {
+        item["family"]: item
+        for item in build_project_integration_status(
+            workspace_path=str(opengrok_workspace),
+            project_name="OpenGrok Workspace Demo",
+            registry_payload=normalize_integration_registry({}, {}),
+        )
+    }["code_search"]
+    chroma_status = {
+        item["family"]: item
+        for item in build_project_integration_status(
+            workspace_path=str(chroma_workspace),
+            project_name="Chroma Workspace Demo",
+            registry_payload=normalize_integration_registry({}, {}),
+        )
+    }["vector_databases"]
+
+    assert opengrok_status["resolved_provider"] == "opengrok"
+    assert opengrok_status["status"] == "partial"
+    assert chroma_status["resolved_provider"] == "chroma"
+    assert chroma_status["status"] == "partial"
 
 
 def test_provider_specific_preview_supports_chrome_devtools_and_cdp_lanes(monkeypatch) -> None:
