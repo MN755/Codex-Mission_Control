@@ -50,7 +50,7 @@ PROVIDER_CLIS: dict[str, tuple[str, ...]] = {
     "github_actions": ("gh",),
     "gitlab_ci": ("glab",),
     "bitbucket_pipelines": (),
-    "circleci": (),
+    "circleci": ("circleci",),
     "buildkite": (),
     "vercel": ("vercel",),
     "netlify": ("netlify",),
@@ -71,12 +71,15 @@ PROVIDER_CLIS: dict[str, tuple[str, ...]] = {
     "snyk": ("snyk",),
     "semgrep": ("semgrep",),
     "trivy": ("trivy",),
+    "codeql": ("codeql",),
     "doppler": ("doppler",),
     "vault": ("vault",),
     "stripe": ("stripe",),
     "onepassword": ("op",),
     "aws_secrets_manager": ("aws",),
     "gcp_secret_manager": ("gcloud",),
+    "chrome_devtools": ("chrome",),
+    "cdp": ("chrome",),
     "postman": ("newman",),
     "insomnia": ("inso",),
     "openapi": ("swagger-cli",),
@@ -158,6 +161,9 @@ PROVIDER_TOKEN_MARKERS: dict[str, tuple[str, ...]] = {
     "nuget": ("nuget", "dotnet", "nuspec"),
     "rubygems": ("rubygems", "gemfile", "gemspec", "gem"),
     "docker_hub": ("docker hub", "dockerfile", "docker"),
+    "codeql": ("codeql",),
+    "chrome_devtools": ("chrome devtools", "devtools"),
+    "cdp": ("chrome debug protocol", "chrome devtools protocol", "cdp"),
     "release_please": ("release please", "release-please"),
     "semantic_release": ("semantic-release", "semantic release"),
     "postman": ("postman", "newman"),
@@ -375,7 +381,7 @@ FAMILIES: tuple[IntegrationFamilyDefinition, ...] = (
         host_tokens=("workflow", "pipeline", "ci"),
         config_files=(".github/workflows", ".gitlab-ci.yml", "bitbucket-pipelines.yml", ".circleci/config.yml"),
         workspace_tokens=("workflow", "pipeline", "ci"),
-        cli_candidates=("gh", "glab"),
+        cli_candidates=("gh", "glab", "circleci"),
         legacy_account_keys=(),
         actions=COMMON_ACTIONS + (
             _action("inspect", "Inspect CI status", "Inspect CI workflow status.", command_template="gh run list --limit 10", risk_level="low", permission_policy="ask_once_per_project"),
@@ -615,7 +621,7 @@ FAMILIES: tuple[IntegrationFamilyDefinition, ...] = (
         host_tokens=("snyk", "semgrep", "codeql", "trivy", "gitleaks", "dependabot"),
         config_files=(".semgrep", ".github/codeql", ".gitleaks.toml", "trivy.yaml"),
         workspace_tokens=("snyk", "semgrep", "codeql", "trivy", "gitleaks", "dependabot"),
-        cli_candidates=("snyk", "semgrep", "trivy", "gitleaks"),
+        cli_candidates=("snyk", "semgrep", "codeql", "trivy", "gitleaks"),
         legacy_account_keys=(),
         actions=COMMON_ACTIONS + (
             _action("scan", "Run scan", "Run the configured security scanner lane.", command_template="gitleaks dir . --redact", risk_level="medium", permission_policy="ask_every_time"),
@@ -677,7 +683,7 @@ FAMILIES: tuple[IntegrationFamilyDefinition, ...] = (
         host_tokens=("chrome", "devtools", "cdp"),
         config_files=(),
         workspace_tokens=("devtools", "cdp"),
-        cli_candidates=(),
+        cli_candidates=("chrome",),
         legacy_account_keys=(),
         actions=COMMON_ACTIONS + (
             _action("inspect", "Inspect browser runtime", "Inspect DevTools/CDP readiness.", risk_level="low", permission_policy="ask_once_per_project"),
@@ -986,6 +992,9 @@ def _provider_command_template(provider: str, action_id: str) -> str | None:
             "inspect_run": "glab ci get --pipeline-id {run_id_q} --with-job-details --output json",
             "tail_logs": "glab ci trace --pipeline-id {run_id_q}",
         },
+        "circleci": {
+            "inspect": "circleci config validate .circleci/config.yml",
+        },
         "vercel": {
             "inspect": "vercel whoami",
             "deploy": "vercel deploy --yes",
@@ -1096,6 +1105,9 @@ def _provider_command_template(provider: str, action_id: str) -> str | None:
         "gitleaks": {
             "scan": "gitleaks dir . --redact",
         },
+        "codeql": {
+            "scan": "codeql resolve qlpacks",
+        },
         "ollama": {
             "inspect": "ollama list",
         },
@@ -1156,6 +1168,14 @@ def _provider_command_template(provider: str, action_id: str) -> str | None:
         },
         "zoekt": {
             "search": "zoekt-query {query_q}",
+        },
+        "chrome_devtools": {
+            "inspect": "chrome --version",
+            "open": "chrome --remote-debugging-port=9222 about:blank",
+        },
+        "cdp": {
+            "inspect": "chrome --version",
+            "open": "chrome --remote-debugging-port=9222 about:blank",
         },
         "auth0": {
             "inspect": "auth0 apps list --json",

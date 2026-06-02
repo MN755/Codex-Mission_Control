@@ -983,6 +983,136 @@ def test_provider_specific_preview_prefers_cypress_for_cypress_repo(monkeypatch,
     assert preview["command"] == "cypress run"
 
 
+def test_provider_specific_preview_supports_circleci_inspect_lane(monkeypatch, tmp_path) -> None:
+    workspace = tmp_path / "circleci-repo"
+    (workspace / ".circleci").mkdir(parents=True, exist_ok=True)
+    (workspace / ".circleci" / "config.yml").write_text("version: 2.1\n", encoding="utf-8")
+
+    monkeypatch.setattr(
+        "integration_registry.shutil.which",
+        lambda command: f"C:/tools/{command}.exe" if command == "circleci" else None,
+    )
+
+    preview = preview_integration_action(
+        family_id="ci_cd",
+        action_id="inspect",
+        params={},
+        registry_payload=normalize_integration_registry({}, {}),
+        workspace_path=str(workspace),
+        project_name="CircleCI Demo",
+    )
+
+    assert preview["provider"] == "circleci"
+    assert preview["command"] == "circleci config validate .circleci/config.yml"
+    assert preview["command_ready"] is True
+
+
+def test_provider_specific_preview_supports_codeql_scan_lane(monkeypatch, tmp_path) -> None:
+    workspace = tmp_path / "codeql-repo"
+    (workspace / ".github" / "codeql").mkdir(parents=True, exist_ok=True)
+    (workspace / ".github" / "codeql" / "config.yml").write_text("name: codeql\n", encoding="utf-8")
+
+    monkeypatch.setattr(
+        "integration_registry.shutil.which",
+        lambda command: f"C:/tools/{command}.exe" if command == "codeql" else None,
+    )
+
+    preview = preview_integration_action(
+        family_id="security_scanners",
+        action_id="scan",
+        params={},
+        registry_payload=normalize_integration_registry({}, {}),
+        workspace_path=str(workspace),
+        project_name="CodeQL Demo",
+    )
+
+    assert preview["provider"] == "codeql"
+    assert preview["command"] == "codeql resolve qlpacks"
+    assert preview["command_ready"] is True
+
+
+def test_provider_specific_preview_supports_chrome_devtools_and_cdp_lanes(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "integration_registry.shutil.which",
+        lambda command: f"C:/tools/{command}.exe" if command == "chrome" else None,
+    )
+
+    chrome_inspect = preview_integration_action(
+        family_id="browser_devtools",
+        action_id="inspect",
+        params={},
+        registry_payload=normalize_integration_registry(
+            {
+                "connections": {
+                    "browser_devtools": {
+                        "family": "browser_devtools",
+                        "status": "connected",
+                        "providers": ["chrome_devtools"],
+                        "connection_source": "mission_control",
+                        "host_imported": False,
+                    }
+                }
+            },
+            {},
+        ),
+        workspace_path=None,
+        project_name="Chrome DevTools Demo",
+    )
+    cdp_open = preview_integration_action(
+        family_id="browser_devtools",
+        action_id="open",
+        params={},
+        registry_payload=normalize_integration_registry(
+            {
+                "connections": {
+                    "browser_devtools": {
+                        "family": "browser_devtools",
+                        "status": "connected",
+                        "providers": ["cdp"],
+                        "connection_source": "mission_control",
+                        "host_imported": False,
+                    }
+                }
+            },
+            {},
+        ),
+        workspace_path=None,
+        project_name="CDP Demo",
+    )
+
+    assert chrome_inspect["provider"] == "chrome_devtools"
+    assert chrome_inspect["command"] == "chrome --version"
+    assert chrome_inspect["command_ready"] is True
+    assert cdp_open["provider"] == "cdp"
+    assert cdp_open["command"] == "chrome --remote-debugging-port=9222 about:blank"
+    assert cdp_open["command_ready"] is True
+
+
+def test_project_integrations_detect_browser_devtools_from_workspace_tokens_and_cli(monkeypatch, tmp_path) -> None:
+    workspace = tmp_path / "devtools-repo"
+    workspace.mkdir(parents=True, exist_ok=True)
+    (workspace / "README.md").write_text("Use Chrome DevTools to inspect the live page.\n", encoding="utf-8")
+
+    monkeypatch.setattr(
+        "integration_registry.shutil.which",
+        lambda command: f"C:/tools/{command}.exe" if command == "chrome" else None,
+    )
+
+    status = {
+        item["family"]: item
+        for item in build_project_integration_status(
+            workspace_path=str(workspace),
+            project_name="DevTools Workspace Demo",
+            registry_payload=normalize_integration_registry({}, {}),
+        )
+    }["browser_devtools"]
+
+    assert status["resolved_provider"] == "chrome_devtools"
+    assert status["status"] == "ready"
+    assert status["resolved_cli_candidates"] == ["chrome"]
+    assert status["local_action_count"] >= 1
+
+
 def test_provider_specific_preview_supports_docusaurus_docs_lane(monkeypatch, tmp_path) -> None:
     workspace = tmp_path / "docusaurus-repo"
     workspace.mkdir(parents=True, exist_ok=True)
