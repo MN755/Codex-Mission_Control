@@ -3625,30 +3625,56 @@ class ProjectIntegrationsRead(BaseModel):
     context_blocked_action_refs: list[str] = Field(default_factory=list)
     preflight_ready_action_count: int = 0
     preflight_ready_action_refs: list[str] = Field(default_factory=list)
+    preflight_ready_family_count: int = 0
+    preflight_ready_family_ids: list[str] = Field(default_factory=list)
     not_preflight_ready_action_count: int = 0
     not_preflight_ready_action_refs: list[str] = Field(default_factory=list)
+    not_preflight_ready_family_count: int = 0
+    not_preflight_ready_family_ids: list[str] = Field(default_factory=list)
     confirmation_eligible_action_count: int = 0
     confirmation_eligible_action_refs: list[str] = Field(default_factory=list)
+    confirmation_eligible_family_count: int = 0
+    confirmation_eligible_family_ids: list[str] = Field(default_factory=list)
     not_confirmation_eligible_action_count: int = 0
     not_confirmation_eligible_action_refs: list[str] = Field(default_factory=list)
+    not_confirmation_eligible_family_count: int = 0
+    not_confirmation_eligible_family_ids: list[str] = Field(default_factory=list)
     ready_to_execute_action_count: int = 0
     ready_to_execute_action_refs: list[str] = Field(default_factory=list)
+    ready_to_execute_family_count: int = 0
+    ready_to_execute_family_ids: list[str] = Field(default_factory=list)
     not_ready_to_execute_action_count: int = 0
     not_ready_to_execute_action_refs: list[str] = Field(default_factory=list)
+    not_ready_to_execute_family_count: int = 0
+    not_ready_to_execute_family_ids: list[str] = Field(default_factory=list)
     unsafe_command_action_count: int = 0
     unsafe_command_action_refs: list[str] = Field(default_factory=list)
+    unsafe_command_family_count: int = 0
+    unsafe_command_family_ids: list[str] = Field(default_factory=list)
     command_ready_action_count: int = 0
     command_ready_action_refs: list[str] = Field(default_factory=list)
+    command_ready_family_count: int = 0
+    command_ready_family_ids: list[str] = Field(default_factory=list)
     command_not_ready_action_count: int = 0
     command_not_ready_action_refs: list[str] = Field(default_factory=list)
+    command_not_ready_family_count: int = 0
+    command_not_ready_family_ids: list[str] = Field(default_factory=list)
     parameterized_execution_action_count: int = 0
     parameterized_execution_action_refs: list[str] = Field(default_factory=list)
+    parameterized_execution_family_count: int = 0
+    parameterized_execution_family_ids: list[str] = Field(default_factory=list)
     non_parameterized_execution_action_count: int = 0
     non_parameterized_execution_action_refs: list[str] = Field(default_factory=list)
+    non_parameterized_execution_family_count: int = 0
+    non_parameterized_execution_family_ids: list[str] = Field(default_factory=list)
     params_complete_action_count: int = 0
     params_complete_action_refs: list[str] = Field(default_factory=list)
+    params_complete_family_count: int = 0
+    params_complete_family_ids: list[str] = Field(default_factory=list)
     params_incomplete_action_count: int = 0
     params_incomplete_action_refs: list[str] = Field(default_factory=list)
+    params_incomplete_family_count: int = 0
+    params_incomplete_family_ids: list[str] = Field(default_factory=list)
     action_count: int = 0
     action_statuses: list[str] = Field(default_factory=list)
     action_status_counts: dict[str, int] = Field(default_factory=dict)

@@ -302,30 +302,56 @@ def test_project_integrations_and_action_preview_flow(client, bridge_headers, mo
     assert project_integrations_payload["context_blocked_action_refs"] == _collect_action_refs("context_blocked_action_ids")
     assert project_integrations_payload["preflight_ready_action_count"] == sum(item["preflight_ready_action_count"] for item in family_list)
     assert project_integrations_payload["preflight_ready_action_refs"] == _collect_action_refs("preflight_ready_action_ids")
+    assert project_integrations_payload["preflight_ready_family_count"] == sum(1 for item in family_list if item["preflight_ready_action_count"] > 0)
+    assert project_integrations_payload["preflight_ready_family_ids"] == [item["family"] for item in family_list if item["preflight_ready_action_count"] > 0]
     assert project_integrations_payload["not_preflight_ready_action_count"] == sum(item["not_preflight_ready_action_count"] for item in family_list)
     assert project_integrations_payload["not_preflight_ready_action_refs"] == _collect_action_refs("not_preflight_ready_action_ids")
+    assert project_integrations_payload["not_preflight_ready_family_count"] == sum(1 for item in family_list if item["not_preflight_ready_action_count"] > 0)
+    assert project_integrations_payload["not_preflight_ready_family_ids"] == [item["family"] for item in family_list if item["not_preflight_ready_action_count"] > 0]
     assert project_integrations_payload["confirmation_eligible_action_count"] == sum(item["confirmation_eligible_action_count"] for item in family_list)
     assert project_integrations_payload["confirmation_eligible_action_refs"] == _collect_action_refs("confirmation_eligible_action_ids")
+    assert project_integrations_payload["confirmation_eligible_family_count"] == sum(1 for item in family_list if item["confirmation_eligible_action_count"] > 0)
+    assert project_integrations_payload["confirmation_eligible_family_ids"] == [item["family"] for item in family_list if item["confirmation_eligible_action_count"] > 0]
     assert project_integrations_payload["not_confirmation_eligible_action_count"] == sum(item["not_confirmation_eligible_action_count"] for item in family_list)
     assert project_integrations_payload["not_confirmation_eligible_action_refs"] == _collect_action_refs("not_confirmation_eligible_action_ids")
+    assert project_integrations_payload["not_confirmation_eligible_family_count"] == sum(1 for item in family_list if item["not_confirmation_eligible_action_count"] > 0)
+    assert project_integrations_payload["not_confirmation_eligible_family_ids"] == [item["family"] for item in family_list if item["not_confirmation_eligible_action_count"] > 0]
     assert project_integrations_payload["ready_to_execute_action_count"] == sum(item["ready_to_execute_action_count"] for item in family_list)
     assert project_integrations_payload["ready_to_execute_action_refs"] == _collect_action_refs("ready_to_execute_action_ids")
+    assert project_integrations_payload["ready_to_execute_family_count"] == sum(1 for item in family_list if item["ready_to_execute_action_count"] > 0)
+    assert project_integrations_payload["ready_to_execute_family_ids"] == [item["family"] for item in family_list if item["ready_to_execute_action_count"] > 0]
     assert project_integrations_payload["not_ready_to_execute_action_count"] == sum(item["not_ready_to_execute_action_count"] for item in family_list)
     assert project_integrations_payload["not_ready_to_execute_action_refs"] == _collect_action_refs("not_ready_to_execute_action_ids")
+    assert project_integrations_payload["not_ready_to_execute_family_count"] == sum(1 for item in family_list if item["not_ready_to_execute_action_count"] > 0)
+    assert project_integrations_payload["not_ready_to_execute_family_ids"] == [item["family"] for item in family_list if item["not_ready_to_execute_action_count"] > 0]
     assert project_integrations_payload["unsafe_command_action_count"] == sum(item["unsafe_command_action_count"] for item in family_list)
     assert project_integrations_payload["unsafe_command_action_refs"] == _collect_action_refs("unsafe_command_action_ids")
+    assert project_integrations_payload["unsafe_command_family_count"] == sum(1 for item in family_list if item["unsafe_command_action_count"] > 0)
+    assert project_integrations_payload["unsafe_command_family_ids"] == [item["family"] for item in family_list if item["unsafe_command_action_count"] > 0]
     assert project_integrations_payload["command_ready_action_count"] == sum(item["command_ready_action_count"] for item in family_list)
     assert project_integrations_payload["command_ready_action_refs"] == _collect_action_refs("command_ready_action_ids")
+    assert project_integrations_payload["command_ready_family_count"] == sum(1 for item in family_list if item["command_ready_action_count"] > 0)
+    assert project_integrations_payload["command_ready_family_ids"] == [item["family"] for item in family_list if item["command_ready_action_count"] > 0]
     assert project_integrations_payload["command_not_ready_action_count"] == sum(item["command_not_ready_action_count"] for item in family_list)
     assert project_integrations_payload["command_not_ready_action_refs"] == _collect_action_refs("command_not_ready_action_ids")
+    assert project_integrations_payload["command_not_ready_family_count"] == sum(1 for item in family_list if item["command_not_ready_action_count"] > 0)
+    assert project_integrations_payload["command_not_ready_family_ids"] == [item["family"] for item in family_list if item["command_not_ready_action_count"] > 0]
     assert project_integrations_payload["parameterized_execution_action_count"] == sum(item["parameterized_execution_action_count"] for item in family_list)
     assert project_integrations_payload["parameterized_execution_action_refs"] == _collect_action_refs("parameterized_execution_action_ids")
+    assert project_integrations_payload["parameterized_execution_family_count"] == sum(1 for item in family_list if item["parameterized_execution_action_count"] > 0)
+    assert project_integrations_payload["parameterized_execution_family_ids"] == [item["family"] for item in family_list if item["parameterized_execution_action_count"] > 0]
     assert project_integrations_payload["non_parameterized_execution_action_count"] == sum(item["non_parameterized_execution_action_count"] for item in family_list)
     assert project_integrations_payload["non_parameterized_execution_action_refs"] == _collect_action_refs("non_parameterized_execution_action_ids")
+    assert project_integrations_payload["non_parameterized_execution_family_count"] == sum(1 for item in family_list if item["non_parameterized_execution_action_count"] > 0)
+    assert project_integrations_payload["non_parameterized_execution_family_ids"] == [item["family"] for item in family_list if item["non_parameterized_execution_action_count"] > 0]
     assert project_integrations_payload["params_complete_action_count"] == sum(item["params_complete_action_count"] for item in family_list)
     assert project_integrations_payload["params_complete_action_refs"] == _collect_action_refs("params_complete_action_ids")
+    assert project_integrations_payload["params_complete_family_count"] == sum(1 for item in family_list if item["params_complete_action_count"] > 0)
+    assert project_integrations_payload["params_complete_family_ids"] == [item["family"] for item in family_list if item["params_complete_action_count"] > 0]
     assert project_integrations_payload["params_incomplete_action_count"] == sum(item["params_incomplete_action_count"] for item in family_list)
     assert project_integrations_payload["params_incomplete_action_refs"] == _collect_action_refs("params_incomplete_action_ids")
+    assert project_integrations_payload["params_incomplete_family_count"] == sum(1 for item in family_list if item["params_incomplete_action_count"] > 0)
+    assert project_integrations_payload["params_incomplete_family_ids"] == [item["family"] for item in family_list if item["params_incomplete_action_count"] > 0]
     assert project_integrations_payload["action_count"] == sum(item["action_count"] for item in family_list)
     assert project_integrations_payload["action_statuses"] == sorted(project_integrations_payload["action_status_counts"])
     assert project_integrations_payload["action_status_counts"] == _sum_count_maps("action_status_counts")

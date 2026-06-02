@@ -14253,6 +14253,19 @@ class MissionControlService:
         available_provider_lane_family_count = len(available_provider_lane_family_ids)
         verification_blocked_family_count = len(verification_blocked_family_ids)
         context_blocked_family_count = len(context_blocked_family_ids)
+        preflight_ready_family_ids = [str(item.get("family") or "") for item in families if int(item.get("preflight_ready_action_count") or 0) > 0]
+        not_preflight_ready_family_ids = [str(item.get("family") or "") for item in families if int(item.get("not_preflight_ready_action_count") or 0) > 0]
+        confirmation_eligible_family_ids = [str(item.get("family") or "") for item in families if int(item.get("confirmation_eligible_action_count") or 0) > 0]
+        not_confirmation_eligible_family_ids = [str(item.get("family") or "") for item in families if int(item.get("not_confirmation_eligible_action_count") or 0) > 0]
+        ready_to_execute_family_ids = [str(item.get("family") or "") for item in families if int(item.get("ready_to_execute_action_count") or 0) > 0]
+        not_ready_to_execute_family_ids = [str(item.get("family") or "") for item in families if int(item.get("not_ready_to_execute_action_count") or 0) > 0]
+        unsafe_command_family_ids = [str(item.get("family") or "") for item in families if int(item.get("unsafe_command_action_count") or 0) > 0]
+        command_ready_family_ids = [str(item.get("family") or "") for item in families if int(item.get("command_ready_action_count") or 0) > 0]
+        command_not_ready_family_ids = [str(item.get("family") or "") for item in families if int(item.get("command_not_ready_action_count") or 0) > 0]
+        parameterized_execution_family_ids = [str(item.get("family") or "") for item in families if int(item.get("parameterized_execution_action_count") or 0) > 0]
+        non_parameterized_execution_family_ids = [str(item.get("family") or "") for item in families if int(item.get("non_parameterized_execution_action_count") or 0) > 0]
+        params_complete_family_ids = [str(item.get("family") or "") for item in families if int(item.get("params_complete_action_count") or 0) > 0]
+        params_incomplete_family_ids = [str(item.get("family") or "") for item in families if int(item.get("params_incomplete_action_count") or 0) > 0]
         available_action_count = sum(int(item.get("available_action_count") or 0) for item in families)
         blocked_action_count = sum(int(item.get("blocked_action_count") or 0) for item in families)
         execution_action_count = sum(int(item.get("execution_action_count") or 0) for item in families)
@@ -14273,28 +14286,41 @@ class MissionControlService:
         preflight_ready_action_count = len(preflight_ready_action_refs)
         not_preflight_ready_action_refs = _collect_action_refs("not_preflight_ready_action_ids")
         not_preflight_ready_action_count = len(not_preflight_ready_action_refs)
+        preflight_ready_family_count = len(preflight_ready_family_ids)
+        not_preflight_ready_family_count = len(not_preflight_ready_family_ids)
         confirmation_eligible_action_refs = _collect_action_refs("confirmation_eligible_action_ids")
         confirmation_eligible_action_count = len(confirmation_eligible_action_refs)
         not_confirmation_eligible_action_refs = _collect_action_refs("not_confirmation_eligible_action_ids")
         not_confirmation_eligible_action_count = len(not_confirmation_eligible_action_refs)
+        confirmation_eligible_family_count = len(confirmation_eligible_family_ids)
+        not_confirmation_eligible_family_count = len(not_confirmation_eligible_family_ids)
         ready_to_execute_action_refs = _collect_action_refs("ready_to_execute_action_ids")
         ready_to_execute_action_count = len(ready_to_execute_action_refs)
         not_ready_to_execute_action_refs = _collect_action_refs("not_ready_to_execute_action_ids")
         not_ready_to_execute_action_count = len(not_ready_to_execute_action_refs)
+        ready_to_execute_family_count = len(ready_to_execute_family_ids)
+        not_ready_to_execute_family_count = len(not_ready_to_execute_family_ids)
         unsafe_command_action_refs = _collect_action_refs("unsafe_command_action_ids")
         unsafe_command_action_count = len(unsafe_command_action_refs)
+        unsafe_command_family_count = len(unsafe_command_family_ids)
         command_ready_action_refs = _collect_action_refs("command_ready_action_ids")
         command_ready_action_count = len(command_ready_action_refs)
         command_not_ready_action_refs = _collect_action_refs("command_not_ready_action_ids")
         command_not_ready_action_count = len(command_not_ready_action_refs)
+        command_ready_family_count = len(command_ready_family_ids)
+        command_not_ready_family_count = len(command_not_ready_family_ids)
         parameterized_execution_action_refs = _collect_action_refs("parameterized_execution_action_ids")
         parameterized_execution_action_count = len(parameterized_execution_action_refs)
         non_parameterized_execution_action_refs = _collect_action_refs("non_parameterized_execution_action_ids")
         non_parameterized_execution_action_count = len(non_parameterized_execution_action_refs)
+        parameterized_execution_family_count = len(parameterized_execution_family_ids)
+        non_parameterized_execution_family_count = len(non_parameterized_execution_family_ids)
         params_complete_action_refs = _collect_action_refs("params_complete_action_ids")
         params_complete_action_count = len(params_complete_action_refs)
         params_incomplete_action_refs = _collect_action_refs("params_incomplete_action_ids")
         params_incomplete_action_count = len(params_incomplete_action_refs)
+        params_complete_family_count = len(params_complete_family_ids)
+        params_incomplete_family_count = len(params_incomplete_family_ids)
         action_count = sum(int(item.get("action_count") or 0) for item in families)
         action_status_counts = _sum_count_maps("action_status_counts")
         action_statuses = sorted(action_status_counts)
@@ -14648,30 +14674,56 @@ class MissionControlService:
             "context_blocked_action_refs": context_blocked_action_refs,
             "preflight_ready_action_count": preflight_ready_action_count,
             "preflight_ready_action_refs": preflight_ready_action_refs,
+            "preflight_ready_family_count": preflight_ready_family_count,
+            "preflight_ready_family_ids": preflight_ready_family_ids,
             "not_preflight_ready_action_count": not_preflight_ready_action_count,
             "not_preflight_ready_action_refs": not_preflight_ready_action_refs,
+            "not_preflight_ready_family_count": not_preflight_ready_family_count,
+            "not_preflight_ready_family_ids": not_preflight_ready_family_ids,
             "confirmation_eligible_action_count": confirmation_eligible_action_count,
             "confirmation_eligible_action_refs": confirmation_eligible_action_refs,
+            "confirmation_eligible_family_count": confirmation_eligible_family_count,
+            "confirmation_eligible_family_ids": confirmation_eligible_family_ids,
             "not_confirmation_eligible_action_count": not_confirmation_eligible_action_count,
             "not_confirmation_eligible_action_refs": not_confirmation_eligible_action_refs,
+            "not_confirmation_eligible_family_count": not_confirmation_eligible_family_count,
+            "not_confirmation_eligible_family_ids": not_confirmation_eligible_family_ids,
             "ready_to_execute_action_count": ready_to_execute_action_count,
             "ready_to_execute_action_refs": ready_to_execute_action_refs,
+            "ready_to_execute_family_count": ready_to_execute_family_count,
+            "ready_to_execute_family_ids": ready_to_execute_family_ids,
             "not_ready_to_execute_action_count": not_ready_to_execute_action_count,
             "not_ready_to_execute_action_refs": not_ready_to_execute_action_refs,
+            "not_ready_to_execute_family_count": not_ready_to_execute_family_count,
+            "not_ready_to_execute_family_ids": not_ready_to_execute_family_ids,
             "unsafe_command_action_count": unsafe_command_action_count,
             "unsafe_command_action_refs": unsafe_command_action_refs,
+            "unsafe_command_family_count": unsafe_command_family_count,
+            "unsafe_command_family_ids": unsafe_command_family_ids,
             "command_ready_action_count": command_ready_action_count,
             "command_ready_action_refs": command_ready_action_refs,
+            "command_ready_family_count": command_ready_family_count,
+            "command_ready_family_ids": command_ready_family_ids,
             "command_not_ready_action_count": command_not_ready_action_count,
             "command_not_ready_action_refs": command_not_ready_action_refs,
+            "command_not_ready_family_count": command_not_ready_family_count,
+            "command_not_ready_family_ids": command_not_ready_family_ids,
             "parameterized_execution_action_count": parameterized_execution_action_count,
             "parameterized_execution_action_refs": parameterized_execution_action_refs,
+            "parameterized_execution_family_count": parameterized_execution_family_count,
+            "parameterized_execution_family_ids": parameterized_execution_family_ids,
             "non_parameterized_execution_action_count": non_parameterized_execution_action_count,
             "non_parameterized_execution_action_refs": non_parameterized_execution_action_refs,
+            "non_parameterized_execution_family_count": non_parameterized_execution_family_count,
+            "non_parameterized_execution_family_ids": non_parameterized_execution_family_ids,
             "params_complete_action_count": params_complete_action_count,
             "params_complete_action_refs": params_complete_action_refs,
+            "params_complete_family_count": params_complete_family_count,
+            "params_complete_family_ids": params_complete_family_ids,
             "params_incomplete_action_count": params_incomplete_action_count,
             "params_incomplete_action_refs": params_incomplete_action_refs,
+            "params_incomplete_family_count": params_incomplete_family_count,
+            "params_incomplete_family_ids": params_incomplete_family_ids,
             "action_count": action_count,
             "action_statuses": action_statuses,
             "action_status_counts": action_status_counts,
