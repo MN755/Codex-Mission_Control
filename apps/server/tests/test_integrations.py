@@ -6201,40 +6201,84 @@ def test_project_integrations_surface_generic_action_groupings(monkeypatch, tmp_
 
     assert ci_status["action_status_counts"] == {"available": 5, "needs_setup": 3}
     assert ci_status["action_status_action_ids"]["available"] == ["import_host_state", "inspect_status", "connect", "disconnect", "inspect"]
+    assert ci_status["action_status_group_count"] == 2
     assert ci_status["execution_mode_counts"] == {"registry_state": 4, "local_cli": 4}
     assert ci_status["execution_mode_action_ids"]["local_cli"] == ["inspect", "inspect_run", "tail_logs", "rerun"]
+    assert ci_status["execution_mode_group_count"] == 2
     assert ci_status["provider_support_mode_counts"] == {"registry_state": 4, "provider_specific": 4}
+    assert ci_status["provider_support_mode_group_count"] == 2
     assert ci_status["provider_context_status_counts"] == {"missing": 4, "inferred": 4}
+    assert ci_status["provider_context_status_group_count"] == 2
     assert ci_status["verification_scope_counts"] == {"local_cli_mutation": 1}
     assert ci_status["verification_scope_action_ids"] == {"local_cli_mutation": ["rerun"]}
+    assert ci_status["verification_scope_group_count"] == 1
     assert ci_status["safe_command_reason_counts"] == {"non_local_execution": 4, "missing_params": 3}
     assert ci_status["safe_command_reason_action_ids"]["missing_params"] == ["inspect_run", "tail_logs", "rerun"]
+    assert ci_status["safe_command_reason_group_count"] == 2
     assert ci_status["context_requirement_reason_counts"] == {}
+    assert ci_status["context_requirement_reason_group_count"] == 0
+    assert ci_status["action_provider_counts"] == {"github_actions": 4}
+    assert ci_status["action_provider_action_ids"] == {"github_actions": ["inspect", "inspect_run", "tail_logs", "rerun"]}
+    assert ci_status["action_provider_group_count"] == 1
+    assert ci_status["executable_name_counts"] == {"gh": 4}
+    assert ci_status["executable_name_action_ids"] == {"gh": ["inspect", "inspect_run", "tail_logs", "rerun"]}
+    assert ci_status["executable_name_group_count"] == 1
     assert ci_status["health"]["execution_mode_counts"] == ci_status["execution_mode_counts"]
     assert ci_status["health"]["provider_support_mode_action_ids"] == ci_status["provider_support_mode_action_ids"]
+    assert ci_status["health"]["action_status_group_count"] == 2
+    assert ci_status["health"]["action_provider_counts"] == {"github_actions": 4}
+    assert ci_status["health"]["executable_name_counts"] == {"gh": 4}
 
     assert package_status["action_status_counts"] == {"available": 5, "needs_setup": 1}
+    assert package_status["action_status_group_count"] == 2
     assert package_status["execution_mode_counts"] == {"registry_state": 4, "local_cli": 2}
+    assert package_status["execution_mode_group_count"] == 2
     assert package_status["provider_support_mode_counts"] == {"registry_state": 4, "provider_specific": 2}
+    assert package_status["provider_support_mode_group_count"] == 2
     assert package_status["provider_context_status_counts"] == {"missing": 4, "inferred": 2}
+    assert package_status["provider_context_status_group_count"] == 2
     assert package_status["verification_scope_counts"] == {"local_cli_mutation": 1}
     assert package_status["verification_scope_action_ids"] == {"local_cli_mutation": ["publish"]}
+    assert package_status["verification_scope_group_count"] == 1
     assert package_status["safe_command_reason_counts"] == {"non_local_execution": 4, "provider_verification_required": 1}
     assert package_status["safe_command_reason_action_ids"]["provider_verification_required"] == ["publish"]
+    assert package_status["safe_command_reason_group_count"] == 2
     assert package_status["context_requirement_reason_counts"] == {}
+    assert package_status["context_requirement_reason_group_count"] == 0
+    assert package_status["action_provider_counts"] == {"npm": 2}
+    assert package_status["action_provider_action_ids"] == {"npm": ["inspect", "publish"]}
+    assert package_status["action_provider_group_count"] == 1
+    assert package_status["executable_name_counts"] == {"npm": 2}
+    assert package_status["executable_name_action_ids"] == {"npm": ["inspect", "publish"]}
+    assert package_status["executable_name_group_count"] == 1
     assert package_status["health"]["action_status_counts"] == package_status["action_status_counts"]
     assert package_status["health"]["safe_command_reason_action_ids"] == package_status["safe_command_reason_action_ids"]
+    assert package_status["health"]["provider_context_status_group_count"] == 2
+    assert package_status["health"]["action_provider_action_ids"] == {"npm": ["inspect", "publish"]}
+    assert package_status["health"]["executable_name_group_count"] == 1
 
     assert source_control["action_status_counts"] == {"available": 4, "needs_setup": 2}
+    assert source_control["action_status_group_count"] == 2
     assert source_control["execution_mode_counts"] == {"registry_state": 4, "unavailable": 2}
+    assert source_control["execution_mode_group_count"] == 2
     assert source_control["provider_support_mode_counts"] == {"registry_state": 4, "provider_specific": 2}
+    assert source_control["provider_support_mode_group_count"] == 2
     assert source_control["provider_context_status_counts"] == {"missing": 6}
+    assert source_control["provider_context_status_group_count"] == 1
     assert source_control["verification_scope_counts"] == {}
+    assert source_control["verification_scope_group_count"] == 0
     assert source_control["safe_command_reason_counts"] == {"non_local_execution": 6}
+    assert source_control["safe_command_reason_group_count"] == 1
     assert source_control["context_requirement_reason_counts"] == {"provider_context_missing": 2}
     assert source_control["context_requirement_reason_action_ids"] == {"provider_context_missing": ["search", "create"]}
+    assert source_control["context_requirement_reason_group_count"] == 1
+    assert source_control["action_provider_counts"] == {}
+    assert source_control["action_provider_group_count"] == 0
+    assert source_control["executable_name_counts"] == {}
+    assert source_control["executable_name_group_count"] == 0
     assert source_control["health"]["context_requirement_reason_counts"] == source_control["context_requirement_reason_counts"]
     assert source_control["health"]["provider_context_status_action_ids"] == source_control["provider_context_status_action_ids"]
+    assert source_control["health"]["safe_command_reason_group_count"] == 1
 
 
 def test_project_integrations_surface_action_mode_and_support_ids(monkeypatch, tmp_path) -> None:
