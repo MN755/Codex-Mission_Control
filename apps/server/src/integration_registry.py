@@ -1624,8 +1624,7 @@ def _git_remote_host_matches_provider(hostname: str, provider: str) -> bool:
     return provider in {"gitlab", "bitbucket"} and first_label == provider
 
 
-def _provider_command_template(provider: str, action_id: str) -> str | None:
-    commands: dict[str, dict[str, str]] = {
+PROVIDER_COMMANDS: dict[str, dict[str, str | None]] = {
         "github": {
             "search": "gh repo view --json name,defaultBranchRef,isPrivate,url",
             "create": "gh issue create --title {title_q} --body {body_q}",
@@ -2037,7 +2036,50 @@ def _provider_command_template(provider: str, action_id: str) -> str | None:
             "inspect": "supabase projects list",
         },
     }
-    return commands.get(provider, {}).get(action_id)
+
+
+def _provider_supports_action(provider: str, action_id: str) -> bool:
+    return action_id in PROVIDER_COMMANDS.get(provider, {})
+
+
+def _provider_command_template(provider: str, action_id: str) -> str | None:
+    return PROVIDER_COMMANDS.get(provider, {}).get(action_id)
+
+
+def _supported_providers_for_action(
+    family: IntegrationFamilyDefinition,
+    action: IntegrationActionDefinition,
+) -> list[str]:
+    return [provider for provider in family.providers if _provider_supports_action(provider, action.action_id)]
+
+
+def _action_support_mode(
+    family: IntegrationFamilyDefinition,
+    action: IntegrationActionDefinition,
+) -> str:
+    if action.action_id in {"import_host_state", "connect", "disconnect", "inspect_status"}:
+        return "registry_state"
+    if _supported_providers_for_action(family, action):
+        return "provider_specific"
+    if action.command_template:
+        return "family_default"
+    if family.providers:
+        return "guided_only"
+    return "unsupported"
+
+
+def _context_requirement_reason(
+    *,
+    family: IntegrationFamilyDefinition,
+    action: IntegrationActionDefinition,
+    resolved_provider: str | None,
+    supported_providers: list[str],
+) -> str | None:
+    if resolved_provider:
+        return None
+    if len(family.providers) > 1 and supported_providers:
+        return "provider_context_missing"
+    return None
 
 
 def _provider_hint_tokens(provider: str) -> list[str]:
@@ -2253,19 +2295,17 @@ def _resolve_provider_command(
         installed_clis=installed_clis,
         git_remote_url=git_remote_url,
     )
-    for provider in candidates:
+    supported_candidates = [provider for provider in candidates if _provider_supports_action(provider, action.action_id)]
+    for provider in supported_candidates:
         template = _provider_command_template(provider, action.action_id)
-        if not template:
-            continue
-        if _command_is_available(template):
+        if template and _command_is_available(template):
             return template, candidates, provider
-    for provider in candidates:
+    for provider in supported_candidates:
         template = _provider_command_template(provider, action.action_id)
-        if template:
-            return template, candidates, provider
+        return template, candidates, provider
     if candidates and len(family.providers) == 1 and action.command_template:
         return action.command_template, candidates, candidates[0]
-    return None, candidates, candidates[0] if candidates else None
+    return None, candidates, None
 
 
 def _provider_status_from_legacy(account: dict[str, Any]) -> str:
@@ -2632,6 +2672,8 @@ def build_project_integration_status(
                 installed_clis=installed_clis,
                 git_remote_url=git_remote_url,
             )
+            supported_providers = _supported_providers_for_action(family, action)
+            support_mode = _action_support_mode(family, action)
             action_metadata = _effective_action_metadata(action, action_provider)
             action_command_ready = bool(action_template and _command_is_available(action_template))
             action_required_params = _dedupe_strs(
@@ -2641,13 +2683,19 @@ def build_project_integration_status(
                 ]
             )
             execution_mode = _execution_mode(action_id=action.action_id, command_template=action_template, provider=action_provider)
-            context_required = bool(not action_provider and len(family.providers) > 1 and action.command_template)
-            suppressed_command_reason = "provider_context_missing" if context_required and not action_template else None
+            context_requirement_reason = _context_requirement_reason(
+                family=family,
+                action=action,
+                resolved_provider=action_provider,
+                supported_providers=supported_providers,
+            )
+            context_required = bool(context_requirement_reason)
+            suppressed_command_reason = context_requirement_reason if context_required and not action_template else None
             action_ready = bool(
                 action.action_id in {"import_host_state", "connect", "disconnect", "inspect_status"}
                 or (action_command_ready and has_context_signal)
                 or (
-                    not action_template
+                    execution_mode in {"guided_remote", "registry_state"}
                     and has_context_signal
                 )
             )
@@ -2667,7 +2715,12 @@ def build_project_integration_status(
                     "command_template": action_template,
                     "command_ready": action_command_ready,
                     "execution_mode": execution_mode,
+                    "provider_support_mode": support_mode,
+                    "supported_providers": supported_providers,
+                    "supported_provider_count": len(supported_providers),
+                    "provider_lane_resolved": bool(action_provider and (not supported_providers or action_provider in supported_providers)),
                     "context_required": context_required,
+                    "context_requirement_reason": context_requirement_reason,
                     "suppressed_command_reason": suppressed_command_reason,
                 }
             )
@@ -2686,6 +2739,12 @@ def build_project_integration_status(
             1
             for item in available_actions
             if item["status"] == "available" and item["execution_mode"] == "registry_state"
+        )
+        provider_specific_action_count = sum(
+            1 for item in available_actions if item["provider_support_mode"] == "provider_specific"
+        )
+        guided_only_action_count = sum(
+            1 for item in available_actions if item["provider_support_mode"] == "guided_only"
         )
         has_actionable_lane = available_action_count > registry_action_count
         has_provider_cli = not provider_cli_candidates or len(installed_provider_clis) == len(provider_cli_candidates)
@@ -2777,6 +2836,8 @@ def build_project_integration_status(
                 "local_action_count": local_action_count,
                 "guided_action_count": guided_action_count,
                 "registry_action_count": registry_action_count,
+                "provider_specific_action_count": provider_specific_action_count,
+                "guided_only_action_count": guided_only_action_count,
                 "health": {
                     "cli_detected": installed_clis,
                     "resolved_cli_detected": installed_provider_clis,
@@ -2915,6 +2976,8 @@ def preview_integration_action(
         provider=resolved_provider,
         cli_only_candidates_suppressed=cli_only_candidates_suppressed,
     )
+    supported_providers = _supported_providers_for_action(family, action)
+    support_mode = _action_support_mode(family, action)
     action_metadata = _effective_action_metadata(action, resolved_provider)
     effective_params = {
         **_provider_default_params(
@@ -2938,8 +3001,14 @@ def preview_integration_action(
             command = _format_command(command_template, effective_params)
     executable_available = bool(command and _command_is_available(command))
     execution_mode = _execution_mode(action_id=action.action_id, command_template=command_template, provider=resolved_provider)
-    context_required = bool(not resolved_provider and len(family.providers) > 1 and action.command_template)
-    suppressed_command_reason = "provider_context_missing" if context_required and not command_template else None
+    context_requirement_reason = _context_requirement_reason(
+        family=family,
+        action=action,
+        resolved_provider=resolved_provider,
+        supported_providers=supported_providers,
+    )
+    context_required = bool(context_requirement_reason)
+    suppressed_command_reason = context_requirement_reason if context_required and not command_template else None
     provider_guidance = _provider_guidance(resolved_provider, action.action_id) or _default_provider_guidance(
         provider=resolved_provider,
         action=action,
@@ -2979,10 +3048,15 @@ def preview_integration_action(
         "resolved_provider_evidence": dict(provider_signal_breakdown.get(resolved_provider) or {}),
         "cli_only_candidates_suppressed": cli_only_candidates_suppressed,
         "provider_resolution_state": provider_resolution_state,
+        "provider_support_mode": support_mode,
+        "supported_providers": supported_providers,
+        "supported_provider_count": len(supported_providers),
+        "provider_lane_resolved": bool(resolved_provider and (not supported_providers or resolved_provider in supported_providers)),
         "defaulted_params": {key: value for key, value in effective_params.items() if key not in params},
         "command_ready": executable_available,
         "execution_mode": execution_mode,
         "context_required": context_required,
+        "context_requirement_reason": context_requirement_reason,
         "context_available": bool(detected_files or token_hits or connection.get("host_imported") or _normalized_connection_status(connection.get("status")) == "connected"),
         "suppressed_command_reason": suppressed_command_reason,
         "provider_guidance": provider_guidance,
@@ -3030,15 +3104,6 @@ def execute_integration_action(
             "returncode": 0,
             "approval_required": False,
             "updated_registry": imported,
-        }
-    if preview["requires_confirmation"] and not confirmed:
-        return {
-            **preview,
-            "status": "approval_required",
-            "stdout": "",
-            "stderr": "Explicit confirmation is required for this mutating integration action.",
-            "returncode": None,
-            "approval_required": True,
         }
     if action.action_id == "connect":
         family = FAMILY_BY_ID[family_id]
@@ -3090,13 +3155,25 @@ def execute_integration_action(
         }
     if not preview.get("command"):
         guidance = _provider_guidance(str(preview.get("provider") or ""), action.action_id)
+        stderr = guidance or "No executable local command is defined for this action."
+        if preview.get("suppressed_command_reason") == "provider_context_missing":
+            stderr = "Mission Control needs real provider context for this provider-specific lane before it can preview or execute a concrete command."
         return {
             **preview,
             "status": "completed" if action.action_id == "connect" else "blocked",
             "stdout": "No executable local command is defined for this action." if action.action_id == "connect" else "",
-            "stderr": "" if action.action_id == "connect" else (guidance or "No executable local command is defined for this action."),
+            "stderr": "" if action.action_id == "connect" else stderr,
             "returncode": 0 if action.action_id == "connect" else None,
             "approval_required": False,
+        }
+    if preview["requires_confirmation"] and not confirmed:
+        return {
+            **preview,
+            "status": "approval_required",
+            "stdout": "",
+            "stderr": "Explicit confirmation is required for this mutating integration action.",
+            "returncode": None,
+            "approval_required": True,
         }
     if not _command_is_available(str(preview["command"])):
         return {

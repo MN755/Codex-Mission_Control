@@ -3115,6 +3115,7 @@ class DiagnosticReportListItemRead(BaseModel):
 ToolAvailability = Literal["available", "needs_setup", "experimental", "unsupported_on_device", "coming_soon"]
 ToolPermissionPolicy = Literal["ask_every_time", "ask_once_per_project", "allow_for_project", "never_allow"]
 IntegrationProviderResolutionState = Literal["resolved", "suppressed_cli_only", "unresolved"]
+IntegrationActionSupportMode = Literal["registry_state", "provider_specific", "family_default", "guided_only", "unsupported"]
 
 
 class ToolCatalogItemRead(BaseModel):
@@ -3143,7 +3144,12 @@ class IntegrationActionRead(BaseModel):
     command_template: str | None = None
     command_ready: bool = False
     execution_mode: str = "unavailable"
+    provider_support_mode: IntegrationActionSupportMode = "unsupported"
+    supported_providers: list[str] = Field(default_factory=list)
+    supported_provider_count: int = 0
+    provider_lane_resolved: bool = False
     context_required: bool = False
+    context_requirement_reason: str | None = None
     suppressed_command_reason: str | None = None
 
 
@@ -3201,6 +3207,8 @@ class ProjectIntegrationFamilyRead(BaseModel):
     local_action_count: int = 0
     guided_action_count: int = 0
     registry_action_count: int = 0
+    provider_specific_action_count: int = 0
+    guided_only_action_count: int = 0
     health: dict[str, Any] = Field(default_factory=dict)
     artifacts: list[dict[str, Any]] = Field(default_factory=list)
     safe_commands: list[str] = Field(default_factory=list)
@@ -3243,10 +3251,15 @@ class IntegrationActionPreviewRead(BaseModel):
     resolved_provider_evidence: dict[str, Any] = Field(default_factory=dict)
     cli_only_candidates_suppressed: list[str] = Field(default_factory=list)
     provider_resolution_state: IntegrationProviderResolutionState = "unresolved"
+    provider_support_mode: IntegrationActionSupportMode = "unsupported"
+    supported_providers: list[str] = Field(default_factory=list)
+    supported_provider_count: int = 0
+    provider_lane_resolved: bool = False
     defaulted_params: dict[str, Any] = Field(default_factory=dict)
     command_ready: bool = False
     execution_mode: str = "unavailable"
     context_required: bool = False
+    context_requirement_reason: str | None = None
     context_available: bool = False
     suppressed_command_reason: str | None = None
     provider_guidance: str | None = None

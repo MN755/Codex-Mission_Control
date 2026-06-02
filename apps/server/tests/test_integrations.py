@@ -89,6 +89,8 @@ def test_project_integrations_and_action_preview_flow(client, bridge_headers, mo
     assert families["containers"]["status"] == "ready"
     assert families["hosting_deploy"]["status"] == "ready"
     assert families["browser_testing"]["status"] == "ready"
+    assert families["source_control"]["provider_specific_action_count"] >= 2
+    assert families["source_control"]["guided_only_action_count"] == 0
 
     preview = client.post(
         f"/api/projects/{project_id}/integrations/source_control/actions/create/preview",
@@ -103,7 +105,12 @@ def test_project_integrations_and_action_preview_flow(client, bridge_headers, mo
     assert preview_payload["execution_mode"] == "local_cli"
     assert preview_payload["provider"] == "github"
     assert preview_payload["provider_resolution_state"] == "resolved"
+    assert preview_payload["provider_support_mode"] == "provider_specific"
+    assert preview_payload["supported_providers"] == ["github", "gitlab", "bitbucket"]
+    assert preview_payload["supported_provider_count"] == 3
+    assert preview_payload["provider_lane_resolved"] is True
     assert preview_payload["context_required"] is False
+    assert preview_payload["context_requirement_reason"] is None
     assert preview_payload["context_available"] is True
     assert preview_payload["suppressed_command_reason"] is None
     assert preview_payload["cli_only_candidates_suppressed"] == []
@@ -122,7 +129,12 @@ def test_project_integrations_and_action_preview_flow(client, bridge_headers, mo
     assert execute_payload["status"] == "approval_required"
     assert execute_payload["provider"] == "github"
     assert execute_payload["provider_resolution_state"] == "resolved"
+    assert execute_payload["provider_support_mode"] == "provider_specific"
+    assert execute_payload["supported_providers"] == ["github", "gitlab", "bitbucket"]
+    assert execute_payload["supported_provider_count"] == 3
+    assert execute_payload["provider_lane_resolved"] is True
     assert execute_payload["context_required"] is False
+    assert execute_payload["context_requirement_reason"] is None
     assert execute_payload["context_available"] is True
     assert execute_payload["suppressed_command_reason"] is None
     assert execute_payload["cli_only_candidates_suppressed"] == []
@@ -139,7 +151,7 @@ def test_project_integration_api_surfaces_context_suppression_metadata(client, b
     monkeypatch.setattr(
         "integration_registry.shutil.which",
         lambda command: f"C:/tools/{command}.exe"
-        if command in {"gh", "vercel", "supabase", "aws", "playwright", "gitleaks", "ollama", "stripe"}
+        if command in {"gh", "vercel", "supabase", "aws", "playwright", "gitleaks", "ollama", "stripe", "npm", "newman", "swagger-cli", "src", "sentry-cli", "chrome"}
         else None,
     )
 
@@ -163,9 +175,16 @@ def test_project_integration_api_surfaces_context_suppression_metadata(client, b
     payments = families["payments"]
     inspect_action = next(item for item in payments["available_actions"] if item["action_id"] == "inspect")
     assert payments["health"]["provider_resolution_state"] == "suppressed_cli_only"
+    assert payments["provider_specific_action_count"] >= 2
+    assert payments["guided_only_action_count"] == 0
     assert inspect_action["status"] == "needs_setup"
     assert inspect_action["command_template"] is None
+    assert inspect_action["provider_support_mode"] == "provider_specific"
+    assert inspect_action["supported_providers"] == ["stripe", "paddle", "lemon_squeezy", "paypal_sandbox"]
+    assert inspect_action["supported_provider_count"] == 4
+    assert inspect_action["provider_lane_resolved"] is False
     assert inspect_action["context_required"] is True
+    assert inspect_action["context_requirement_reason"] == "provider_context_missing"
     assert inspect_action["suppressed_command_reason"] == "provider_context_missing"
 
     preview = client.post(
@@ -180,7 +199,12 @@ def test_project_integration_api_surfaces_context_suppression_metadata(client, b
     assert preview_payload["command_ready"] is False
     assert preview_payload["execution_mode"] == "unavailable"
     assert preview_payload["provider_resolution_state"] == "suppressed_cli_only"
+    assert preview_payload["provider_support_mode"] == "provider_specific"
+    assert preview_payload["supported_providers"] == ["stripe", "paddle", "lemon_squeezy", "paypal_sandbox"]
+    assert preview_payload["supported_provider_count"] == 4
+    assert preview_payload["provider_lane_resolved"] is False
     assert preview_payload["context_required"] is True
+    assert preview_payload["context_requirement_reason"] == "provider_context_missing"
     assert preview_payload["context_available"] is False
     assert preview_payload["suppressed_command_reason"] == "provider_context_missing"
     assert preview_payload["provider_guidance"] is None
@@ -4987,7 +5011,7 @@ def test_provider_scoring_breakdown_and_preview_expose_suppressed_cli_only_candi
     assert sorted(preview["cli_only_candidates_suppressed"]) == ["docusaurus", "mintlify"]
 
 
-def test_preview_suppresses_family_default_commands_without_provider_context(monkeypatch, tmp_path) -> None:
+def test_preview_suppresses_family_default_and_provider_specific_commands_without_provider_context(monkeypatch, tmp_path) -> None:
     workspace = tmp_path / "plain-repo"
     workspace.mkdir(parents=True, exist_ok=True)
     (workspace / "README.md").write_text("plain repo\n", encoding="utf-8")
@@ -4995,21 +5019,40 @@ def test_preview_suppresses_family_default_commands_without_provider_context(mon
     monkeypatch.setattr(
         "integration_registry.shutil.which",
         lambda command: f"C:/tools/{command}.exe"
-        if command in {"gh", "vercel", "supabase", "aws", "playwright", "gitleaks", "ollama", "stripe"}
+        if command in {"gh", "vercel", "supabase", "aws", "playwright", "gitleaks", "ollama", "stripe", "npm", "newman", "swagger-cli", "src", "sentry-cli", "chrome", "release-please"}
         else None,
     )
 
     cases = [
-        ("source_control", "search"),
-        ("hosting_deploy", "inspect"),
-        ("database_platforms", "inspect"),
-        ("cloud_platforms", "inspect"),
-        ("browser_testing", "validate"),
-        ("security_scanners", "scan"),
-        ("local_model_runtimes", "inspect"),
-        ("payments", "inspect"),
+        ("source_control", "search", "provider_specific", ["github", "gitlab", "bitbucket"]),
+        ("hosting_deploy", "inspect", "provider_specific", ["vercel", "netlify", "cloudflare_pages", "railway", "render"]),
+        ("database_platforms", "inspect", "provider_specific", ["supabase", "firebase", "neon", "planetscale"]),
+        ("cloud_platforms", "inspect", "provider_specific", ["aws", "azure", "gcp"]),
+        ("browser_testing", "validate", "provider_specific", ["playwright", "cypress"]),
+        ("security_scanners", "scan", "provider_specific", ["dependabot", "gitleaks", "codeql", "snyk", "semgrep", "trivy"]),
+        ("local_model_runtimes", "inspect", "provider_specific", ["ollama", "vllm", "lm_studio"]),
+        ("payments", "inspect", "provider_specific", ["stripe", "paddle", "lemon_squeezy", "paypal_sandbox"]),
+        ("hosting_deploy", "tail_logs", "provider_specific", ["cloudflare_pages", "railway", "render"]),
+        ("observability", "tail", "provider_specific", ["sentry", "logrocket", "datadog"]),
+        ("docs_systems", "sync", "provider_specific", ["notion", "confluence", "docusaurus"]),
+        ("cloud_platforms", "open", "provider_specific", ["aws", "azure", "gcp"]),
+        ("api_clients", "inspect", "provider_specific", ["postman", "insomnia", "bruno"]),
+        ("api_clients", "validate", "provider_specific", ["postman", "insomnia", "bruno"]),
+        ("openapi", "inspect", "provider_specific", ["openapi", "swagger"]),
+        ("openapi", "validate", "provider_specific", ["openapi", "swagger"]),
+        ("package_registries", "inspect", "provider_specific", ["npm", "pypi", "maven", "crates", "nuget", "rubygems", "docker_hub"]),
+        ("package_registries", "publish", "provider_specific", ["npm", "pypi", "maven", "crates", "nuget", "rubygems", "docker_hub"]),
+        ("local_model_runtimes", "open", "provider_specific", ["ollama", "vllm", "lm_studio"]),
+        ("code_search", "search", "provider_specific", ["sourcegraph", "opengrok", "zoekt"]),
+        ("browser_devtools", "inspect", "provider_specific", ["chrome_devtools", "cdp"]),
+        ("browser_devtools", "open", "provider_specific", ["chrome_devtools", "cdp"]),
+        ("payments", "create", "provider_specific", ["stripe", "paddle", "lemon_squeezy", "paypal_sandbox"]),
+        ("auth_providers", "inspect", "provider_specific", ["auth0", "clerk", "workos", "okta", "firebase_auth", "supabase_auth"]),
+        ("secrets", "inspect", "provider_specific", ["onepassword", "doppler", "vault", "aws_secrets_manager", "gcp_secret_manager"]),
+        ("release_management", "draft", "provider_specific", ["release_please", "changesets", "semantic_release", "github_releases", "launchnotes"]),
+        ("release_management", "create", "provider_specific", ["release_please", "changesets", "semantic_release", "github_releases", "launchnotes"]),
     ]
-    for family_id, action_id in cases:
+    for family_id, action_id, support_mode, supported in cases:
         preview = preview_integration_action(
             family_id=family_id,
             action_id=action_id,
@@ -5024,19 +5067,24 @@ def test_preview_suppresses_family_default_commands_without_provider_context(mon
         assert preview["execution_mode"] == "unavailable"
         assert preview["provider_resolution_state"] == "suppressed_cli_only"
         assert preview["context_required"] is True
+        assert preview["context_requirement_reason"] == "provider_context_missing"
         assert preview["context_available"] is False
         assert preview["suppressed_command_reason"] == "provider_context_missing"
+        assert preview["provider_support_mode"] == support_mode
+        assert sorted(preview["supported_providers"]) == sorted(supported)
+        assert preview["supported_provider_count"] == len(supported)
+        assert preview["provider_lane_resolved"] is False
         assert any("suppressed until mission control has real provider context" in note.lower() for note in preview["notes"])
 
 
-def test_project_integrations_surface_context_required_when_provider_context_is_missing(monkeypatch, tmp_path) -> None:
+def test_project_integrations_surface_context_required_for_provider_specific_actions_when_provider_context_is_missing(monkeypatch, tmp_path) -> None:
     workspace = tmp_path / "plain-status"
     workspace.mkdir(parents=True, exist_ok=True)
     (workspace / "README.md").write_text("plain repo\n", encoding="utf-8")
 
     monkeypatch.setattr(
         "integration_registry.shutil.which",
-        lambda command: f"C:/tools/{command}.exe" if command in {"gh", "vercel", "supabase", "aws"} else None,
+        lambda command: f"C:/tools/{command}.exe" if command in {"gh", "vercel", "supabase", "aws", "newman", "chrome", "stripe", "release-please"} else None,
     )
 
     statuses = {
@@ -5048,11 +5096,15 @@ def test_project_integrations_surface_context_required_when_provider_context_is_
         )
     }
 
-    for family_id, action_id in (
-        ("source_control", "search"),
-        ("hosting_deploy", "inspect"),
-        ("database_platforms", "inspect"),
-        ("cloud_platforms", "inspect"),
+    for family_id, action_id, support_mode, supported in (
+        ("source_control", "search", "provider_specific", ["github", "gitlab", "bitbucket"]),
+        ("hosting_deploy", "inspect", "provider_specific", ["vercel", "netlify", "cloudflare_pages", "railway", "render"]),
+        ("database_platforms", "inspect", "provider_specific", ["supabase", "firebase", "neon", "planetscale"]),
+        ("cloud_platforms", "inspect", "provider_specific", ["aws", "azure", "gcp"]),
+        ("api_clients", "inspect", "provider_specific", ["postman", "insomnia", "bruno"]),
+        ("browser_devtools", "inspect", "provider_specific", ["chrome_devtools", "cdp"]),
+        ("payments", "create", "provider_specific", ["stripe", "paddle", "lemon_squeezy", "paypal_sandbox"]),
+        ("release_management", "draft", "provider_specific", ["release_please", "changesets", "semantic_release", "github_releases", "launchnotes"]),
     ):
         status = statuses[family_id]
         action = next(item for item in status["available_actions"] if item["action_id"] == action_id)
@@ -5060,4 +5112,112 @@ def test_project_integrations_surface_context_required_when_provider_context_is_
         assert action["status"] == "needs_setup"
         assert action["command_template"] is None
         assert action["context_required"] is True
+        assert action["context_requirement_reason"] == "provider_context_missing"
+        assert action["suppressed_command_reason"] == "provider_context_missing"
+        assert action["provider_support_mode"] == support_mode
+        assert sorted(action["supported_providers"]) == sorted(supported)
+        assert action["supported_provider_count"] == len(supported)
+        assert action["provider_lane_resolved"] is False
+
+
+def test_execute_integration_action_reports_provider_context_block_for_provider_specific_lanes(monkeypatch, tmp_path) -> None:
+    workspace = tmp_path / "plain-execute"
+    workspace.mkdir(parents=True, exist_ok=True)
+    (workspace / "README.md").write_text("plain repo\n", encoding="utf-8")
+
+    monkeypatch.setattr(
+        "integration_registry.shutil.which",
+        lambda command: f"C:/tools/{command}.exe" if command in {"newman", "stripe", "release-please"} else None,
+    )
+
+    for family_id, action_id in (
+        ("api_clients", "inspect"),
+        ("payments", "create"),
+        ("release_management", "draft"),
+    ):
+        result = execute_integration_action(
+            family_id=family_id,
+            action_id=action_id,
+            params={"name": "Test User"} if family_id == "payments" else {},
+            registry_payload=normalize_integration_registry({}, {}),
+            workspace_path=str(workspace),
+            project_name="Plain Execute Demo",
+            confirmed=False,
+        )
+        assert result["status"] == "blocked"
+        assert result["command"] is None
+        assert result["provider"] is None
+        assert result["context_required"] is True
+        assert result["context_requirement_reason"] == "provider_context_missing"
+        assert result["suppressed_command_reason"] == "provider_context_missing"
+        assert "needs real provider context" in result["stderr"].lower()
+
+
+def test_provider_specific_actions_stay_needs_setup_when_only_family_level_context_exists(monkeypatch, tmp_path) -> None:
+    workspace = tmp_path / "family-context-only"
+    workspace.mkdir(parents=True, exist_ok=True)
+    (workspace / "README.md").write_text("project context exists but no provider identity\n", encoding="utf-8")
+
+    monkeypatch.setattr(
+        "integration_registry.shutil.which",
+        lambda command: f"C:/tools/{command}.exe" if command in {"newman", "chrome", "stripe", "release-please"} else None,
+    )
+
+    registry = normalize_integration_registry(
+        {
+            "connections": {
+                "api_clients": {
+                    "family": "api_clients",
+                    "status": "partial",
+                    "providers": [],
+                    "connection_source": "manual",
+                    "host_imported": False,
+                },
+                "browser_devtools": {
+                    "family": "browser_devtools",
+                    "status": "partial",
+                    "providers": [],
+                    "connection_source": "manual",
+                    "host_imported": False,
+                },
+                "payments": {
+                    "family": "payments",
+                    "status": "partial",
+                    "providers": [],
+                    "connection_source": "manual",
+                    "host_imported": False,
+                },
+                "release_management": {
+                    "family": "release_management",
+                    "status": "partial",
+                    "providers": [],
+                    "connection_source": "manual",
+                    "host_imported": False,
+                },
+            }
+        },
+        {},
+    )
+
+    statuses = {
+        item["family"]: item
+        for item in build_project_integration_status(
+            workspace_path=str(workspace),
+            project_name="Family Context Demo",
+            registry_payload=registry,
+        )
+    }
+
+    for family_id, action_id in (
+        ("api_clients", "inspect"),
+        ("browser_devtools", "inspect"),
+        ("payments", "create"),
+        ("release_management", "draft"),
+    ):
+        action = next(item for item in statuses[family_id]["available_actions"] if item["action_id"] == action_id)
+        assert action["status"] == "needs_setup"
+        assert action["command_template"] is None
+        assert action["execution_mode"] == "unavailable"
+        assert action["context_required"] is True
+        assert action["context_requirement_reason"] == "provider_context_missing"
         assert action["suppressed_command_reason"] == "provider_context_missing"
