@@ -47,6 +47,7 @@ PROVIDER_CLIS: dict[str, tuple[str, ...]] = {
     "linear": (),
     "docker": ("docker",),
     "devcontainer": ("devcontainer",),
+    "opentofu": ("tofu",),
     "github_actions": ("gh",),
     "gitlab_ci": ("glab",),
     "bitbucket_pipelines": (),
@@ -59,6 +60,7 @@ PROVIDER_CLIS: dict[str, tuple[str, ...]] = {
     "render": ("render",),
     "storybook": ("npm",),
     "mintlify": ("mintlify",),
+    "docusaurus": ("npm",),
     "terraform": ("terraform",),
     "aws": ("aws",),
     "azure": ("az",),
@@ -78,6 +80,8 @@ PROVIDER_CLIS: dict[str, tuple[str, ...]] = {
     "neon": ("neon",),
     "planetscale": ("pscale",),
     "kubernetes": ("kubectl",),
+    "changesets": ("changeset",),
+    "github_releases": ("gh",),
     "release_please": ("release-please",),
     "semantic_release": ("semantic-release",),
     "bruno": ("bru",),
@@ -301,6 +305,12 @@ PROVIDER_ACTION_GUIDANCE: dict[str, dict[str, str]] = {
         "tail_logs": "Bitbucket pipeline log tails currently require a host-integrated or API-backed adapter lane.",
         "rerun": "Bitbucket reruns currently require a host-integrated or API-backed adapter lane.",
     },
+    "circleci": {
+        "inspect": "CircleCI inspection uses the local CLI when available and validates the current pipeline config rather than pretending the repo alone proves a live CI session.",
+    },
+    "buildkite": {
+        "inspect": "Buildkite inspection uses the local agent tooling when available and validates the current pipeline config rather than pretending the repo alone proves a live CI session.",
+    },
     "render": {
         "deploy": "Render deploys support the official Render CLI, but you still need a concrete service identifier before Mission Control should attempt to trigger anything.",
     },
@@ -332,9 +342,25 @@ PROVIDER_ACTION_GUIDANCE: dict[str, dict[str, str]] = {
         "inspect": "Mintlify inspection uses the local CLI when available, but it still reflects the current docs workspace and CLI environment rather than a static repo promise.",
         "sync": "Mintlify sync should use the verified local docs CLI or a host-backed publishing lane instead of pretending the repo alone proves a live docs session.",
     },
+    "postman": {
+        "inspect": "Postman inspection uses the Newman CLI when available and reflects the current local collection/runtime environment rather than a repo hint.",
+        "validate": "Postman validation uses the Newman CLI when available and runs the current collection state rather than a static registry hint.",
+    },
+    "insomnia": {
+        "inspect": "Insomnia inspection uses the Inso CLI when available and reflects the current local collection/runtime environment rather than a repo hint.",
+        "validate": "Insomnia validation uses the Inso CLI when available and runs the current collection state rather than a static registry hint.",
+    },
+    "bruno": {
+        "inspect": "Bruno inspection uses the local CLI when available and reflects the current request collection/runtime environment rather than a repo hint.",
+        "validate": "Bruno validation uses the local CLI when available and runs the current collection state rather than a static registry hint.",
+    },
     "terraform": {
         "validate": "Terraform validation uses the local CLI when available, but it still reflects the current workspace and provider configuration rather than repo hints alone.",
         "deploy": "Terraform apply uses the local CLI when available and still mutates live infrastructure state, so approvals remain mandatory.",
+    },
+    "opentofu": {
+        "validate": "OpenTofu validation uses the local CLI when available, but it still reflects the current workspace and provider configuration rather than repo hints alone.",
+        "deploy": "OpenTofu apply uses the local CLI when available and still mutates live infrastructure state, so approvals remain mandatory.",
     },
     "aws": {
         "inspect": "AWS inspection uses live CLI auth and reflects the active cloud account context rather than repo-local proof.",
@@ -526,6 +552,15 @@ PROVIDER_ACTION_GUIDANCE: dict[str, dict[str, str]] = {
     "docusaurus": {
         "inspect": "Docusaurus inspection uses the local CLI when available and reflects the current docs workspace rather than repo hints alone.",
         "sync": "Docusaurus sync currently builds local docs artifacts through the local CLI; it does not claim a live remote publish by itself.",
+    },
+    "devcontainer": {
+        "inspect": "Dev Containers inspection uses the local CLI when available and reflects the current workspace/container definition rather than repo hints alone.",
+        "validate": "Dev Containers validation uses the local CLI when available and reads the current workspace/container definition rather than a static registry hint.",
+        "open": "Dev Containers startup uses the local CLI when available and changes local runtime state, not remote provider state.",
+    },
+    "docker": {
+        "inspect": "Docker inspection uses the local CLI when available and reflects the current local engine/runtime state rather than repo hints alone.",
+        "validate": "Docker validation uses the local CLI when available and reflects the current local runtime availability rather than repo hints alone.",
     },
     "stripe": {
         "inspect": "Stripe inspection uses the local CLI when available, but it still reflects live sandbox/auth state rather than repo-local proof.",
@@ -1318,9 +1353,12 @@ def _provider_display_name(provider: str | None) -> str:
     if not provider_id:
         return "This provider"
     display_names = {
+        "gitlab": "GitLab",
         "github_actions": "GitHub Actions",
+        "circleci": "CircleCI",
         "gitlab_ci": "GitLab CI",
         "bitbucket_pipelines": "Bitbucket Pipelines",
+        "opentofu": "OpenTofu",
         "cloudflare_pages": "Cloudflare Pages",
         "github_issues": "GitHub Issues",
         "github_releases": "GitHub Releases",
@@ -1329,6 +1367,7 @@ def _provider_display_name(provider: str | None) -> str:
         "codeql": "CodeQL",
         "chrome_devtools": "Chrome DevTools",
         "cdp": "Chrome DevTools Protocol",
+        "auth0": "Auth0",
         "npm": "npm",
         "pypi": "PyPI",
         "crates": "crates.io",
@@ -1340,6 +1379,8 @@ def _provider_display_name(provider: str | None) -> str:
         "posthog_feature_flags": "PostHog Feature Flags",
         "lemon_squeezy": "Lemon Squeezy",
         "lm_studio": "LM Studio",
+        "sourcegraph": "Sourcegraph",
+        "vllm": "vLLM",
     }
     return display_names.get(provider_id, provider_id.replace("_", " ").title())
 
@@ -1843,15 +1884,25 @@ def _provider_command_template(provider: str, action_id: str) -> str | None:
     return commands.get(provider, {}).get(action_id)
 
 
+def _provider_hint_tokens(provider: str) -> list[str]:
+    tokens = {
+        provider.lower(),
+        provider.replace("_", " ").lower(),
+        *[token.lower() for token in PROVIDER_CLIS.get(provider, ()) if len(token) >= 3],
+        *[
+            token.lower()
+            for token in PROVIDER_TOKEN_MARKERS.get(provider, ())
+            if len(token) >= 3 or " " in token or any(char.isdigit() for char in token)
+        ],
+    }
+    return _dedupe_strs([token for token in tokens if token])
+
+
 def _provider_hints_for_paths(family: IntegrationFamilyDefinition, matched_paths: list[str]) -> list[str]:
     lowered_paths = [item.lower() for item in matched_paths]
     hints: list[str] = []
     for provider in family.providers:
-        provider_tokens = {
-            provider.lower(),
-            provider.replace("_", " ").lower(),
-            *[token.lower() for token in PROVIDER_CLIS.get(provider, ())],
-        }
+        provider_tokens = _provider_hint_tokens(provider)
         if any(token and token in path for path in lowered_paths for token in provider_tokens):
             hints.append(provider)
     return _dedupe_strs(hints or [provider for provider in family.providers if provider])

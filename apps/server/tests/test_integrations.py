@@ -2010,7 +2010,7 @@ def test_default_provider_guidance_surfaces_for_validation_and_search_lanes(monk
         project_name="Sourcegraph Guidance Demo",
     )
 
-    assert any("evaluates the current repo or runtime state" in note.lower() for note in postman_preview["notes"])
+    assert any("runs the current collection state" in note.lower() for note in postman_preview["notes"])
     assert any("live indexed search state" in note.lower() for note in sourcegraph_preview["notes"])
 
 
@@ -4324,3 +4324,166 @@ def test_project_integrations_surface_effective_action_metadata(monkeypatch, tmp
     assert postman_validate["provider"] == "postman"
     assert postman_validate["risk_level"] == "low"
     assert postman_validate["permission_policy"] == "ask_once_per_project"
+    assert postman_validate["requires_confirmation"] is False
+    assert postman_validate["mutates_remote_state"] is False
+
+
+def test_import_host_state_uses_alias_aware_provider_hints(monkeypatch, tmp_path) -> None:
+    codex_root = tmp_path / "codex-host"
+    claude_root = tmp_path / "claude-host"
+    for rel in [
+        "launch darkly/project.json",
+        "new relic/account.json",
+        "github releases/config.json",
+        "helpscout/mailbox.json",
+        "lmstudio/models.json",
+        "lemon squeezy/store.json",
+    ]:
+        path = codex_root / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(
+        "integration_registry._host_scan_roots",
+        lambda: {"codex": [codex_root], "claude_code": [claude_root]},
+    )
+
+    registry = import_host_state(None)
+    connections = registry["connections"]
+
+    assert connections["feature_flags"]["providers"] == ["launchdarkly"]
+    assert connections["observability"]["providers"] == ["new_relic"]
+    assert connections["release_management"]["providers"] == ["github_releases"]
+    assert connections["support_desk"]["providers"] == ["help_scout"]
+    assert connections["local_model_runtimes"]["providers"] == ["lm_studio"]
+    assert connections["payments"]["providers"] == ["lemon_squeezy"]
+
+
+def test_project_integrations_expose_missing_provider_cli_metadata_for_release_docs_and_tofu(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(
+        "integration_registry.shutil.which",
+        lambda command: f"C:/tools/{command}.exe" if command in {"changeset", "gh", "npm", "tofu"} else None,
+    )
+
+    changesets_root = tmp_path / "changesets"
+    (changesets_root / ".changeset").mkdir(parents=True, exist_ok=True)
+    (changesets_root / ".changeset" / "config.json").write_text("{}", encoding="utf-8")
+    changesets_statuses = build_project_integration_status(
+        workspace_path=str(changesets_root),
+        project_name="changesets-demo",
+        registry_payload=None,
+    )
+    changesets_status = next(item for item in changesets_statuses if item["family"] == "release_management")
+    assert changesets_status["resolved_provider"] == "changesets"
+    assert changesets_status["resolved_cli_candidates"] == ["changeset"]
+    assert changesets_status["health"]["resolved_cli_detected"] == ["changeset"]
+
+    releases_root = tmp_path / "github-releases"
+    releases_root.mkdir(parents=True, exist_ok=True)
+    (releases_root / "README.md").write_text("github releases\n", encoding="utf-8")
+    releases_statuses = build_project_integration_status(
+        workspace_path=str(releases_root),
+        project_name="github-releases-demo",
+        registry_payload=None,
+    )
+    releases_status = next(item for item in releases_statuses if item["family"] == "release_management")
+    assert releases_status["resolved_provider"] == "github_releases"
+    assert releases_status["resolved_cli_candidates"] == ["gh"]
+    assert releases_status["health"]["resolved_cli_detected"] == ["gh"]
+
+    docusaurus_root = tmp_path / "docusaurus"
+    docusaurus_root.mkdir(parents=True, exist_ok=True)
+    (docusaurus_root / "docusaurus.config.js").write_text("export default {};\n", encoding="utf-8")
+    docusaurus_statuses = build_project_integration_status(
+        workspace_path=str(docusaurus_root),
+        project_name="docusaurus-demo",
+        registry_payload=None,
+    )
+    docusaurus_status = next(item for item in docusaurus_statuses if item["family"] == "docs_systems")
+    assert docusaurus_status["resolved_provider"] == "docusaurus"
+    assert docusaurus_status["resolved_cli_candidates"] == ["npm"]
+    assert docusaurus_status["health"]["resolved_cli_detected"] == ["npm"]
+
+    tofu_root = tmp_path / "tofu"
+    tofu_root.mkdir(parents=True, exist_ok=True)
+    (tofu_root / "tofu.hcl").write_text("terraform {}\n", encoding="utf-8")
+    tofu_statuses = build_project_integration_status(
+        workspace_path=str(tofu_root),
+        project_name="tofu-demo",
+        registry_payload=None,
+    )
+    tofu_status = next(item for item in tofu_statuses if item["family"] == "terraform")
+    assert tofu_status["resolved_provider"] == "opentofu"
+    assert tofu_status["resolved_cli_candidates"] == ["tofu"]
+    assert tofu_status["health"]["resolved_cli_detected"] == ["tofu"]
+
+
+def test_provider_specific_preview_surfaces_ci_collection_and_tofu_guidance(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(
+        "integration_registry.shutil.which",
+        lambda command: f"C:/tools/{command}.exe"
+        if command in {"circleci", "buildkite-agent", "newman", "inso", "bru", "tofu"}
+        else None,
+    )
+
+    circle_root = tmp_path / "circle"
+    (circle_root / ".circleci").mkdir(parents=True, exist_ok=True)
+    (circle_root / ".circleci" / "config.yml").write_text("version: 2.1\n", encoding="utf-8")
+    circle_preview = preview_integration_action(
+        family_id="ci_cd",
+        action_id="inspect",
+        params={},
+        registry_payload=None,
+        workspace_path=str(circle_root),
+        project_name="circle-demo",
+    )
+    assert "CircleCI" in circle_preview["provider_guidance"]
+    assert circle_preview["provider_guidance"] == circle_preview["notes"][-1]
+
+    buildkite_root = tmp_path / "buildkite"
+    (buildkite_root / ".buildkite").mkdir(parents=True, exist_ok=True)
+    (buildkite_root / ".buildkite" / "pipeline.yml").write_text("steps: []\n", encoding="utf-8")
+    buildkite_preview = preview_integration_action(
+        family_id="ci_cd",
+        action_id="inspect",
+        params={},
+        registry_payload=None,
+        workspace_path=str(buildkite_root),
+        project_name="buildkite-demo",
+    )
+    assert "Buildkite" in buildkite_preview["provider_guidance"]
+    assert buildkite_preview["provider_guidance"] == buildkite_preview["notes"][-1]
+
+    collection_cases = [
+        ("postman", "postman.json", "Postman"),
+        ("insomnia", ".insomnia/workspace.json", "Insomnia"),
+        ("bruno", "bruno.json", "Bruno"),
+    ]
+    for provider, relpath, brand in collection_cases:
+        root = tmp_path / provider
+        path = root / relpath
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("{}", encoding="utf-8")
+        preview = preview_integration_action(
+            family_id="api_clients",
+            action_id="validate",
+            params={},
+            registry_payload=None,
+            workspace_path=str(root),
+            project_name=f"{provider}-demo",
+        )
+        assert brand in preview["provider_guidance"]
+        assert preview["provider_guidance"] == preview["notes"][-1]
+
+    tofu_root = tmp_path / "opentofu"
+    tofu_root.mkdir(parents=True, exist_ok=True)
+    (tofu_root / "tofu.hcl").write_text("terraform {}\n", encoding="utf-8")
+    tofu_preview = preview_integration_action(
+        family_id="terraform",
+        action_id="validate",
+        params={},
+        registry_payload=None,
+        workspace_path=str(tofu_root),
+        project_name="tofu-preview",
+    )
+    assert "OpenTofu" in tofu_preview["provider_guidance"]
+    assert tofu_preview["provider_guidance"] == tofu_preview["notes"][-1]
