@@ -3269,9 +3269,14 @@ class IntegrationActionPreviewRead(BaseModel):
     provider_context_status: IntegrationProviderContextStatus = "missing"
     provider_verification_required: bool = False
     provider_verification_reason: str | None = None
+    executable_name: str | None = None
     defaulted_params: dict[str, Any] = Field(default_factory=dict)
     command_ready: bool = False
     execution_mode: str = "unavailable"
+    execution_block_reason: str | None = None
+    preflight_ready: bool = False
+    confirmation_eligible: bool = False
+    ready_to_execute: bool = False
     context_required: bool = False
     context_requirement_reason: str | None = None
     context_available: bool = False

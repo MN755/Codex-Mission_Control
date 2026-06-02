@@ -1498,6 +1498,28 @@ def _command_is_available(command: str) -> bool:
     return shutil.which(executable) is not None
 
 
+def _execution_block_reason(
+    *,
+    missing_params: list[str],
+    provider_verification_required: bool,
+    suppressed_command_reason: str | None,
+    execution_mode: str,
+    command: str | None,
+    executable_available: bool,
+) -> str | None:
+    if missing_params:
+        return "missing_params"
+    if provider_verification_required:
+        return "provider_verification_required"
+    if suppressed_command_reason:
+        return suppressed_command_reason
+    if not command and execution_mode == "guided_remote":
+        return "no_local_command"
+    if command and not executable_available:
+        return "missing_executable"
+    return None
+
+
 def _provider_extra_required_params(provider: str | None, action_id: str) -> tuple[str, ...]:
     if not provider:
         return ()
@@ -3191,6 +3213,7 @@ def preview_integration_action(
         else:
             command = _format_command(command_template, effective_params)
     executable_available = bool(command and _command_is_available(command))
+    executable_name = _command_executable_name(command or command_template or "")
     execution_mode = _execution_mode(action_id=action.action_id, command_template=command_template, provider=resolved_provider)
     provider_verification_reason = _provider_verification_reason(
         action_metadata=action_metadata,
@@ -3214,6 +3237,17 @@ def preview_integration_action(
         action_metadata=action_metadata,
         command_template=command_template,
     )
+    execution_block_reason = _execution_block_reason(
+        missing_params=missing,
+        provider_verification_required=provider_verification_required,
+        suppressed_command_reason=suppressed_command_reason,
+        execution_mode=execution_mode,
+        command=command,
+        executable_available=executable_available,
+    )
+    preflight_ready = execution_block_reason is None
+    confirmation_eligible = bool(preflight_ready and action_metadata["requires_confirmation"])
+    ready_to_execute = bool(preflight_ready and not action_metadata["requires_confirmation"])
     notes = [
         "Mission Control previews the action before execution so approvals are tied to a concrete command or host import step.",
         "Local execution stays shell-free and only runs when the previewed executable is actually present.",
@@ -3260,9 +3294,14 @@ def preview_integration_action(
         "provider_context_status": provider_context_status,
         "provider_verification_required": provider_verification_required,
         "provider_verification_reason": provider_verification_reason,
+        "executable_name": executable_name,
         "defaulted_params": {key: value for key, value in effective_params.items() if key not in params},
         "command_ready": executable_available,
         "execution_mode": execution_mode,
+        "execution_block_reason": execution_block_reason,
+        "preflight_ready": preflight_ready,
+        "confirmation_eligible": confirmation_eligible,
+        "ready_to_execute": ready_to_execute,
         "context_required": context_required,
         "context_requirement_reason": context_requirement_reason,
         "context_available": bool(has_workspace_signal or has_host_import or connection_status == "connected"),
@@ -3298,7 +3337,7 @@ def execute_integration_action(
             **preview,
             "status": "blocked",
             "stdout": "",
-            "stderr": "",
+            "stderr": f"Missing required parameters for this integration action: {', '.join(preview['missing_params'])}.",
             "returncode": None,
             "approval_required": False,
         }
@@ -3370,6 +3409,15 @@ def execute_integration_action(
             "returncode": None,
             "approval_required": False,
         }
+    if preview.get("execution_block_reason") == "missing_executable":
+        return {
+            **preview,
+            "status": "blocked",
+            "stdout": "",
+            "stderr": "The previewed executable is not available on PATH for this environment.",
+            "returncode": None,
+            "approval_required": False,
+        }
     if not preview.get("command"):
         guidance = _provider_guidance(str(preview.get("provider") or ""), action.action_id)
         stderr = guidance or "No executable local command is defined for this action."
@@ -3391,15 +3439,6 @@ def execute_integration_action(
             "stderr": "Explicit confirmation is required for this mutating integration action.",
             "returncode": None,
             "approval_required": True,
-        }
-    if not _command_is_available(str(preview["command"])):
-        return {
-            **preview,
-            "status": "blocked",
-            "stdout": "",
-            "stderr": "The previewed executable is not available on PATH for this environment.",
-            "returncode": None,
-            "approval_required": False,
         }
     try:
         completed = subprocess.run(

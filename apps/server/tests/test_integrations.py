@@ -114,6 +114,11 @@ def test_project_integrations_and_action_preview_flow(client, bridge_headers, mo
     assert preview_payload["provider_context_status"] == "inferred"
     assert preview_payload["provider_verification_required"] is False
     assert preview_payload["provider_verification_reason"] is None
+    assert preview_payload["executable_name"] == "gh"
+    assert preview_payload["execution_block_reason"] is None
+    assert preview_payload["preflight_ready"] is True
+    assert preview_payload["confirmation_eligible"] is True
+    assert preview_payload["ready_to_execute"] is False
     assert preview_payload["context_required"] is False
     assert preview_payload["context_requirement_reason"] is None
     assert preview_payload["context_available"] is True
@@ -143,6 +148,11 @@ def test_project_integrations_and_action_preview_flow(client, bridge_headers, mo
     assert execute_payload["provider_context_status"] == "inferred"
     assert execute_payload["provider_verification_required"] is False
     assert execute_payload["provider_verification_reason"] is None
+    assert execute_payload["executable_name"] == "gh"
+    assert execute_payload["execution_block_reason"] is None
+    assert execute_payload["preflight_ready"] is True
+    assert execute_payload["confirmation_eligible"] is True
+    assert execute_payload["ready_to_execute"] is False
     assert execute_payload["context_required"] is False
     assert execute_payload["context_requirement_reason"] is None
     assert execute_payload["context_available"] is True
@@ -231,6 +241,10 @@ def test_project_integration_api_surfaces_context_suppression_metadata(client, b
     assert preview_payload["provider_context_status"] == "missing"
     assert preview_payload["provider_verification_required"] is False
     assert preview_payload["provider_verification_reason"] is None
+    assert preview_payload["execution_block_reason"] == "provider_context_missing"
+    assert preview_payload["preflight_ready"] is False
+    assert preview_payload["confirmation_eligible"] is False
+    assert preview_payload["ready_to_execute"] is False
     assert preview_payload["context_required"] is True
     assert preview_payload["context_requirement_reason"] == "provider_context_missing"
     assert preview_payload["context_available"] is False
@@ -5175,6 +5189,10 @@ def test_execute_integration_action_reports_provider_context_block_for_provider_
         assert result["status"] == "blocked"
         assert result["command"] is None
         assert result["provider"] is None
+        assert result["execution_block_reason"] == "provider_context_missing"
+        assert result["preflight_ready"] is False
+        assert result["confirmation_eligible"] is False
+        assert result["ready_to_execute"] is False
         assert result["context_required"] is True
         assert result["context_requirement_reason"] == "provider_context_missing"
         assert result["suppressed_command_reason"] == "provider_context_missing"
@@ -5496,6 +5514,10 @@ def test_preview_and_execute_surface_provider_verification_requirement_for_guide
         assert preview["provider_context_status"] == "inferred"
         assert preview["provider_verification_required"] is True
         assert preview["provider_verification_reason"] == "provider_verification_required"
+        assert preview["execution_block_reason"] == "provider_verification_required"
+        assert preview["preflight_ready"] is False
+        assert preview["confirmation_eligible"] is False
+        assert preview["ready_to_execute"] is False
         assert any("guided remote mutation remains blocked" in note.lower() for note in preview["notes"])
 
         result = execute_integration_action(
@@ -5511,4 +5533,75 @@ def test_preview_and_execute_surface_provider_verification_requirement_for_guide
         assert result["approval_required"] is False
         assert result["provider_verification_required"] is True
         assert result["provider_verification_reason"] == "provider_verification_required"
+        assert result["execution_block_reason"] == "provider_verification_required"
+        assert result["preflight_ready"] is False
+        assert result["confirmation_eligible"] is False
+        assert result["ready_to_execute"] is False
         assert "must verify the live provider identity" in result["stderr"].lower()
+
+
+def test_execute_integration_action_blocks_missing_executable_before_confirmation(monkeypatch) -> None:
+    monkeypatch.setattr("integration_registry.shutil.which", lambda _command: None)
+
+    cases = [
+        ("source_control", "create", {"title": "t", "body": "b"}, {"source_control": {"family": "source_control", "status": "connected", "providers": ["github"], "connection_source": "mission_control", "host_imported": False}}, "gh"),
+        ("ci_cd", "rerun", {"run_id": "42"}, {"ci_cd": {"family": "ci_cd", "status": "connected", "providers": ["github_actions"], "connection_source": "mission_control", "host_imported": False}}, "gh"),
+        ("hosting_deploy", "deploy", {}, {"hosting_deploy": {"family": "hosting_deploy", "status": "connected", "providers": ["vercel"], "connection_source": "mission_control", "host_imported": False}}, "vercel"),
+        ("database_platforms", "sync", {}, {"database_platforms": {"family": "database_platforms", "status": "connected", "providers": ["supabase"], "connection_source": "mission_control", "host_imported": False}}, "supabase"),
+        ("kubernetes", "deploy", {"path": "k8s.yaml"}, {"kubernetes": {"family": "kubernetes", "status": "connected", "providers": ["kubernetes"], "connection_source": "mission_control", "host_imported": False}}, "kubectl"),
+        ("terraform", "deploy", {}, {"terraform": {"family": "terraform", "status": "connected", "providers": ["terraform"], "connection_source": "mission_control", "host_imported": False}}, "terraform"),
+    ]
+
+    for family_id, action_id, params, connections, executable in cases:
+        result = execute_integration_action(
+            family_id=family_id,
+            action_id=action_id,
+            params=params,
+            registry_payload=normalize_integration_registry({"connections": connections}, {}),
+            workspace_path=None,
+            project_name="Missing Executable Demo",
+            confirmed=False,
+        )
+        assert result["status"] == "blocked"
+        assert result["approval_required"] is False
+        assert result["executable_name"] == executable
+        assert result["execution_block_reason"] == "missing_executable"
+        assert result["preflight_ready"] is False
+        assert result["confirmation_eligible"] is False
+        assert result["ready_to_execute"] is False
+        assert "not available on path" in result["stderr"].lower()
+
+
+def test_execute_integration_action_reports_missing_params_with_reason(monkeypatch) -> None:
+    monkeypatch.setattr("integration_registry.shutil.which", lambda _command: "C:/tools/gh.exe")
+
+    result = execute_integration_action(
+        family_id="source_control",
+        action_id="create",
+        params={"title": "Need body"},
+        registry_payload=normalize_integration_registry(
+            {
+                "connections": {
+                    "source_control": {
+                        "family": "source_control",
+                        "status": "connected",
+                        "providers": ["github"],
+                        "connection_source": "mission_control",
+                        "host_imported": False,
+                    }
+                }
+            },
+            {},
+        ),
+        workspace_path=None,
+        project_name="Missing Params Demo",
+        confirmed=False,
+    )
+
+    assert result["status"] == "blocked"
+    assert result["missing_params"] == ["body"]
+    assert result["execution_block_reason"] == "missing_params"
+    assert result["preflight_ready"] is False
+    assert result["confirmation_eligible"] is False
+    assert result["ready_to_execute"] is False
+    assert "missing required parameters" in result["stderr"].lower()
