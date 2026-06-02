@@ -109,6 +109,8 @@ def test_project_integrations_and_action_preview_flow(client, bridge_headers, mo
     assert preview_payload["supported_providers"] == ["github", "gitlab", "bitbucket"]
     assert preview_payload["supported_provider_count"] == 3
     assert preview_payload["provider_lane_resolved"] is True
+    assert preview_payload["provider_context_verified"] is False
+    assert preview_payload["provider_context_source"] == "workspace"
     assert preview_payload["context_required"] is False
     assert preview_payload["context_requirement_reason"] is None
     assert preview_payload["context_available"] is True
@@ -133,6 +135,8 @@ def test_project_integrations_and_action_preview_flow(client, bridge_headers, mo
     assert execute_payload["supported_providers"] == ["github", "gitlab", "bitbucket"]
     assert execute_payload["supported_provider_count"] == 3
     assert execute_payload["provider_lane_resolved"] is True
+    assert execute_payload["provider_context_verified"] is False
+    assert execute_payload["provider_context_source"] == "workspace"
     assert execute_payload["context_required"] is False
     assert execute_payload["context_requirement_reason"] is None
     assert execute_payload["context_available"] is True
@@ -177,12 +181,20 @@ def test_project_integration_api_surfaces_context_suppression_metadata(client, b
     assert payments["health"]["provider_resolution_state"] == "suppressed_cli_only"
     assert payments["provider_specific_action_count"] >= 2
     assert payments["guided_only_action_count"] == 0
+    assert payments["available_provider_lane_count"] == 0
+    assert payments["context_blocked_action_count"] >= 2
+    assert payments["health"]["provider_context_verified"] is False
+    assert payments["health"]["provider_context_source"] == "standalone_cli_only"
+    assert payments["health"]["connection_provider_count"] == 0
+    assert payments["health"]["connection_without_provider_identity"] is False
     assert inspect_action["status"] == "needs_setup"
     assert inspect_action["command_template"] is None
     assert inspect_action["provider_support_mode"] == "provider_specific"
     assert inspect_action["supported_providers"] == ["stripe", "paddle", "lemon_squeezy", "paypal_sandbox"]
     assert inspect_action["supported_provider_count"] == 4
     assert inspect_action["provider_lane_resolved"] is False
+    assert inspect_action["provider_context_verified"] is False
+    assert inspect_action["provider_context_source"] == "standalone_cli_only"
     assert inspect_action["context_required"] is True
     assert inspect_action["context_requirement_reason"] == "provider_context_missing"
     assert inspect_action["suppressed_command_reason"] == "provider_context_missing"
@@ -203,6 +215,8 @@ def test_project_integration_api_surfaces_context_suppression_metadata(client, b
     assert preview_payload["supported_providers"] == ["stripe", "paddle", "lemon_squeezy", "paypal_sandbox"]
     assert preview_payload["supported_provider_count"] == 4
     assert preview_payload["provider_lane_resolved"] is False
+    assert preview_payload["provider_context_verified"] is False
+    assert preview_payload["provider_context_source"] == "standalone_cli_only"
     assert preview_payload["context_required"] is True
     assert preview_payload["context_requirement_reason"] == "provider_context_missing"
     assert preview_payload["context_available"] is False
@@ -5221,3 +5235,135 @@ def test_provider_specific_actions_stay_needs_setup_when_only_family_level_conte
         assert action["context_required"] is True
         assert action["context_requirement_reason"] == "provider_context_missing"
         assert action["suppressed_command_reason"] == "provider_context_missing"
+
+
+def test_connected_families_without_provider_identity_no_longer_claim_ready(monkeypatch, tmp_path) -> None:
+    workspace = tmp_path / "connected-no-provider"
+    workspace.mkdir(parents=True, exist_ok=True)
+    (workspace / "README.md").write_text("generic project context only\n", encoding="utf-8")
+
+    monkeypatch.setattr(
+        "integration_registry.shutil.which",
+        lambda command: f"C:/tools/{command}.exe"
+        if command in {"gh", "vercel", "supabase", "aws", "newman", "chrome", "stripe", "release-please"}
+        else None,
+    )
+
+    registry = normalize_integration_registry(
+        {
+            "connections": {
+                family_id: {
+                    "family": family_id,
+                    "status": "connected",
+                    "providers": [],
+                    "connection_source": "manual",
+                    "host_imported": False,
+                }
+                for family_id in {"source_control", "hosting_deploy", "database_platforms", "cloud_platforms", "api_clients", "browser_devtools", "payments", "release_management"}
+            }
+        },
+        {},
+    )
+
+    statuses = {
+        item["family"]: item
+        for item in build_project_integration_status(
+            workspace_path=str(workspace),
+            project_name="Connected No Provider Demo",
+            registry_payload=registry,
+        )
+    }
+
+    for family_id in ("source_control", "hosting_deploy", "database_platforms", "cloud_platforms", "api_clients", "browser_devtools", "payments", "release_management"):
+        status = statuses[family_id]
+        assert status["status"] == "partial"
+        assert status["resolved_provider"] is None
+        assert status["available_provider_lane_count"] == 0
+        assert status["context_blocked_action_count"] >= 1
+        assert status["health"]["provider_context_verified"] is False
+        assert status["health"]["provider_context_source"] == "connection_family_only"
+        assert status["health"]["connection_provider_count"] == 0
+        assert status["health"]["connection_without_provider_identity"] is True
+        assert any("lacks verified provider identity" in blocker.lower() for blocker in status["blockers"])
+        assert any("explicit provider selection" in fix.lower() for fix in status["recommended_fixes"])
+
+
+def test_workspace_inferred_provider_does_not_upgrade_connected_family_without_verified_provider(monkeypatch, tmp_path) -> None:
+    workspace = tmp_path / "docs-no-verified-provider"
+    workspace.mkdir(parents=True, exist_ok=True)
+    (workspace / "README.md").write_text("Notion keeps docs synced.\n", encoding="utf-8")
+
+    monkeypatch.setattr("integration_registry.shutil.which", lambda _command: None)
+
+    registry = normalize_integration_registry(
+        {
+            "connections": {
+                "docs_systems": {
+                    "family": "docs_systems",
+                    "status": "connected",
+                    "providers": [],
+                    "connection_source": "manual",
+                    "host_imported": False,
+                }
+            }
+        },
+        {},
+    )
+
+    status = next(
+        item
+        for item in build_project_integration_status(
+            workspace_path=str(workspace),
+            project_name="Docs No Provider Demo",
+            registry_payload=registry,
+        )
+        if item["family"] == "docs_systems"
+    )
+
+    assert status["status"] == "partial"
+    assert status["resolved_provider"] == "notion"
+    assert status["available_provider_lane_count"] >= 1
+    assert status["health"]["provider_context_verified"] is False
+    assert status["health"]["provider_context_source"] == "workspace"
+    assert status["health"]["connection_without_provider_identity"] is True
+    assert any("workspace or host signals suggest `notion`" in fix.lower() for fix in status["recommended_fixes"])
+
+
+def test_single_provider_connected_family_still_reports_ready_with_verified_context(monkeypatch, tmp_path) -> None:
+    workspace = tmp_path / "single-provider-ready"
+    workspace.mkdir(parents=True, exist_ok=True)
+    (workspace / "README.md").write_text("kubernetes cluster docs\n", encoding="utf-8")
+
+    monkeypatch.setattr("integration_registry.shutil.which", lambda command: f"C:/tools/{command}.exe" if command == "kubectl" else None)
+
+    registry = normalize_integration_registry(
+        {
+            "connections": {
+                "kubernetes": {
+                    "family": "kubernetes",
+                    "status": "connected",
+                    "providers": [],
+                    "connection_source": "manual",
+                    "host_imported": False,
+                }
+            }
+        },
+        {},
+    )
+
+    status = next(
+        item
+        for item in build_project_integration_status(
+            workspace_path=str(workspace),
+            project_name="Kubernetes Ready Demo",
+            registry_payload=registry,
+        )
+        if item["family"] == "kubernetes"
+    )
+
+    assert status["status"] == "ready"
+    assert status["resolved_provider"] == "kubernetes"
+    assert status["available_provider_lane_count"] >= 1
+    assert status["health"]["provider_context_verified"] is True
+    assert status["health"]["provider_context_source"] == "connection"
+    assert status["health"]["connection_provider_count"] == 0

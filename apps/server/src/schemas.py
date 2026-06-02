@@ -3148,6 +3148,8 @@ class IntegrationActionRead(BaseModel):
     supported_providers: list[str] = Field(default_factory=list)
     supported_provider_count: int = 0
     provider_lane_resolved: bool = False
+    provider_context_verified: bool = False
+    provider_context_source: str = "none"
     context_required: bool = False
     context_requirement_reason: str | None = None
     suppressed_command_reason: str | None = None
@@ -3209,6 +3211,8 @@ class ProjectIntegrationFamilyRead(BaseModel):
     registry_action_count: int = 0
     provider_specific_action_count: int = 0
     guided_only_action_count: int = 0
+    available_provider_lane_count: int = 0
+    context_blocked_action_count: int = 0
     health: dict[str, Any] = Field(default_factory=dict)
     artifacts: list[dict[str, Any]] = Field(default_factory=list)
     safe_commands: list[str] = Field(default_factory=list)
@@ -3255,6 +3259,8 @@ class IntegrationActionPreviewRead(BaseModel):
     supported_providers: list[str] = Field(default_factory=list)
     supported_provider_count: int = 0
     provider_lane_resolved: bool = False
+    provider_context_verified: bool = False
+    provider_context_source: str = "none"
     defaulted_params: dict[str, Any] = Field(default_factory=dict)
     command_ready: bool = False
     execution_mode: str = "unavailable"

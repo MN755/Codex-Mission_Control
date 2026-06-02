@@ -2082,6 +2082,54 @@ def _context_requirement_reason(
     return None
 
 
+def _provider_context_verified(
+    *,
+    family: IntegrationFamilyDefinition,
+    resolved_provider: str | None,
+    connection_status: str,
+    connection_providers: list[str],
+) -> bool:
+    if connection_status != "connected":
+        return False
+    if len(family.providers) == 1:
+        return True
+    if resolved_provider and resolved_provider in connection_providers:
+        return True
+    return False
+
+
+def _provider_context_source(
+    *,
+    family: IntegrationFamilyDefinition,
+    resolved_provider: str | None,
+    connection_status: str,
+    connection_providers: list[str],
+    has_host_import: bool,
+    has_workspace_signal: bool,
+    has_any_cli_signal: bool,
+) -> str:
+    if _provider_context_verified(
+        family=family,
+        resolved_provider=resolved_provider,
+        connection_status=connection_status,
+        connection_providers=connection_providers,
+    ):
+        return "connection"
+    if resolved_provider and has_workspace_signal:
+        return "workspace"
+    if resolved_provider and has_host_import:
+        return "host_import"
+    if connection_status == "connected":
+        return "connection_family_only"
+    if has_host_import:
+        return "host_import_only"
+    if has_workspace_signal:
+        return "workspace_only"
+    if has_any_cli_signal:
+        return "standalone_cli_only"
+    return "none"
+
+
 def _provider_hint_tokens(provider: str) -> list[str]:
     tokens = {
         provider.lower(),
@@ -2653,12 +2701,33 @@ def build_project_integration_status(
         )
         resolved_provider = provider_candidates[0] if provider_candidates else None
         displayed_providers = provider_candidates or list(connection.get("providers") or []) or list(family.providers)
+        connection_providers = [str(item) for item in list(connection.get("providers") or []) if str(item).strip()]
+        connection_provider_count = len(connection_providers)
         has_host_import = bool(connection.get("host_imported"))
         has_workspace_signal = bool(detected_files or token_hits)
         has_connection = connection_status == "connected"
         has_context_signal = has_connection or has_host_import or has_workspace_signal
         provider_cli_candidates = list(_provider_cli_candidates(resolved_provider))
         installed_provider_clis = [cli for cli in provider_cli_candidates if shutil.which(cli)]
+        has_any_cli_signal = bool(installed_clis)
+        provider_context_verified = _provider_context_verified(
+            family=family,
+            resolved_provider=resolved_provider,
+            connection_status=connection_status,
+            connection_providers=connection_providers,
+        )
+        provider_context_source = _provider_context_source(
+            family=family,
+            resolved_provider=resolved_provider,
+            connection_status=connection_status,
+            connection_providers=connection_providers,
+            has_host_import=has_host_import,
+            has_workspace_signal=has_workspace_signal,
+            has_any_cli_signal=has_any_cli_signal,
+        )
+        connection_without_provider_identity = bool(
+            has_connection and len(family.providers) > 1 and not connection_provider_count
+        )
         available_actions: list[dict[str, Any]] = []
         blockers: list[str] = []
         recommended_fixes: list[str] = []
@@ -2719,6 +2788,8 @@ def build_project_integration_status(
                     "supported_providers": supported_providers,
                     "supported_provider_count": len(supported_providers),
                     "provider_lane_resolved": bool(action_provider and (not supported_providers or action_provider in supported_providers)),
+                    "provider_context_verified": provider_context_verified,
+                    "provider_context_source": provider_context_source,
                     "context_required": context_required,
                     "context_requirement_reason": context_requirement_reason,
                     "suppressed_command_reason": suppressed_command_reason,
@@ -2746,9 +2817,16 @@ def build_project_integration_status(
         guided_only_action_count = sum(
             1 for item in available_actions if item["provider_support_mode"] == "guided_only"
         )
+        available_provider_lane_count = sum(
+            1
+            for item in available_actions
+            if item["status"] == "available"
+            and item["provider_lane_resolved"]
+            and item["execution_mode"] != "registry_state"
+        )
+        context_blocked_action_count = sum(1 for item in available_actions if item["context_required"])
         has_actionable_lane = available_action_count > registry_action_count
         has_provider_cli = not provider_cli_candidates or len(installed_provider_clis) == len(provider_cli_candidates)
-        has_any_cli_signal = bool(installed_clis)
         if not has_context_signal:
             if has_any_cli_signal:
                 blockers.append("Only standalone local CLIs were detected. Mission Control still needs workspace, host, or connection evidence before claiming this family is active.")
@@ -2757,7 +2835,20 @@ def build_project_integration_status(
                 blockers.append("No host import, local CLI, or workspace signals were detected for this family.")
                 recommended_fixes.append("Connect the provider in Mission Control or install the relevant local CLI before expecting a serious integration lane.")
             status = "needs_setup"
-        elif has_connection and (has_actionable_lane or not provider_cli_candidates or guided_action_count > 0):
+        elif provider_specific_action_count > 0 and has_connection and not provider_context_verified:
+            status = "partial"
+            blockers.append("Connection state exists, but Mission Control still lacks verified provider identity for provider-specific lanes in this family.")
+            if connection_without_provider_identity:
+                recommended_fixes.append("Reconnect this family through Mission Control with an explicit provider selection before treating it as ready.")
+            else:
+                recommended_fixes.append("Verify the connected provider in Mission Control before treating provider-specific lanes in this family as ready.")
+            if resolved_provider and provider_context_source in {"workspace", "host_import"}:
+                recommended_fixes.append(f"Workspace or host signals suggest `{resolved_provider}`, but Mission Control still needs a verified live connection for that provider.")
+        elif has_connection and (
+            available_provider_lane_count > 0
+            or (guided_only_action_count > 0 and has_actionable_lane)
+            or (available_action_count == registry_action_count and not provider_specific_action_count)
+        ):
             status = "ready"
         elif local_action_count > 0 and (has_workspace_signal or has_host_import or has_connection):
             status = "ready"
@@ -2838,6 +2929,8 @@ def build_project_integration_status(
                 "registry_action_count": registry_action_count,
                 "provider_specific_action_count": provider_specific_action_count,
                 "guided_only_action_count": guided_only_action_count,
+                "available_provider_lane_count": available_provider_lane_count,
+                "context_blocked_action_count": context_blocked_action_count,
                 "health": {
                     "cli_detected": installed_clis,
                     "resolved_cli_detected": installed_provider_clis,
@@ -2848,6 +2941,10 @@ def build_project_integration_status(
                     "host_import_detected": has_host_import,
                     "connection_status": connection_status,
                     "connection_detected": has_connection,
+                    "connection_provider_count": connection_provider_count,
+                    "connection_without_provider_identity": connection_without_provider_identity,
+                    "provider_context_verified": provider_context_verified,
+                    "provider_context_source": provider_context_source,
                     "standalone_cli_detected": has_any_cli_signal and not has_context_signal,
                     "signal_sources": signal_sources,
                     "provider_signal_breakdown": provider_signal_breakdown,
@@ -2950,6 +3047,11 @@ def preview_integration_action(
     detected_files = _family_workspace_evidence_files(family=family, relative_files=relative_files)
     token_hits = [token for token in _family_token_candidates(family) if token and _contains_token(haystack, token)]
     installed_clis = [cli for cli in family.cli_candidates if shutil.which(cli)]
+    connection_status = _normalized_connection_status(connection.get("status"))
+    connection_providers = [str(item) for item in list(connection.get("providers") or []) if str(item).strip()]
+    has_host_import = bool(connection.get("host_imported"))
+    has_workspace_signal = bool(detected_files or token_hits)
+    has_any_cli_signal = bool(installed_clis)
     command_template, provider_candidates, resolved_provider = _resolve_provider_command(
         family=family,
         action=action,
@@ -2978,6 +3080,21 @@ def preview_integration_action(
     )
     supported_providers = _supported_providers_for_action(family, action)
     support_mode = _action_support_mode(family, action)
+    provider_context_verified = _provider_context_verified(
+        family=family,
+        resolved_provider=resolved_provider,
+        connection_status=connection_status,
+        connection_providers=connection_providers,
+    )
+    provider_context_source = _provider_context_source(
+        family=family,
+        resolved_provider=resolved_provider,
+        connection_status=connection_status,
+        connection_providers=connection_providers,
+        has_host_import=has_host_import,
+        has_workspace_signal=has_workspace_signal,
+        has_any_cli_signal=has_any_cli_signal,
+    )
     action_metadata = _effective_action_metadata(action, resolved_provider)
     effective_params = {
         **_provider_default_params(
@@ -3052,12 +3169,14 @@ def preview_integration_action(
         "supported_providers": supported_providers,
         "supported_provider_count": len(supported_providers),
         "provider_lane_resolved": bool(resolved_provider and (not supported_providers or resolved_provider in supported_providers)),
+        "provider_context_verified": provider_context_verified,
+        "provider_context_source": provider_context_source,
         "defaulted_params": {key: value for key, value in effective_params.items() if key not in params},
         "command_ready": executable_available,
         "execution_mode": execution_mode,
         "context_required": context_required,
         "context_requirement_reason": context_requirement_reason,
-        "context_available": bool(detected_files or token_hits or connection.get("host_imported") or _normalized_connection_status(connection.get("status")) == "connected"),
+        "context_available": bool(has_workspace_signal or has_host_import or connection_status == "connected"),
         "suppressed_command_reason": suppressed_command_reason,
         "provider_guidance": provider_guidance,
         "notes": notes,
