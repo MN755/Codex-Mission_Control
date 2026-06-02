@@ -324,6 +324,20 @@ def test_project_integrations_treat_connected_notion_lane_as_ready_without_cli(m
 
 def test_execute_integration_action_is_shell_free_and_blocks_missing_executable(monkeypatch) -> None:
     monkeypatch.setattr("integration_registry.shutil.which", lambda _command: None)
+    registry = normalize_integration_registry(
+        {
+            "connections": {
+                "source_control": {
+                    "family": "source_control",
+                    "status": "connected",
+                    "providers": ["github"],
+                    "connection_source": "mission_control",
+                    "host_imported": False,
+                }
+            }
+        },
+        {},
+    )
 
     called = {"ran": False}
 
@@ -337,7 +351,7 @@ def test_execute_integration_action_is_shell_free_and_blocks_missing_executable(
         family_id="source_control",
         action_id="create",
         params={"title": "Demo", "body": "Body"},
-        registry_payload=normalize_integration_registry({}, {}),
+        registry_payload=registry,
         workspace_path=None,
         project_name="Shell Safety",
         confirmed=True,
@@ -351,6 +365,20 @@ def test_execute_integration_action_is_shell_free_and_blocks_missing_executable(
 
 def test_execute_integration_action_parses_quoted_args_correctly(monkeypatch) -> None:
     monkeypatch.setattr("integration_registry.shutil.which", lambda command: f"C:/tools/{command}.exe" if command == "gh" else None)
+    registry = normalize_integration_registry(
+        {
+            "connections": {
+                "source_control": {
+                    "family": "source_control",
+                    "status": "connected",
+                    "providers": ["github"],
+                    "connection_source": "mission_control",
+                    "host_imported": False,
+                }
+            }
+        },
+        {},
+    )
 
     captured: dict[str, object] = {}
 
@@ -370,7 +398,7 @@ def test_execute_integration_action_parses_quoted_args_correctly(monkeypatch) ->
         family_id="source_control",
         action_id="create",
         params={"title": 'Need "quotes" now', "body": "spaces still matter"},
-        registry_payload=normalize_integration_registry({}, {}),
+        registry_payload=registry,
         workspace_path=None,
         project_name="Quote Demo",
         confirmed=True,
@@ -4877,3 +4905,79 @@ def test_provider_scoring_breakdown_and_preview_expose_suppressed_cli_only_candi
     assert preview["resolved_provider_evidence"]["workspace_token"] == 30
     assert preview["provider_signal_breakdown"]["notion"]["has_non_cli_evidence"] is True
     assert sorted(preview["cli_only_candidates_suppressed"]) == ["docusaurus", "mintlify"]
+
+
+def test_preview_suppresses_family_default_commands_without_provider_context(monkeypatch, tmp_path) -> None:
+    workspace = tmp_path / "plain-repo"
+    workspace.mkdir(parents=True, exist_ok=True)
+    (workspace / "README.md").write_text("plain repo\n", encoding="utf-8")
+
+    monkeypatch.setattr(
+        "integration_registry.shutil.which",
+        lambda command: f"C:/tools/{command}.exe"
+        if command in {"gh", "vercel", "supabase", "aws", "playwright", "gitleaks", "ollama", "stripe"}
+        else None,
+    )
+
+    cases = [
+        ("source_control", "search"),
+        ("hosting_deploy", "inspect"),
+        ("database_platforms", "inspect"),
+        ("cloud_platforms", "inspect"),
+        ("browser_testing", "validate"),
+        ("security_scanners", "scan"),
+        ("local_model_runtimes", "inspect"),
+        ("payments", "inspect"),
+    ]
+    for family_id, action_id in cases:
+        preview = preview_integration_action(
+            family_id=family_id,
+            action_id=action_id,
+            params={},
+            registry_payload=normalize_integration_registry({}, {}),
+            workspace_path=str(workspace),
+            project_name="Plain Preview Demo",
+        )
+        assert preview["provider"] is None
+        assert preview["command"] is None
+        assert preview["command_ready"] is False
+        assert preview["execution_mode"] == "unavailable"
+        assert preview["provider_resolution_state"] == "suppressed_cli_only"
+        assert preview["context_required"] is True
+        assert preview["context_available"] is False
+        assert preview["suppressed_command_reason"] == "provider_context_missing"
+        assert any("suppressed until mission control has real provider context" in note.lower() for note in preview["notes"])
+
+
+def test_project_integrations_surface_context_required_when_provider_context_is_missing(monkeypatch, tmp_path) -> None:
+    workspace = tmp_path / "plain-status"
+    workspace.mkdir(parents=True, exist_ok=True)
+    (workspace / "README.md").write_text("plain repo\n", encoding="utf-8")
+
+    monkeypatch.setattr(
+        "integration_registry.shutil.which",
+        lambda command: f"C:/tools/{command}.exe" if command in {"gh", "vercel", "supabase", "aws"} else None,
+    )
+
+    statuses = {
+        item["family"]: item
+        for item in build_project_integration_status(
+            workspace_path=str(workspace),
+            project_name="Plain Status Demo",
+            registry_payload=normalize_integration_registry({}, {}),
+        )
+    }
+
+    for family_id, action_id in (
+        ("source_control", "search"),
+        ("hosting_deploy", "inspect"),
+        ("database_platforms", "inspect"),
+        ("cloud_platforms", "inspect"),
+    ):
+        status = statuses[family_id]
+        action = next(item for item in status["available_actions"] if item["action_id"] == action_id)
+        assert status["health"]["provider_resolution_state"] == "suppressed_cli_only"
+        assert action["status"] == "needs_setup"
+        assert action["command_template"] is None
+        assert action["context_required"] is True
+        assert action["suppressed_command_reason"] == "provider_context_missing"

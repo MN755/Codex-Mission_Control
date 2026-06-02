@@ -2227,6 +2227,14 @@ def _provider_candidates_for_family(
     return _dedupe_strs(ordered)
 
 
+def _provider_resolution_state(*, provider: str | None, cli_only_candidates_suppressed: list[str]) -> str:
+    if provider:
+        return "resolved"
+    if cli_only_candidates_suppressed:
+        return "suppressed_cli_only"
+    return "unresolved"
+
+
 def _resolve_provider_command(
     *,
     family: IntegrationFamilyDefinition,
@@ -2255,11 +2263,9 @@ def _resolve_provider_command(
         template = _provider_command_template(provider, action.action_id)
         if template:
             return template, candidates, provider
-    if candidates:
-        if len(family.providers) == 1:
-            return action.command_template, candidates, candidates[0]
-        return None, candidates, candidates[0]
-    return action.command_template, candidates, None
+    if candidates and len(family.providers) == 1 and action.command_template:
+        return action.command_template, candidates, candidates[0]
+    return None, candidates, candidates[0] if candidates else None
 
 
 def _provider_status_from_legacy(account: dict[str, Any]) -> str:
@@ -2635,6 +2641,8 @@ def build_project_integration_status(
                 ]
             )
             execution_mode = _execution_mode(action_id=action.action_id, command_template=action_template, provider=action_provider)
+            context_required = bool(not action_provider and len(family.providers) > 1 and action.command_template)
+            suppressed_command_reason = "provider_context_missing" if context_required and not action_template else None
             action_ready = bool(
                 action.action_id in {"import_host_state", "connect", "disconnect", "inspect_status"}
                 or (action_command_ready and has_context_signal)
@@ -2659,6 +2667,8 @@ def build_project_integration_status(
                     "command_template": action_template,
                     "command_ready": action_command_ready,
                     "execution_mode": execution_mode,
+                    "context_required": context_required,
+                    "suppressed_command_reason": suppressed_command_reason,
                 }
             )
         available_action_count = sum(1 for item in available_actions if item["status"] == "available")
@@ -2734,6 +2744,10 @@ def build_project_integration_status(
             for provider, entry in provider_signal_breakdown.items()
             if bool(entry.get("suppressed_cli_only"))
         ]
+        provider_resolution_state = _provider_resolution_state(
+            provider=resolved_provider,
+            cli_only_candidates_suppressed=cli_only_candidates_suppressed,
+        )
         artifacts = [{"type": "config_file", "path": path} for path in detected_files]
         artifacts.extend(
             {
@@ -2778,6 +2792,7 @@ def build_project_integration_status(
                     "provider_signal_breakdown": provider_signal_breakdown,
                     "resolved_provider_evidence": dict(provider_signal_breakdown.get(resolved_provider) or {}),
                     "cli_only_candidates_suppressed": cli_only_candidates_suppressed,
+                    "provider_resolution_state": provider_resolution_state,
                     "resolved_provider": resolved_provider,
                     "provider_candidates": provider_candidates,
                     "git_remote_url": git_remote_url or None,
@@ -2891,6 +2906,15 @@ def preview_integration_action(
         installed_clis=installed_clis,
         git_remote_url=git_remote_url,
     )
+    cli_only_candidates_suppressed = [
+        provider
+        for provider, entry in provider_signal_breakdown.items()
+        if bool(entry.get("suppressed_cli_only"))
+    ]
+    provider_resolution_state = _provider_resolution_state(
+        provider=resolved_provider,
+        cli_only_candidates_suppressed=cli_only_candidates_suppressed,
+    )
     action_metadata = _effective_action_metadata(action, resolved_provider)
     effective_params = {
         **_provider_default_params(
@@ -2914,6 +2938,8 @@ def preview_integration_action(
             command = _format_command(command_template, effective_params)
     executable_available = bool(command and _command_is_available(command))
     execution_mode = _execution_mode(action_id=action.action_id, command_template=command_template, provider=resolved_provider)
+    context_required = bool(not resolved_provider and len(family.providers) > 1 and action.command_template)
+    suppressed_command_reason = "provider_context_missing" if context_required and not command_template else None
     provider_guidance = _provider_guidance(resolved_provider, action.action_id) or _default_provider_guidance(
         provider=resolved_provider,
         action=action,
@@ -2927,6 +2953,8 @@ def preview_integration_action(
         f"Executable detected: {'yes' if executable_available else 'no'}.",
         f"Resolved provider: {resolved_provider or 'none'}.",
     ]
+    if suppressed_command_reason == "provider_context_missing":
+        notes.append("Executable preview was intentionally suppressed until Mission Control has real provider context for this family.")
     if effective_params != params:
         notes.append(f"Provider defaults were inferred for preview params: {json.dumps({key: value for key, value in effective_params.items() if key not in params}, sort_keys=True)}")
     if provider_guidance:
@@ -2949,14 +2977,14 @@ def preview_integration_action(
         "provider_candidates": provider_candidates,
         "provider_signal_breakdown": provider_signal_breakdown,
         "resolved_provider_evidence": dict(provider_signal_breakdown.get(resolved_provider) or {}),
-        "cli_only_candidates_suppressed": [
-            provider
-            for provider, entry in provider_signal_breakdown.items()
-            if bool(entry.get("suppressed_cli_only"))
-        ],
+        "cli_only_candidates_suppressed": cli_only_candidates_suppressed,
+        "provider_resolution_state": provider_resolution_state,
         "defaulted_params": {key: value for key, value in effective_params.items() if key not in params},
         "command_ready": executable_available,
         "execution_mode": execution_mode,
+        "context_required": context_required,
+        "context_available": bool(detected_files or token_hits or connection.get("host_imported") or _normalized_connection_status(connection.get("status")) == "connected"),
+        "suppressed_command_reason": suppressed_command_reason,
         "provider_guidance": provider_guidance,
         "notes": notes,
     }
