@@ -14300,118 +14300,147 @@ class MissionControlService:
         action_statuses = sorted(action_status_counts)
         action_status_group_count = len(action_status_counts)
         action_status_action_refs = _collect_grouped_action_refs("action_status_action_ids")
+        action_status_family_ids = _group_count_map_family_ids("action_status_counts")
         available_action_status_counts = _sum_count_maps("available_action_status_counts")
         available_action_statuses = sorted(available_action_status_counts)
         available_action_status_group_count = len(available_action_status_counts)
         available_action_status_action_refs = _collect_grouped_action_refs("available_action_status_action_ids")
+        available_action_status_family_ids = _group_count_map_family_ids("available_action_status_counts")
         blocked_action_status_counts = _sum_count_maps("blocked_action_status_counts")
         blocked_action_statuses = sorted(blocked_action_status_counts)
         blocked_action_status_group_count = len(blocked_action_status_counts)
         blocked_action_status_action_refs = _collect_grouped_action_refs("blocked_action_status_action_ids")
+        blocked_action_status_family_ids = _group_count_map_family_ids("blocked_action_status_counts")
         execution_mode_counts = _sum_count_maps("execution_mode_counts")
         execution_modes = sorted(execution_mode_counts)
         execution_mode_group_count = len(execution_mode_counts)
         execution_mode_action_refs = _collect_grouped_action_refs("execution_mode_action_ids")
+        execution_mode_family_ids = _group_count_map_family_ids("execution_mode_counts")
         available_execution_mode_counts = _sum_count_maps("available_execution_mode_counts")
         available_execution_modes = sorted(available_execution_mode_counts)
         available_execution_mode_group_count = len(available_execution_mode_counts)
         available_execution_mode_action_refs = _collect_grouped_action_refs("available_execution_mode_action_ids")
+        available_execution_mode_family_ids = _group_count_map_family_ids("available_execution_mode_counts")
         blocked_execution_mode_counts = _sum_count_maps("blocked_execution_mode_counts")
         blocked_execution_modes = sorted(blocked_execution_mode_counts)
         blocked_execution_mode_group_count = len(blocked_execution_mode_counts)
         blocked_execution_mode_action_refs = _collect_grouped_action_refs("blocked_execution_mode_action_ids")
+        blocked_execution_mode_family_ids = _group_count_map_family_ids("blocked_execution_mode_counts")
         provider_support_mode_counts = _sum_count_maps("provider_support_mode_counts")
         provider_support_modes = sorted(provider_support_mode_counts)
         provider_support_mode_group_count = len(provider_support_mode_counts)
         provider_support_mode_action_refs = _collect_grouped_action_refs("provider_support_mode_action_ids")
+        provider_support_mode_family_ids = _group_count_map_family_ids("provider_support_mode_counts")
         available_provider_support_mode_counts = _sum_count_maps("available_provider_support_mode_counts")
         available_provider_support_modes = sorted(available_provider_support_mode_counts)
         available_provider_support_mode_group_count = len(available_provider_support_mode_counts)
         available_provider_support_mode_action_refs = _collect_grouped_action_refs("available_provider_support_mode_action_ids")
+        available_provider_support_mode_family_ids = _group_count_map_family_ids("available_provider_support_mode_counts")
         blocked_provider_support_mode_counts = _sum_count_maps("blocked_provider_support_mode_counts")
         blocked_provider_support_modes = sorted(blocked_provider_support_mode_counts)
         blocked_provider_support_mode_group_count = len(blocked_provider_support_mode_counts)
         blocked_provider_support_mode_action_refs = _collect_grouped_action_refs("blocked_provider_support_mode_action_ids")
+        blocked_provider_support_mode_family_ids = _group_count_map_family_ids("blocked_provider_support_mode_counts")
         action_provider_context_status_counts = _sum_count_maps("provider_context_status_counts")
         action_provider_context_statuses = sorted(action_provider_context_status_counts)
         action_provider_context_status_group_count = len(action_provider_context_status_counts)
         action_provider_context_status_action_refs = _collect_grouped_action_refs("provider_context_status_action_ids")
+        action_provider_context_status_family_ids = _group_count_map_family_ids("provider_context_status_counts")
         available_action_provider_context_status_counts = _sum_count_maps("available_provider_context_status_counts")
         available_action_provider_context_statuses = sorted(available_action_provider_context_status_counts)
         available_action_provider_context_status_group_count = len(available_action_provider_context_status_counts)
         available_action_provider_context_status_action_refs = _collect_grouped_action_refs("available_provider_context_status_action_ids")
+        available_action_provider_context_status_family_ids = _group_count_map_family_ids("available_provider_context_status_counts")
         blocked_action_provider_context_status_counts = _sum_count_maps("blocked_provider_context_status_counts")
         blocked_action_provider_context_statuses = sorted(blocked_action_provider_context_status_counts)
         blocked_action_provider_context_status_group_count = len(blocked_action_provider_context_status_counts)
         blocked_action_provider_context_status_action_refs = _collect_grouped_action_refs("blocked_provider_context_status_action_ids")
+        blocked_action_provider_context_status_family_ids = _group_count_map_family_ids("blocked_provider_context_status_counts")
         verification_scope_counts = _sum_count_maps("verification_scope_counts")
         verification_scopes = sorted(verification_scope_counts)
         verification_scope_group_count = len(verification_scope_counts)
         verification_scope_action_refs = _collect_grouped_action_refs("verification_scope_action_ids")
+        verification_scope_family_ids = _group_count_map_family_ids("verification_scope_counts")
         available_verification_scope_counts = _sum_count_maps("available_verification_scope_counts")
         available_verification_scopes = sorted(available_verification_scope_counts)
         available_verification_scope_group_count = len(available_verification_scope_counts)
         available_verification_scope_action_refs = _collect_grouped_action_refs("available_verification_scope_action_ids")
+        available_verification_scope_family_ids = _group_count_map_family_ids("available_verification_scope_counts")
         blocked_verification_scope_counts = _sum_count_maps("blocked_verification_scope_counts")
         blocked_verification_scopes = sorted(blocked_verification_scope_counts)
         blocked_verification_scope_group_count = len(blocked_verification_scope_counts)
         blocked_verification_scope_action_refs = _collect_grouped_action_refs("blocked_verification_scope_action_ids")
+        blocked_verification_scope_family_ids = _group_count_map_family_ids("blocked_verification_scope_counts")
         safe_command_reason_counts = _sum_count_maps("safe_command_reason_counts")
         safe_command_reasons = sorted(safe_command_reason_counts)
         safe_command_reason_group_count = len(safe_command_reason_counts)
         safe_command_reason_action_refs = _collect_grouped_action_refs("safe_command_reason_action_ids")
+        safe_command_reason_family_ids = _group_count_map_family_ids("safe_command_reason_counts")
         available_safe_command_reason_counts = _sum_count_maps("available_safe_command_reason_counts")
         available_safe_command_reasons = sorted(available_safe_command_reason_counts)
         available_safe_command_reason_group_count = len(available_safe_command_reason_counts)
         available_safe_command_reason_action_refs = _collect_grouped_action_refs("available_safe_command_reason_action_ids")
+        available_safe_command_reason_family_ids = _group_count_map_family_ids("available_safe_command_reason_counts")
         blocked_safe_command_reason_counts = _sum_count_maps("blocked_safe_command_reason_counts")
         blocked_safe_command_reasons = sorted(blocked_safe_command_reason_counts)
         blocked_safe_command_reason_group_count = len(blocked_safe_command_reason_counts)
         blocked_safe_command_reason_action_refs = _collect_grouped_action_refs("blocked_safe_command_reason_action_ids")
+        blocked_safe_command_reason_family_ids = _group_count_map_family_ids("blocked_safe_command_reason_counts")
         context_requirement_reason_counts = _sum_count_maps("context_requirement_reason_counts")
         context_requirement_reasons = sorted(context_requirement_reason_counts)
         context_requirement_reason_group_count = len(context_requirement_reason_counts)
         context_requirement_reason_action_refs = _collect_grouped_action_refs("context_requirement_reason_action_ids")
+        context_requirement_reason_family_ids = _group_count_map_family_ids("context_requirement_reason_counts")
         available_context_requirement_reason_counts = _sum_count_maps("available_context_requirement_reason_counts")
         available_context_requirement_reasons = sorted(available_context_requirement_reason_counts)
         available_context_requirement_reason_group_count = len(available_context_requirement_reason_counts)
         available_context_requirement_reason_action_refs = _collect_grouped_action_refs("available_context_requirement_reason_action_ids")
+        available_context_requirement_reason_family_ids = _group_count_map_family_ids("available_context_requirement_reason_counts")
         blocked_context_requirement_reason_counts = _sum_count_maps("blocked_context_requirement_reason_counts")
         blocked_context_requirement_reasons = sorted(blocked_context_requirement_reason_counts)
         blocked_context_requirement_reason_group_count = len(blocked_context_requirement_reason_counts)
         blocked_context_requirement_reason_action_refs = _collect_grouped_action_refs("blocked_context_requirement_reason_action_ids")
+        blocked_context_requirement_reason_family_ids = _group_count_map_family_ids("blocked_context_requirement_reason_counts")
         action_provider_counts = _sum_count_maps("action_provider_counts")
         action_providers = sorted(action_provider_counts)
         action_provider_group_count = len(action_provider_counts)
         action_provider_action_refs = _collect_grouped_action_refs("action_provider_action_ids")
+        action_provider_family_ids = _group_count_map_family_ids("action_provider_counts")
         available_action_provider_counts = _sum_count_maps("available_action_provider_counts")
         available_action_providers = sorted(available_action_provider_counts)
         available_action_provider_group_count = len(available_action_provider_counts)
         available_action_provider_action_refs = _collect_grouped_action_refs("available_action_provider_action_ids")
+        available_action_provider_family_ids = _group_count_map_family_ids("available_action_provider_counts")
         blocked_action_provider_counts = _sum_count_maps("blocked_action_provider_counts")
         blocked_action_providers = sorted(blocked_action_provider_counts)
         blocked_action_provider_group_count = len(blocked_action_provider_counts)
         blocked_action_provider_action_refs = _collect_grouped_action_refs("blocked_action_provider_action_ids")
+        blocked_action_provider_family_ids = _group_count_map_family_ids("blocked_action_provider_counts")
         executable_name_counts = _sum_count_maps("executable_name_counts")
         executable_names = sorted(executable_name_counts)
         executable_name_group_count = len(executable_name_counts)
         executable_name_action_refs = _collect_grouped_action_refs("executable_name_action_ids")
+        executable_name_family_ids = _group_count_map_family_ids("executable_name_counts")
         available_executable_name_counts = _sum_count_maps("available_executable_name_counts")
         available_executable_names = sorted(available_executable_name_counts)
         available_executable_name_group_count = len(available_executable_name_counts)
         available_executable_name_action_refs = _collect_grouped_action_refs("available_executable_name_action_ids")
+        available_executable_name_family_ids = _group_count_map_family_ids("available_executable_name_counts")
         blocked_executable_name_counts = _sum_count_maps("blocked_executable_name_counts")
         blocked_executable_names = sorted(blocked_executable_name_counts)
         blocked_executable_name_group_count = len(blocked_executable_name_counts)
         blocked_executable_name_action_refs = _collect_grouped_action_refs("blocked_executable_name_action_ids")
+        blocked_executable_name_family_ids = _group_count_map_family_ids("blocked_executable_name_counts")
         execution_block_reason_counts = _sum_count_maps("execution_block_reason_counts")
         execution_block_reasons = sorted(execution_block_reason_counts)
         execution_block_reason_group_count = len(execution_block_reason_counts)
         execution_block_reason_action_refs = _collect_grouped_action_refs("execution_block_reason_action_ids")
+        execution_block_reason_family_ids = _group_count_map_family_ids("execution_block_reason_counts")
         blocking_reason_counts = _sum_count_maps("blocking_reason_counts")
         blocking_reasons = sorted(blocking_reason_counts)
         blocking_reason_group_count = len(blocking_reason_counts)
         blocking_reason_action_refs = _collect_grouped_action_refs("blocking_reason_action_ids")
+        blocking_reason_family_ids = _group_count_map_family_ids("blocking_reason_counts")
         required_permissions = _merge_unique_lists("required_permissions")
         required_permission_family_ids = _group_list_family_ids("required_permissions")
         required_permission_count = len(required_permissions)
@@ -14648,118 +14677,147 @@ class MissionControlService:
             "action_status_counts": action_status_counts,
             "action_status_group_count": action_status_group_count,
             "action_status_action_refs": action_status_action_refs,
+            "action_status_family_ids": action_status_family_ids,
             "available_action_statuses": available_action_statuses,
             "available_action_status_counts": available_action_status_counts,
             "available_action_status_group_count": available_action_status_group_count,
             "available_action_status_action_refs": available_action_status_action_refs,
+            "available_action_status_family_ids": available_action_status_family_ids,
             "blocked_action_statuses": blocked_action_statuses,
             "blocked_action_status_counts": blocked_action_status_counts,
             "blocked_action_status_group_count": blocked_action_status_group_count,
             "blocked_action_status_action_refs": blocked_action_status_action_refs,
+            "blocked_action_status_family_ids": blocked_action_status_family_ids,
             "execution_modes": execution_modes,
             "execution_mode_counts": execution_mode_counts,
             "execution_mode_group_count": execution_mode_group_count,
             "execution_mode_action_refs": execution_mode_action_refs,
+            "execution_mode_family_ids": execution_mode_family_ids,
             "available_execution_modes": available_execution_modes,
             "available_execution_mode_counts": available_execution_mode_counts,
             "available_execution_mode_group_count": available_execution_mode_group_count,
             "available_execution_mode_action_refs": available_execution_mode_action_refs,
+            "available_execution_mode_family_ids": available_execution_mode_family_ids,
             "blocked_execution_modes": blocked_execution_modes,
             "blocked_execution_mode_counts": blocked_execution_mode_counts,
             "blocked_execution_mode_group_count": blocked_execution_mode_group_count,
             "blocked_execution_mode_action_refs": blocked_execution_mode_action_refs,
+            "blocked_execution_mode_family_ids": blocked_execution_mode_family_ids,
             "provider_support_modes": provider_support_modes,
             "provider_support_mode_counts": provider_support_mode_counts,
             "provider_support_mode_group_count": provider_support_mode_group_count,
             "provider_support_mode_action_refs": provider_support_mode_action_refs,
+            "provider_support_mode_family_ids": provider_support_mode_family_ids,
             "available_provider_support_modes": available_provider_support_modes,
             "available_provider_support_mode_counts": available_provider_support_mode_counts,
             "available_provider_support_mode_group_count": available_provider_support_mode_group_count,
             "available_provider_support_mode_action_refs": available_provider_support_mode_action_refs,
+            "available_provider_support_mode_family_ids": available_provider_support_mode_family_ids,
             "blocked_provider_support_modes": blocked_provider_support_modes,
             "blocked_provider_support_mode_counts": blocked_provider_support_mode_counts,
             "blocked_provider_support_mode_group_count": blocked_provider_support_mode_group_count,
             "blocked_provider_support_mode_action_refs": blocked_provider_support_mode_action_refs,
+            "blocked_provider_support_mode_family_ids": blocked_provider_support_mode_family_ids,
             "action_provider_context_statuses": action_provider_context_statuses,
             "action_provider_context_status_counts": action_provider_context_status_counts,
             "action_provider_context_status_group_count": action_provider_context_status_group_count,
             "action_provider_context_status_action_refs": action_provider_context_status_action_refs,
+            "action_provider_context_status_family_ids": action_provider_context_status_family_ids,
             "available_action_provider_context_statuses": available_action_provider_context_statuses,
             "available_action_provider_context_status_counts": available_action_provider_context_status_counts,
             "available_action_provider_context_status_group_count": available_action_provider_context_status_group_count,
             "available_action_provider_context_status_action_refs": available_action_provider_context_status_action_refs,
+            "available_action_provider_context_status_family_ids": available_action_provider_context_status_family_ids,
             "blocked_action_provider_context_statuses": blocked_action_provider_context_statuses,
             "blocked_action_provider_context_status_counts": blocked_action_provider_context_status_counts,
             "blocked_action_provider_context_status_group_count": blocked_action_provider_context_status_group_count,
             "blocked_action_provider_context_status_action_refs": blocked_action_provider_context_status_action_refs,
+            "blocked_action_provider_context_status_family_ids": blocked_action_provider_context_status_family_ids,
             "verification_scopes": verification_scopes,
             "verification_scope_counts": verification_scope_counts,
             "verification_scope_group_count": verification_scope_group_count,
             "verification_scope_action_refs": verification_scope_action_refs,
+            "verification_scope_family_ids": verification_scope_family_ids,
             "available_verification_scopes": available_verification_scopes,
             "available_verification_scope_counts": available_verification_scope_counts,
             "available_verification_scope_group_count": available_verification_scope_group_count,
             "available_verification_scope_action_refs": available_verification_scope_action_refs,
+            "available_verification_scope_family_ids": available_verification_scope_family_ids,
             "blocked_verification_scopes": blocked_verification_scopes,
             "blocked_verification_scope_counts": blocked_verification_scope_counts,
             "blocked_verification_scope_group_count": blocked_verification_scope_group_count,
             "blocked_verification_scope_action_refs": blocked_verification_scope_action_refs,
+            "blocked_verification_scope_family_ids": blocked_verification_scope_family_ids,
             "safe_command_reasons": safe_command_reasons,
             "safe_command_reason_counts": safe_command_reason_counts,
             "safe_command_reason_group_count": safe_command_reason_group_count,
             "safe_command_reason_action_refs": safe_command_reason_action_refs,
+            "safe_command_reason_family_ids": safe_command_reason_family_ids,
             "available_safe_command_reasons": available_safe_command_reasons,
             "available_safe_command_reason_counts": available_safe_command_reason_counts,
             "available_safe_command_reason_group_count": available_safe_command_reason_group_count,
             "available_safe_command_reason_action_refs": available_safe_command_reason_action_refs,
+            "available_safe_command_reason_family_ids": available_safe_command_reason_family_ids,
             "blocked_safe_command_reasons": blocked_safe_command_reasons,
             "blocked_safe_command_reason_counts": blocked_safe_command_reason_counts,
             "blocked_safe_command_reason_group_count": blocked_safe_command_reason_group_count,
             "blocked_safe_command_reason_action_refs": blocked_safe_command_reason_action_refs,
+            "blocked_safe_command_reason_family_ids": blocked_safe_command_reason_family_ids,
             "context_requirement_reasons": context_requirement_reasons,
             "context_requirement_reason_counts": context_requirement_reason_counts,
             "context_requirement_reason_group_count": context_requirement_reason_group_count,
             "context_requirement_reason_action_refs": context_requirement_reason_action_refs,
+            "context_requirement_reason_family_ids": context_requirement_reason_family_ids,
             "available_context_requirement_reasons": available_context_requirement_reasons,
             "available_context_requirement_reason_counts": available_context_requirement_reason_counts,
             "available_context_requirement_reason_group_count": available_context_requirement_reason_group_count,
             "available_context_requirement_reason_action_refs": available_context_requirement_reason_action_refs,
+            "available_context_requirement_reason_family_ids": available_context_requirement_reason_family_ids,
             "blocked_context_requirement_reasons": blocked_context_requirement_reasons,
             "blocked_context_requirement_reason_counts": blocked_context_requirement_reason_counts,
             "blocked_context_requirement_reason_group_count": blocked_context_requirement_reason_group_count,
             "blocked_context_requirement_reason_action_refs": blocked_context_requirement_reason_action_refs,
+            "blocked_context_requirement_reason_family_ids": blocked_context_requirement_reason_family_ids,
             "action_providers": action_providers,
             "action_provider_counts": action_provider_counts,
             "action_provider_group_count": action_provider_group_count,
             "action_provider_action_refs": action_provider_action_refs,
+            "action_provider_family_ids": action_provider_family_ids,
             "available_action_providers": available_action_providers,
             "available_action_provider_counts": available_action_provider_counts,
             "available_action_provider_group_count": available_action_provider_group_count,
             "available_action_provider_action_refs": available_action_provider_action_refs,
+            "available_action_provider_family_ids": available_action_provider_family_ids,
             "blocked_action_providers": blocked_action_providers,
             "blocked_action_provider_counts": blocked_action_provider_counts,
             "blocked_action_provider_group_count": blocked_action_provider_group_count,
             "blocked_action_provider_action_refs": blocked_action_provider_action_refs,
+            "blocked_action_provider_family_ids": blocked_action_provider_family_ids,
             "executable_names": executable_names,
             "executable_name_counts": executable_name_counts,
             "executable_name_group_count": executable_name_group_count,
             "executable_name_action_refs": executable_name_action_refs,
+            "executable_name_family_ids": executable_name_family_ids,
             "available_executable_names": available_executable_names,
             "available_executable_name_counts": available_executable_name_counts,
             "available_executable_name_group_count": available_executable_name_group_count,
             "available_executable_name_action_refs": available_executable_name_action_refs,
+            "available_executable_name_family_ids": available_executable_name_family_ids,
             "blocked_executable_names": blocked_executable_names,
             "blocked_executable_name_counts": blocked_executable_name_counts,
             "blocked_executable_name_group_count": blocked_executable_name_group_count,
             "blocked_executable_name_action_refs": blocked_executable_name_action_refs,
+            "blocked_executable_name_family_ids": blocked_executable_name_family_ids,
             "execution_block_reasons": execution_block_reasons,
             "execution_block_reason_counts": execution_block_reason_counts,
             "execution_block_reason_group_count": execution_block_reason_group_count,
             "execution_block_reason_action_refs": execution_block_reason_action_refs,
+            "execution_block_reason_family_ids": execution_block_reason_family_ids,
             "blocking_reasons": blocking_reasons,
             "blocking_reason_counts": blocking_reason_counts,
             "blocking_reason_group_count": blocking_reason_group_count,
             "blocking_reason_action_refs": blocking_reason_action_refs,
+            "blocking_reason_family_ids": blocking_reason_family_ids,
             "required_permissions": required_permissions,
             "required_permission_count": required_permission_count,
             "required_permission_family_ids": required_permission_family_ids,
