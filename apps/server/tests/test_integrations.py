@@ -4188,3 +4188,139 @@ def test_provider_specific_preview_surfaces_package_registry_and_docusaurus_guid
     assert any("rubygems inspection uses the local cli" in note.lower() for note in rubygems_preview["notes"])
     assert any("local docker cli" in note.lower() and "local engine and auth context" in note.lower() for note in dockerhub_preview["notes"])
     assert any("does not claim a live remote publish by itself" in note.lower() for note in docusaurus_preview["notes"])
+
+
+def test_provider_specific_action_overrides_relax_local_devcontainer_and_docusaurus_semantics(monkeypatch, tmp_path) -> None:
+    devcontainer_workspace = tmp_path / "devcontainer-override-repo"
+    (devcontainer_workspace / ".devcontainer").mkdir(parents=True, exist_ok=True)
+    (devcontainer_workspace / ".devcontainer" / "devcontainer.json").write_text("{}\n", encoding="utf-8")
+
+    docusaurus_workspace = tmp_path / "docusaurus-override-repo"
+    docusaurus_workspace.mkdir(parents=True, exist_ok=True)
+    (docusaurus_workspace / "docusaurus.config.ts").write_text("export default {};\n", encoding="utf-8")
+
+    monkeypatch.setattr(
+        "integration_registry.shutil.which",
+        lambda command: f"C:/tools/{command}.exe" if command in {"devcontainer", "npm"} else None,
+    )
+
+    devcontainer_preview = preview_integration_action(
+        family_id="containers",
+        action_id="open",
+        params={},
+        registry_payload=normalize_integration_registry({}, {}),
+        workspace_path=str(devcontainer_workspace),
+        project_name="Devcontainer Override Demo",
+    )
+    docusaurus_preview = preview_integration_action(
+        family_id="docs_systems",
+        action_id="sync",
+        params={},
+        registry_payload=normalize_integration_registry({}, {}),
+        workspace_path=str(docusaurus_workspace),
+        project_name="Docusaurus Override Demo",
+    )
+
+    assert devcontainer_preview["provider"] == "devcontainer"
+    assert devcontainer_preview["risk_level"] == "low"
+    assert devcontainer_preview["permission_policy"] == "ask_once_per_project"
+    assert devcontainer_preview["requires_confirmation"] is False
+    assert devcontainer_preview["mutates_remote_state"] is False
+    assert devcontainer_preview["provider_guidance"] == devcontainer_preview["notes"][-1]
+    assert "mutates remote state" not in devcontainer_preview["provider_guidance"].lower()
+
+    assert docusaurus_preview["provider"] == "docusaurus"
+    assert docusaurus_preview["risk_level"] == "low"
+    assert docusaurus_preview["permission_policy"] == "ask_once_per_project"
+    assert docusaurus_preview["requires_confirmation"] is False
+    assert docusaurus_preview["mutates_remote_state"] is False
+    assert docusaurus_preview["provider_guidance"] == docusaurus_preview["notes"][-1]
+
+
+def test_provider_specific_action_overrides_relax_local_validation_lanes(monkeypatch, tmp_path) -> None:
+    postman_workspace = tmp_path / "postman-override-repo"
+    postman_workspace.mkdir(parents=True, exist_ok=True)
+    (postman_workspace / "orders.postman_collection.json").write_text("{}\n", encoding="utf-8")
+
+    insomnia_workspace = tmp_path / "insomnia-override-repo"
+    (insomnia_workspace / ".insomnia").mkdir(parents=True, exist_ok=True)
+    (insomnia_workspace / ".insomnia" / "collection.json").write_text("{}\n", encoding="utf-8")
+
+    bruno_workspace = tmp_path / "bruno-override-repo"
+    bruno_workspace.mkdir(parents=True, exist_ok=True)
+    (bruno_workspace / "bruno.json").write_text("{}\n", encoding="utf-8")
+
+    openapi_workspace = tmp_path / "openapi-override-repo"
+    openapi_workspace.mkdir(parents=True, exist_ok=True)
+    (openapi_workspace / "openapi.yaml").write_text("openapi: 3.1.0\n", encoding="utf-8")
+
+    swagger_workspace = tmp_path / "swagger-override-repo"
+    swagger_workspace.mkdir(parents=True, exist_ok=True)
+    (swagger_workspace / "swagger.yaml").write_text('swagger: "2.0"\n', encoding="utf-8")
+
+    storybook_workspace = tmp_path / "storybook-override-repo"
+    (storybook_workspace / ".storybook").mkdir(parents=True, exist_ok=True)
+    (storybook_workspace / ".storybook" / "main.ts").write_text("export default {}\n", encoding="utf-8")
+
+    monkeypatch.setattr(
+        "integration_registry.shutil.which",
+        lambda command: f"C:/tools/{command}.exe"
+        if command in {"newman", "inso", "bru", "swagger-cli", "npm", "storybook"}
+        else None,
+    )
+
+    previews = [
+        preview_integration_action(family_id="api_clients", action_id="validate", params={}, registry_payload=normalize_integration_registry({}, {}), workspace_path=str(postman_workspace), project_name="Postman Override Demo"),
+        preview_integration_action(family_id="api_clients", action_id="validate", params={}, registry_payload=normalize_integration_registry({}, {}), workspace_path=str(insomnia_workspace), project_name="Insomnia Override Demo"),
+        preview_integration_action(family_id="api_clients", action_id="validate", params={}, registry_payload=normalize_integration_registry({}, {}), workspace_path=str(bruno_workspace), project_name="Bruno Override Demo"),
+        preview_integration_action(family_id="openapi", action_id="validate", params={}, registry_payload=normalize_integration_registry({}, {}), workspace_path=str(openapi_workspace), project_name="OpenAPI Override Demo"),
+        preview_integration_action(family_id="openapi", action_id="validate", params={}, registry_payload=normalize_integration_registry({}, {}), workspace_path=str(swagger_workspace), project_name="Swagger Override Demo"),
+        preview_integration_action(family_id="storybook", action_id="validate", params={}, registry_payload=normalize_integration_registry({}, {}), workspace_path=str(storybook_workspace), project_name="Storybook Override Demo"),
+    ]
+
+    for preview in previews:
+        assert preview["risk_level"] == "low"
+        assert preview["permission_policy"] == "ask_once_per_project"
+        assert preview["requires_confirmation"] is False
+        assert preview["mutates_remote_state"] is False
+        assert preview["provider_guidance"] == preview["notes"][-1]
+
+
+def test_project_integrations_surface_effective_action_metadata(monkeypatch, tmp_path) -> None:
+    devcontainer_workspace = tmp_path / "effective-metadata-repo"
+    (devcontainer_workspace / ".devcontainer").mkdir(parents=True, exist_ok=True)
+    (devcontainer_workspace / ".devcontainer" / "devcontainer.json").write_text("{}\n", encoding="utf-8")
+    (devcontainer_workspace / "docusaurus.config.ts").write_text("export default {};\n", encoding="utf-8")
+    (devcontainer_workspace / "orders.postman_collection.json").write_text("{}\n", encoding="utf-8")
+
+    monkeypatch.setattr(
+        "integration_registry.shutil.which",
+        lambda command: f"C:/tools/{command}.exe" if command in {"devcontainer", "npm", "newman"} else None,
+    )
+
+    statuses = {
+        item["family"]: item
+        for item in build_project_integration_status(
+            workspace_path=str(devcontainer_workspace),
+            project_name="Effective Metadata Demo",
+            registry_payload=normalize_integration_registry({}, {}),
+        )
+    }
+
+    container_open = next(item for item in statuses["containers"]["available_actions"] if item["action_id"] == "open")
+    docs_sync = next(item for item in statuses["docs_systems"]["available_actions"] if item["action_id"] == "sync")
+    postman_validate = next(item for item in statuses["api_clients"]["available_actions"] if item["action_id"] == "validate")
+
+    assert container_open["provider"] == "devcontainer"
+    assert container_open["risk_level"] == "low"
+    assert container_open["permission_policy"] == "ask_once_per_project"
+    assert container_open["requires_confirmation"] is False
+    assert container_open["mutates_remote_state"] is False
+    assert docs_sync["provider"] == "docusaurus"
+    assert docs_sync["risk_level"] == "low"
+    assert docs_sync["permission_policy"] == "ask_once_per_project"
+    assert docs_sync["requires_confirmation"] is False
+    assert docs_sync["mutates_remote_state"] is False
+    assert postman_validate["provider"] == "postman"
+    assert postman_validate["risk_level"] == "low"
+    assert postman_validate["permission_policy"] == "ask_once_per_project"

@@ -597,6 +597,53 @@ PROVIDER_ACTION_REQUIRED_PARAMS: dict[tuple[str, str], tuple[str, ...]] = {
     ("swagger", "validate"): ("spec",),
 }
 
+PROVIDER_ACTION_OVERRIDES: dict[tuple[str, str], dict[str, Any]] = {
+    ("devcontainer", "open"): {
+        "risk_level": "low",
+        "permission_policy": "ask_once_per_project",
+        "mutates_remote_state": False,
+        "requires_confirmation": False,
+    },
+    ("docusaurus", "sync"): {
+        "risk_level": "low",
+        "permission_policy": "ask_once_per_project",
+        "mutates_remote_state": False,
+        "requires_confirmation": False,
+    },
+    ("postman", "validate"): {
+        "risk_level": "low",
+        "permission_policy": "ask_once_per_project",
+    },
+    ("insomnia", "validate"): {
+        "risk_level": "low",
+        "permission_policy": "ask_once_per_project",
+    },
+    ("bruno", "validate"): {
+        "risk_level": "low",
+        "permission_policy": "ask_once_per_project",
+    },
+    ("openapi", "validate"): {
+        "risk_level": "low",
+        "permission_policy": "ask_once_per_project",
+    },
+    ("swagger", "validate"): {
+        "risk_level": "low",
+        "permission_policy": "ask_once_per_project",
+    },
+    ("storybook", "validate"): {
+        "risk_level": "low",
+        "permission_policy": "ask_once_per_project",
+    },
+    ("chrome_devtools", "open"): {
+        "risk_level": "low",
+        "permission_policy": "ask_once_per_project",
+    },
+    ("cdp", "open"): {
+        "risk_level": "low",
+        "permission_policy": "ask_once_per_project",
+    },
+}
+
 
 @dataclass(frozen=True)
 class IntegrationActionDefinition:
@@ -1278,6 +1325,10 @@ def _provider_display_name(provider: str | None) -> str:
         "github_issues": "GitHub Issues",
         "github_releases": "GitHub Releases",
         "docker_hub": "Docker Hub",
+        "devcontainer": "Dev Containers",
+        "codeql": "CodeQL",
+        "chrome_devtools": "Chrome DevTools",
+        "cdp": "Chrome DevTools Protocol",
         "npm": "npm",
         "pypi": "PyPI",
         "crates": "crates.io",
@@ -1300,16 +1351,29 @@ def _provider_guidance(provider: str | None, action_id: str) -> str | None:
     return guidance.get(action_id) or guidance.get("inspect")
 
 
+def _effective_action_metadata(action: IntegrationActionDefinition, provider: str | None) -> dict[str, Any]:
+    metadata = {
+        "risk_level": action.risk_level,
+        "permission_policy": action.permission_policy,
+        "mutates_remote_state": action.mutates_remote_state,
+        "requires_confirmation": action.requires_confirmation,
+    }
+    if provider:
+        metadata.update(PROVIDER_ACTION_OVERRIDES.get((provider, action.action_id), {}))
+    return metadata
+
+
 def _default_provider_guidance(
     *,
     provider: str | None,
     action: IntegrationActionDefinition,
+    action_metadata: dict[str, Any],
     command_template: str | None,
 ) -> str | None:
     if not provider or not command_template:
         return None
     provider_name = _provider_display_name(provider)
-    if action.mutates_remote_state:
+    if bool(action_metadata.get("mutates_remote_state")):
         return f"{provider_name} uses the local CLI when available and still mutates remote state, so approvals remain mandatory."
     if action.action_id in {"inspect", "inspect_run", "tail_logs", "tail", "search", "draft", "open"}:
         return f"{provider_name} uses the local CLI when available, but the result still depends on live provider state rather than repo-local proof."
@@ -2292,6 +2356,7 @@ def build_project_integration_status(
                 installed_clis=installed_clis,
                 git_remote_url=git_remote_url,
             )
+            action_metadata = _effective_action_metadata(action, action_provider)
             action_command_ready = bool(action_template and _command_is_available(action_template))
             action_required_params = _dedupe_strs(
                 [
@@ -2313,11 +2378,11 @@ def build_project_integration_status(
                     "action_id": action.action_id,
                     "title": action.title,
                     "summary": action.summary,
-                    "risk_level": action.risk_level,
-                    "permission_policy": action.permission_policy,
+                    "risk_level": str(action_metadata["risk_level"]),
+                    "permission_policy": str(action_metadata["permission_policy"]),
                     "preview_supported": action.preview_supported,
-                    "mutates_remote_state": action.mutates_remote_state,
-                    "requires_confirmation": action.requires_confirmation,
+                    "mutates_remote_state": bool(action_metadata["mutates_remote_state"]),
+                    "requires_confirmation": bool(action_metadata["requires_confirmation"]),
                     "required_params": action_required_params,
                     "status": "available" if action_ready else "needs_setup",
                     "provider": action_provider,
@@ -2380,7 +2445,7 @@ def build_project_integration_status(
                     git_remote_url=git_remote_url,
                 )
             ]
-            if template and not action.mutates_remote_state and _command_is_available(template)
+            if template and not _effective_action_metadata(action, _provider).get("mutates_remote_state") and _command_is_available(template)
         ]
         artifacts = [{"type": "config_file", "path": path} for path in detected_files]
         artifacts.extend(
@@ -2406,7 +2471,7 @@ def build_project_integration_status(
                 "resolved_provider": resolved_provider,
                 "provider_candidates": provider_candidates,
                 "resolved_cli_candidates": provider_cli_candidates,
-                "required_permissions": _dedupe_strs([action.permission_policy for action in family.actions]),
+                "required_permissions": _dedupe_strs([str(item["permission_policy"]) for item in available_actions]),
                 "available_action_count": available_action_count,
                 "local_action_count": local_action_count,
                 "guided_action_count": guided_action_count,
@@ -2523,6 +2588,7 @@ def preview_integration_action(
         installed_clis=installed_clis,
         git_remote_url=git_remote_url,
     )
+    action_metadata = _effective_action_metadata(action, resolved_provider)
     effective_params = {
         **_provider_default_params(
             provider=resolved_provider,
@@ -2548,6 +2614,7 @@ def preview_integration_action(
     provider_guidance = _provider_guidance(resolved_provider, action.action_id) or _default_provider_guidance(
         provider=resolved_provider,
         action=action,
+        action_metadata=action_metadata,
         command_template=command_template,
     )
     notes = [
@@ -2557,10 +2624,10 @@ def preview_integration_action(
         f"Executable detected: {'yes' if executable_available else 'no'}.",
         f"Resolved provider: {resolved_provider or 'none'}.",
     ]
-    if provider_guidance:
-        notes.append(provider_guidance)
     if effective_params != params:
         notes.append(f"Provider defaults were inferred for preview params: {json.dumps({key: value for key, value in effective_params.items() if key not in params}, sort_keys=True)}")
+    if provider_guidance:
+        notes.append(provider_guidance)
     return {
         "family": family.family_id,
         "action_id": action.action_id,
@@ -2569,17 +2636,18 @@ def preview_integration_action(
         "project_name": project_name,
         "workspace_path": workspace_path,
         "command": command,
-        "risk_level": action.risk_level,
-        "permission_policy": action.permission_policy,
+        "risk_level": str(action_metadata["risk_level"]),
+        "permission_policy": str(action_metadata["permission_policy"]),
         "preview_supported": action.preview_supported,
-        "mutates_remote_state": action.mutates_remote_state,
-        "requires_confirmation": action.requires_confirmation,
+        "mutates_remote_state": bool(action_metadata["mutates_remote_state"]),
+        "requires_confirmation": bool(action_metadata["requires_confirmation"]),
         "missing_params": missing,
         "provider": resolved_provider,
         "provider_candidates": provider_candidates,
         "defaulted_params": {key: value for key, value in effective_params.items() if key not in params},
         "command_ready": executable_available,
         "execution_mode": execution_mode,
+        "provider_guidance": provider_guidance,
         "notes": notes,
     }
 
@@ -2625,7 +2693,7 @@ def execute_integration_action(
             "approval_required": False,
             "updated_registry": imported,
         }
-    if action.requires_confirmation and not confirmed:
+    if preview["requires_confirmation"] and not confirmed:
         return {
             **preview,
             "status": "approval_required",
