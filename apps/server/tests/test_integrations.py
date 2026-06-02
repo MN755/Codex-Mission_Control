@@ -4080,3 +4080,111 @@ def test_project_integrations_detect_package_registry_provider_specific_cli_from
     assert rubygems_status["resolved_cli_candidates"] == ["gem"]
     assert rubygems_status["health"]["resolved_cli_detected"] == ["gem"]
     assert rubygems_status["status"] == "ready"
+
+
+def test_provider_specific_preview_surfaces_package_registry_and_docusaurus_guidance(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(
+        "integration_registry.shutil.which",
+        lambda command: f"C:/tools/{command}.exe"
+        if command in {"npm", "twine", "mvn", "cargo", "dotnet", "gem", "docker"}
+        else None,
+    )
+
+    docusaurus_workspace = tmp_path / "docusaurus-guidance-repo"
+    docusaurus_workspace.mkdir(parents=True, exist_ok=True)
+    (docusaurus_workspace / "docusaurus.config.ts").write_text("export default {};\n", encoding="utf-8")
+
+    npm_preview = preview_integration_action(
+        family_id="package_registries",
+        action_id="inspect",
+        params={},
+        registry_payload=normalize_integration_registry(
+            {"connections": {"package_registries": {"family": "package_registries", "status": "connected", "providers": ["npm"], "connection_source": "mission_control", "host_imported": False}}},
+            {},
+        ),
+        workspace_path=None,
+        project_name="npm Guidance Demo",
+    )
+    pypi_preview = preview_integration_action(
+        family_id="package_registries",
+        action_id="inspect",
+        params={},
+        registry_payload=normalize_integration_registry(
+            {"connections": {"package_registries": {"family": "package_registries", "status": "connected", "providers": ["pypi"], "connection_source": "mission_control", "host_imported": False}}},
+            {},
+        ),
+        workspace_path=None,
+        project_name="PyPI Guidance Demo",
+    )
+    maven_preview = preview_integration_action(
+        family_id="package_registries",
+        action_id="inspect",
+        params={},
+        registry_payload=normalize_integration_registry(
+            {"connections": {"package_registries": {"family": "package_registries", "status": "connected", "providers": ["maven"], "connection_source": "mission_control", "host_imported": False}}},
+            {},
+        ),
+        workspace_path=None,
+        project_name="Maven Guidance Demo",
+    )
+    crates_preview = preview_integration_action(
+        family_id="package_registries",
+        action_id="inspect",
+        params={},
+        registry_payload=normalize_integration_registry(
+            {"connections": {"package_registries": {"family": "package_registries", "status": "connected", "providers": ["crates"], "connection_source": "mission_control", "host_imported": False}}},
+            {},
+        ),
+        workspace_path=None,
+        project_name="crates.io Guidance Demo",
+    )
+    nuget_preview = preview_integration_action(
+        family_id="package_registries",
+        action_id="inspect",
+        params={},
+        registry_payload=normalize_integration_registry(
+            {"connections": {"package_registries": {"family": "package_registries", "status": "connected", "providers": ["nuget"], "connection_source": "mission_control", "host_imported": False}}},
+            {},
+        ),
+        workspace_path=None,
+        project_name="NuGet Guidance Demo",
+    )
+    rubygems_preview = preview_integration_action(
+        family_id="package_registries",
+        action_id="inspect",
+        params={},
+        registry_payload=normalize_integration_registry(
+            {"connections": {"package_registries": {"family": "package_registries", "status": "connected", "providers": ["rubygems"], "connection_source": "mission_control", "host_imported": False}}},
+            {},
+        ),
+        workspace_path=None,
+        project_name="RubyGems Guidance Demo",
+    )
+    dockerhub_preview = preview_integration_action(
+        family_id="package_registries",
+        action_id="inspect",
+        params={},
+        registry_payload=normalize_integration_registry(
+            {"connections": {"package_registries": {"family": "package_registries", "status": "connected", "providers": ["docker_hub"], "connection_source": "mission_control", "host_imported": False}}},
+            {},
+        ),
+        workspace_path=None,
+        project_name="Docker Hub Guidance Demo",
+    )
+    docusaurus_preview = preview_integration_action(
+        family_id="docs_systems",
+        action_id="sync",
+        params={},
+        registry_payload=normalize_integration_registry({}, {}),
+        workspace_path=str(docusaurus_workspace),
+        project_name="Docusaurus Guidance Demo",
+    )
+
+    assert any("current auth/session and registry configuration" in note.lower() for note in npm_preview["notes"])
+    assert any("upload environment" in note.lower() for note in pypi_preview["notes"])
+    assert any("build and repository configuration" in note.lower() for note in maven_preview["notes"])
+    assert any("crates.io inspection uses the local cargo cli" in note.lower() for note in crates_preview["notes"])
+    assert any("nuget inspection uses the local cli" in note.lower() for note in nuget_preview["notes"])
+    assert any("rubygems inspection uses the local cli" in note.lower() for note in rubygems_preview["notes"])
+    assert any("local docker cli" in note.lower() and "local engine and auth context" in note.lower() for note in dockerhub_preview["notes"])
+    assert any("does not claim a live remote publish by itself" in note.lower() for note in docusaurus_preview["notes"])

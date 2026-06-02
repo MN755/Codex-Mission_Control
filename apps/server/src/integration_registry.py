@@ -348,6 +348,34 @@ PROVIDER_ACTION_GUIDANCE: dict[str, dict[str, str]] = {
         "inspect": "GCP inspection uses live CLI auth and reflects the active project context rather than repo-local proof.",
         "open": "GCP context refresh uses the local CLI when available and still depends on live cloud auth state.",
     },
+    "npm": {
+        "inspect": "npm inspection uses the local CLI when available and reflects the current auth/session and registry configuration rather than repo hints alone.",
+        "publish": "npm publish uses the local CLI when available and still mutates remote registry state, so approvals remain mandatory.",
+    },
+    "pypi": {
+        "inspect": "PyPI inspection uses the local tooling when available and reflects the current upload environment rather than repo hints alone.",
+        "publish": "PyPI uploads use the local tooling when available and still mutate remote registry state, so approvals remain mandatory.",
+    },
+    "maven": {
+        "inspect": "Maven inspection uses the local CLI when available and reflects the current build and repository configuration rather than repo hints alone.",
+        "publish": "Maven deploy uses the local CLI when available and still mutates remote repository state, so approvals remain mandatory.",
+    },
+    "crates": {
+        "inspect": "crates.io inspection uses the local Cargo CLI when available and reflects the current toolchain and registry configuration rather than repo hints alone.",
+        "publish": "crates.io publishing uses the local Cargo CLI when available and still mutates remote registry state, so approvals remain mandatory.",
+    },
+    "nuget": {
+        "inspect": "NuGet inspection uses the local CLI when available and reflects the current source configuration rather than repo hints alone.",
+        "publish": "NuGet publishing uses the local CLI when available and still mutates remote registry state, so approvals remain mandatory.",
+    },
+    "rubygems": {
+        "inspect": "RubyGems inspection uses the local CLI when available and reflects the current gem environment rather than repo hints alone.",
+        "publish": "RubyGems publishing uses the local CLI when available and still mutates remote registry state, so approvals remain mandatory.",
+    },
+    "docker_hub": {
+        "inspect": "Docker Hub inspection uses the local Docker CLI when available and reflects the current local engine and auth context rather than repo hints alone.",
+        "publish": "Docker Hub publishing uses the local Docker CLI when available and still mutates remote registry state, so approvals remain mandatory.",
+    },
     "snyk": {
         "scan": "Snyk scans use the local CLI when available and reflect the current dependency graph and live policy configuration rather than repo hints alone.",
     },
@@ -494,6 +522,10 @@ PROVIDER_ACTION_GUIDANCE: dict[str, dict[str, str]] = {
     },
     "gcp_secret_manager": {
         "inspect": "GCP Secret Manager inspection uses gcloud auth and reflects live cloud state, not a repo-only guarantee.",
+    },
+    "docusaurus": {
+        "inspect": "Docusaurus inspection uses the local CLI when available and reflects the current docs workspace rather than repo hints alone.",
+        "sync": "Docusaurus sync currently builds local docs artifacts through the local CLI; it does not claim a live remote publish by itself.",
     },
     "stripe": {
         "inspect": "Stripe inspection uses the local CLI when available, but it still reflects live sandbox/auth state rather than repo-local proof.",
@@ -1246,6 +1278,11 @@ def _provider_display_name(provider: str | None) -> str:
         "github_issues": "GitHub Issues",
         "github_releases": "GitHub Releases",
         "docker_hub": "Docker Hub",
+        "npm": "npm",
+        "pypi": "PyPI",
+        "crates": "crates.io",
+        "nuget": "NuGet",
+        "rubygems": "RubyGems",
         "new_relic": "New Relic",
         "aws_secrets_manager": "AWS Secrets Manager",
         "gcp_secret_manager": "GCP Secret Manager",
