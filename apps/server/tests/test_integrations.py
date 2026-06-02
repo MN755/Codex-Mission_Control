@@ -768,9 +768,45 @@ def test_project_integrations_and_action_preview_flow(client, bridge_headers, mo
         expected_families = _families_with_count_map_values(count_field)
         assert project_integrations_payload[f"{prefix}_family_count"] == len(expected_families)
         assert project_integrations_payload[f"{prefix}_families"] == expected_families
+    for prefix, family_ids_field in (
+        ("action_status", "action_status_counts"),
+        ("available_action_status", "available_action_status_counts"),
+        ("blocked_action_status", "blocked_action_status_counts"),
+        ("execution_mode", "execution_mode_counts"),
+        ("available_execution_mode", "available_execution_mode_counts"),
+        ("blocked_execution_mode", "blocked_execution_mode_counts"),
+        ("provider_support_mode", "provider_support_mode_counts"),
+        ("available_provider_support_mode", "available_provider_support_mode_counts"),
+        ("blocked_provider_support_mode", "blocked_provider_support_mode_counts"),
+        ("action_provider_context_status", "provider_context_status_counts"),
+        ("available_action_provider_context_status", "available_provider_context_status_counts"),
+        ("blocked_action_provider_context_status", "blocked_provider_context_status_counts"),
+        ("verification_scope", "verification_scope_counts"),
+        ("available_verification_scope", "available_verification_scope_counts"),
+        ("blocked_verification_scope", "blocked_verification_scope_counts"),
+        ("safe_command_reason", "safe_command_reason_counts"),
+        ("available_safe_command_reason", "available_safe_command_reason_counts"),
+        ("blocked_safe_command_reason", "blocked_safe_command_reason_counts"),
+        ("context_requirement_reason", "context_requirement_reason_counts"),
+        ("available_context_requirement_reason", "available_context_requirement_reason_counts"),
+        ("blocked_context_requirement_reason", "blocked_context_requirement_reason_counts"),
+        ("action_provider", "action_provider_counts"),
+        ("available_action_provider", "available_action_provider_counts"),
+        ("blocked_action_provider", "blocked_action_provider_counts"),
+        ("executable_name", "executable_name_counts"),
+        ("available_executable_name", "available_executable_name_counts"),
+        ("blocked_executable_name", "blocked_executable_name_counts"),
+        ("available_provider_context_status", "available_provider_context_status_counts"),
+        ("blocked_provider_context_status", "blocked_provider_context_status_counts"),
+        ("execution_block_reason", "execution_block_reason_counts"),
+        ("blocking_reason", "blocking_reason_counts"),
+    ):
+        expected_family_counts = {key: len(value) for key, value in _group_count_map_family_ids(family_ids_field).items()}
+        assert project_integrations_payload[f"{prefix}_family_counts"] == expected_family_counts
     assert project_integrations_payload["required_permissions"] == _merge_unique_lists("required_permissions")
     assert project_integrations_payload["required_permission_count"] == len(project_integrations_payload["required_permissions"])
     assert project_integrations_payload["required_permission_family_ids"] == _group_list_family_ids("required_permissions")
+    assert project_integrations_payload["required_permission_family_counts"] == {key: len(value) for key, value in _group_list_family_ids("required_permissions").items()}
     assert project_integrations_payload["required_permission_group_count"] == len(project_integrations_payload["required_permission_family_ids"])
     assert project_integrations_payload["required_permission_family_count"] == len(project_integrations_payload["required_permission_families"])
     assert project_integrations_payload["required_permission_families"] == _families_with_values("required_permissions")
@@ -779,6 +815,7 @@ def test_project_integrations_and_action_preview_flow(client, bridge_headers, mo
     assert project_integrations_payload["permission_policy_group_count"] == len(project_integrations_payload["permission_policy_counts"])
     assert project_integrations_payload["permission_policy_action_refs"] == _collect_grouped_action_refs("permission_policy_action_ids")
     assert project_integrations_payload["permission_policy_family_ids"] == _group_count_map_family_ids("permission_policy_counts")
+    assert project_integrations_payload["permission_policy_family_counts"] == {key: len(value) for key, value in _group_count_map_family_ids("permission_policy_counts").items()}
     assert project_integrations_payload["permission_policy_family_count"] == len(project_integrations_payload["permission_policy_families"])
     assert project_integrations_payload["permission_policy_families"] == _families_with_count_map_values("permission_policy_counts")
     assert project_integrations_payload["available_permission_policies"] == sorted(project_integrations_payload["available_permission_policy_counts"])
@@ -786,6 +823,7 @@ def test_project_integrations_and_action_preview_flow(client, bridge_headers, mo
     assert project_integrations_payload["available_permission_policy_group_count"] == len(project_integrations_payload["available_permission_policy_counts"])
     assert project_integrations_payload["available_permission_policy_action_refs"] == _collect_grouped_action_refs("available_permission_policy_action_ids")
     assert project_integrations_payload["available_permission_policy_family_ids"] == _group_count_map_family_ids("available_permission_policy_counts")
+    assert project_integrations_payload["available_permission_policy_family_counts"] == {key: len(value) for key, value in _group_count_map_family_ids("available_permission_policy_counts").items()}
     assert project_integrations_payload["available_permission_policy_family_count"] == len(project_integrations_payload["available_permission_policy_families"])
     assert project_integrations_payload["available_permission_policy_families"] == _families_with_count_map_values("available_permission_policy_counts")
     assert project_integrations_payload["blocked_permission_policies"] == sorted(project_integrations_payload["blocked_permission_policy_counts"])
@@ -793,6 +831,7 @@ def test_project_integrations_and_action_preview_flow(client, bridge_headers, mo
     assert project_integrations_payload["blocked_permission_policy_group_count"] == len(project_integrations_payload["blocked_permission_policy_counts"])
     assert project_integrations_payload["blocked_permission_policy_action_refs"] == _collect_grouped_action_refs("blocked_permission_policy_action_ids")
     assert project_integrations_payload["blocked_permission_policy_family_ids"] == _group_count_map_family_ids("blocked_permission_policy_counts")
+    assert project_integrations_payload["blocked_permission_policy_family_counts"] == {key: len(value) for key, value in _group_count_map_family_ids("blocked_permission_policy_counts").items()}
     assert project_integrations_payload["blocked_permission_policy_family_count"] == len(project_integrations_payload["blocked_permission_policy_families"])
     assert project_integrations_payload["blocked_permission_policy_families"] == _families_with_count_map_values("blocked_permission_policy_counts")
     assert project_integrations_payload["risk_levels"] == sorted(project_integrations_payload["risk_level_counts"])
@@ -800,6 +839,7 @@ def test_project_integrations_and_action_preview_flow(client, bridge_headers, mo
     assert project_integrations_payload["risk_level_group_count"] == len(project_integrations_payload["risk_level_counts"])
     assert project_integrations_payload["risk_level_action_refs"] == _collect_grouped_action_refs("risk_level_action_ids")
     assert project_integrations_payload["risk_level_family_ids"] == _group_count_map_family_ids("risk_level_counts")
+    assert project_integrations_payload["risk_level_family_counts"] == {key: len(value) for key, value in _group_count_map_family_ids("risk_level_counts").items()}
     assert project_integrations_payload["risk_level_family_count"] == len(project_integrations_payload["risk_level_families"])
     assert project_integrations_payload["risk_level_families"] == _families_with_count_map_values("risk_level_counts")
     assert project_integrations_payload["available_risk_levels"] == sorted(project_integrations_payload["available_risk_level_counts"])
@@ -807,6 +847,7 @@ def test_project_integrations_and_action_preview_flow(client, bridge_headers, mo
     assert project_integrations_payload["available_risk_level_group_count"] == len(project_integrations_payload["available_risk_level_counts"])
     assert project_integrations_payload["available_risk_level_action_refs"] == _collect_grouped_action_refs("available_risk_level_action_ids")
     assert project_integrations_payload["available_risk_level_family_ids"] == _group_count_map_family_ids("available_risk_level_counts")
+    assert project_integrations_payload["available_risk_level_family_counts"] == {key: len(value) for key, value in _group_count_map_family_ids("available_risk_level_counts").items()}
     assert project_integrations_payload["available_risk_level_family_count"] == len(project_integrations_payload["available_risk_level_families"])
     assert project_integrations_payload["available_risk_level_families"] == _families_with_count_map_values("available_risk_level_counts")
     assert project_integrations_payload["blocked_risk_levels"] == sorted(project_integrations_payload["blocked_risk_level_counts"])
@@ -814,11 +855,13 @@ def test_project_integrations_and_action_preview_flow(client, bridge_headers, mo
     assert project_integrations_payload["blocked_risk_level_group_count"] == len(project_integrations_payload["blocked_risk_level_counts"])
     assert project_integrations_payload["blocked_risk_level_action_refs"] == _collect_grouped_action_refs("blocked_risk_level_action_ids")
     assert project_integrations_payload["blocked_risk_level_family_ids"] == _group_count_map_family_ids("blocked_risk_level_counts")
+    assert project_integrations_payload["blocked_risk_level_family_counts"] == {key: len(value) for key, value in _group_count_map_family_ids("blocked_risk_level_counts").items()}
     assert project_integrations_payload["blocked_risk_level_family_count"] == len(project_integrations_payload["blocked_risk_level_families"])
     assert project_integrations_payload["blocked_risk_level_families"] == _families_with_count_map_values("blocked_risk_level_counts")
     assert project_integrations_payload["execution_required_permissions"] == _merge_unique_lists("execution_required_permissions")
     assert project_integrations_payload["execution_required_permission_count"] == len(project_integrations_payload["execution_required_permissions"])
     assert project_integrations_payload["execution_required_permission_family_ids"] == _group_list_family_ids("execution_required_permissions")
+    assert project_integrations_payload["execution_required_permission_family_counts"] == {key: len(value) for key, value in _group_list_family_ids("execution_required_permissions").items()}
     assert project_integrations_payload["execution_required_permission_group_count"] == len(project_integrations_payload["execution_required_permission_family_ids"])
     assert project_integrations_payload["execution_required_permission_family_count"] == len(project_integrations_payload["execution_required_permission_families"])
     assert project_integrations_payload["execution_required_permission_families"] == _families_with_values("execution_required_permissions")
@@ -827,6 +870,7 @@ def test_project_integrations_and_action_preview_flow(client, bridge_headers, mo
     assert project_integrations_payload["execution_permission_policy_group_count"] == len(project_integrations_payload["execution_permission_policy_counts"])
     assert project_integrations_payload["execution_permission_policy_action_refs"] == _collect_grouped_action_refs("execution_permission_policy_action_ids")
     assert project_integrations_payload["execution_permission_policy_family_ids"] == _group_count_map_family_ids("execution_permission_policy_counts")
+    assert project_integrations_payload["execution_permission_policy_family_counts"] == {key: len(value) for key, value in _group_count_map_family_ids("execution_permission_policy_counts").items()}
     assert project_integrations_payload["execution_permission_policy_family_count"] == len(project_integrations_payload["execution_permission_policy_families"])
     assert project_integrations_payload["execution_permission_policy_families"] == _families_with_count_map_values("execution_permission_policy_counts")
     assert project_integrations_payload["available_execution_permission_policies"] == sorted(project_integrations_payload["available_execution_permission_policy_counts"])
@@ -834,6 +878,7 @@ def test_project_integrations_and_action_preview_flow(client, bridge_headers, mo
     assert project_integrations_payload["available_execution_permission_policy_group_count"] == len(project_integrations_payload["available_execution_permission_policy_counts"])
     assert project_integrations_payload["available_execution_permission_policy_action_refs"] == _collect_grouped_action_refs("available_execution_permission_policy_action_ids")
     assert project_integrations_payload["available_execution_permission_policy_family_ids"] == _group_count_map_family_ids("available_execution_permission_policy_counts")
+    assert project_integrations_payload["available_execution_permission_policy_family_counts"] == {key: len(value) for key, value in _group_count_map_family_ids("available_execution_permission_policy_counts").items()}
     assert project_integrations_payload["available_execution_permission_policy_family_count"] == len(project_integrations_payload["available_execution_permission_policy_families"])
     assert project_integrations_payload["available_execution_permission_policy_families"] == _families_with_count_map_values("available_execution_permission_policy_counts")
     assert project_integrations_payload["blocked_execution_permission_policies"] == sorted(project_integrations_payload["blocked_execution_permission_policy_counts"])
@@ -841,6 +886,7 @@ def test_project_integrations_and_action_preview_flow(client, bridge_headers, mo
     assert project_integrations_payload["blocked_execution_permission_policy_group_count"] == len(project_integrations_payload["blocked_execution_permission_policy_counts"])
     assert project_integrations_payload["blocked_execution_permission_policy_action_refs"] == _collect_grouped_action_refs("blocked_execution_permission_policy_action_ids")
     assert project_integrations_payload["blocked_execution_permission_policy_family_ids"] == _group_count_map_family_ids("blocked_execution_permission_policy_counts")
+    assert project_integrations_payload["blocked_execution_permission_policy_family_counts"] == {key: len(value) for key, value in _group_count_map_family_ids("blocked_execution_permission_policy_counts").items()}
     assert project_integrations_payload["blocked_execution_permission_policy_family_count"] == len(project_integrations_payload["blocked_execution_permission_policy_families"])
     assert project_integrations_payload["blocked_execution_permission_policy_families"] == _families_with_count_map_values("blocked_execution_permission_policy_counts")
     assert project_integrations_payload["execution_risk_levels"] == sorted(project_integrations_payload["execution_risk_level_counts"])
@@ -848,6 +894,7 @@ def test_project_integrations_and_action_preview_flow(client, bridge_headers, mo
     assert project_integrations_payload["execution_risk_level_group_count"] == len(project_integrations_payload["execution_risk_level_counts"])
     assert project_integrations_payload["execution_risk_level_action_refs"] == _collect_grouped_action_refs("execution_risk_level_action_ids")
     assert project_integrations_payload["execution_risk_level_family_ids"] == _group_count_map_family_ids("execution_risk_level_counts")
+    assert project_integrations_payload["execution_risk_level_family_counts"] == {key: len(value) for key, value in _group_count_map_family_ids("execution_risk_level_counts").items()}
     assert project_integrations_payload["execution_risk_level_family_count"] == len(project_integrations_payload["execution_risk_level_families"])
     assert project_integrations_payload["execution_risk_level_families"] == _families_with_count_map_values("execution_risk_level_counts")
     assert project_integrations_payload["available_execution_risk_levels"] == sorted(project_integrations_payload["available_execution_risk_level_counts"])
@@ -855,6 +902,7 @@ def test_project_integrations_and_action_preview_flow(client, bridge_headers, mo
     assert project_integrations_payload["available_execution_risk_level_group_count"] == len(project_integrations_payload["available_execution_risk_level_counts"])
     assert project_integrations_payload["available_execution_risk_level_action_refs"] == _collect_grouped_action_refs("available_execution_risk_level_action_ids")
     assert project_integrations_payload["available_execution_risk_level_family_ids"] == _group_count_map_family_ids("available_execution_risk_level_counts")
+    assert project_integrations_payload["available_execution_risk_level_family_counts"] == {key: len(value) for key, value in _group_count_map_family_ids("available_execution_risk_level_counts").items()}
     assert project_integrations_payload["available_execution_risk_level_family_count"] == len(project_integrations_payload["available_execution_risk_level_families"])
     assert project_integrations_payload["available_execution_risk_level_families"] == _families_with_count_map_values("available_execution_risk_level_counts")
     assert project_integrations_payload["blocked_execution_risk_levels"] == sorted(project_integrations_payload["blocked_execution_risk_level_counts"])
@@ -862,6 +910,7 @@ def test_project_integrations_and_action_preview_flow(client, bridge_headers, mo
     assert project_integrations_payload["blocked_execution_risk_level_group_count"] == len(project_integrations_payload["blocked_execution_risk_level_counts"])
     assert project_integrations_payload["blocked_execution_risk_level_action_refs"] == _collect_grouped_action_refs("blocked_execution_risk_level_action_ids")
     assert project_integrations_payload["blocked_execution_risk_level_family_ids"] == _group_count_map_family_ids("blocked_execution_risk_level_counts")
+    assert project_integrations_payload["blocked_execution_risk_level_family_counts"] == {key: len(value) for key, value in _group_count_map_family_ids("blocked_execution_risk_level_counts").items()}
     assert project_integrations_payload["blocked_execution_risk_level_family_count"] == len(project_integrations_payload["blocked_execution_risk_level_families"])
     assert project_integrations_payload["blocked_execution_risk_level_families"] == _families_with_count_map_values("blocked_execution_risk_level_counts")
     assert project_integrations_payload["artifact_count"] == len(project_integrations_payload["artifacts"])

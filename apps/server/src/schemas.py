@@ -3856,6 +3856,7 @@ class ProjectIntegrationsRead(BaseModel):
     action_status_group_count: int = 0
     action_status_action_refs: dict[str, list[str]] = Field(default_factory=dict)
     action_status_family_ids: dict[str, list[str]] = Field(default_factory=dict)
+    action_status_family_counts: dict[str, int] = Field(default_factory=dict)
     action_status_family_count: int = 0
     action_status_families: list[str] = Field(default_factory=list)
     available_action_statuses: list[str] = Field(default_factory=list)
@@ -3863,6 +3864,7 @@ class ProjectIntegrationsRead(BaseModel):
     available_action_status_group_count: int = 0
     available_action_status_action_refs: dict[str, list[str]] = Field(default_factory=dict)
     available_action_status_family_ids: dict[str, list[str]] = Field(default_factory=dict)
+    available_action_status_family_counts: dict[str, int] = Field(default_factory=dict)
     available_action_status_family_count: int = 0
     available_action_status_families: list[str] = Field(default_factory=list)
     blocked_action_statuses: list[str] = Field(default_factory=list)
@@ -3870,6 +3872,7 @@ class ProjectIntegrationsRead(BaseModel):
     blocked_action_status_group_count: int = 0
     blocked_action_status_action_refs: dict[str, list[str]] = Field(default_factory=dict)
     blocked_action_status_family_ids: dict[str, list[str]] = Field(default_factory=dict)
+    blocked_action_status_family_counts: dict[str, int] = Field(default_factory=dict)
     blocked_action_status_family_count: int = 0
     blocked_action_status_families: list[str] = Field(default_factory=list)
     execution_modes: list[str] = Field(default_factory=list)
@@ -3877,6 +3880,7 @@ class ProjectIntegrationsRead(BaseModel):
     execution_mode_group_count: int = 0
     execution_mode_action_refs: dict[str, list[str]] = Field(default_factory=dict)
     execution_mode_family_ids: dict[str, list[str]] = Field(default_factory=dict)
+    execution_mode_family_counts: dict[str, int] = Field(default_factory=dict)
     execution_mode_family_count: int = 0
     execution_mode_families: list[str] = Field(default_factory=list)
     available_execution_modes: list[str] = Field(default_factory=list)
@@ -3884,6 +3888,7 @@ class ProjectIntegrationsRead(BaseModel):
     available_execution_mode_group_count: int = 0
     available_execution_mode_action_refs: dict[str, list[str]] = Field(default_factory=dict)
     available_execution_mode_family_ids: dict[str, list[str]] = Field(default_factory=dict)
+    available_execution_mode_family_counts: dict[str, int] = Field(default_factory=dict)
     available_execution_mode_family_count: int = 0
     available_execution_mode_families: list[str] = Field(default_factory=list)
     blocked_execution_modes: list[str] = Field(default_factory=list)
@@ -3891,6 +3896,7 @@ class ProjectIntegrationsRead(BaseModel):
     blocked_execution_mode_group_count: int = 0
     blocked_execution_mode_action_refs: dict[str, list[str]] = Field(default_factory=dict)
     blocked_execution_mode_family_ids: dict[str, list[str]] = Field(default_factory=dict)
+    blocked_execution_mode_family_counts: dict[str, int] = Field(default_factory=dict)
     blocked_execution_mode_family_count: int = 0
     blocked_execution_mode_families: list[str] = Field(default_factory=list)
     provider_support_modes: list[str] = Field(default_factory=list)
@@ -3898,6 +3904,7 @@ class ProjectIntegrationsRead(BaseModel):
     provider_support_mode_group_count: int = 0
     provider_support_mode_action_refs: dict[str, list[str]] = Field(default_factory=dict)
     provider_support_mode_family_ids: dict[str, list[str]] = Field(default_factory=dict)
+    provider_support_mode_family_counts: dict[str, int] = Field(default_factory=dict)
     provider_support_mode_family_count: int = 0
     provider_support_mode_families: list[str] = Field(default_factory=list)
     available_provider_support_modes: list[str] = Field(default_factory=list)
@@ -3905,6 +3912,7 @@ class ProjectIntegrationsRead(BaseModel):
     available_provider_support_mode_group_count: int = 0
     available_provider_support_mode_action_refs: dict[str, list[str]] = Field(default_factory=dict)
     available_provider_support_mode_family_ids: dict[str, list[str]] = Field(default_factory=dict)
+    available_provider_support_mode_family_counts: dict[str, int] = Field(default_factory=dict)
     available_provider_support_mode_family_count: int = 0
     available_provider_support_mode_families: list[str] = Field(default_factory=list)
     blocked_provider_support_modes: list[str] = Field(default_factory=list)
@@ -3912,6 +3920,7 @@ class ProjectIntegrationsRead(BaseModel):
     blocked_provider_support_mode_group_count: int = 0
     blocked_provider_support_mode_action_refs: dict[str, list[str]] = Field(default_factory=dict)
     blocked_provider_support_mode_family_ids: dict[str, list[str]] = Field(default_factory=dict)
+    blocked_provider_support_mode_family_counts: dict[str, int] = Field(default_factory=dict)
     blocked_provider_support_mode_family_count: int = 0
     blocked_provider_support_mode_families: list[str] = Field(default_factory=list)
     action_provider_context_statuses: list[str] = Field(default_factory=list)
@@ -3919,6 +3928,7 @@ class ProjectIntegrationsRead(BaseModel):
     action_provider_context_status_group_count: int = 0
     action_provider_context_status_action_refs: dict[str, list[str]] = Field(default_factory=dict)
     action_provider_context_status_family_ids: dict[str, list[str]] = Field(default_factory=dict)
+    action_provider_context_status_family_counts: dict[str, int] = Field(default_factory=dict)
     action_provider_context_status_family_count: int = 0
     action_provider_context_status_families: list[str] = Field(default_factory=list)
     available_action_provider_context_statuses: list[str] = Field(default_factory=list)
@@ -3926,6 +3936,7 @@ class ProjectIntegrationsRead(BaseModel):
     available_action_provider_context_status_group_count: int = 0
     available_action_provider_context_status_action_refs: dict[str, list[str]] = Field(default_factory=dict)
     available_action_provider_context_status_family_ids: dict[str, list[str]] = Field(default_factory=dict)
+    available_action_provider_context_status_family_counts: dict[str, int] = Field(default_factory=dict)
     available_action_provider_context_status_family_count: int = 0
     available_action_provider_context_status_families: list[str] = Field(default_factory=list)
     blocked_action_provider_context_statuses: list[str] = Field(default_factory=list)
@@ -3933,6 +3944,7 @@ class ProjectIntegrationsRead(BaseModel):
     blocked_action_provider_context_status_group_count: int = 0
     blocked_action_provider_context_status_action_refs: dict[str, list[str]] = Field(default_factory=dict)
     blocked_action_provider_context_status_family_ids: dict[str, list[str]] = Field(default_factory=dict)
+    blocked_action_provider_context_status_family_counts: dict[str, int] = Field(default_factory=dict)
     blocked_action_provider_context_status_family_count: int = 0
     blocked_action_provider_context_status_families: list[str] = Field(default_factory=list)
     verification_scopes: list[str] = Field(default_factory=list)
@@ -3940,6 +3952,7 @@ class ProjectIntegrationsRead(BaseModel):
     verification_scope_group_count: int = 0
     verification_scope_action_refs: dict[str, list[str]] = Field(default_factory=dict)
     verification_scope_family_ids: dict[str, list[str]] = Field(default_factory=dict)
+    verification_scope_family_counts: dict[str, int] = Field(default_factory=dict)
     verification_scope_family_count: int = 0
     verification_scope_families: list[str] = Field(default_factory=list)
     available_verification_scopes: list[str] = Field(default_factory=list)
@@ -3947,6 +3960,7 @@ class ProjectIntegrationsRead(BaseModel):
     available_verification_scope_group_count: int = 0
     available_verification_scope_action_refs: dict[str, list[str]] = Field(default_factory=dict)
     available_verification_scope_family_ids: dict[str, list[str]] = Field(default_factory=dict)
+    available_verification_scope_family_counts: dict[str, int] = Field(default_factory=dict)
     available_verification_scope_family_count: int = 0
     available_verification_scope_families: list[str] = Field(default_factory=list)
     blocked_verification_scopes: list[str] = Field(default_factory=list)
@@ -3954,6 +3968,7 @@ class ProjectIntegrationsRead(BaseModel):
     blocked_verification_scope_group_count: int = 0
     blocked_verification_scope_action_refs: dict[str, list[str]] = Field(default_factory=dict)
     blocked_verification_scope_family_ids: dict[str, list[str]] = Field(default_factory=dict)
+    blocked_verification_scope_family_counts: dict[str, int] = Field(default_factory=dict)
     blocked_verification_scope_family_count: int = 0
     blocked_verification_scope_families: list[str] = Field(default_factory=list)
     safe_command_reasons: list[str] = Field(default_factory=list)
@@ -3961,6 +3976,7 @@ class ProjectIntegrationsRead(BaseModel):
     safe_command_reason_group_count: int = 0
     safe_command_reason_action_refs: dict[str, list[str]] = Field(default_factory=dict)
     safe_command_reason_family_ids: dict[str, list[str]] = Field(default_factory=dict)
+    safe_command_reason_family_counts: dict[str, int] = Field(default_factory=dict)
     safe_command_reason_family_count: int = 0
     safe_command_reason_families: list[str] = Field(default_factory=list)
     available_safe_command_reasons: list[str] = Field(default_factory=list)
@@ -3968,6 +3984,7 @@ class ProjectIntegrationsRead(BaseModel):
     available_safe_command_reason_group_count: int = 0
     available_safe_command_reason_action_refs: dict[str, list[str]] = Field(default_factory=dict)
     available_safe_command_reason_family_ids: dict[str, list[str]] = Field(default_factory=dict)
+    available_safe_command_reason_family_counts: dict[str, int] = Field(default_factory=dict)
     available_safe_command_reason_family_count: int = 0
     available_safe_command_reason_families: list[str] = Field(default_factory=list)
     blocked_safe_command_reasons: list[str] = Field(default_factory=list)
@@ -3975,6 +3992,7 @@ class ProjectIntegrationsRead(BaseModel):
     blocked_safe_command_reason_group_count: int = 0
     blocked_safe_command_reason_action_refs: dict[str, list[str]] = Field(default_factory=dict)
     blocked_safe_command_reason_family_ids: dict[str, list[str]] = Field(default_factory=dict)
+    blocked_safe_command_reason_family_counts: dict[str, int] = Field(default_factory=dict)
     blocked_safe_command_reason_family_count: int = 0
     blocked_safe_command_reason_families: list[str] = Field(default_factory=list)
     context_requirement_reasons: list[str] = Field(default_factory=list)
@@ -3982,6 +4000,7 @@ class ProjectIntegrationsRead(BaseModel):
     context_requirement_reason_group_count: int = 0
     context_requirement_reason_action_refs: dict[str, list[str]] = Field(default_factory=dict)
     context_requirement_reason_family_ids: dict[str, list[str]] = Field(default_factory=dict)
+    context_requirement_reason_family_counts: dict[str, int] = Field(default_factory=dict)
     context_requirement_reason_family_count: int = 0
     context_requirement_reason_families: list[str] = Field(default_factory=list)
     available_context_requirement_reasons: list[str] = Field(default_factory=list)
@@ -3989,6 +4008,7 @@ class ProjectIntegrationsRead(BaseModel):
     available_context_requirement_reason_group_count: int = 0
     available_context_requirement_reason_action_refs: dict[str, list[str]] = Field(default_factory=dict)
     available_context_requirement_reason_family_ids: dict[str, list[str]] = Field(default_factory=dict)
+    available_context_requirement_reason_family_counts: dict[str, int] = Field(default_factory=dict)
     available_context_requirement_reason_family_count: int = 0
     available_context_requirement_reason_families: list[str] = Field(default_factory=list)
     blocked_context_requirement_reasons: list[str] = Field(default_factory=list)
@@ -3996,6 +4016,7 @@ class ProjectIntegrationsRead(BaseModel):
     blocked_context_requirement_reason_group_count: int = 0
     blocked_context_requirement_reason_action_refs: dict[str, list[str]] = Field(default_factory=dict)
     blocked_context_requirement_reason_family_ids: dict[str, list[str]] = Field(default_factory=dict)
+    blocked_context_requirement_reason_family_counts: dict[str, int] = Field(default_factory=dict)
     blocked_context_requirement_reason_family_count: int = 0
     blocked_context_requirement_reason_families: list[str] = Field(default_factory=list)
     action_providers: list[str] = Field(default_factory=list)
@@ -4003,6 +4024,7 @@ class ProjectIntegrationsRead(BaseModel):
     action_provider_group_count: int = 0
     action_provider_action_refs: dict[str, list[str]] = Field(default_factory=dict)
     action_provider_family_ids: dict[str, list[str]] = Field(default_factory=dict)
+    action_provider_family_counts: dict[str, int] = Field(default_factory=dict)
     action_provider_family_count: int = 0
     action_provider_families: list[str] = Field(default_factory=list)
     available_action_providers: list[str] = Field(default_factory=list)
@@ -4010,6 +4032,7 @@ class ProjectIntegrationsRead(BaseModel):
     available_action_provider_group_count: int = 0
     available_action_provider_action_refs: dict[str, list[str]] = Field(default_factory=dict)
     available_action_provider_family_ids: dict[str, list[str]] = Field(default_factory=dict)
+    available_action_provider_family_counts: dict[str, int] = Field(default_factory=dict)
     available_action_provider_family_count: int = 0
     available_action_provider_families: list[str] = Field(default_factory=list)
     blocked_action_providers: list[str] = Field(default_factory=list)
@@ -4017,6 +4040,7 @@ class ProjectIntegrationsRead(BaseModel):
     blocked_action_provider_group_count: int = 0
     blocked_action_provider_action_refs: dict[str, list[str]] = Field(default_factory=dict)
     blocked_action_provider_family_ids: dict[str, list[str]] = Field(default_factory=dict)
+    blocked_action_provider_family_counts: dict[str, int] = Field(default_factory=dict)
     blocked_action_provider_family_count: int = 0
     blocked_action_provider_families: list[str] = Field(default_factory=list)
     executable_names: list[str] = Field(default_factory=list)
@@ -4024,6 +4048,7 @@ class ProjectIntegrationsRead(BaseModel):
     executable_name_group_count: int = 0
     executable_name_action_refs: dict[str, list[str]] = Field(default_factory=dict)
     executable_name_family_ids: dict[str, list[str]] = Field(default_factory=dict)
+    executable_name_family_counts: dict[str, int] = Field(default_factory=dict)
     executable_name_family_count: int = 0
     executable_name_families: list[str] = Field(default_factory=list)
     available_executable_names: list[str] = Field(default_factory=list)
@@ -4031,6 +4056,7 @@ class ProjectIntegrationsRead(BaseModel):
     available_executable_name_group_count: int = 0
     available_executable_name_action_refs: dict[str, list[str]] = Field(default_factory=dict)
     available_executable_name_family_ids: dict[str, list[str]] = Field(default_factory=dict)
+    available_executable_name_family_counts: dict[str, int] = Field(default_factory=dict)
     available_executable_name_family_count: int = 0
     available_executable_name_families: list[str] = Field(default_factory=list)
     blocked_executable_names: list[str] = Field(default_factory=list)
@@ -4038,6 +4064,7 @@ class ProjectIntegrationsRead(BaseModel):
     blocked_executable_name_group_count: int = 0
     blocked_executable_name_action_refs: dict[str, list[str]] = Field(default_factory=dict)
     blocked_executable_name_family_ids: dict[str, list[str]] = Field(default_factory=dict)
+    blocked_executable_name_family_counts: dict[str, int] = Field(default_factory=dict)
     blocked_executable_name_family_count: int = 0
     blocked_executable_name_families: list[str] = Field(default_factory=list)
     available_provider_context_statuses: list[str] = Field(default_factory=list)
@@ -4045,6 +4072,7 @@ class ProjectIntegrationsRead(BaseModel):
     available_provider_context_status_group_count: int = 0
     available_provider_context_status_action_refs: dict[str, list[str]] = Field(default_factory=dict)
     available_provider_context_status_family_ids: dict[str, list[str]] = Field(default_factory=dict)
+    available_provider_context_status_family_counts: dict[str, int] = Field(default_factory=dict)
     available_provider_context_status_family_count: int = 0
     available_provider_context_status_families: list[str] = Field(default_factory=list)
     blocked_provider_context_statuses: list[str] = Field(default_factory=list)
@@ -4052,6 +4080,7 @@ class ProjectIntegrationsRead(BaseModel):
     blocked_provider_context_status_group_count: int = 0
     blocked_provider_context_status_action_refs: dict[str, list[str]] = Field(default_factory=dict)
     blocked_provider_context_status_family_ids: dict[str, list[str]] = Field(default_factory=dict)
+    blocked_provider_context_status_family_counts: dict[str, int] = Field(default_factory=dict)
     blocked_provider_context_status_family_count: int = 0
     blocked_provider_context_status_families: list[str] = Field(default_factory=list)
     execution_block_reasons: list[str] = Field(default_factory=list)
@@ -4059,6 +4088,7 @@ class ProjectIntegrationsRead(BaseModel):
     execution_block_reason_group_count: int = 0
     execution_block_reason_action_refs: dict[str, list[str]] = Field(default_factory=dict)
     execution_block_reason_family_ids: dict[str, list[str]] = Field(default_factory=dict)
+    execution_block_reason_family_counts: dict[str, int] = Field(default_factory=dict)
     execution_block_reason_family_count: int = 0
     execution_block_reason_families: list[str] = Field(default_factory=list)
     blocking_reasons: list[str] = Field(default_factory=list)
@@ -4066,11 +4096,13 @@ class ProjectIntegrationsRead(BaseModel):
     blocking_reason_group_count: int = 0
     blocking_reason_action_refs: dict[str, list[str]] = Field(default_factory=dict)
     blocking_reason_family_ids: dict[str, list[str]] = Field(default_factory=dict)
+    blocking_reason_family_counts: dict[str, int] = Field(default_factory=dict)
     blocking_reason_family_count: int = 0
     blocking_reason_families: list[str] = Field(default_factory=list)
     required_permissions: list[str] = Field(default_factory=list)
     required_permission_count: int = 0
     required_permission_family_ids: dict[str, list[str]] = Field(default_factory=dict)
+    required_permission_family_counts: dict[str, int] = Field(default_factory=dict)
     required_permission_group_count: int = 0
     required_permission_family_count: int = 0
     required_permission_families: list[str] = Field(default_factory=list)
@@ -4079,6 +4111,7 @@ class ProjectIntegrationsRead(BaseModel):
     permission_policy_group_count: int = 0
     permission_policy_action_refs: dict[str, list[str]] = Field(default_factory=dict)
     permission_policy_family_ids: dict[str, list[str]] = Field(default_factory=dict)
+    permission_policy_family_counts: dict[str, int] = Field(default_factory=dict)
     permission_policy_family_count: int = 0
     permission_policy_families: list[str] = Field(default_factory=list)
     available_permission_policies: list[str] = Field(default_factory=list)
@@ -4086,6 +4119,7 @@ class ProjectIntegrationsRead(BaseModel):
     available_permission_policy_group_count: int = 0
     available_permission_policy_action_refs: dict[str, list[str]] = Field(default_factory=dict)
     available_permission_policy_family_ids: dict[str, list[str]] = Field(default_factory=dict)
+    available_permission_policy_family_counts: dict[str, int] = Field(default_factory=dict)
     available_permission_policy_family_count: int = 0
     available_permission_policy_families: list[str] = Field(default_factory=list)
     blocked_permission_policies: list[str] = Field(default_factory=list)
@@ -4093,6 +4127,7 @@ class ProjectIntegrationsRead(BaseModel):
     blocked_permission_policy_group_count: int = 0
     blocked_permission_policy_action_refs: dict[str, list[str]] = Field(default_factory=dict)
     blocked_permission_policy_family_ids: dict[str, list[str]] = Field(default_factory=dict)
+    blocked_permission_policy_family_counts: dict[str, int] = Field(default_factory=dict)
     blocked_permission_policy_family_count: int = 0
     blocked_permission_policy_families: list[str] = Field(default_factory=list)
     risk_levels: list[str] = Field(default_factory=list)
@@ -4100,6 +4135,7 @@ class ProjectIntegrationsRead(BaseModel):
     risk_level_group_count: int = 0
     risk_level_action_refs: dict[str, list[str]] = Field(default_factory=dict)
     risk_level_family_ids: dict[str, list[str]] = Field(default_factory=dict)
+    risk_level_family_counts: dict[str, int] = Field(default_factory=dict)
     risk_level_family_count: int = 0
     risk_level_families: list[str] = Field(default_factory=list)
     available_risk_levels: list[str] = Field(default_factory=list)
@@ -4107,6 +4143,7 @@ class ProjectIntegrationsRead(BaseModel):
     available_risk_level_group_count: int = 0
     available_risk_level_action_refs: dict[str, list[str]] = Field(default_factory=dict)
     available_risk_level_family_ids: dict[str, list[str]] = Field(default_factory=dict)
+    available_risk_level_family_counts: dict[str, int] = Field(default_factory=dict)
     available_risk_level_family_count: int = 0
     available_risk_level_families: list[str] = Field(default_factory=list)
     blocked_risk_levels: list[str] = Field(default_factory=list)
@@ -4114,11 +4151,13 @@ class ProjectIntegrationsRead(BaseModel):
     blocked_risk_level_group_count: int = 0
     blocked_risk_level_action_refs: dict[str, list[str]] = Field(default_factory=dict)
     blocked_risk_level_family_ids: dict[str, list[str]] = Field(default_factory=dict)
+    blocked_risk_level_family_counts: dict[str, int] = Field(default_factory=dict)
     blocked_risk_level_family_count: int = 0
     blocked_risk_level_families: list[str] = Field(default_factory=list)
     execution_required_permissions: list[str] = Field(default_factory=list)
     execution_required_permission_count: int = 0
     execution_required_permission_family_ids: dict[str, list[str]] = Field(default_factory=dict)
+    execution_required_permission_family_counts: dict[str, int] = Field(default_factory=dict)
     execution_required_permission_group_count: int = 0
     execution_required_permission_family_count: int = 0
     execution_required_permission_families: list[str] = Field(default_factory=list)
@@ -4127,6 +4166,7 @@ class ProjectIntegrationsRead(BaseModel):
     execution_permission_policy_group_count: int = 0
     execution_permission_policy_action_refs: dict[str, list[str]] = Field(default_factory=dict)
     execution_permission_policy_family_ids: dict[str, list[str]] = Field(default_factory=dict)
+    execution_permission_policy_family_counts: dict[str, int] = Field(default_factory=dict)
     execution_permission_policy_family_count: int = 0
     execution_permission_policy_families: list[str] = Field(default_factory=list)
     available_execution_permission_policies: list[str] = Field(default_factory=list)
@@ -4134,6 +4174,7 @@ class ProjectIntegrationsRead(BaseModel):
     available_execution_permission_policy_group_count: int = 0
     available_execution_permission_policy_action_refs: dict[str, list[str]] = Field(default_factory=dict)
     available_execution_permission_policy_family_ids: dict[str, list[str]] = Field(default_factory=dict)
+    available_execution_permission_policy_family_counts: dict[str, int] = Field(default_factory=dict)
     available_execution_permission_policy_family_count: int = 0
     available_execution_permission_policy_families: list[str] = Field(default_factory=list)
     blocked_execution_permission_policies: list[str] = Field(default_factory=list)
@@ -4141,6 +4182,7 @@ class ProjectIntegrationsRead(BaseModel):
     blocked_execution_permission_policy_group_count: int = 0
     blocked_execution_permission_policy_action_refs: dict[str, list[str]] = Field(default_factory=dict)
     blocked_execution_permission_policy_family_ids: dict[str, list[str]] = Field(default_factory=dict)
+    blocked_execution_permission_policy_family_counts: dict[str, int] = Field(default_factory=dict)
     blocked_execution_permission_policy_family_count: int = 0
     blocked_execution_permission_policy_families: list[str] = Field(default_factory=list)
     execution_risk_levels: list[str] = Field(default_factory=list)
@@ -4148,6 +4190,7 @@ class ProjectIntegrationsRead(BaseModel):
     execution_risk_level_group_count: int = 0
     execution_risk_level_action_refs: dict[str, list[str]] = Field(default_factory=dict)
     execution_risk_level_family_ids: dict[str, list[str]] = Field(default_factory=dict)
+    execution_risk_level_family_counts: dict[str, int] = Field(default_factory=dict)
     execution_risk_level_family_count: int = 0
     execution_risk_level_families: list[str] = Field(default_factory=list)
     available_execution_risk_levels: list[str] = Field(default_factory=list)
@@ -4155,6 +4198,7 @@ class ProjectIntegrationsRead(BaseModel):
     available_execution_risk_level_group_count: int = 0
     available_execution_risk_level_action_refs: dict[str, list[str]] = Field(default_factory=dict)
     available_execution_risk_level_family_ids: dict[str, list[str]] = Field(default_factory=dict)
+    available_execution_risk_level_family_counts: dict[str, int] = Field(default_factory=dict)
     available_execution_risk_level_family_count: int = 0
     available_execution_risk_level_families: list[str] = Field(default_factory=list)
     blocked_execution_risk_levels: list[str] = Field(default_factory=list)
@@ -4162,6 +4206,7 @@ class ProjectIntegrationsRead(BaseModel):
     blocked_execution_risk_level_group_count: int = 0
     blocked_execution_risk_level_action_refs: dict[str, list[str]] = Field(default_factory=dict)
     blocked_execution_risk_level_family_ids: dict[str, list[str]] = Field(default_factory=dict)
+    blocked_execution_risk_level_family_counts: dict[str, int] = Field(default_factory=dict)
     blocked_execution_risk_level_family_count: int = 0
     blocked_execution_risk_level_families: list[str] = Field(default_factory=list)
     artifact_count: int = 0

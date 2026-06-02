@@ -602,7 +602,7 @@ class MissionControlService:
 
     @staticmethod
     def _report_status_from_runner_status(status: str) -> str:
-        return {
+        result = {
             "completed": "done",
             "blocked": "blocked",
             "needs_review": "needs_review",
@@ -722,7 +722,7 @@ class MissionControlService:
 
     @staticmethod
     def _trace_outcome_from_report_status(status: str) -> str:
-        return {
+        result = {
             "done": "success",
             "needs_review": "needs_review",
             "blocked": "blocked",
@@ -3127,7 +3127,7 @@ class MissionControlService:
             )
             not in persisted_keys
         ]
-        return {
+        result = {
             "project_id": project.id,
             "persisted": persisted,
             "derived_candidates": derived_candidates,
@@ -15520,6 +15520,56 @@ class MissionControlService:
             "note_value_group_count": note_value_group_count,
             "note_value_family_count": note_value_family_count,
             "note_value_families": note_value_families,
+            **{
+                f"{prefix}_family_counts": _counts_from_grouped_family_ids(grouped_family_ids)
+                for prefix, grouped_family_ids in (
+                    ("action_status", action_status_family_ids),
+                    ("available_action_status", available_action_status_family_ids),
+                    ("blocked_action_status", blocked_action_status_family_ids),
+                    ("execution_mode", execution_mode_family_ids),
+                    ("available_execution_mode", available_execution_mode_family_ids),
+                    ("blocked_execution_mode", blocked_execution_mode_family_ids),
+                    ("provider_support_mode", provider_support_mode_family_ids),
+                    ("available_provider_support_mode", available_provider_support_mode_family_ids),
+                    ("blocked_provider_support_mode", blocked_provider_support_mode_family_ids),
+                    ("action_provider_context_status", action_provider_context_status_family_ids),
+                    ("available_action_provider_context_status", available_action_provider_context_status_family_ids),
+                    ("blocked_action_provider_context_status", blocked_action_provider_context_status_family_ids),
+                    ("verification_scope", verification_scope_family_ids),
+                    ("available_verification_scope", available_verification_scope_family_ids),
+                    ("blocked_verification_scope", blocked_verification_scope_family_ids),
+                    ("safe_command_reason", safe_command_reason_family_ids),
+                    ("available_safe_command_reason", available_safe_command_reason_family_ids),
+                    ("blocked_safe_command_reason", blocked_safe_command_reason_family_ids),
+                    ("context_requirement_reason", context_requirement_reason_family_ids),
+                    ("available_context_requirement_reason", available_context_requirement_reason_family_ids),
+                    ("blocked_context_requirement_reason", blocked_context_requirement_reason_family_ids),
+                    ("action_provider", action_provider_family_ids),
+                    ("available_action_provider", available_action_provider_family_ids),
+                    ("blocked_action_provider", blocked_action_provider_family_ids),
+                    ("executable_name", executable_name_family_ids),
+                    ("available_executable_name", available_executable_name_family_ids),
+                    ("blocked_executable_name", blocked_executable_name_family_ids),
+                    ("available_provider_context_status", available_provider_context_status_family_ids),
+                    ("blocked_provider_context_status", blocked_provider_context_status_family_ids),
+                    ("execution_block_reason", execution_block_reason_family_ids),
+                    ("blocking_reason", blocking_reason_family_ids),
+                    ("required_permission", required_permission_family_ids),
+                    ("permission_policy", permission_policy_family_ids),
+                    ("available_permission_policy", available_permission_policy_family_ids),
+                    ("blocked_permission_policy", blocked_permission_policy_family_ids),
+                    ("risk_level", risk_level_family_ids),
+                    ("available_risk_level", available_risk_level_family_ids),
+                    ("blocked_risk_level", blocked_risk_level_family_ids),
+                    ("execution_required_permission", execution_required_permission_family_ids),
+                    ("execution_permission_policy", execution_permission_policy_family_ids),
+                    ("available_execution_permission_policy", available_execution_permission_policy_family_ids),
+                    ("blocked_execution_permission_policy", blocked_execution_permission_policy_family_ids),
+                    ("execution_risk_level", execution_risk_level_family_ids),
+                    ("available_execution_risk_level", available_execution_risk_level_family_ids),
+                    ("blocked_execution_risk_level", blocked_execution_risk_level_family_ids),
+                )
+            },
             "families": families,
         }
         return result
