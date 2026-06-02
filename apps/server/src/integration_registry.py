@@ -1271,11 +1271,40 @@ def _provider_command_template(provider: str, action_id: str) -> str | None:
             "inspect_run": "glab ci get --pipeline-id {run_id_q} --with-job-details --output json",
             "tail_logs": "glab ci trace --pipeline-id {run_id_q}",
         },
+        "bitbucket_pipelines": {
+            "inspect": None,
+            "inspect_run": None,
+            "tail_logs": None,
+            "rerun": None,
+        },
         "circleci": {
             "inspect": "circleci config validate .circleci/config.yml",
         },
         "buildkite": {
             "inspect": "buildkite-agent pipeline upload --dry-run .buildkite/pipeline.yml",
+        },
+        "figma": {
+            "inspect": None,
+        },
+        "slack": {
+            "draft": None,
+            "create": None,
+        },
+        "discord": {
+            "draft": None,
+            "create": None,
+        },
+        "teams": {
+            "draft": None,
+            "create": None,
+        },
+        "notion": {
+            "inspect": None,
+            "sync": None,
+        },
+        "confluence": {
+            "inspect": None,
+            "sync": None,
         },
         "vercel": {
             "inspect": "vercel whoami",
@@ -1318,12 +1347,48 @@ def _provider_command_template(provider: str, action_id: str) -> str | None:
             "inspect": "sentry-cli info",
             "tail": "sentry-cli releases list",
         },
+        "logrocket": {
+            "inspect": None,
+            "tail": None,
+        },
         "datadog": {
             "inspect": "datadog-ci --version",
             "tail": "datadog-ci gate evaluate",
         },
         "new_relic": {
             "inspect": "newrelic --version",
+        },
+        "launchdarkly": {
+            "inspect": None,
+            "sync": None,
+        },
+        "statsig": {
+            "inspect": None,
+            "sync": None,
+        },
+        "configcat": {
+            "inspect": None,
+            "sync": None,
+        },
+        "unleash": {
+            "inspect": None,
+            "sync": None,
+        },
+        "posthog_feature_flags": {
+            "inspect": None,
+            "sync": None,
+        },
+        "posthog": {
+            "inspect": None,
+        },
+        "amplitude": {
+            "inspect": None,
+        },
+        "mixpanel": {
+            "inspect": None,
+        },
+        "plausible": {
+            "inspect": None,
         },
         "postman": {
             "inspect": "newman --version",
@@ -1366,6 +1431,10 @@ def _provider_command_template(provider: str, action_id: str) -> str | None:
         "vllm": {
             "inspect": "vllm --help",
             "open": "vllm serve --help",
+        },
+        "lm_studio": {
+            "inspect": None,
+            "open": None,
         },
         "npm": {
             "inspect": "npm whoami",
@@ -1449,6 +1518,22 @@ def _provider_command_template(provider: str, action_id: str) -> str | None:
         "gcp_secret_manager": {
             "inspect": "gcloud secrets list --format json",
         },
+        "intercom": {
+            "search": None,
+            "create": None,
+        },
+        "zendesk": {
+            "search": None,
+            "create": None,
+        },
+        "help_scout": {
+            "search": None,
+            "create": None,
+        },
+        "freshdesk": {
+            "search": None,
+            "create": None,
+        },
         "changesets": {
             "draft": "changeset status",
             "create": "changeset version",
@@ -1465,9 +1550,25 @@ def _provider_command_template(provider: str, action_id: str) -> str | None:
             "draft": "gh release view --json name,tagName,isDraft",
             "create": "gh release create {tag_q}",
         },
+        "launchnotes": {
+            "draft": None,
+            "create": None,
+        },
         "stripe": {
             "inspect": "stripe config --list",
             "create": "stripe customers create --name {name_q}",
+        },
+        "paddle": {
+            "inspect": None,
+            "create": None,
+        },
+        "lemon_squeezy": {
+            "inspect": None,
+            "create": None,
+        },
+        "paypal_sandbox": {
+            "inspect": None,
+            "create": None,
         },
         "openapi": {
             "inspect": "swagger-cli validate {spec_q}",
@@ -1516,6 +1617,15 @@ def _provider_command_template(provider: str, action_id: str) -> str | None:
         },
         "auth0": {
             "inspect": "auth0 apps list --json",
+        },
+        "clerk": {
+            "inspect": None,
+        },
+        "workos": {
+            "inspect": None,
+        },
+        "okta": {
+            "inspect": None,
         },
         "firebase_auth": {
             "inspect": "firebase apps:list --json",

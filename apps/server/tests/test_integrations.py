@@ -1349,6 +1349,93 @@ def test_guided_preview_surfaces_figma_and_chatops_guidance(monkeypatch) -> None
     assert any("api-backed lane" in note.lower() for note in slack_preview["notes"])
 
 
+def test_guided_preview_surfaces_bitbucket_pipeline_and_docs_guidance(monkeypatch) -> None:
+    monkeypatch.setattr("integration_registry.shutil.which", lambda _command: None)
+
+    bitbucket_preview = preview_integration_action(
+        family_id="ci_cd",
+        action_id="inspect_run",
+        params={"run_id": "123"},
+        registry_payload=normalize_integration_registry(
+            {"connections": {"ci_cd": {"family": "ci_cd", "status": "connected", "providers": ["bitbucket_pipelines"], "connection_source": "mission_control", "host_imported": False}}},
+            {},
+        ),
+        workspace_path=None,
+        project_name="Bitbucket Pipelines Demo",
+    )
+    confluence_preview = preview_integration_action(
+        family_id="docs_systems",
+        action_id="inspect",
+        params={},
+        registry_payload=normalize_integration_registry(
+            {"connections": {"docs_systems": {"family": "docs_systems", "status": "connected", "providers": ["confluence"], "connection_source": "mission_control", "host_imported": False}}},
+            {},
+        ),
+        workspace_path=None,
+        project_name="Confluence Demo",
+    )
+
+    assert bitbucket_preview["provider"] == "bitbucket_pipelines"
+    assert bitbucket_preview["command"] is None
+    assert bitbucket_preview["execution_mode"] == "guided_remote"
+    assert any("api-backed adapter lane" in note.lower() for note in bitbucket_preview["notes"])
+    assert confluence_preview["provider"] == "confluence"
+    assert confluence_preview["command"] is None
+    assert confluence_preview["execution_mode"] == "guided_remote"
+    assert any("documentation lane" in note.lower() for note in confluence_preview["notes"])
+
+
+def test_guided_preview_surfaces_teams_notion_and_logrocket_without_commands(monkeypatch) -> None:
+    monkeypatch.setattr("integration_registry.shutil.which", lambda _command: None)
+
+    teams_preview = preview_integration_action(
+        family_id="chatops",
+        action_id="create",
+        params={},
+        registry_payload=normalize_integration_registry(
+            {"connections": {"chatops": {"family": "chatops", "status": "connected", "providers": ["teams"], "connection_source": "mission_control", "host_imported": False}}},
+            {},
+        ),
+        workspace_path=None,
+        project_name="Teams Demo",
+    )
+    notion_preview = preview_integration_action(
+        family_id="docs_systems",
+        action_id="sync",
+        params={},
+        registry_payload=normalize_integration_registry(
+            {"connections": {"docs_systems": {"family": "docs_systems", "status": "connected", "providers": ["notion"], "connection_source": "mission_control", "host_imported": False}}},
+            {},
+        ),
+        workspace_path=None,
+        project_name="Notion Demo",
+    )
+    logrocket_preview = preview_integration_action(
+        family_id="observability",
+        action_id="tail",
+        params={},
+        registry_payload=normalize_integration_registry(
+            {"connections": {"observability": {"family": "observability", "status": "connected", "providers": ["logrocket"], "connection_source": "mission_control", "host_imported": False}}},
+            {},
+        ),
+        workspace_path=None,
+        project_name="LogRocket Demo",
+    )
+
+    assert teams_preview["provider"] == "teams"
+    assert teams_preview["command"] is None
+    assert teams_preview["execution_mode"] == "guided_remote"
+    assert any("microsoft teams" in note.lower() and "api-backed lane" in note.lower() for note in teams_preview["notes"])
+    assert notion_preview["provider"] == "notion"
+    assert notion_preview["command"] is None
+    assert notion_preview["execution_mode"] == "guided_remote"
+    assert any("notion sync" in note.lower() and "api-backed lane" in note.lower() for note in notion_preview["notes"])
+    assert logrocket_preview["provider"] == "logrocket"
+    assert logrocket_preview["command"] is None
+    assert logrocket_preview["execution_mode"] == "guided_remote"
+    assert any("logrocket" in note.lower() and "telemetry review" in note.lower() for note in logrocket_preview["notes"])
+
+
 def test_guided_preview_surfaces_feature_flag_and_analytics_guidance(monkeypatch) -> None:
     monkeypatch.setattr("integration_registry.shutil.which", lambda _command: None)
 
@@ -1381,6 +1468,105 @@ def test_guided_preview_surfaces_feature_flag_and_analytics_guidance(monkeypatch
     assert analytics_preview["provider"] == "posthog"
     assert analytics_preview["command"] is None
     assert any("analytics lane" in note.lower() for note in analytics_preview["notes"])
+
+
+def test_guided_preview_surfaces_statsig_amplitude_and_lmstudio_guidance(monkeypatch) -> None:
+    monkeypatch.setattr("integration_registry.shutil.which", lambda _command: None)
+
+    statsig_preview = preview_integration_action(
+        family_id="feature_flags",
+        action_id="sync",
+        params={},
+        registry_payload=normalize_integration_registry(
+            {"connections": {"feature_flags": {"family": "feature_flags", "status": "connected", "providers": ["statsig"], "connection_source": "mission_control", "host_imported": False}}},
+            {},
+        ),
+        workspace_path=None,
+        project_name="Statsig Demo",
+    )
+    amplitude_preview = preview_integration_action(
+        family_id="analytics",
+        action_id="inspect",
+        params={},
+        registry_payload=normalize_integration_registry(
+            {"connections": {"analytics": {"family": "analytics", "status": "connected", "providers": ["amplitude"], "connection_source": "mission_control", "host_imported": False}}},
+            {},
+        ),
+        workspace_path=None,
+        project_name="Amplitude Demo",
+    )
+    lmstudio_preview = preview_integration_action(
+        family_id="local_model_runtimes",
+        action_id="open",
+        params={},
+        registry_payload=normalize_integration_registry(
+            {"connections": {"local_model_runtimes": {"family": "local_model_runtimes", "status": "connected", "providers": ["lm_studio"], "connection_source": "mission_control", "host_imported": False}}},
+            {},
+        ),
+        workspace_path=None,
+        project_name="LM Studio Demo",
+    )
+
+    assert statsig_preview["provider"] == "statsig"
+    assert statsig_preview["command"] is None
+    assert any("statsig sync" in note.lower() and "api-backed lane" in note.lower() for note in statsig_preview["notes"])
+    assert amplitude_preview["provider"] == "amplitude"
+    assert amplitude_preview["command"] is None
+    assert any("analytics lane" in note.lower() for note in amplitude_preview["notes"])
+    assert lmstudio_preview["provider"] == "lm_studio"
+    assert lmstudio_preview["command"] is None
+    assert any("runtime bridge" in note.lower() for note in lmstudio_preview["notes"])
+
+
+def test_guided_preview_surfaces_configcat_mixpanel_and_freshdesk_without_commands(monkeypatch) -> None:
+    monkeypatch.setattr("integration_registry.shutil.which", lambda _command: None)
+
+    configcat_preview = preview_integration_action(
+        family_id="feature_flags",
+        action_id="inspect",
+        params={},
+        registry_payload=normalize_integration_registry(
+            {"connections": {"feature_flags": {"family": "feature_flags", "status": "connected", "providers": ["configcat"], "connection_source": "mission_control", "host_imported": False}}},
+            {},
+        ),
+        workspace_path=None,
+        project_name="ConfigCat Demo",
+    )
+    mixpanel_preview = preview_integration_action(
+        family_id="analytics",
+        action_id="inspect",
+        params={},
+        registry_payload=normalize_integration_registry(
+            {"connections": {"analytics": {"family": "analytics", "status": "connected", "providers": ["mixpanel"], "connection_source": "mission_control", "host_imported": False}}},
+            {},
+        ),
+        workspace_path=None,
+        project_name="Mixpanel Demo",
+    )
+    freshdesk_preview = preview_integration_action(
+        family_id="support_desk",
+        action_id="create",
+        params={},
+        registry_payload=normalize_integration_registry(
+            {"connections": {"support_desk": {"family": "support_desk", "status": "connected", "providers": ["freshdesk"], "connection_source": "mission_control", "host_imported": False}}},
+            {},
+        ),
+        workspace_path=None,
+        project_name="Freshdesk Demo",
+    )
+
+    assert configcat_preview["provider"] == "configcat"
+    assert configcat_preview["command"] is None
+    assert configcat_preview["execution_mode"] == "guided_remote"
+    assert any("feature-flag lane" in note.lower() for note in configcat_preview["notes"])
+    assert mixpanel_preview["provider"] == "mixpanel"
+    assert mixpanel_preview["command"] is None
+    assert mixpanel_preview["execution_mode"] == "guided_remote"
+    assert any("analytics lane" in note.lower() for note in mixpanel_preview["notes"])
+    assert freshdesk_preview["provider"] == "freshdesk"
+    assert freshdesk_preview["command"] is None
+    assert freshdesk_preview["execution_mode"] == "guided_remote"
+    assert any("freshdesk ticket creation" in note.lower() and "api-backed lane" in note.lower() for note in freshdesk_preview["notes"])
 
 
 def test_guided_preview_surfaces_dependabot_and_opengrok_guidance(monkeypatch) -> None:
@@ -1522,6 +1708,119 @@ def test_guided_preview_surfaces_support_auth_payment_release_and_runtime_guidan
     assert any("runtime bridge" in note.lower() for note in lmstudio_preview["notes"])
     assert launchnotes_preview["provider"] == "launchnotes"
     assert any("release lane" in note.lower() for note in launchnotes_preview["notes"])
+
+
+def test_guided_preview_surfaces_discord_lemon_squeezy_and_workos_without_commands(monkeypatch) -> None:
+    monkeypatch.setattr("integration_registry.shutil.which", lambda _command: None)
+
+    discord_preview = preview_integration_action(
+        family_id="chatops",
+        action_id="create",
+        params={},
+        registry_payload=normalize_integration_registry(
+            {"connections": {"chatops": {"family": "chatops", "status": "connected", "providers": ["discord"], "connection_source": "mission_control", "host_imported": False}}},
+            {},
+        ),
+        workspace_path=None,
+        project_name="Discord Demo",
+    )
+    lemonsqueezy_preview = preview_integration_action(
+        family_id="payments",
+        action_id="create",
+        params={},
+        registry_payload=normalize_integration_registry(
+            {"connections": {"payments": {"family": "payments", "status": "connected", "providers": ["lemon_squeezy"], "connection_source": "mission_control", "host_imported": False}}},
+            {},
+        ),
+        workspace_path=None,
+        project_name="Lemon Squeezy Demo",
+    )
+    workos_preview = preview_integration_action(
+        family_id="auth_providers",
+        action_id="inspect",
+        params={},
+        registry_payload=normalize_integration_registry(
+            {"connections": {"auth_providers": {"family": "auth_providers", "status": "connected", "providers": ["workos"], "connection_source": "mission_control", "host_imported": False}}},
+            {},
+        ),
+        workspace_path=None,
+        project_name="WorkOS Demo",
+    )
+
+    assert discord_preview["provider"] == "discord"
+    assert discord_preview["command"] is None
+    assert discord_preview["execution_mode"] == "guided_remote"
+    assert any("discord message creation" in note.lower() and "api-backed lane" in note.lower() for note in discord_preview["notes"])
+    assert lemonsqueezy_preview["provider"] == "lemon_squeezy"
+    assert lemonsqueezy_preview["command"] is None
+    assert lemonsqueezy_preview["execution_mode"] == "guided_remote"
+    assert any("lemon squeezy" in note.lower() and "api-backed lane" in note.lower() for note in lemonsqueezy_preview["notes"])
+    assert workos_preview["provider"] == "workos"
+    assert workos_preview["command"] is None
+    assert workos_preview["execution_mode"] == "guided_remote"
+    assert any("auth lane" in note.lower() for note in workos_preview["notes"])
+
+
+def test_guided_preview_surfaces_zendesk_paypal_clerk_and_launchnotes_without_commands(monkeypatch) -> None:
+    monkeypatch.setattr("integration_registry.shutil.which", lambda _command: None)
+
+    zendesk_preview = preview_integration_action(
+        family_id="support_desk",
+        action_id="create",
+        params={},
+        registry_payload=normalize_integration_registry(
+            {"connections": {"support_desk": {"family": "support_desk", "status": "connected", "providers": ["zendesk"], "connection_source": "mission_control", "host_imported": False}}},
+            {},
+        ),
+        workspace_path=None,
+        project_name="Zendesk Demo",
+    )
+    paypal_preview = preview_integration_action(
+        family_id="payments",
+        action_id="inspect",
+        params={},
+        registry_payload=normalize_integration_registry(
+            {"connections": {"payments": {"family": "payments", "status": "connected", "providers": ["paypal_sandbox"], "connection_source": "mission_control", "host_imported": False}}},
+            {},
+        ),
+        workspace_path=None,
+        project_name="PayPal Sandbox Demo",
+    )
+    clerk_preview = preview_integration_action(
+        family_id="auth_providers",
+        action_id="inspect",
+        params={},
+        registry_payload=normalize_integration_registry(
+            {"connections": {"auth_providers": {"family": "auth_providers", "status": "connected", "providers": ["clerk"], "connection_source": "mission_control", "host_imported": False}}},
+            {},
+        ),
+        workspace_path=None,
+        project_name="Clerk Demo",
+    )
+    launchnotes_preview = preview_integration_action(
+        family_id="release_management",
+        action_id="create",
+        params={},
+        registry_payload=normalize_integration_registry(
+            {"connections": {"release_management": {"family": "release_management", "status": "connected", "providers": ["launchnotes"], "connection_source": "mission_control", "host_imported": False}}},
+            {},
+        ),
+        workspace_path=None,
+        project_name="LaunchNotes Demo",
+    )
+
+    assert zendesk_preview["provider"] == "zendesk"
+    assert zendesk_preview["command"] is None
+    assert any("zendesk ticket creation" in note.lower() and "api-backed lane" in note.lower() for note in zendesk_preview["notes"])
+    assert paypal_preview["provider"] == "paypal_sandbox"
+    assert paypal_preview["command"] is None
+    assert any("payment lane" in note.lower() for note in paypal_preview["notes"])
+    assert clerk_preview["provider"] == "clerk"
+    assert clerk_preview["command"] is None
+    assert any("auth lane" in note.lower() for note in clerk_preview["notes"])
+    assert launchnotes_preview["provider"] == "launchnotes"
+    assert launchnotes_preview["command"] is None
+    assert any("launchnotes release publishing" in note.lower() and "api-backed lane" in note.lower() for note in launchnotes_preview["notes"])
 
 
 def test_cli_backed_preview_surfaces_auth_secret_payment_and_release_guidance(monkeypatch) -> None:
