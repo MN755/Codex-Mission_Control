@@ -205,6 +205,13 @@ def test_project_integration_api_surfaces_context_suppression_metadata(client, b
     assert payments["verification_blocked_action_count"] == 0
     assert payments["verification_blocked_guided_action_count"] == 0
     assert payments["verification_blocked_local_action_count"] == 0
+    assert payments["preflight_ready_action_count"] == 4
+    assert payments["confirmation_eligible_action_count"] == 1
+    assert payments["ready_to_execute_action_count"] == 3
+    assert payments["missing_params_action_count"] == 0
+    assert payments["missing_executable_action_count"] == 0
+    assert payments["no_local_command_action_count"] == 0
+    assert payments["provider_context_blocked_action_count"] >= 2
     assert payments["health"]["provider_context_verified"] is False
     assert payments["health"]["provider_context_source"] == "standalone_cli_only"
     assert payments["health"]["provider_context_status"] == "missing"
@@ -222,6 +229,11 @@ def test_project_integration_api_surfaces_context_suppression_metadata(client, b
     assert inspect_action["provider_verification_required"] is False
     assert inspect_action["provider_verification_reason"] is None
     assert inspect_action["verification_scope"] is None
+    assert inspect_action["executable_name"] is None
+    assert inspect_action["execution_block_reason"] == "provider_context_missing"
+    assert inspect_action["preflight_ready"] is False
+    assert inspect_action["confirmation_eligible"] is False
+    assert inspect_action["ready_to_execute"] is False
     assert inspect_action["context_required"] is True
     assert inspect_action["context_requirement_reason"] == "provider_context_missing"
     assert inspect_action["suppressed_command_reason"] == "provider_context_missing"
@@ -5167,6 +5179,10 @@ def test_project_integrations_surface_context_required_for_provider_specific_act
         assert sorted(action["supported_providers"]) == sorted(supported)
         assert action["supported_provider_count"] == len(supported)
         assert action["provider_lane_resolved"] is False
+        assert action["execution_block_reason"] == "provider_context_missing"
+        assert action["preflight_ready"] is False
+        assert action["confirmation_eligible"] is False
+        assert action["ready_to_execute"] is False
 
 
 def test_execute_integration_action_reports_provider_context_block_for_provider_specific_lanes(monkeypatch, tmp_path) -> None:
@@ -5323,6 +5339,7 @@ def test_connected_families_without_provider_identity_no_longer_claim_ready(monk
         assert status["health"]["provider_context_source"] == "connection_family_only"
         assert status["health"]["connection_provider_count"] == 0
         assert status["health"]["connection_without_provider_identity"] is True
+        assert status["provider_context_blocked_action_count"] >= 1
         assert any("lacks verified provider identity" in blocker.lower() for blocker in status["blockers"])
         assert any("explicit provider selection" in fix.lower() for fix in status["recommended_fixes"])
 
@@ -5618,6 +5635,61 @@ def test_unverified_local_cli_mutations_no_longer_claim_confirmation_eligibility
         assert result["confirmation_eligible"] is False
         assert result["ready_to_execute"] is False
         assert "local cli mutation" in result["stderr"].lower()
+
+
+def test_project_integrations_surface_preflight_counts_and_action_readiness(monkeypatch, tmp_path) -> None:
+    workspace = tmp_path / "preflight-counts"
+    workspace.mkdir(parents=True, exist_ok=True)
+    (workspace / "package.json").write_text('{"name":"demo","version":"1.0.0"}\n', encoding="utf-8")
+
+    monkeypatch.setattr("integration_registry.shutil.which", lambda command: f"C:/tools/{command}.exe" if command == "npm" else None)
+
+    status = next(
+        item
+        for item in build_project_integration_status(
+            workspace_path=str(workspace),
+            project_name="Preflight Counts Demo",
+            registry_payload=normalize_integration_registry({}, {}),
+        )
+        if item["family"] == "package_registries"
+    )
+
+    inspect_action = next(item for item in status["available_actions"] if item["action_id"] == "inspect")
+    publish_action = next(item for item in status["available_actions"] if item["action_id"] == "publish")
+
+    assert status["available_action_count"] == 5
+    assert status["local_action_count"] == 1
+    assert status["registry_action_count"] == 4
+    assert status["preflight_ready_action_count"] == 5
+    assert status["confirmation_eligible_action_count"] == 1
+    assert status["ready_to_execute_action_count"] == 4
+    assert status["verification_blocked_action_count"] == 1
+    assert status["verification_blocked_local_action_count"] == 1
+    assert status["verification_blocked_guided_action_count"] == 0
+    assert status["provider_context_blocked_action_count"] == 0
+    assert status["missing_params_action_count"] == 0
+    assert status["missing_executable_action_count"] == 0
+    assert status["no_local_command_action_count"] == 0
+    assert status["health"]["preflight_ready_action_count"] == 5
+    assert status["health"]["confirmation_eligible_action_count"] == 1
+    assert status["health"]["ready_to_execute_action_count"] == 4
+    assert status["health"]["verification_blocked_local_action_count"] == 1
+
+    assert inspect_action["status"] == "available"
+    assert inspect_action["execution_block_reason"] is None
+    assert inspect_action["preflight_ready"] is True
+    assert inspect_action["confirmation_eligible"] is False
+    assert inspect_action["ready_to_execute"] is True
+    assert inspect_action["executable_name"] == "npm"
+
+    assert publish_action["status"] == "needs_setup"
+    assert publish_action["provider_verification_required"] is True
+    assert publish_action["verification_scope"] == "local_cli_mutation"
+    assert publish_action["execution_block_reason"] == "provider_verification_required"
+    assert publish_action["preflight_ready"] is False
+    assert publish_action["confirmation_eligible"] is False
+    assert publish_action["ready_to_execute"] is False
+    assert publish_action["executable_name"] == "npm"
 
 
 def test_execute_integration_action_blocks_missing_executable_before_confirmation(monkeypatch) -> None:

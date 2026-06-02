@@ -3156,6 +3156,11 @@ class IntegrationActionRead(BaseModel):
     provider_verification_required: bool = False
     provider_verification_reason: str | None = None
     verification_scope: IntegrationVerificationScope | None = None
+    executable_name: str | None = None
+    execution_block_reason: str | None = None
+    preflight_ready: bool = False
+    confirmation_eligible: bool = False
+    ready_to_execute: bool = False
     context_required: bool = False
     context_requirement_reason: str | None = None
     suppressed_command_reason: str | None = None
@@ -3222,6 +3227,13 @@ class ProjectIntegrationFamilyRead(BaseModel):
     verification_blocked_action_count: int = 0
     verification_blocked_guided_action_count: int = 0
     verification_blocked_local_action_count: int = 0
+    preflight_ready_action_count: int = 0
+    confirmation_eligible_action_count: int = 0
+    ready_to_execute_action_count: int = 0
+    missing_params_action_count: int = 0
+    missing_executable_action_count: int = 0
+    no_local_command_action_count: int = 0
+    provider_context_blocked_action_count: int = 0
     health: dict[str, Any] = Field(default_factory=dict)
     artifacts: list[dict[str, Any]] = Field(default_factory=list)
     safe_commands: list[str] = Field(default_factory=list)

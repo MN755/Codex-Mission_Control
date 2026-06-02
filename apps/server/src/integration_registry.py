@@ -1530,6 +1530,70 @@ def _verification_scope(*, provider_verification_reason: str | None, execution_m
     return None
 
 
+def _action_preflight_summary(
+    *,
+    family: IntegrationFamilyDefinition,
+    action: IntegrationActionDefinition,
+    provider: str | None,
+    command_template: str | None,
+    root: Path | None,
+    relative_files: list[str],
+    action_metadata: dict[str, Any],
+    execution_mode: str,
+    provider_verification_required: bool,
+    provider_verification_reason: str | None,
+    suppressed_command_reason: str | None,
+) -> dict[str, Any]:
+    effective_params = _provider_default_params(
+        provider=provider,
+        action_id=action.action_id,
+        root=root,
+        relative_files=relative_files,
+    )
+    required_params = _dedupe_strs(
+        [
+            *[str(item) for item in action.required_params],
+            *[str(item) for item in _provider_extra_required_params(provider, action.action_id)],
+        ]
+    )
+    missing_params = [
+        name
+        for name in required_params
+        if name not in effective_params or effective_params[name] in {None, ""}
+    ]
+    command: str | None = None
+    if command_template:
+        if missing_params:
+            command = command_template
+        else:
+            command = _format_command(command_template, effective_params)
+    executable_available = bool(command and _command_is_available(command))
+    executable_name = _command_executable_name(command or command_template or "")
+    execution_block_reason = _execution_block_reason(
+        missing_params=missing_params,
+        provider_verification_required=provider_verification_required,
+        suppressed_command_reason=suppressed_command_reason,
+        execution_mode=execution_mode,
+        command=command,
+        executable_available=executable_available,
+    )
+    preflight_ready = execution_block_reason is None
+    confirmation_eligible = bool(preflight_ready and action_metadata["requires_confirmation"])
+    ready_to_execute = bool(preflight_ready and not action_metadata["requires_confirmation"])
+    return {
+        "defaulted_params": effective_params,
+        "required_params": required_params,
+        "missing_params": missing_params,
+        "command": command,
+        "command_ready": executable_available,
+        "executable_name": executable_name,
+        "execution_block_reason": execution_block_reason,
+        "preflight_ready": preflight_ready,
+        "confirmation_eligible": confirmation_eligible,
+        "ready_to_execute": ready_to_execute,
+    }
+
+
 def _provider_extra_required_params(provider: str | None, action_id: str) -> tuple[str, ...]:
     if not provider:
         return ()
@@ -2806,13 +2870,6 @@ def build_project_integration_status(
             supported_providers = _supported_providers_for_action(family, action)
             support_mode = _action_support_mode(family, action)
             action_metadata = _effective_action_metadata(action, action_provider)
-            action_command_ready = bool(action_template and _command_is_available(action_template))
-            action_required_params = _dedupe_strs(
-                [
-                    *[str(item) for item in action.required_params],
-                    *[str(item) for item in _provider_extra_required_params(action_provider, action.action_id)],
-                ]
-            )
             execution_mode = _execution_mode(action_id=action.action_id, command_template=action_template, provider=action_provider)
             provider_lane_resolved = bool(action_provider and (not supported_providers or action_provider in supported_providers))
             provider_context_status = _provider_context_status(
@@ -2841,14 +2898,22 @@ def build_project_integration_status(
             )
             context_required = bool(context_requirement_reason)
             suppressed_command_reason = context_requirement_reason if context_required and not action_template else None
+            preflight = _action_preflight_summary(
+                family=family,
+                action=action,
+                provider=action_provider,
+                command_template=action_template,
+                root=root,
+                relative_files=relative_files,
+                action_metadata=action_metadata,
+                execution_mode=execution_mode,
+                provider_verification_required=provider_verification_required,
+                provider_verification_reason=provider_verification_reason,
+                suppressed_command_reason=suppressed_command_reason,
+            )
             action_ready = bool(
                 action.action_id in {"import_host_state", "connect", "disconnect", "inspect_status"}
-                or (
-                    execution_mode == "local_cli"
-                    and action_command_ready
-                    and has_context_signal
-                )
-                or (action_command_ready and has_context_signal)
+                or (preflight["command_ready"] and has_context_signal)
                 or (
                     execution_mode in {"guided_remote", "registry_state"}
                     and has_context_signal
@@ -2866,11 +2931,11 @@ def build_project_integration_status(
                     "preview_supported": action.preview_supported,
                     "mutates_remote_state": bool(action_metadata["mutates_remote_state"]),
                     "requires_confirmation": bool(action_metadata["requires_confirmation"]),
-                    "required_params": action_required_params,
+                    "required_params": preflight["required_params"],
                     "status": "available" if action_ready else "needs_setup",
                     "provider": action_provider,
                     "command_template": action_template,
-                    "command_ready": action_command_ready,
+                    "command_ready": preflight["command_ready"],
                     "execution_mode": execution_mode,
                     "provider_support_mode": support_mode,
                     "supported_providers": supported_providers,
@@ -2882,6 +2947,11 @@ def build_project_integration_status(
                     "provider_verification_required": provider_verification_required,
                     "provider_verification_reason": provider_verification_reason,
                     "verification_scope": verification_scope,
+                    "executable_name": preflight["executable_name"],
+                    "execution_block_reason": preflight["execution_block_reason"],
+                    "preflight_ready": preflight["preflight_ready"],
+                    "confirmation_eligible": preflight["confirmation_eligible"],
+                    "ready_to_execute": preflight["ready_to_execute"],
                     "context_required": context_required,
                     "context_requirement_reason": context_requirement_reason,
                     "suppressed_command_reason": suppressed_command_reason,
@@ -2929,6 +2999,13 @@ def build_project_integration_status(
         verification_blocked_local_action_count = sum(
             1 for item in available_actions if item.get("verification_scope") == "local_cli_mutation"
         )
+        preflight_ready_action_count = sum(1 for item in available_actions if item["preflight_ready"])
+        confirmation_eligible_action_count = sum(1 for item in available_actions if item["confirmation_eligible"])
+        ready_to_execute_action_count = sum(1 for item in available_actions if item["ready_to_execute"])
+        missing_params_action_count = sum(1 for item in available_actions if item.get("execution_block_reason") == "missing_params")
+        missing_executable_action_count = sum(1 for item in available_actions if item.get("execution_block_reason") == "missing_executable")
+        no_local_command_action_count = sum(1 for item in available_actions if item.get("execution_block_reason") == "no_local_command")
+        provider_context_blocked_action_count = sum(1 for item in available_actions if item.get("execution_block_reason") == "provider_context_missing")
         has_actionable_lane = available_action_count > registry_action_count
         has_provider_cli = not provider_cli_candidates or len(installed_provider_clis) == len(provider_cli_candidates)
         if not has_context_signal:
@@ -3042,6 +3119,13 @@ def build_project_integration_status(
                 "verification_blocked_action_count": verification_blocked_action_count,
                 "verification_blocked_guided_action_count": verification_blocked_guided_action_count,
                 "verification_blocked_local_action_count": verification_blocked_local_action_count,
+                "preflight_ready_action_count": preflight_ready_action_count,
+                "confirmation_eligible_action_count": confirmation_eligible_action_count,
+                "ready_to_execute_action_count": ready_to_execute_action_count,
+                "missing_params_action_count": missing_params_action_count,
+                "missing_executable_action_count": missing_executable_action_count,
+                "no_local_command_action_count": no_local_command_action_count,
+                "provider_context_blocked_action_count": provider_context_blocked_action_count,
                 "health": {
                     "cli_detected": installed_clis,
                     "resolved_cli_detected": installed_provider_clis,
@@ -3072,6 +3156,13 @@ def build_project_integration_status(
                     "verification_blocked_action_ids": verification_blocked_action_ids,
                     "verification_blocked_guided_action_count": verification_blocked_guided_action_count,
                     "verification_blocked_local_action_count": verification_blocked_local_action_count,
+                    "preflight_ready_action_count": preflight_ready_action_count,
+                    "confirmation_eligible_action_count": confirmation_eligible_action_count,
+                    "ready_to_execute_action_count": ready_to_execute_action_count,
+                    "missing_params_action_count": missing_params_action_count,
+                    "missing_executable_action_count": missing_executable_action_count,
+                    "no_local_command_action_count": no_local_command_action_count,
+                    "provider_context_blocked_action_count": provider_context_blocked_action_count,
                     "git_remote_url": git_remote_url or None,
                 },
                 "artifacts": artifacts,
