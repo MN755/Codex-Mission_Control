@@ -213,6 +213,7 @@ PROVIDER_TOKEN_MARKERS: dict[str, tuple[str, ...]] = {
     "paddle": ("paddle",),
     "lemon_squeezy": ("lemon squeezy", "lemonsqueezy"),
     "paypal_sandbox": ("paypal sandbox", "paypal"),
+    "github_releases": ("github releases", "github release"),
     "release_please": ("release please", "release-please"),
     "semantic_release": ("semantic-release", "semantic release"),
     "clerk": ("clerk",),
@@ -285,6 +286,9 @@ PROVIDER_ACTION_GUIDANCE: dict[str, dict[str, str]] = {
     "confluence": {
         "inspect": "Confluence is intentionally a guided remote lane here. Use the host-integrated or API-backed documentation lane instead of pretending a local CLI exists.",
         "sync": "Confluence sync should route through a verified host or API-backed lane.",
+    },
+    "auth0": {
+        "inspect": "Auth0 inspection uses the local CLI when available, but it still represents live remote auth state, not a repo-only guarantee.",
     },
     "logrocket": {
         "inspect": "LogRocket is intentionally treated as a guided remote lane here. Mission Control should not pretend a local LogRocket CLI exists when the honest path is browser/API-backed.",
@@ -365,6 +369,47 @@ PROVIDER_ACTION_GUIDANCE: dict[str, dict[str, str]] = {
     },
     "okta": {
         "inspect": "Okta auth inspection should route through a verified host or API-backed auth lane instead of a fake local CLI.",
+    },
+    "firebase_auth": {
+        "inspect": "Firebase Auth inspection uses the Firebase CLI when available, but the real contract still depends on live remote auth state.",
+    },
+    "supabase_auth": {
+        "inspect": "Supabase Auth inspection uses the Supabase CLI when available, but the real contract still depends on live remote auth state.",
+    },
+    "onepassword": {
+        "inspect": "1Password inspection uses the local CLI when available, but the result still reflects live vault/session state rather than repo-local proof.",
+    },
+    "doppler": {
+        "inspect": "Doppler inspection uses the local CLI when available, but the result still reflects live config/auth state rather than repo-local proof.",
+    },
+    "vault": {
+        "inspect": "Vault inspection uses the local CLI when available, but the result still reflects live cluster/session state rather than repo-local proof.",
+    },
+    "aws_secrets_manager": {
+        "inspect": "AWS Secrets Manager inspection uses AWS CLI auth and reflects live cloud state, not a repo-only guarantee.",
+    },
+    "gcp_secret_manager": {
+        "inspect": "GCP Secret Manager inspection uses gcloud auth and reflects live cloud state, not a repo-only guarantee.",
+    },
+    "stripe": {
+        "inspect": "Stripe inspection uses the local CLI when available, but it still reflects live sandbox/auth state rather than repo-local proof.",
+        "create": "Stripe sandbox artifact creation uses the local CLI when available and still mutates remote test state, so approvals remain mandatory.",
+    },
+    "release_please": {
+        "draft": "Release Please drafting uses the local CLI when available, but the output still depends on the repo's live release metadata and branch state.",
+        "create": "Release Please publishing uses the local CLI when available and still mutates release state, so approvals remain mandatory.",
+    },
+    "changesets": {
+        "draft": "Changesets drafting uses the local CLI when available and reflects the repo's current changeset graph rather than a static repo hint.",
+        "create": "Changesets release creation uses the local CLI when available and still mutates release state, so approvals remain mandatory.",
+    },
+    "semantic_release": {
+        "draft": "semantic-release dry runs use the local CLI when available and reflect the repo's live release configuration and commit history.",
+        "create": "semantic-release publishing uses the local CLI when available and still mutates release state, so approvals remain mandatory.",
+    },
+    "github_releases": {
+        "draft": "GitHub release inspection uses the local CLI when available, but it still reflects live remote release state rather than repo-local proof.",
+        "create": "GitHub release creation uses the local CLI when available and still mutates remote release state, so approvals remain mandatory.",
     },
     "launchnotes": {
         "draft": "LaunchNotes drafting should route through a verified host or API-backed release lane instead of a fake local CLI.",
@@ -906,7 +951,7 @@ FAMILIES: tuple[IntegrationFamilyDefinition, ...] = (
         summary="Identity and authentication provider integration lane.",
         category="product",
         providers=("auth0", "clerk", "workos", "okta", "firebase_auth", "supabase_auth"),
-        host_tokens=("auth0", "clerk", "workos", "okta", "firebase auth", "supabase auth"),
+        host_tokens=("auth0", "clerk", "workos", "work os", "okta", "firebase auth", "supabase auth"),
         config_files=(".auth0", "auth0.json", ".auth0.json", "firebase.json", "supabase/config.toml"),
         workspace_tokens=("auth0", "clerk", "workos", "okta", "firebase auth", "supabase auth"),
         cli_candidates=("auth0", "firebase", "supabase"),
@@ -936,7 +981,7 @@ FAMILIES: tuple[IntegrationFamilyDefinition, ...] = (
         summary="Feature-flag and runtime-config integration lane.",
         category="product",
         providers=("launchdarkly", "statsig", "configcat", "unleash", "posthog_feature_flags"),
-        host_tokens=("launchdarkly", "statsig", "configcat", "unleash", "posthog"),
+        host_tokens=("launchdarkly", "launch darkly", "statsig", "configcat", "config cat", "unleash", "posthog"),
         config_files=(),
         workspace_tokens=("launchdarkly", "statsig", "configcat", "unleash", "posthog"),
         cli_candidates=(),
@@ -1456,6 +1501,10 @@ def _provider_hints_for_paths(family: IntegrationFamilyDefinition, matched_paths
     return _dedupe_strs(hints or [provider for provider in family.providers if provider])
 
 
+def _family_token_candidates(family: IntegrationFamilyDefinition) -> list[str]:
+    return _dedupe_strs([*family.workspace_tokens, *family.host_tokens])
+
+
 def _path_matches_marker(path: str, marker: str) -> bool:
     lowered_path = str(path or "").lower()
     lowered_marker = str(marker or "").lower().rstrip("/")
@@ -1909,7 +1958,7 @@ def build_project_integration_status(
             for path in relative_files
             if any(_path_matches_marker(path, item) for item in family.config_files)
         ]
-        token_hits = [token for token in family.workspace_tokens if token and token.lower() in haystack]
+        token_hits = [token for token in _family_token_candidates(family) if token and token.lower() in haystack]
         installed_clis = [cli for cli in family.cli_candidates if shutil.which(cli)]
         provider_candidates = _provider_candidates_for_family(
             family=family,
@@ -2163,7 +2212,7 @@ def preview_integration_action(
         for path in relative_files
         if any(_path_matches_marker(path, item) for item in family.config_files)
     ]
-    token_hits = [token for token in family.workspace_tokens if token and token.lower() in haystack]
+    token_hits = [token for token in _family_token_candidates(family) if token and token.lower() in haystack]
     installed_clis = [cli for cli in family.cli_candidates if shutil.which(cli)]
     command_template, provider_candidates, resolved_provider = _resolve_provider_command(
         family=family,

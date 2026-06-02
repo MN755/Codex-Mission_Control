@@ -1524,6 +1524,160 @@ def test_guided_preview_surfaces_support_auth_payment_release_and_runtime_guidan
     assert any("release lane" in note.lower() for note in launchnotes_preview["notes"])
 
 
+def test_cli_backed_preview_surfaces_auth_secret_payment_and_release_guidance(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "integration_registry.shutil.which",
+        lambda command: f"C:/tools/{command}.exe"
+        if command in {"auth0", "firebase", "supabase", "op", "doppler", "vault", "aws", "gcloud", "stripe", "release-please", "changeset", "semantic-release", "gh"}
+        else None,
+    )
+
+    auth0_preview = preview_integration_action(
+        family_id="auth_providers",
+        action_id="inspect",
+        params={},
+        registry_payload=normalize_integration_registry({"connections": {"auth_providers": {"family": "auth_providers", "status": "connected", "providers": ["auth0"], "connection_source": "mission_control", "host_imported": False}}}, {}),
+        workspace_path=None,
+        project_name="Auth0 Guidance Demo",
+    )
+    firebase_auth_preview = preview_integration_action(
+        family_id="auth_providers",
+        action_id="inspect",
+        params={},
+        registry_payload=normalize_integration_registry({"connections": {"auth_providers": {"family": "auth_providers", "status": "connected", "providers": ["firebase_auth"], "connection_source": "mission_control", "host_imported": False}}}, {}),
+        workspace_path=None,
+        project_name="Firebase Auth Guidance Demo",
+    )
+    supabase_auth_preview = preview_integration_action(
+        family_id="auth_providers",
+        action_id="inspect",
+        params={},
+        registry_payload=normalize_integration_registry({"connections": {"auth_providers": {"family": "auth_providers", "status": "connected", "providers": ["supabase_auth"], "connection_source": "mission_control", "host_imported": False}}}, {}),
+        workspace_path=None,
+        project_name="Supabase Auth Guidance Demo",
+    )
+    onepassword_preview = preview_integration_action(
+        family_id="secrets",
+        action_id="inspect",
+        params={},
+        registry_payload=normalize_integration_registry({"connections": {"secrets": {"family": "secrets", "status": "connected", "providers": ["onepassword"], "connection_source": "mission_control", "host_imported": False}}}, {}),
+        workspace_path=None,
+        project_name="1Password Guidance Demo",
+    )
+    stripe_preview = preview_integration_action(
+        family_id="payments",
+        action_id="create",
+        params={"name": "Test Customer"},
+        registry_payload=normalize_integration_registry({"connections": {"payments": {"family": "payments", "status": "connected", "providers": ["stripe"], "connection_source": "mission_control", "host_imported": False}}}, {}),
+        workspace_path=None,
+        project_name="Stripe Guidance Demo",
+    )
+    release_please_preview = preview_integration_action(
+        family_id="release_management",
+        action_id="draft",
+        params={},
+        registry_payload=normalize_integration_registry({"connections": {"release_management": {"family": "release_management", "status": "connected", "providers": ["release_please"], "connection_source": "mission_control", "host_imported": False}}}, {}),
+        workspace_path=None,
+        project_name="Release Please Guidance Demo",
+    )
+    changesets_preview = preview_integration_action(
+        family_id="release_management",
+        action_id="draft",
+        params={},
+        registry_payload=normalize_integration_registry({"connections": {"release_management": {"family": "release_management", "status": "connected", "providers": ["changesets"], "connection_source": "mission_control", "host_imported": False}}}, {}),
+        workspace_path=None,
+        project_name="Changesets Guidance Demo",
+    )
+    semantic_release_preview = preview_integration_action(
+        family_id="release_management",
+        action_id="draft",
+        params={},
+        registry_payload=normalize_integration_registry({"connections": {"release_management": {"family": "release_management", "status": "connected", "providers": ["semantic_release"], "connection_source": "mission_control", "host_imported": False}}}, {}),
+        workspace_path=None,
+        project_name="semantic-release Guidance Demo",
+    )
+    github_releases_preview = preview_integration_action(
+        family_id="release_management",
+        action_id="draft",
+        params={},
+        registry_payload=normalize_integration_registry({"connections": {"release_management": {"family": "release_management", "status": "connected", "providers": ["github_releases"], "connection_source": "mission_control", "host_imported": False}}}, {}),
+        workspace_path=None,
+        project_name="GitHub Releases Guidance Demo",
+    )
+
+    assert any("live remote auth state" in note.lower() for note in auth0_preview["notes"])
+    assert any("live remote auth state" in note.lower() for note in firebase_auth_preview["notes"])
+    assert any("live remote auth state" in note.lower() for note in supabase_auth_preview["notes"])
+    assert any("live vault/session state" in note.lower() for note in onepassword_preview["notes"])
+    assert any("mutates remote test state" in note.lower() for note in stripe_preview["notes"])
+    assert any("release metadata" in note.lower() for note in release_please_preview["notes"])
+    assert any("changeset graph" in note.lower() for note in changesets_preview["notes"])
+    assert any("commit history" in note.lower() for note in semantic_release_preview["notes"])
+    assert any("live remote release state" in note.lower() for note in github_releases_preview["notes"])
+
+
+def test_host_token_aliases_detect_new_relic_launch_darkly_work_os_and_github_releases(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr("integration_registry.shutil.which", lambda _command: None)
+
+    new_relic_workspace = tmp_path / "new-relic-repo"
+    new_relic_workspace.mkdir(parents=True, exist_ok=True)
+    (new_relic_workspace / "README.md").write_text("New Relic handles release telemetry.\n", encoding="utf-8")
+
+    launchdarkly_workspace = tmp_path / "launch-darkly-repo"
+    launchdarkly_workspace.mkdir(parents=True, exist_ok=True)
+    (launchdarkly_workspace / "README.md").write_text("Launch Darkly controls staged rollouts.\n", encoding="utf-8")
+
+    workos_workspace = tmp_path / "work-os-repo"
+    workos_workspace.mkdir(parents=True, exist_ok=True)
+    (workos_workspace / "README.md").write_text("Work OS handles enterprise auth routing.\n", encoding="utf-8")
+
+    github_releases_workspace = tmp_path / "github-releases-repo"
+    github_releases_workspace.mkdir(parents=True, exist_ok=True)
+    (github_releases_workspace / "README.md").write_text("GitHub Releases publishes artifacts for this product.\n", encoding="utf-8")
+
+    new_relic_status = {
+        item["family"]: item
+        for item in build_project_integration_status(
+            workspace_path=str(new_relic_workspace),
+            project_name="New Relic Workspace Demo",
+            registry_payload=normalize_integration_registry({}, {}),
+        )
+    }["observability"]
+    launchdarkly_status = {
+        item["family"]: item
+        for item in build_project_integration_status(
+            workspace_path=str(launchdarkly_workspace),
+            project_name="Launch Darkly Workspace Demo",
+            registry_payload=normalize_integration_registry({}, {}),
+        )
+    }["feature_flags"]
+    workos_status = {
+        item["family"]: item
+        for item in build_project_integration_status(
+            workspace_path=str(workos_workspace),
+            project_name="Work OS Workspace Demo",
+            registry_payload=normalize_integration_registry({}, {}),
+        )
+    }["auth_providers"]
+    github_releases_status = {
+        item["family"]: item
+        for item in build_project_integration_status(
+            workspace_path=str(github_releases_workspace),
+            project_name="GitHub Releases Workspace Demo",
+            registry_payload=normalize_integration_registry({}, {}),
+        )
+    }["release_management"]
+
+    assert new_relic_status["resolved_provider"] == "new_relic"
+    assert new_relic_status["status"] == "partial"
+    assert launchdarkly_status["resolved_provider"] == "launchdarkly"
+    assert launchdarkly_status["status"] == "partial"
+    assert workos_status["resolved_provider"] == "workos"
+    assert workos_status["status"] == "partial"
+    assert github_releases_status["resolved_provider"] == "github_releases"
+    assert github_releases_status["status"] == "partial"
+
+
 def test_workspace_token_aliases_detect_help_scout_lmstudio_and_launch_notes(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr("integration_registry.shutil.which", lambda _command: None)
 
