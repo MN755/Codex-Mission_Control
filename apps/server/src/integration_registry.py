@@ -2139,6 +2139,63 @@ def _provider_cli_candidates(provider: str | None) -> tuple[str, ...]:
     return PROVIDER_CLIS.get(provider, ())
 
 
+def _provider_signal_breakdown(
+    *,
+    family: IntegrationFamilyDefinition,
+    connection: dict[str, Any],
+    detected_files: list[str],
+    token_hits: list[str],
+    installed_clis: list[str],
+    git_remote_url: str,
+) -> dict[str, dict[str, Any]]:
+    breakdown: dict[str, dict[str, Any]] = {}
+    connection_providers = [str(item) for item in list(connection.get("providers") or [])]
+    connection_source = str(connection.get("connection_source") or "mission_control")
+    git_remote_host = _git_remote_hostname(git_remote_url)
+    lowered_files = [path.lower() for path in detected_files]
+    lowered_hits = {hit.lower() for hit in token_hits}
+    installed_cli_set = {item.lower() for item in installed_clis}
+
+    for provider in family.providers:
+        entry = {
+            "connection": 0,
+            "git_remote": 0,
+            "workspace_marker": 0,
+            "workspace_token": 0,
+            "cli": 0,
+            "total": 0,
+            "has_non_cli_evidence": False,
+            "suppressed_cli_only": False,
+        }
+        if provider in connection_providers:
+            entry["connection"] = 80 if connection_source in AUTHORITATIVE_CONNECTION_SOURCES else 40
+        if git_remote_host:
+            if _git_remote_host_matches_provider(git_remote_host, "github") and provider == "github":
+                entry["git_remote"] = 70
+            if _git_remote_host_matches_provider(git_remote_host, "gitlab") and provider == "gitlab":
+                entry["git_remote"] = 70
+            if _git_remote_host_matches_provider(git_remote_host, "bitbucket") and provider == "bitbucket":
+                entry["git_remote"] = 70
+        markers = PROVIDER_WORKSPACE_MARKERS.get(provider, ())
+        if any(_path_matches_marker(file_path, marker) for file_path in lowered_files for marker in markers):
+            entry["workspace_marker"] = 60
+        tokens = PROVIDER_TOKEN_MARKERS.get(provider, ())
+        if any(token.lower() in lowered_hits for token in tokens):
+            entry["workspace_token"] = 30
+        entry["has_non_cli_evidence"] = bool(
+            entry["connection"] or entry["git_remote"] or entry["workspace_marker"] or entry["workspace_token"]
+        )
+        required_clis = PROVIDER_CLIS.get(provider, ())
+        if required_clis and all(cli.lower() in installed_cli_set for cli in required_clis):
+            if entry["has_non_cli_evidence"]:
+                entry["cli"] = 10
+            else:
+                entry["suppressed_cli_only"] = True
+        entry["total"] = int(entry["connection"]) + int(entry["git_remote"]) + int(entry["workspace_marker"]) + int(entry["workspace_token"]) + int(entry["cli"])
+        breakdown[provider] = entry
+    return breakdown
+
+
 def _provider_candidates_for_family(
     *,
     family: IntegrationFamilyDefinition,
@@ -2148,33 +2205,19 @@ def _provider_candidates_for_family(
     installed_clis: list[str],
     git_remote_url: str,
 ) -> list[str]:
-    scores: dict[str, int] = {}
-    connection_providers = [str(item) for item in list(connection.get("providers") or [])]
-    connection_source = str(connection.get("connection_source") or "mission_control")
-    for provider in connection_providers:
-        if provider in family.providers:
-            scores[provider] = scores.get(provider, 0) + (80 if connection_source in AUTHORITATIVE_CONNECTION_SOURCES else 40)
-    git_remote_host = _git_remote_hostname(git_remote_url)
-    if git_remote_host:
-        if _git_remote_host_matches_provider(git_remote_host, "github") and "github" in family.providers:
-            scores["github"] = scores.get("github", 0) + 70
-        if _git_remote_host_matches_provider(git_remote_host, "gitlab") and "gitlab" in family.providers:
-            scores["gitlab"] = scores.get("gitlab", 0) + 70
-        if _git_remote_host_matches_provider(git_remote_host, "bitbucket") and "bitbucket" in family.providers:
-            scores["bitbucket"] = scores.get("bitbucket", 0) + 70
-    lowered_files = [path.lower() for path in detected_files]
-    lowered_hits = {hit.lower() for hit in token_hits}
-    installed_cli_set = {item.lower() for item in installed_clis}
-    for provider in family.providers:
-        markers = PROVIDER_WORKSPACE_MARKERS.get(provider, ())
-        if any(_path_matches_marker(file_path, marker) for file_path in lowered_files for marker in markers):
-            scores[provider] = scores.get(provider, 0) + 60
-        tokens = PROVIDER_TOKEN_MARKERS.get(provider, ())
-        if any(token.lower() in lowered_hits for token in tokens):
-            scores[provider] = scores.get(provider, 0) + 30
-        required_clis = PROVIDER_CLIS.get(provider, ())
-        if required_clis and all(cli.lower() in installed_cli_set for cli in required_clis):
-            scores[provider] = scores.get(provider, 0) + 10
+    breakdown = _provider_signal_breakdown(
+        family=family,
+        connection=connection,
+        detected_files=detected_files,
+        token_hits=token_hits,
+        installed_clis=installed_clis,
+        git_remote_url=git_remote_url,
+    )
+    scores = {
+        provider: int(entry["total"])
+        for provider, entry in breakdown.items()
+        if int(entry["total"]) > 0 and bool(entry["has_non_cli_evidence"])
+    }
     priority = PROVIDER_PRIORITY_BY_FAMILY.get(family.family_id, family.providers)
     priority_index = {provider: index for index, provider in enumerate(priority)}
     ordered = sorted(
@@ -2554,6 +2597,14 @@ def build_project_integration_status(
             installed_clis=installed_clis,
             git_remote_url=git_remote_url,
         )
+        provider_signal_breakdown = _provider_signal_breakdown(
+            family=family,
+            connection=connection,
+            detected_files=detected_files,
+            token_hits=token_hits,
+            installed_clis=installed_clis,
+            git_remote_url=git_remote_url,
+        )
         resolved_provider = provider_candidates[0] if provider_candidates else None
         displayed_providers = provider_candidates or list(connection.get("providers") or []) or list(family.providers)
         has_host_import = bool(connection.get("host_imported"))
@@ -2678,6 +2729,11 @@ def build_project_integration_status(
                 "standalone_cli" if has_any_cli_signal and not has_context_signal else "",
             ]
         )
+        cli_only_candidates_suppressed = [
+            provider
+            for provider, entry in provider_signal_breakdown.items()
+            if bool(entry.get("suppressed_cli_only"))
+        ]
         artifacts = [{"type": "config_file", "path": path} for path in detected_files]
         artifacts.extend(
             {
@@ -2719,6 +2775,9 @@ def build_project_integration_status(
                     "connection_detected": has_connection,
                     "standalone_cli_detected": has_any_cli_signal and not has_context_signal,
                     "signal_sources": signal_sources,
+                    "provider_signal_breakdown": provider_signal_breakdown,
+                    "resolved_provider_evidence": dict(provider_signal_breakdown.get(resolved_provider) or {}),
+                    "cli_only_candidates_suppressed": cli_only_candidates_suppressed,
                     "resolved_provider": resolved_provider,
                     "provider_candidates": provider_candidates,
                     "git_remote_url": git_remote_url or None,
@@ -2824,6 +2883,14 @@ def preview_integration_action(
         installed_clis=installed_clis,
         git_remote_url=git_remote_url,
     )
+    provider_signal_breakdown = _provider_signal_breakdown(
+        family=family,
+        connection=connection,
+        detected_files=detected_files,
+        token_hits=token_hits,
+        installed_clis=installed_clis,
+        git_remote_url=git_remote_url,
+    )
     action_metadata = _effective_action_metadata(action, resolved_provider)
     effective_params = {
         **_provider_default_params(
@@ -2880,6 +2947,13 @@ def preview_integration_action(
         "missing_params": missing,
         "provider": resolved_provider,
         "provider_candidates": provider_candidates,
+        "provider_signal_breakdown": provider_signal_breakdown,
+        "resolved_provider_evidence": dict(provider_signal_breakdown.get(resolved_provider) or {}),
+        "cli_only_candidates_suppressed": [
+            provider
+            for provider, entry in provider_signal_breakdown.items()
+            if bool(entry.get("suppressed_cli_only"))
+        ],
         "defaulted_params": {key: value for key, value in effective_params.items() if key not in params},
         "command_ready": executable_available,
         "execution_mode": execution_mode,

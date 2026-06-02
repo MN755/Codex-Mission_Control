@@ -4796,3 +4796,84 @@ def test_provider_specific_guidance_surfaces_for_platform_observability_and_devt
         )
         assert expected in preview["provider_guidance"]
         assert preview["provider_guidance"] == preview["notes"][-1]
+
+
+def test_provider_scoring_suppresses_cli_only_pollution_across_multi_provider_families(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(
+        "integration_registry.shutil.which",
+        lambda command: f"C:/tools/{command}.exe"
+        if command in {"npm", "gh", "acli", "supabase", "firebase", "neon", "pscale", "src", "zoekt-query", "stripe"}
+        else None,
+    )
+
+    cases = [
+        ("docs_systems", "Notion keeps docs synced.\n", "notion", ["docusaurus"], "docusaurus"),
+        ("work_tracking", "Linear plans our sprint work.\n", "linear", ["github_issues", "jira"], "github_issues"),
+        ("database_platforms", "Firebase powers auth and data.\n", "firebase", ["supabase", "neon", "planetscale"], "supabase"),
+        ("payments", "LemonSqueezy handles test purchases.\n", "lemon_squeezy", ["stripe"], "stripe"),
+        ("code_search", "Open Grok powers legacy search.\n", "opengrok", ["sourcegraph", "zoekt"], "sourcegraph"),
+    ]
+
+    family_to_repo = {
+        "docs_systems": "docs-repo",
+        "work_tracking": "work-repo",
+        "database_platforms": "data-repo",
+        "payments": "payments-repo",
+        "code_search": "search-repo",
+    }
+    for family_id, readme_text, expected_provider, suppressed, polluted in cases:
+        workspace = tmp_path / family_to_repo[family_id]
+        workspace.mkdir(parents=True, exist_ok=True)
+        (workspace / "README.md").write_text(readme_text, encoding="utf-8")
+        status = next(
+            item
+            for item in build_project_integration_status(
+                workspace_path=str(workspace),
+                project_name=f"{family_id}-demo",
+                registry_payload=normalize_integration_registry({}, {}),
+            )
+            if item["family"] == family_id
+        )
+        assert status["resolved_provider"] == expected_provider
+        assert polluted not in status["provider_candidates"]
+        assert all(provider in status["health"]["cli_only_candidates_suppressed"] for provider in suppressed)
+        assert status["health"]["resolved_provider_evidence"]["workspace_token"] == 30
+        assert status["health"]["resolved_provider_evidence"]["has_non_cli_evidence"] is True
+
+
+def test_provider_scoring_breakdown_and_preview_expose_suppressed_cli_only_candidates(monkeypatch, tmp_path) -> None:
+    workspace = tmp_path / "notion-docs"
+    workspace.mkdir(parents=True, exist_ok=True)
+    (workspace / "README.md").write_text("Notion keeps docs synced.\n", encoding="utf-8")
+
+    monkeypatch.setattr(
+        "integration_registry.shutil.which",
+        lambda command: f"C:/tools/{command}.exe" if command in {"npm", "mintlify"} else None,
+    )
+
+    status = next(
+        item
+        for item in build_project_integration_status(
+            workspace_path=str(workspace),
+            project_name="Notion Docs Demo",
+            registry_payload=normalize_integration_registry({}, {}),
+        )
+        if item["family"] == "docs_systems"
+    )
+    preview = preview_integration_action(
+        family_id="docs_systems",
+        action_id="inspect",
+        params={},
+        registry_payload=normalize_integration_registry({}, {}),
+        workspace_path=str(workspace),
+        project_name="Notion Docs Demo",
+    )
+
+    assert status["resolved_provider"] == "notion"
+    assert status["health"]["provider_signal_breakdown"]["notion"]["workspace_token"] == 30
+    assert status["health"]["provider_signal_breakdown"]["docusaurus"]["suppressed_cli_only"] is True
+    assert status["health"]["provider_signal_breakdown"]["mintlify"]["suppressed_cli_only"] is True
+    assert sorted(status["health"]["cli_only_candidates_suppressed"]) == ["docusaurus", "mintlify"]
+    assert preview["resolved_provider_evidence"]["workspace_token"] == 30
+    assert preview["provider_signal_breakdown"]["notion"]["has_non_cli_evidence"] is True
+    assert sorted(preview["cli_only_candidates_suppressed"]) == ["docusaurus", "mintlify"]
