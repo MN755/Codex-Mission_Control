@@ -14196,6 +14196,29 @@ class MissionControlService:
                     artifacts.append(artifact)
             return artifacts
 
+        def _counts_from_grouped_family_ids(grouped: dict[str, list[str]]) -> dict[str, int]:
+            return {key: len(ids) for key, ids in grouped.items()}
+
+        def _group_artifact_type_family_ids() -> dict[str, list[str]]:
+            grouped: dict[str, list[str]] = {}
+            for item in families:
+                family_id = str(item.get("family") or "")
+                if not family_id:
+                    continue
+                seen: set[str] = set()
+                for raw_artifact in item.get("artifacts") or []:
+                    if not isinstance(raw_artifact, dict):
+                        continue
+                    raw_type = raw_artifact.get("type")
+                    if raw_type in (None, ""):
+                        continue
+                    artifact_type = str(raw_type)
+                    if artifact_type in seen:
+                        continue
+                    seen.add(artifact_type)
+                    grouped.setdefault(artifact_type, []).append(family_id)
+            return grouped
+
         family_ids = [str(item.get("family") or "") for item in families]
         family_ids_by_status = _group_scalar_family_ids("status", fallback="unknown")
         statuses = sorted(family_ids_by_status)
@@ -14737,19 +14760,35 @@ class MissionControlService:
         artifact_family_count = len(artifact_family_ids)
         artifacts = _collect_artifacts()
         artifact_count = len(artifacts)
+        artifact_type_family_ids = _group_artifact_type_family_ids()
+        artifact_types = sorted(artifact_type_family_ids)
+        artifact_type_counts = _counts_from_grouped_family_ids(artifact_type_family_ids)
+        artifact_type_group_count = len(artifact_type_counts)
         safe_commands = _merge_unique_strings("safe_commands")
+        safe_command_value_family_ids = _group_list_family_ids("safe_commands")
+        safe_command_value_counts = _counts_from_grouped_family_ids(safe_command_value_family_ids)
+        safe_command_value_group_count = len(safe_command_value_counts)
         blocker_family_ids = _families_with_values("blockers")
         blocker_family_count = len(blocker_family_ids)
         blockers = _merge_unique_strings("blockers")
         blocker_count = len(blockers)
+        blocker_value_family_ids = _group_list_family_ids("blockers")
+        blocker_value_counts = _counts_from_grouped_family_ids(blocker_value_family_ids)
+        blocker_value_group_count = len(blocker_value_counts)
         recommended_fix_family_ids = _families_with_values("recommended_fixes")
         recommended_fix_family_count = len(recommended_fix_family_ids)
         recommended_fixes = _merge_unique_strings("recommended_fixes")
         recommended_fix_count = len(recommended_fixes)
+        recommended_fix_value_family_ids = _group_list_family_ids("recommended_fixes")
+        recommended_fix_value_counts = _counts_from_grouped_family_ids(recommended_fix_value_family_ids)
+        recommended_fix_value_group_count = len(recommended_fix_value_counts)
         note_family_ids = _families_with_values("notes")
         note_family_count = len(note_family_ids)
         notes = _merge_unique_strings("notes")
         note_count = len(notes)
+        note_value_family_ids = _group_list_family_ids("notes")
+        note_value_counts = _counts_from_grouped_family_ids(note_value_family_ids)
+        note_value_group_count = len(note_value_counts)
         return {
             "project_id": project.id,
             "project_name": project.name,
@@ -15293,19 +15332,35 @@ class MissionControlService:
             "artifact_family_count": artifact_family_count,
             "artifact_family_ids": artifact_family_ids,
             "artifacts": artifacts,
+            "artifact_types": artifact_types,
+            "artifact_type_counts": artifact_type_counts,
+            "artifact_type_family_ids": artifact_type_family_ids,
+            "artifact_type_group_count": artifact_type_group_count,
             "safe_commands": safe_commands,
+            "safe_command_value_counts": safe_command_value_counts,
+            "safe_command_value_family_ids": safe_command_value_family_ids,
+            "safe_command_value_group_count": safe_command_value_group_count,
             "blocker_count": blocker_count,
             "blocker_family_count": blocker_family_count,
             "blocker_family_ids": blocker_family_ids,
             "blockers": blockers,
+            "blocker_value_counts": blocker_value_counts,
+            "blocker_value_family_ids": blocker_value_family_ids,
+            "blocker_value_group_count": blocker_value_group_count,
             "recommended_fix_count": recommended_fix_count,
             "recommended_fix_family_count": recommended_fix_family_count,
             "recommended_fix_family_ids": recommended_fix_family_ids,
             "recommended_fixes": recommended_fixes,
+            "recommended_fix_value_counts": recommended_fix_value_counts,
+            "recommended_fix_value_family_ids": recommended_fix_value_family_ids,
+            "recommended_fix_value_group_count": recommended_fix_value_group_count,
             "note_count": note_count,
             "note_family_count": note_family_count,
             "note_family_ids": note_family_ids,
             "notes": notes,
+            "note_value_counts": note_value_counts,
+            "note_value_family_ids": note_value_family_ids,
+            "note_value_group_count": note_value_group_count,
             "families": families,
         }
 

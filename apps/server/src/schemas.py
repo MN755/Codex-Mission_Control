@@ -4057,19 +4057,35 @@ class ProjectIntegrationsRead(BaseModel):
     artifact_family_count: int = 0
     artifact_family_ids: list[str] = Field(default_factory=list)
     artifacts: list[dict[str, Any]] = Field(default_factory=list)
+    artifact_types: list[str] = Field(default_factory=list)
+    artifact_type_counts: dict[str, int] = Field(default_factory=dict)
+    artifact_type_family_ids: dict[str, list[str]] = Field(default_factory=dict)
+    artifact_type_group_count: int = 0
     safe_commands: list[str] = Field(default_factory=list)
+    safe_command_value_counts: dict[str, int] = Field(default_factory=dict)
+    safe_command_value_family_ids: dict[str, list[str]] = Field(default_factory=dict)
+    safe_command_value_group_count: int = 0
     blocker_count: int = 0
     blocker_family_count: int = 0
     blocker_family_ids: list[str] = Field(default_factory=list)
     blockers: list[str] = Field(default_factory=list)
+    blocker_value_counts: dict[str, int] = Field(default_factory=dict)
+    blocker_value_family_ids: dict[str, list[str]] = Field(default_factory=dict)
+    blocker_value_group_count: int = 0
     recommended_fix_count: int = 0
     recommended_fix_family_count: int = 0
     recommended_fix_family_ids: list[str] = Field(default_factory=list)
     recommended_fixes: list[str] = Field(default_factory=list)
+    recommended_fix_value_counts: dict[str, int] = Field(default_factory=dict)
+    recommended_fix_value_family_ids: dict[str, list[str]] = Field(default_factory=dict)
+    recommended_fix_value_group_count: int = 0
     note_count: int = 0
     note_family_count: int = 0
     note_family_ids: list[str] = Field(default_factory=list)
     notes: list[str] = Field(default_factory=list)
+    note_value_counts: dict[str, int] = Field(default_factory=dict)
+    note_value_family_ids: dict[str, list[str]] = Field(default_factory=dict)
+    note_value_group_count: int = 0
     families: list[ProjectIntegrationFamilyRead] = Field(default_factory=list)
 
 
