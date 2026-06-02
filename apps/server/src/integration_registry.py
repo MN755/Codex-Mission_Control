@@ -1499,6 +1499,29 @@ def _command_is_available(command: str) -> bool:
     return shutil.which(executable) is not None
 
 
+def _execution_block_reasons(
+    *,
+    missing_params: list[str],
+    provider_verification_required: bool,
+    suppressed_command_reason: str | None,
+    execution_mode: str,
+    command: str | None,
+    executable_available: bool,
+) -> list[str]:
+    reasons: list[str] = []
+    if missing_params:
+        reasons.append("missing_params")
+    if provider_verification_required:
+        reasons.append("provider_verification_required")
+    if suppressed_command_reason:
+        reasons.append(str(suppressed_command_reason))
+    if not command and execution_mode == "guided_remote":
+        reasons.append("no_local_command")
+    if command and not executable_available:
+        reasons.append("missing_executable")
+    return _dedupe_strs(reasons)
+
+
 def _execution_block_reason(
     *,
     missing_params: list[str],
@@ -1508,17 +1531,15 @@ def _execution_block_reason(
     command: str | None,
     executable_available: bool,
 ) -> str | None:
-    if missing_params:
-        return "missing_params"
-    if provider_verification_required:
-        return "provider_verification_required"
-    if suppressed_command_reason:
-        return suppressed_command_reason
-    if not command and execution_mode == "guided_remote":
-        return "no_local_command"
-    if command and not executable_available:
-        return "missing_executable"
-    return None
+    reasons = _execution_block_reasons(
+        missing_params=missing_params,
+        provider_verification_required=provider_verification_required,
+        suppressed_command_reason=suppressed_command_reason,
+        execution_mode=execution_mode,
+        command=command,
+        executable_available=executable_available,
+    )
+    return reasons[0] if reasons else None
 
 
 def _verification_scope(*, provider_verification_reason: str | None, execution_mode: str) -> str | None:
@@ -1570,7 +1591,7 @@ def _action_preflight_summary(
             command = _format_command(command_template, effective_params)
     executable_available = bool(command and _command_is_available(command))
     executable_name = _command_executable_name(command or command_template or "")
-    execution_block_reason = _execution_block_reason(
+    blocking_reasons = _execution_block_reasons(
         missing_params=missing_params,
         provider_verification_required=provider_verification_required,
         suppressed_command_reason=suppressed_command_reason,
@@ -1578,7 +1599,8 @@ def _action_preflight_summary(
         command=command,
         executable_available=executable_available,
     )
-    preflight_ready = execution_block_reason is None
+    execution_block_reason = blocking_reasons[0] if blocking_reasons else None
+    preflight_ready = not blocking_reasons
     confirmation_eligible = bool(preflight_ready and action_metadata["requires_confirmation"])
     ready_to_execute = bool(preflight_ready and not action_metadata["requires_confirmation"])
     return {
@@ -1590,6 +1612,8 @@ def _action_preflight_summary(
         "command_ready": executable_available,
         "executable_name": executable_name,
         "execution_block_reason": execution_block_reason,
+        "blocking_reasons": blocking_reasons,
+        "blocking_reason_count": len(blocking_reasons),
         "preflight_ready": preflight_ready,
         "confirmation_eligible": confirmation_eligible,
         "ready_to_execute": ready_to_execute,
@@ -2963,6 +2987,8 @@ def build_project_integration_status(
                     "verification_scope": verification_scope,
                     "executable_name": preflight["executable_name"],
                     "execution_block_reason": preflight["execution_block_reason"],
+                    "blocking_reasons": preflight["blocking_reasons"],
+                    "blocking_reason_count": preflight["blocking_reason_count"],
                     "preflight_ready": preflight["preflight_ready"],
                     "confirmation_eligible": preflight["confirmation_eligible"],
                     "ready_to_execute": preflight["ready_to_execute"],
@@ -3031,6 +3057,12 @@ def build_project_integration_status(
             for item in execution_actions
             if item["status"] != "available"
         ]
+        multi_blocked_action_count = sum(1 for item in execution_actions if item.get("blocking_reason_count", 0) > 1)
+        multi_blocked_action_ids = [
+            str(item["action_id"])
+            for item in execution_actions
+            if item.get("blocking_reason_count", 0) > 1
+        ]
         preflight_ready_action_count = sum(1 for item in execution_actions if item["preflight_ready"])
         confirmation_eligible_action_count = sum(1 for item in execution_actions if item["confirmation_eligible"])
         ready_to_execute_action_count = sum(1 for item in execution_actions if item["ready_to_execute"])
@@ -3077,6 +3109,15 @@ def build_project_integration_status(
                 str(item["execution_block_reason"])
                 for item in execution_actions
                 if item.get("execution_block_reason")
+            ).items()
+            if count > 0
+        }
+        blocking_reason_counts = {
+            reason: count
+            for reason, count in Counter(
+                reason
+                for item in execution_actions
+                for reason in list(item.get("blocking_reasons") or [])
             ).items()
             if count > 0
         }
@@ -3200,6 +3241,8 @@ def build_project_integration_status(
                 "execution_action_count": execution_action_count,
                 "blocked_execution_action_count": blocked_execution_action_count,
                 "blocked_execution_action_ids": blocked_execution_action_ids,
+                "multi_blocked_action_count": multi_blocked_action_count,
+                "multi_blocked_action_ids": multi_blocked_action_ids,
                 "preflight_ready_action_count": preflight_ready_action_count,
                 "confirmation_eligible_action_count": confirmation_eligible_action_count,
                 "ready_to_execute_action_count": ready_to_execute_action_count,
@@ -3216,6 +3259,7 @@ def build_project_integration_status(
                 "provider_context_blocked_action_ids": provider_context_blocked_action_ids,
                 "defaulted_param_action_ids": defaulted_param_action_ids,
                 "execution_block_reason_counts": execution_block_reason_counts,
+                "blocking_reason_counts": blocking_reason_counts,
                 "health": {
                     "cli_detected": installed_clis,
                     "resolved_cli_detected": installed_provider_clis,
@@ -3251,6 +3295,8 @@ def build_project_integration_status(
                     "execution_action_count": execution_action_count,
                     "blocked_execution_action_count": blocked_execution_action_count,
                     "blocked_execution_action_ids": blocked_execution_action_ids,
+                    "multi_blocked_action_count": multi_blocked_action_count,
+                    "multi_blocked_action_ids": multi_blocked_action_ids,
                     "preflight_ready_action_count": preflight_ready_action_count,
                     "confirmation_eligible_action_count": confirmation_eligible_action_count,
                     "ready_to_execute_action_count": ready_to_execute_action_count,
@@ -3268,6 +3314,7 @@ def build_project_integration_status(
                     "context_blocked_action_ids": context_blocked_action_ids,
                     "defaulted_param_action_ids": defaulted_param_action_ids,
                     "execution_block_reason_counts": execution_block_reason_counts,
+                    "blocking_reason_counts": blocking_reason_counts,
                     "git_remote_url": git_remote_url or None,
                 },
                 "artifacts": artifacts,
@@ -3475,7 +3522,15 @@ def preview_integration_action(
         command=command,
         executable_available=executable_available,
     )
-    preflight_ready = execution_block_reason is None
+    blocking_reasons = _execution_block_reasons(
+        missing_params=missing,
+        provider_verification_required=provider_verification_required,
+        suppressed_command_reason=suppressed_command_reason,
+        execution_mode=execution_mode,
+        command=command,
+        executable_available=executable_available,
+    )
+    preflight_ready = not blocking_reasons
     confirmation_eligible = bool(preflight_ready and action_metadata["requires_confirmation"])
     ready_to_execute = bool(preflight_ready and not action_metadata["requires_confirmation"])
     notes = [
@@ -3539,6 +3594,8 @@ def preview_integration_action(
         "command_ready": executable_available,
         "execution_mode": execution_mode,
         "execution_block_reason": execution_block_reason,
+        "blocking_reasons": blocking_reasons,
+        "blocking_reason_count": len(blocking_reasons),
         "preflight_ready": preflight_ready,
         "confirmation_eligible": confirmation_eligible,
         "ready_to_execute": ready_to_execute,

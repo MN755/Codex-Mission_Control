@@ -3161,6 +3161,8 @@ class IntegrationActionRead(BaseModel):
     verification_scope: IntegrationVerificationScope | None = None
     executable_name: str | None = None
     execution_block_reason: str | None = None
+    blocking_reasons: list[str] = Field(default_factory=list)
+    blocking_reason_count: int = 0
     preflight_ready: bool = False
     confirmation_eligible: bool = False
     ready_to_execute: bool = False
@@ -3237,6 +3239,8 @@ class ProjectIntegrationFamilyRead(BaseModel):
     execution_action_count: int = 0
     blocked_execution_action_count: int = 0
     blocked_execution_action_ids: list[str] = Field(default_factory=list)
+    multi_blocked_action_count: int = 0
+    multi_blocked_action_ids: list[str] = Field(default_factory=list)
     preflight_ready_action_count: int = 0
     confirmation_eligible_action_count: int = 0
     ready_to_execute_action_count: int = 0
@@ -3253,6 +3257,7 @@ class ProjectIntegrationFamilyRead(BaseModel):
     provider_context_blocked_action_ids: list[str] = Field(default_factory=list)
     defaulted_param_action_ids: list[str] = Field(default_factory=list)
     execution_block_reason_counts: dict[str, int] = Field(default_factory=dict)
+    blocking_reason_counts: dict[str, int] = Field(default_factory=dict)
     health: dict[str, Any] = Field(default_factory=dict)
     artifacts: list[dict[str, Any]] = Field(default_factory=list)
     safe_commands: list[str] = Field(default_factory=list)
@@ -3312,6 +3317,8 @@ class IntegrationActionPreviewRead(BaseModel):
     command_ready: bool = False
     execution_mode: str = "unavailable"
     execution_block_reason: str | None = None
+    blocking_reasons: list[str] = Field(default_factory=list)
+    blocking_reason_count: int = 0
     preflight_ready: bool = False
     confirmation_eligible: bool = False
     ready_to_execute: bool = False

@@ -861,6 +861,10 @@ def test_provider_specific_preview_surfaces_jira_create_param_requirements(monke
     assert sorted(preview["required_params"]) == ["body", "issue_type", "project_key", "title"]
     assert sorted(preview["missing_params"]) == ["issue_type", "project_key"]
     assert preview["params_complete"] is False
+    assert preview["execution_block_reason"] == "missing_params"
+    assert preview["blocking_reasons"] == ["missing_params", "provider_verification_required"]
+    assert preview["blocking_reason_count"] == 2
+    assert preview["provider_verification_required"] is True
     assert 'acli jira workitem create' in str(preview["command"])
     assert preview["execution_mode"] == "local_cli"
 
@@ -5863,6 +5867,64 @@ def test_project_integrations_surface_execution_block_reason_inventories(monkeyp
     assert package_status["health"]["verification_blocked_guided_action_ids"] == []
 
 
+def test_project_integrations_surface_multi_blocked_action_inventories(monkeypatch, tmp_path) -> None:
+    pypi_workspace = tmp_path / "pypi-demo"
+    pypi_workspace.mkdir(parents=True, exist_ok=True)
+    (pypi_workspace / "pyproject.toml").write_text("[project]\nname='demo'\nversion='0.1.0'\n", encoding="utf-8")
+
+    monkeypatch.setattr(
+        "integration_registry.shutil.which",
+        lambda command: f"C:/tools/{command}.exe" if command == "twine" else None,
+    )
+
+    statuses = {
+        item["family"]: item
+        for item in build_project_integration_status(
+            registry_payload=normalize_integration_registry({}, {}),
+            workspace_path=str(pypi_workspace),
+            project_name="PyPI Multi Block Demo",
+        )
+    }
+
+    package_status = statuses["package_registries"]
+    publish_action = next(item for item in package_status["available_actions"] if item["action_id"] == "publish")
+
+    assert publish_action["provider"] == "pypi"
+    assert publish_action["execution_block_reason"] == "missing_params"
+    assert publish_action["blocking_reasons"] == ["missing_params", "provider_verification_required"]
+    assert publish_action["blocking_reason_count"] == 2
+    assert publish_action["provider_verification_required"] is True
+    assert package_status["multi_blocked_action_count"] >= 1
+    assert "publish" in package_status["multi_blocked_action_ids"]
+    assert package_status["blocking_reason_counts"]["missing_params"] >= 1
+    assert package_status["blocking_reason_counts"]["provider_verification_required"] >= 1
+    assert "publish" in package_status["health"]["multi_blocked_action_ids"]
+    assert package_status["health"]["multi_blocked_action_count"] >= 1
+    assert package_status["health"]["blocking_reason_counts"]["missing_params"] >= 1
+    assert package_status["health"]["blocking_reason_counts"]["provider_verification_required"] >= 1
+
+    empty_statuses = {
+        item["family"]: item
+        for item in build_project_integration_status(
+            registry_payload=normalize_integration_registry({}, {}),
+            workspace_path=None,
+            project_name="No Context Multi Block Demo",
+        )
+    }
+    source_control = empty_statuses["source_control"]
+    create_action = next(item for item in source_control["available_actions"] if item["action_id"] == "create")
+
+    assert create_action["execution_block_reason"] == "missing_params"
+    assert create_action["blocking_reasons"] == ["missing_params", "provider_context_missing"]
+    assert create_action["blocking_reason_count"] == 2
+    assert source_control["multi_blocked_action_count"] >= 1
+    assert "create" in source_control["multi_blocked_action_ids"]
+    assert source_control["blocking_reason_counts"]["missing_params"] >= 1
+    assert source_control["blocking_reason_counts"]["provider_context_missing"] >= 1
+    assert "create" in source_control["health"]["multi_blocked_action_ids"]
+    assert source_control["health"]["blocking_reason_counts"]["provider_context_missing"] >= 1
+
+
 def test_execute_integration_action_blocks_missing_executable_before_confirmation(monkeypatch) -> None:
     monkeypatch.setattr("integration_registry.shutil.which", lambda _command: None)
 
@@ -5930,3 +5992,29 @@ def test_execute_integration_action_reports_missing_params_with_reason(monkeypat
     assert result["confirmation_eligible"] is False
     assert result["ready_to_execute"] is False
     assert "missing required parameters" in result["stderr"].lower()
+
+
+def test_execute_integration_action_surfaces_secondary_blockers(monkeypatch, tmp_path) -> None:
+    workspace = tmp_path / "source-control-demo"
+    (workspace / ".github" / "workflows").mkdir(parents=True, exist_ok=True)
+    (workspace / ".github" / "workflows" / "ci.yml").write_text("name: ci\n", encoding="utf-8")
+
+    monkeypatch.setattr("integration_registry.shutil.which", lambda command: f"C:/tools/{command}.exe" if command == "gh" else None)
+
+    result = execute_integration_action(
+        family_id="source_control",
+        action_id="create",
+        params={"title": "Need body"},
+        registry_payload=normalize_integration_registry({}, {}),
+        workspace_path=str(workspace),
+        project_name="Secondary Block Demo",
+        confirmed=False,
+    )
+
+    assert result["status"] == "blocked"
+    assert result["execution_block_reason"] == "missing_params"
+    assert result["blocking_reasons"] == ["missing_params", "provider_verification_required"]
+    assert result["blocking_reason_count"] == 2
+    assert result["provider_verification_required"] is True
+    assert result["missing_params"] == ["body"]
+    assert result["preflight_ready"] is False
