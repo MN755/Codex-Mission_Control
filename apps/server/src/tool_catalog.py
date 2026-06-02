@@ -29,6 +29,7 @@ TOOL_CATALOG: list[dict[str, Any]] = [
     {"id": "write-publishable-docs", "name": "Write Publishable Docs", "category": "Docs tools", "summary": "Generate polished public-facing documentation.", "risk_level": "low"},
     {"id": "github-wiki-creator", "name": "GitHub Wiki Creator", "category": "Docs tools", "summary": "Publish docs to a connected GitHub wiki.", "risk_level": "medium"},
     {"id": "github-deployment-creator", "name": "GitHub Deployment Creator", "category": "Deployment tools", "summary": "Create deployment-related GitHub artifacts.", "risk_level": "medium"},
+    {"id": "gitlab-merge-request-creator", "name": "GitLab Merge Request Creator", "category": "Deployment tools", "summary": "Create or guide merge-request work against a connected GitLab host.", "risk_level": "medium"},
     {"id": "skill-creator", "name": "Skill Creator", "category": "Core tools", "summary": "Create local Mission Control or Codex skills.", "risk_level": "medium"},
     {"id": "goal-reminder", "name": "Goal Reminder", "category": "Core tools", "summary": "Keep the current build goal visible to the manager and workers.", "risk_level": "low"},
     {"id": "security-review", "name": "Security Review", "category": "Testing tools", "summary": "Run a local security review checklist or specialist model.", "risk_level": "medium"},
@@ -74,6 +75,10 @@ TOOL_CATALOG: list[dict[str, Any]] = [
     {"id": "dependency-audit-with-osv-scanner", "name": "Dependency Audit with OSV-Scanner", "category": "Testing tools", "summary": "Scan repo lockfiles for known dependency vulnerabilities.", "risk_level": "medium"},
     {"id": "python-audit-with-pip-audit", "name": "Python Audit with pip-audit", "category": "Testing tools", "summary": "Audit Python dependencies for known vulnerabilities.", "risk_level": "medium"},
     {"id": "deploy-with-vercel", "name": "Deploy with Vercel", "category": "Deployment tools", "summary": "Deploy through a configured Vercel account.", "risk_level": "high"},
+    {"id": "deploy-with-netlify", "name": "Deploy with Netlify", "category": "Deployment tools", "summary": "Deploy through a configured Netlify account.", "risk_level": "high"},
+    {"id": "deploy-with-cloudflare-pages", "name": "Deploy with Cloudflare Pages", "category": "Deployment tools", "summary": "Deploy through a configured Cloudflare Pages lane.", "risk_level": "high"},
+    {"id": "deploy-with-railway", "name": "Deploy with Railway", "category": "Deployment tools", "summary": "Deploy through a configured Railway project.", "risk_level": "high"},
+    {"id": "deploy-with-render", "name": "Deploy with Render", "category": "Deployment tools", "summary": "Deploy through a configured Render service.", "risk_level": "high"},
     {"id": "web-search-with-approval", "name": "Web Search with Approval", "category": "Search/research tools", "summary": "Use live web search with explicit approval.", "risk_level": "medium"},
     {"id": "extra-sandbox", "name": "Extra Sandbox", "category": "Experimental environments", "summary": "Use a broader or alternate local sandbox when configured.", "risk_level": "high"},
     {"id": "test-in-linux-wsl", "name": "Test in Linux / WSL", "category": "Testing tools", "summary": "Run validation in Linux or WSL when available.", "risk_level": "medium"},
@@ -146,7 +151,25 @@ def _integration_connection_status(integration_registry: dict[str, Any], family_
     connection.setdefault("status", "disconnected")
     connection.setdefault("host_imported", False)
     connection.setdefault("connection_source", "mission_control")
+    connection.setdefault("providers", [])
     return connection
+
+
+def _integration_supports_provider(connection: dict[str, Any], provider: str) -> bool:
+    return provider in {str(item) for item in list(connection.get("providers") or [])}
+
+
+def _integration_provider_available(connection: dict[str, Any], provider: str) -> bool:
+    return _integration_supports_provider(connection, provider) and (
+        connection.get("status") == "connected" or bool(connection.get("host_imported"))
+    )
+
+
+def _connected_provider_label(connection: dict[str, Any]) -> str:
+    providers = [str(item) for item in list(connection.get("providers") or []) if str(item).strip()]
+    if not providers:
+        return "none"
+    return ", ".join(providers)
 
 
 def _availability(
@@ -424,14 +447,43 @@ def _availability(
     if tool_id in {"github-wiki-creator", "github-deployment-creator"}:
         source_control = _integration_connection_status(integration_registry, "source_control")
         github_status = connected_accounts.get("github", {})
-        is_available = source_control.get("status") == "connected" or bool(source_control.get("host_imported")) or github_status.get("status") == "connected"
+        is_available = _integration_provider_available(source_control, "github") or github_status.get("status") == "connected"
         notes.append(f"Connection source: {source_control.get('connection_source')}.")
+        notes.append(f"Resolved source-control providers: {_connected_provider_label(source_control)}.")
+        if not is_available and list(source_control.get("providers") or []):
+            notes.append("This tool is GitHub-specific. The current source-control provider does not look like GitHub.")
         return ("available" if is_available else "needs_setup"), notes
-    if tool_id == "deploy-with-vercel":
+    if tool_id == "gitlab-merge-request-creator":
+        source_control = _integration_connection_status(integration_registry, "source_control")
+        is_available = _integration_provider_available(source_control, "gitlab")
+        notes.append(f"Connection source: {source_control.get('connection_source')}.")
+        notes.append(f"Resolved source-control providers: {_connected_provider_label(source_control)}.")
+        if not is_available and list(source_control.get("providers") or []):
+            notes.append("This tool is GitLab-specific. The current source-control provider does not look like GitLab.")
+        return ("available" if is_available else "needs_setup"), notes
+    if tool_id in {
+        "deploy-with-vercel",
+        "deploy-with-netlify",
+        "deploy-with-cloudflare-pages",
+        "deploy-with-railway",
+        "deploy-with-render",
+    }:
         hosting = _integration_connection_status(integration_registry, "hosting_deploy")
         vercel_status = connected_accounts.get("vercel", {})
-        is_available = hosting.get("status") == "connected" or bool(hosting.get("host_imported")) or vercel_status.get("status") == "connected"
+        tool_provider = {
+            "deploy-with-vercel": "vercel",
+            "deploy-with-netlify": "netlify",
+            "deploy-with-cloudflare-pages": "cloudflare_pages",
+            "deploy-with-railway": "railway",
+            "deploy-with-render": "render",
+        }[tool_id]
+        is_available = _integration_provider_available(hosting, tool_provider) or (
+            tool_provider == "vercel" and vercel_status.get("status") == "connected"
+        )
         notes.append(f"Connection source: {hosting.get('connection_source')}.")
+        notes.append(f"Resolved hosting providers: {_connected_provider_label(hosting)}.")
+        if not is_available and list(hosting.get("providers") or []):
+            notes.append(f"This tool is {tool_provider.replace('_', ' ')}-specific. The current hosting provider does not match.")
         return ("available" if is_available else "needs_setup"), notes
     if tool_id == "web-search-with-approval":
         notes.append("Web search stays approval-gated unless the user explicitly enables it.")
@@ -467,7 +519,17 @@ def _availability(
 def default_permission_policy(tool_id: str) -> str:
     if tool_id in {"file-search", "format-changer", "write-publishable-docs", "goal-reminder", "ascii-image-creator"}:
         return "ask_once_per_project"
-    if tool_id in {"deploy-with-vercel", "github-deployment-creator", "extra-sandbox", "cuda-test-environment"}:
+    if tool_id in {
+        "deploy-with-vercel",
+        "deploy-with-netlify",
+        "deploy-with-cloudflare-pages",
+        "deploy-with-railway",
+        "deploy-with-render",
+        "github-deployment-creator",
+        "gitlab-merge-request-creator",
+        "extra-sandbox",
+        "cuda-test-environment",
+    }:
         return "ask_every_time"
     return "ask_every_time"
 

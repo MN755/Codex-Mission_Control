@@ -549,6 +549,123 @@ def test_tool_catalog_reuses_process_probe_cache_across_catalog_calls(monkeypatc
     assert counters["spatial_plan"] == 1
 
 
+def test_tool_catalog_requires_actual_github_provider_for_github_specific_tools() -> None:
+    registry = {
+        "connections": {
+            "source_control": {
+                "family": "source_control",
+                "status": "connected",
+                "providers": ["gitlab"],
+                "connection_source": "mission_control",
+                "host_imported": False,
+            }
+        }
+    }
+
+    payload = catalog_with_permissions(
+        provider="codex",
+        connected_accounts={},
+        integration_registry=registry,
+        permission_overrides={},
+    )
+    tools = {item["id"]: item for item in payload}
+
+    assert tools["github-wiki-creator"]["availability"] == "needs_setup"
+    assert tools["github-deployment-creator"]["availability"] == "needs_setup"
+    assert any("gitlab" in note.lower() for note in tools["github-wiki-creator"]["notes"])
+    assert any("gitlab" in note.lower() for note in tools["github-deployment-creator"]["notes"])
+
+
+def test_tool_catalog_accepts_gitlab_provider_for_gitlab_specific_tool() -> None:
+    registry = {
+        "connections": {
+            "source_control": {
+                "family": "source_control",
+                "status": "connected",
+                "providers": ["gitlab"],
+                "connection_source": "mission_control",
+                "host_imported": False,
+            }
+        }
+    }
+
+    payload = catalog_with_permissions(
+        provider="codex",
+        connected_accounts={},
+        integration_registry=registry,
+        permission_overrides={},
+    )
+    tools = {item["id"]: item for item in payload}
+
+    assert tools["gitlab-merge-request-creator"]["availability"] == "available"
+
+
+def test_tool_catalog_requires_provider_specific_hosting_tool_match() -> None:
+    registry = {
+        "connections": {
+            "hosting_deploy": {
+                "family": "hosting_deploy",
+                "status": "connected",
+                "providers": ["netlify"],
+                "connection_source": "mission_control",
+                "host_imported": False,
+            }
+        }
+    }
+
+    payload = catalog_with_permissions(
+        provider="codex",
+        connected_accounts={},
+        integration_registry=registry,
+        permission_overrides={},
+    )
+    tools = {item["id"]: item for item in payload}
+
+    assert tools["deploy-with-vercel"]["availability"] == "needs_setup"
+    assert tools["deploy-with-netlify"]["availability"] == "available"
+    assert tools["deploy-with-cloudflare-pages"]["availability"] == "needs_setup"
+    assert any("netlify" in note.lower() for note in tools["deploy-with-vercel"]["notes"])
+
+
+def test_tool_catalog_accepts_provider_specific_host_imports_for_new_deploy_tools() -> None:
+    registry = {
+        "connections": {
+            "hosting_deploy": {
+                "family": "hosting_deploy",
+                "status": "partial",
+                "providers": ["cloudflare_pages", "railway", "render"],
+                "connection_source": "codex_host",
+                "host_imported": True,
+            }
+        }
+    }
+
+    payload = catalog_with_permissions(
+        provider="codex",
+        connected_accounts={},
+        integration_registry=registry,
+        permission_overrides={},
+    )
+    tools = {item["id"]: item for item in payload}
+
+    assert tools["deploy-with-cloudflare-pages"]["availability"] == "available"
+    assert tools["deploy-with-railway"]["availability"] == "available"
+    assert tools["deploy-with-render"]["availability"] == "available"
+    assert tools["deploy-with-netlify"]["availability"] == "needs_setup"
+
+
+def test_tool_catalog_keeps_legacy_vercel_support_without_registry_provider() -> None:
+    payload = catalog_with_permissions(
+        provider="codex",
+        connected_accounts={"vercel": {"status": "connected"}},
+        integration_registry={},
+        permission_overrides={},
+    )
+    tools = {item["id"]: item for item in payload}
+
+    assert tools["deploy-with-vercel"]["availability"] == "available"
+
+
 def test_tool_catalog_accepts_repo_native_tensorflow_export_commands_without_clis(monkeypatch) -> None:
     monkeypatch.setattr(
         "tool_catalog.detect_tensorflow_repo_mode",
