@@ -4053,6 +4053,23 @@ class ProjectIntegrationsRead(BaseModel):
     blocked_execution_risk_level_family_ids: dict[str, list[str]] = Field(default_factory=dict)
     blocked_execution_risk_level_family_count: int = 0
     blocked_execution_risk_level_families: list[str] = Field(default_factory=list)
+    artifact_count: int = 0
+    artifact_family_count: int = 0
+    artifact_family_ids: list[str] = Field(default_factory=list)
+    artifacts: list[dict[str, Any]] = Field(default_factory=list)
+    safe_commands: list[str] = Field(default_factory=list)
+    blocker_count: int = 0
+    blocker_family_count: int = 0
+    blocker_family_ids: list[str] = Field(default_factory=list)
+    blockers: list[str] = Field(default_factory=list)
+    recommended_fix_count: int = 0
+    recommended_fix_family_count: int = 0
+    recommended_fix_family_ids: list[str] = Field(default_factory=list)
+    recommended_fixes: list[str] = Field(default_factory=list)
+    note_count: int = 0
+    note_family_count: int = 0
+    note_family_ids: list[str] = Field(default_factory=list)
+    notes: list[str] = Field(default_factory=list)
     families: list[ProjectIntegrationFamilyRead] = Field(default_factory=list)
 
 

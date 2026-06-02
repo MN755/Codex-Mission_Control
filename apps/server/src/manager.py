@@ -14168,6 +14168,34 @@ class MissionControlService:
                     grouped.setdefault(str(raw_group_key), []).extend(refs)
             return grouped
 
+        def _merge_unique_strings(key: str) -> list[str]:
+            values: list[str] = []
+            seen: set[str] = set()
+            for item in families:
+                for raw_value in item.get(key) or []:
+                    if raw_value in (None, ""):
+                        continue
+                    value = str(raw_value)
+                    if value in seen:
+                        continue
+                    seen.add(value)
+                    values.append(value)
+            return values
+
+        def _collect_artifacts() -> list[dict[str, Any]]:
+            artifacts: list[dict[str, Any]] = []
+            for item in families:
+                family_id = str(item.get("family") or "")
+                if not family_id:
+                    continue
+                for raw_artifact in item.get("artifacts") or []:
+                    if not isinstance(raw_artifact, dict):
+                        continue
+                    artifact = dict(raw_artifact)
+                    artifact["family"] = family_id
+                    artifacts.append(artifact)
+            return artifacts
+
         family_ids = [str(item.get("family") or "") for item in families]
         family_ids_by_status = _group_scalar_family_ids("status", fallback="unknown")
         statuses = sorted(family_ids_by_status)
@@ -14705,6 +14733,23 @@ class MissionControlService:
         blocked_execution_risk_level_action_refs = _collect_grouped_action_refs("blocked_execution_risk_level_action_ids")
         blocked_execution_risk_level_families = _families_with_count_map_values("blocked_execution_risk_level_counts")
         blocked_execution_risk_level_family_count = len(blocked_execution_risk_level_families)
+        artifact_family_ids = _families_with_values("artifacts")
+        artifact_family_count = len(artifact_family_ids)
+        artifacts = _collect_artifacts()
+        artifact_count = len(artifacts)
+        safe_commands = _merge_unique_strings("safe_commands")
+        blocker_family_ids = _families_with_values("blockers")
+        blocker_family_count = len(blocker_family_ids)
+        blockers = _merge_unique_strings("blockers")
+        blocker_count = len(blockers)
+        recommended_fix_family_ids = _families_with_values("recommended_fixes")
+        recommended_fix_family_count = len(recommended_fix_family_ids)
+        recommended_fixes = _merge_unique_strings("recommended_fixes")
+        recommended_fix_count = len(recommended_fixes)
+        note_family_ids = _families_with_values("notes")
+        note_family_count = len(note_family_ids)
+        notes = _merge_unique_strings("notes")
+        note_count = len(notes)
         return {
             "project_id": project.id,
             "project_name": project.name,
@@ -15244,6 +15289,23 @@ class MissionControlService:
             "blocked_execution_risk_level_family_ids": blocked_execution_risk_level_family_ids,
             "blocked_execution_risk_level_family_count": blocked_execution_risk_level_family_count,
             "blocked_execution_risk_level_families": blocked_execution_risk_level_families,
+            "artifact_count": artifact_count,
+            "artifact_family_count": artifact_family_count,
+            "artifact_family_ids": artifact_family_ids,
+            "artifacts": artifacts,
+            "safe_commands": safe_commands,
+            "blocker_count": blocker_count,
+            "blocker_family_count": blocker_family_count,
+            "blocker_family_ids": blocker_family_ids,
+            "blockers": blockers,
+            "recommended_fix_count": recommended_fix_count,
+            "recommended_fix_family_count": recommended_fix_family_count,
+            "recommended_fix_family_ids": recommended_fix_family_ids,
+            "recommended_fixes": recommended_fixes,
+            "note_count": note_count,
+            "note_family_count": note_family_count,
+            "note_family_ids": note_family_ids,
+            "notes": notes,
             "families": families,
         }
 

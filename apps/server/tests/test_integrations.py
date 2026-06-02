@@ -190,6 +190,22 @@ def test_project_integrations_and_action_preview_flow(client, bridge_headers, mo
         return [item["family"] for item in family_list if item[field_name]]
     def _families_with_count_map_values(field_name: str) -> list[str]:
         return [item["family"] for item in family_list if any(item[field_name].values())]
+    def _merge_unique_strings(field_name: str) -> list[str]:
+        values = []
+        seen = set()
+        for item in family_list:
+            for value in item[field_name]:
+                if value in seen:
+                    continue
+                seen.add(value)
+                values.append(value)
+        return values
+    def _collect_artifacts() -> list[dict[str, Any]]:
+        artifacts = []
+        for item in family_list:
+            for artifact in item["artifacts"]:
+                artifacts.append({**artifact, "family": item["family"]})
+        return artifacts
     def _collect_action_refs(field_name: str) -> list[str]:
         refs = []
         for item in family_list:
@@ -734,6 +750,23 @@ def test_project_integrations_and_action_preview_flow(client, bridge_headers, mo
     assert project_integrations_payload["blocked_execution_risk_level_family_ids"] == _group_count_map_family_ids("blocked_execution_risk_level_counts")
     assert project_integrations_payload["blocked_execution_risk_level_family_count"] == len(project_integrations_payload["blocked_execution_risk_level_families"])
     assert project_integrations_payload["blocked_execution_risk_level_families"] == _families_with_count_map_values("blocked_execution_risk_level_counts")
+    assert project_integrations_payload["artifact_count"] == len(project_integrations_payload["artifacts"])
+    assert project_integrations_payload["artifact_family_count"] == sum(1 for item in family_list if item["artifacts"])
+    assert project_integrations_payload["artifact_family_ids"] == [item["family"] for item in family_list if item["artifacts"]]
+    assert project_integrations_payload["artifacts"] == _collect_artifacts()
+    assert project_integrations_payload["safe_commands"] == _merge_unique_strings("safe_commands")
+    assert project_integrations_payload["blocker_count"] == len(project_integrations_payload["blockers"])
+    assert project_integrations_payload["blocker_family_count"] == sum(1 for item in family_list if item["blockers"])
+    assert project_integrations_payload["blocker_family_ids"] == [item["family"] for item in family_list if item["blockers"]]
+    assert project_integrations_payload["blockers"] == _merge_unique_strings("blockers")
+    assert project_integrations_payload["recommended_fix_count"] == len(project_integrations_payload["recommended_fixes"])
+    assert project_integrations_payload["recommended_fix_family_count"] == sum(1 for item in family_list if item["recommended_fixes"])
+    assert project_integrations_payload["recommended_fix_family_ids"] == [item["family"] for item in family_list if item["recommended_fixes"]]
+    assert project_integrations_payload["recommended_fixes"] == _merge_unique_strings("recommended_fixes")
+    assert project_integrations_payload["note_count"] == len(project_integrations_payload["notes"])
+    assert project_integrations_payload["note_family_count"] == sum(1 for item in family_list if item["notes"])
+    assert project_integrations_payload["note_family_ids"] == [item["family"] for item in family_list if item["notes"]]
+    assert project_integrations_payload["notes"] == _merge_unique_strings("notes")
     assert families["source_control"]["status"] == "ready"
     assert families["containers"]["status"] == "ready"
     assert families["hosting_deploy"]["status"] == "ready"
