@@ -6129,6 +6129,21 @@ def test_project_integrations_surface_context_and_preflight_inventory_ids(monkey
     assert inspect_action["provider_guidance"]
     assert publish_action["context_available"] is True
     assert publish_action["provider_guidance"]
+    assert package_status["execution_action_ids"] == ["inspect", "publish"]
+    assert package_status["mutating_execution_action_count"] == 1
+    assert package_status["mutating_execution_action_ids"] == ["publish"]
+    assert package_status["non_mutating_execution_action_count"] == 1
+    assert package_status["non_mutating_execution_action_ids"] == ["inspect"]
+    assert package_status["confirmation_required_execution_action_count"] == 1
+    assert package_status["confirmation_required_execution_action_ids"] == ["publish"]
+    assert package_status["preview_supported_execution_action_count"] == 2
+    assert package_status["preview_supported_execution_action_ids"] == ["inspect", "publish"]
+    assert package_status["context_available_execution_action_count"] == 2
+    assert package_status["context_available_execution_action_ids"] == ["inspect", "publish"]
+    assert package_status["provider_guidance_action_count"] == 2
+    assert package_status["provider_guidance_action_ids"] == ["inspect", "publish"]
+    assert package_status["commandless_execution_action_count"] == 0
+    assert package_status["commandless_execution_action_ids"] == []
     assert package_status["command_ready_action_ids"] == ["inspect", "publish"]
     assert package_status["parameterized_execution_action_ids"] == []
     assert package_status["params_complete_action_ids"] == ["inspect", "publish"]
@@ -6137,6 +6152,8 @@ def test_project_integrations_surface_context_and_preflight_inventory_ids(monkey
     assert package_status["provider_context_missing_action_ids"] == ["import_host_state", "inspect_status", "connect", "disconnect"]
     assert package_status["health"]["command_ready_action_ids"] == ["inspect", "publish"]
     assert package_status["health"]["provider_context_inferred_action_ids"] == ["inspect", "publish"]
+    assert package_status["health"]["mutating_execution_action_ids"] == ["publish"]
+    assert package_status["health"]["provider_guidance_action_ids"] == ["inspect", "publish"]
 
     docs_workspace = tmp_path / "context-preflight-docs"
     docs_workspace.mkdir(parents=True, exist_ok=True)
@@ -6169,10 +6186,32 @@ def test_project_integrations_surface_context_and_preflight_inventory_ids(monkey
         if item["family"] == "docs_systems"
     )
 
+    docs_inspect = next(item for item in docs_status["available_actions"] if item["action_id"] == "inspect")
+    docs_sync = next(item for item in docs_status["available_actions"] if item["action_id"] == "sync")
+    assert docs_inspect["context_available"] is True
+    assert docs_inspect["provider_guidance"]
+    assert docs_sync["context_available"] is True
+    assert docs_sync["provider_guidance"]
+    assert docs_status["execution_action_ids"] == ["inspect", "sync"]
+    assert docs_status["mutating_execution_action_count"] == 1
+    assert docs_status["mutating_execution_action_ids"] == ["sync"]
+    assert docs_status["non_mutating_execution_action_count"] == 1
+    assert docs_status["non_mutating_execution_action_ids"] == ["inspect"]
+    assert docs_status["confirmation_required_execution_action_count"] == 1
+    assert docs_status["confirmation_required_execution_action_ids"] == ["sync"]
+    assert docs_status["preview_supported_execution_action_count"] == 2
+    assert docs_status["preview_supported_execution_action_ids"] == ["inspect", "sync"]
+    assert docs_status["context_available_execution_action_count"] == 2
+    assert docs_status["context_available_execution_action_ids"] == ["inspect", "sync"]
+    assert docs_status["provider_guidance_action_count"] == 2
+    assert docs_status["provider_guidance_action_ids"] == ["inspect", "sync"]
+    assert docs_status["commandless_execution_action_count"] == 2
+    assert docs_status["commandless_execution_action_ids"] == ["inspect", "sync"]
     assert docs_status["provider_context_verified_action_ids"] == []
     assert docs_status["provider_context_inferred_action_ids"] == ["inspect", "sync"]
     assert docs_status["provider_context_missing_action_ids"] == ["import_host_state", "inspect_status", "connect", "disconnect"]
     assert docs_status["health"]["provider_context_inferred_action_ids"] == ["inspect", "sync"]
+    assert docs_status["health"]["commandless_execution_action_ids"] == ["inspect", "sync"]
 
     source_control_status = next(
         item

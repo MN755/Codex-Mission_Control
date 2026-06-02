@@ -3273,6 +3273,19 @@ class ProjectIntegrationFamilyRead(BaseModel):
     verification_blocked_local_action_count: int = 0
     verification_blocked_local_action_ids: list[str] = Field(default_factory=list)
     execution_action_count: int = 0
+    execution_action_ids: list[str] = Field(default_factory=list)
+    mutating_execution_action_count: int = 0
+    mutating_execution_action_ids: list[str] = Field(default_factory=list)
+    non_mutating_execution_action_count: int = 0
+    non_mutating_execution_action_ids: list[str] = Field(default_factory=list)
+    confirmation_required_execution_action_count: int = 0
+    confirmation_required_execution_action_ids: list[str] = Field(default_factory=list)
+    preview_supported_execution_action_count: int = 0
+    preview_supported_execution_action_ids: list[str] = Field(default_factory=list)
+    context_available_execution_action_count: int = 0
+    context_available_execution_action_ids: list[str] = Field(default_factory=list)
+    provider_guidance_action_count: int = 0
+    provider_guidance_action_ids: list[str] = Field(default_factory=list)
     blocked_execution_action_count: int = 0
     blocked_execution_action_ids: list[str] = Field(default_factory=list)
     multi_blocked_action_count: int = 0
@@ -3307,6 +3320,8 @@ class ProjectIntegrationFamilyRead(BaseModel):
     provider_context_missing_action_count: int = 0
     provider_context_missing_action_ids: list[str] = Field(default_factory=list)
     defaulted_param_action_ids: list[str] = Field(default_factory=list)
+    commandless_execution_action_count: int = 0
+    commandless_execution_action_ids: list[str] = Field(default_factory=list)
     execution_block_reason_counts: dict[str, int] = Field(default_factory=dict)
     blocking_reason_counts: dict[str, int] = Field(default_factory=dict)
     health: dict[str, Any] = Field(default_factory=dict)

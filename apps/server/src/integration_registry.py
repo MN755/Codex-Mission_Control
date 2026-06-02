@@ -3168,6 +3168,7 @@ def build_project_integration_status(
         available_risk_level_action_ids = _action_ids_by_key(actionable_actions, "risk_level")
         blocked_risk_level_action_ids = _action_ids_by_key(blocked_actions, "risk_level")
         execution_actions = [item for item in available_actions if item["execution_mode"] != "registry_state"]
+        execution_action_ids = [str(item["action_id"]) for item in execution_actions]
         available_execution_actions = [item for item in execution_actions if item["status"] == "available"]
         available_execution_action_count = len(available_execution_actions)
         available_execution_action_ids = [str(item["action_id"]) for item in available_execution_actions]
@@ -3176,6 +3177,42 @@ def build_project_integration_status(
         available_execution_permission_policy_action_ids = _action_ids_by_key(available_execution_actions, "permission_policy")
         available_execution_risk_level_counts = _count_by_key(available_execution_actions, "risk_level")
         available_execution_risk_level_action_ids = _action_ids_by_key(available_execution_actions, "risk_level")
+        mutating_execution_action_count = sum(1 for item in execution_actions if item["mutates_remote_state"])
+        mutating_execution_action_ids = [
+            str(item["action_id"])
+            for item in execution_actions
+            if item["mutates_remote_state"]
+        ]
+        non_mutating_execution_action_count = sum(1 for item in execution_actions if not item["mutates_remote_state"])
+        non_mutating_execution_action_ids = [
+            str(item["action_id"])
+            for item in execution_actions
+            if not item["mutates_remote_state"]
+        ]
+        confirmation_required_execution_action_count = sum(1 for item in execution_actions if item["requires_confirmation"])
+        confirmation_required_execution_action_ids = [
+            str(item["action_id"])
+            for item in execution_actions
+            if item["requires_confirmation"]
+        ]
+        preview_supported_execution_action_count = sum(1 for item in execution_actions if item["preview_supported"])
+        preview_supported_execution_action_ids = [
+            str(item["action_id"])
+            for item in execution_actions
+            if item["preview_supported"]
+        ]
+        context_available_execution_action_count = sum(1 for item in execution_actions if item["context_available"])
+        context_available_execution_action_ids = [
+            str(item["action_id"])
+            for item in execution_actions
+            if item["context_available"]
+        ]
+        provider_guidance_action_count = sum(1 for item in execution_actions if item.get("provider_guidance"))
+        provider_guidance_action_ids = [
+            str(item["action_id"])
+            for item in execution_actions
+            if item.get("provider_guidance")
+        ]
         execution_action_count = len(execution_actions)
         blocked_execution_action_count = sum(1 for item in execution_actions if item["status"] != "available")
         blocked_execution_action_ids = [
@@ -3253,6 +3290,12 @@ def build_project_integration_status(
             str(item["action_id"])
             for item in available_actions
             if item["provider_context_status"] == "missing"
+        ]
+        commandless_execution_action_count = sum(1 for item in execution_actions if not item.get("command"))
+        commandless_execution_action_ids = [
+            str(item["action_id"])
+            for item in execution_actions
+            if not item.get("command")
         ]
         context_blocked_action_ids = [
             str(item["action_id"])
@@ -3442,6 +3485,19 @@ def build_project_integration_status(
                 "verification_blocked_local_action_count": verification_blocked_local_action_count,
                 "verification_blocked_local_action_ids": verification_blocked_local_action_ids,
                 "execution_action_count": execution_action_count,
+                "execution_action_ids": execution_action_ids,
+                "mutating_execution_action_count": mutating_execution_action_count,
+                "mutating_execution_action_ids": mutating_execution_action_ids,
+                "non_mutating_execution_action_count": non_mutating_execution_action_count,
+                "non_mutating_execution_action_ids": non_mutating_execution_action_ids,
+                "confirmation_required_execution_action_count": confirmation_required_execution_action_count,
+                "confirmation_required_execution_action_ids": confirmation_required_execution_action_ids,
+                "preview_supported_execution_action_count": preview_supported_execution_action_count,
+                "preview_supported_execution_action_ids": preview_supported_execution_action_ids,
+                "context_available_execution_action_count": context_available_execution_action_count,
+                "context_available_execution_action_ids": context_available_execution_action_ids,
+                "provider_guidance_action_count": provider_guidance_action_count,
+                "provider_guidance_action_ids": provider_guidance_action_ids,
                 "blocked_execution_action_count": blocked_execution_action_count,
                 "blocked_execution_action_ids": blocked_execution_action_ids,
                 "multi_blocked_action_count": multi_blocked_action_count,
@@ -3476,6 +3532,8 @@ def build_project_integration_status(
                 "provider_context_missing_action_count": provider_context_missing_action_count,
                 "provider_context_missing_action_ids": provider_context_missing_action_ids,
                 "defaulted_param_action_ids": defaulted_param_action_ids,
+                "commandless_execution_action_count": commandless_execution_action_count,
+                "commandless_execution_action_ids": commandless_execution_action_ids,
                 "execution_block_reason_counts": execution_block_reason_counts,
                 "blocking_reason_counts": blocking_reason_counts,
                 "health": {
@@ -3542,6 +3600,19 @@ def build_project_integration_status(
                     "verification_blocked_local_action_count": verification_blocked_local_action_count,
                     "verification_blocked_local_action_ids": verification_blocked_local_action_ids,
                     "execution_action_count": execution_action_count,
+                    "execution_action_ids": execution_action_ids,
+                    "mutating_execution_action_count": mutating_execution_action_count,
+                    "mutating_execution_action_ids": mutating_execution_action_ids,
+                    "non_mutating_execution_action_count": non_mutating_execution_action_count,
+                    "non_mutating_execution_action_ids": non_mutating_execution_action_ids,
+                    "confirmation_required_execution_action_count": confirmation_required_execution_action_count,
+                    "confirmation_required_execution_action_ids": confirmation_required_execution_action_ids,
+                    "preview_supported_execution_action_count": preview_supported_execution_action_count,
+                    "preview_supported_execution_action_ids": preview_supported_execution_action_ids,
+                    "context_available_execution_action_count": context_available_execution_action_count,
+                    "context_available_execution_action_ids": context_available_execution_action_ids,
+                    "provider_guidance_action_count": provider_guidance_action_count,
+                    "provider_guidance_action_ids": provider_guidance_action_ids,
                     "blocked_execution_action_count": blocked_execution_action_count,
                     "blocked_execution_action_ids": blocked_execution_action_ids,
                     "multi_blocked_action_count": multi_blocked_action_count,
@@ -3577,6 +3648,8 @@ def build_project_integration_status(
                     "provider_context_missing_action_ids": provider_context_missing_action_ids,
                     "context_blocked_action_ids": context_blocked_action_ids,
                     "defaulted_param_action_ids": defaulted_param_action_ids,
+                    "commandless_execution_action_count": commandless_execution_action_count,
+                    "commandless_execution_action_ids": commandless_execution_action_ids,
                     "execution_block_reason_counts": execution_block_reason_counts,
                     "blocking_reason_counts": blocking_reason_counts,
                     "git_remote_url": git_remote_url or None,
