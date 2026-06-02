@@ -14131,6 +14131,18 @@ class MissionControlService:
         def _families_with_count_map_values(key: str) -> list[str]:
             return [str(item.get("family") or "") for item in families if any((item.get(key) or {}).values())]
 
+        def _collect_action_refs(key: str) -> list[str]:
+            refs: list[str] = []
+            for item in families:
+                family_id = str(item.get("family") or "")
+                if not family_id:
+                    continue
+                for raw_action_id in item.get(key) or []:
+                    if raw_action_id in (None, ""):
+                        continue
+                    refs.append(f"{family_id}:{raw_action_id}")
+            return refs
+
         family_ids = [str(item.get("family") or "") for item in families]
         family_ids_by_status = _group_scalar_family_ids("status", fallback="unknown")
         statuses = sorted(family_ids_by_status)
@@ -14230,6 +14242,40 @@ class MissionControlService:
         available_provider_lane_count = sum(int(item.get("available_provider_lane_count") or 0) for item in families)
         verification_blocked_action_count = sum(int(item.get("verification_blocked_action_count") or 0) for item in families)
         context_blocked_action_count = sum(int(item.get("context_blocked_action_count") or 0) for item in families)
+        available_action_refs = _collect_action_refs("available_action_ids")
+        blocked_action_refs = _collect_action_refs("blocked_action_ids")
+        execution_action_refs = _collect_action_refs("execution_action_ids")
+        blocked_execution_action_refs = _collect_action_refs("blocked_execution_action_ids")
+        safe_command_action_refs = _collect_action_refs("safe_command_action_ids")
+        available_provider_lane_action_refs = _collect_action_refs("available_provider_lane_action_ids")
+        verification_blocked_action_refs = _collect_action_refs("verification_blocked_action_ids")
+        context_blocked_action_refs = _collect_action_refs("context_blocked_action_ids")
+        preflight_ready_action_refs = _collect_action_refs("preflight_ready_action_ids")
+        preflight_ready_action_count = len(preflight_ready_action_refs)
+        not_preflight_ready_action_refs = _collect_action_refs("not_preflight_ready_action_ids")
+        not_preflight_ready_action_count = len(not_preflight_ready_action_refs)
+        confirmation_eligible_action_refs = _collect_action_refs("confirmation_eligible_action_ids")
+        confirmation_eligible_action_count = len(confirmation_eligible_action_refs)
+        not_confirmation_eligible_action_refs = _collect_action_refs("not_confirmation_eligible_action_ids")
+        not_confirmation_eligible_action_count = len(not_confirmation_eligible_action_refs)
+        ready_to_execute_action_refs = _collect_action_refs("ready_to_execute_action_ids")
+        ready_to_execute_action_count = len(ready_to_execute_action_refs)
+        not_ready_to_execute_action_refs = _collect_action_refs("not_ready_to_execute_action_ids")
+        not_ready_to_execute_action_count = len(not_ready_to_execute_action_refs)
+        unsafe_command_action_refs = _collect_action_refs("unsafe_command_action_ids")
+        unsafe_command_action_count = len(unsafe_command_action_refs)
+        command_ready_action_refs = _collect_action_refs("command_ready_action_ids")
+        command_ready_action_count = len(command_ready_action_refs)
+        command_not_ready_action_refs = _collect_action_refs("command_not_ready_action_ids")
+        command_not_ready_action_count = len(command_not_ready_action_refs)
+        parameterized_execution_action_refs = _collect_action_refs("parameterized_execution_action_ids")
+        parameterized_execution_action_count = len(parameterized_execution_action_refs)
+        non_parameterized_execution_action_refs = _collect_action_refs("non_parameterized_execution_action_ids")
+        non_parameterized_execution_action_count = len(non_parameterized_execution_action_refs)
+        params_complete_action_refs = _collect_action_refs("params_complete_action_ids")
+        params_complete_action_count = len(params_complete_action_refs)
+        params_incomplete_action_refs = _collect_action_refs("params_incomplete_action_ids")
+        params_incomplete_action_count = len(params_incomplete_action_refs)
         action_count = sum(int(item.get("action_count") or 0) for item in families)
         action_status_counts = _sum_count_maps("action_status_counts")
         action_statuses = sorted(action_status_counts)
@@ -14464,27 +14510,61 @@ class MissionControlService:
             "available_action_family_count": available_action_family_count,
             "available_action_family_ids": available_action_family_ids,
             "available_action_count": available_action_count,
+            "available_action_refs": available_action_refs,
             "blocked_action_family_count": blocked_action_family_count,
             "blocked_action_family_ids": blocked_action_family_ids,
             "blocked_action_count": blocked_action_count,
+            "blocked_action_refs": blocked_action_refs,
             "execution_action_family_count": execution_action_family_count,
             "execution_action_family_ids": execution_action_family_ids,
             "execution_action_count": execution_action_count,
+            "execution_action_refs": execution_action_refs,
             "blocked_execution_action_family_count": blocked_execution_action_family_count,
             "blocked_execution_action_family_ids": blocked_execution_action_family_ids,
             "blocked_execution_action_count": blocked_execution_action_count,
+            "blocked_execution_action_refs": blocked_execution_action_refs,
             "safe_command_family_count": safe_command_family_count,
             "safe_command_family_ids": safe_command_family_ids,
             "safe_command_count": safe_command_count,
+            "safe_command_action_refs": safe_command_action_refs,
             "available_provider_lane_family_count": available_provider_lane_family_count,
             "available_provider_lane_family_ids": available_provider_lane_family_ids,
             "available_provider_lane_count": available_provider_lane_count,
+            "available_provider_lane_action_refs": available_provider_lane_action_refs,
             "verification_blocked_family_count": verification_blocked_family_count,
             "verification_blocked_family_ids": verification_blocked_family_ids,
             "verification_blocked_action_count": verification_blocked_action_count,
+            "verification_blocked_action_refs": verification_blocked_action_refs,
             "context_blocked_family_count": context_blocked_family_count,
             "context_blocked_family_ids": context_blocked_family_ids,
             "context_blocked_action_count": context_blocked_action_count,
+            "context_blocked_action_refs": context_blocked_action_refs,
+            "preflight_ready_action_count": preflight_ready_action_count,
+            "preflight_ready_action_refs": preflight_ready_action_refs,
+            "not_preflight_ready_action_count": not_preflight_ready_action_count,
+            "not_preflight_ready_action_refs": not_preflight_ready_action_refs,
+            "confirmation_eligible_action_count": confirmation_eligible_action_count,
+            "confirmation_eligible_action_refs": confirmation_eligible_action_refs,
+            "not_confirmation_eligible_action_count": not_confirmation_eligible_action_count,
+            "not_confirmation_eligible_action_refs": not_confirmation_eligible_action_refs,
+            "ready_to_execute_action_count": ready_to_execute_action_count,
+            "ready_to_execute_action_refs": ready_to_execute_action_refs,
+            "not_ready_to_execute_action_count": not_ready_to_execute_action_count,
+            "not_ready_to_execute_action_refs": not_ready_to_execute_action_refs,
+            "unsafe_command_action_count": unsafe_command_action_count,
+            "unsafe_command_action_refs": unsafe_command_action_refs,
+            "command_ready_action_count": command_ready_action_count,
+            "command_ready_action_refs": command_ready_action_refs,
+            "command_not_ready_action_count": command_not_ready_action_count,
+            "command_not_ready_action_refs": command_not_ready_action_refs,
+            "parameterized_execution_action_count": parameterized_execution_action_count,
+            "parameterized_execution_action_refs": parameterized_execution_action_refs,
+            "non_parameterized_execution_action_count": non_parameterized_execution_action_count,
+            "non_parameterized_execution_action_refs": non_parameterized_execution_action_refs,
+            "params_complete_action_count": params_complete_action_count,
+            "params_complete_action_refs": params_complete_action_refs,
+            "params_incomplete_action_count": params_incomplete_action_count,
+            "params_incomplete_action_refs": params_incomplete_action_refs,
             "action_count": action_count,
             "action_statuses": action_statuses,
             "action_status_counts": action_status_counts,
