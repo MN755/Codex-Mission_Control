@@ -3219,6 +3219,20 @@ def build_project_integration_status(
         risk_level_action_ids = _action_ids_by_key(available_actions, "risk_level")
         available_risk_level_action_ids = _action_ids_by_key(actionable_actions, "risk_level")
         blocked_risk_level_action_ids = _action_ids_by_key(blocked_actions, "risk_level")
+        action_status_counts = _count_by_key(available_actions, "status")
+        action_status_action_ids = _action_ids_by_key(available_actions, "status")
+        execution_mode_counts = _count_by_key(available_actions, "execution_mode")
+        execution_mode_action_ids = _action_ids_by_key(available_actions, "execution_mode")
+        provider_support_mode_counts = _count_by_key(available_actions, "provider_support_mode")
+        provider_support_mode_action_ids = _action_ids_by_key(available_actions, "provider_support_mode")
+        provider_context_status_counts = _count_by_key(available_actions, "provider_context_status")
+        provider_context_status_action_ids = _action_ids_by_key(available_actions, "provider_context_status")
+        verification_scope_counts = _count_by_key(available_actions, "verification_scope")
+        verification_scope_action_ids = _action_ids_by_key(available_actions, "verification_scope")
+        safe_command_reason_counts = _count_by_key(available_actions, "safe_command_reason")
+        safe_command_reason_action_ids = _action_ids_by_key(available_actions, "safe_command_reason")
+        context_requirement_reason_counts = _count_by_key(available_actions, "context_requirement_reason")
+        context_requirement_reason_action_ids = _action_ids_by_key(available_actions, "context_requirement_reason")
         risk_level_group_count = _group_count(risk_level_counts)
         available_risk_level_group_count = _group_count(available_risk_level_counts)
         blocked_risk_level_group_count = _group_count(blocked_risk_level_counts)
@@ -3608,6 +3622,20 @@ def build_project_integration_status(
                 "available_risk_level_group_count": available_risk_level_group_count,
                 "blocked_risk_level_group_count": blocked_risk_level_group_count,
                 "action_count": len(available_actions),
+                "action_status_counts": action_status_counts,
+                "action_status_action_ids": action_status_action_ids,
+                "execution_mode_counts": execution_mode_counts,
+                "execution_mode_action_ids": execution_mode_action_ids,
+                "provider_support_mode_counts": provider_support_mode_counts,
+                "provider_support_mode_action_ids": provider_support_mode_action_ids,
+                "provider_context_status_counts": provider_context_status_counts,
+                "provider_context_status_action_ids": provider_context_status_action_ids,
+                "verification_scope_counts": verification_scope_counts,
+                "verification_scope_action_ids": verification_scope_action_ids,
+                "safe_command_reason_counts": safe_command_reason_counts,
+                "safe_command_reason_action_ids": safe_command_reason_action_ids,
+                "context_requirement_reason_counts": context_requirement_reason_counts,
+                "context_requirement_reason_action_ids": context_requirement_reason_action_ids,
                 "available_action_count": available_action_count,
                 "blocked_action_count": len(blocked_actions),
                 "available_execution_action_count": available_execution_action_count,
@@ -3788,6 +3816,20 @@ def build_project_integration_status(
                     "available_risk_level_action_ids": available_risk_level_action_ids,
                     "blocked_risk_level_action_ids": blocked_risk_level_action_ids,
                     "action_count": len(available_actions),
+                    "action_status_counts": action_status_counts,
+                    "action_status_action_ids": action_status_action_ids,
+                    "execution_mode_counts": execution_mode_counts,
+                    "execution_mode_action_ids": execution_mode_action_ids,
+                    "provider_support_mode_counts": provider_support_mode_counts,
+                    "provider_support_mode_action_ids": provider_support_mode_action_ids,
+                    "provider_context_status_counts": provider_context_status_counts,
+                    "provider_context_status_action_ids": provider_context_status_action_ids,
+                    "verification_scope_counts": verification_scope_counts,
+                    "verification_scope_action_ids": verification_scope_action_ids,
+                    "safe_command_reason_counts": safe_command_reason_counts,
+                    "safe_command_reason_action_ids": safe_command_reason_action_ids,
+                    "context_requirement_reason_counts": context_requirement_reason_counts,
+                    "context_requirement_reason_action_ids": context_requirement_reason_action_ids,
                     "blocked_action_count": len(blocked_actions),
                     "available_execution_action_count": available_execution_action_count,
                     "available_execution_action_ids": available_execution_action_ids,
