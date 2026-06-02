@@ -1970,10 +1970,10 @@ def test_default_provider_guidance_surfaces_for_ci_deploy_database_and_cluster_l
         project_name="Kubernetes Guidance Demo",
     )
 
-    assert any("live provider state" in note.lower() for note in github_actions_preview["notes"])
-    assert any("mutates remote state" in note.lower() for note in vercel_preview["notes"])
-    assert any("live provider state" in note.lower() for note in supabase_preview["notes"])
-    assert any("mutates remote state" in note.lower() for note in kubernetes_preview["notes"])
+    assert any("live remote workflow state" in note.lower() for note in github_actions_preview["notes"])
+    assert any("mutates remote deployment state" in note.lower() for note in vercel_preview["notes"])
+    assert any("live platform state" in note.lower() for note in supabase_preview["notes"])
+    assert any("mutates live cluster state" in note.lower() for note in kubernetes_preview["notes"])
 
 
 def test_default_provider_guidance_surfaces_for_validation_and_search_lanes(monkeypatch, tmp_path) -> None:
@@ -4701,3 +4701,98 @@ def test_project_integrations_surface_signal_source_metadata(monkeypatch, tmp_pa
     assert source_control["health"]["host_import_detected"] is False
     assert source_control["health"]["standalone_cli_detected"] is False
     assert source_control["health"]["signal_sources"] == ["connection", "workspace"]
+
+
+def test_provider_specific_guidance_surfaces_for_source_control_ci_and_deploy_lanes(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(
+        "integration_registry.shutil.which",
+        lambda command: f"C:/tools/{command}.exe"
+        if command in {"gh", "glab", "vercel", "wrangler", "railway"}
+        else None,
+    )
+
+    cases = [
+        ("source_control", "github", "search", {}, "GitHub inspection"),
+        ("source_control", "gitlab", "search", {}, "GitLab inspection"),
+        ("work_tracking", "github_issues", "search", {}, "GitHub Issues inspection"),
+        ("ci_cd", "github_actions", "inspect_run", {"run_id": "42"}, "GitHub Actions run inspection"),
+        ("ci_cd", "gitlab_ci", "tail_logs", {"run_id": "42"}, "GitLab CI log inspection"),
+        ("hosting_deploy", "vercel", "inspect", {}, "Vercel inspection"),
+        ("hosting_deploy", "cloudflare_pages", "tail_logs", {}, "Cloudflare Pages log inspection"),
+        ("hosting_deploy", "railway", "deploy", {}, "Railway deploy uses"),
+    ]
+
+    for family_id, provider, action_id, params, expected in cases:
+        registry = normalize_integration_registry(
+            {
+                "connections": {
+                    family_id: {
+                        "family": family_id,
+                        "status": "connected",
+                        "providers": [provider],
+                        "connection_source": "mission_control",
+                        "host_imported": False,
+                    }
+                }
+            },
+            {},
+        )
+        preview = preview_integration_action(
+            family_id=family_id,
+            action_id=action_id,
+            params=params,
+            registry_payload=registry,
+            workspace_path=None,
+            project_name=f"{provider}-guidance",
+        )
+        assert expected in preview["provider_guidance"]
+        assert preview["provider_guidance"] == preview["notes"][-1]
+
+
+def test_provider_specific_guidance_surfaces_for_platform_observability_and_devtools_lanes(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "integration_registry.shutil.which",
+        lambda command: f"C:/tools/{command}.exe"
+        if command in {"supabase", "firebase", "neon", "pscale", "sentry-cli", "datadog-ci", "newrelic", "kubectl", "npm", "chrome"}
+        else None,
+    )
+
+    cases = [
+        ("database_platforms", "supabase", "inspect", "Supabase inspection"),
+        ("database_platforms", "firebase", "inspect", "Firebase inspection"),
+        ("database_platforms", "neon", "inspect", "Neon inspection"),
+        ("database_platforms", "planetscale", "inspect", "PlanetScale inspection"),
+        ("observability", "sentry", "inspect", "Sentry inspection"),
+        ("observability", "datadog", "tail", "Datadog telemetry inspection"),
+        ("observability", "new_relic", "inspect", "New Relic inspection"),
+        ("kubernetes", "kubernetes", "inspect", "Kubernetes inspection"),
+        ("storybook", "storybook", "validate", "Storybook validation"),
+        ("browser_devtools", "chrome_devtools", "inspect", "Chrome DevTools inspection"),
+        ("browser_devtools", "cdp", "open", "Chrome DevTools Protocol startup"),
+    ]
+
+    for family_id, provider, action_id, expected in cases:
+        registry = normalize_integration_registry(
+            {
+                "connections": {
+                    family_id: {
+                        "family": family_id,
+                        "status": "connected",
+                        "providers": [provider],
+                        "connection_source": "mission_control",
+                        "host_imported": False,
+                    }
+                }
+            },
+            {},
+        )
+        preview = preview_integration_action(
+            family_id=family_id,
+            action_id=action_id,
+            params={},
+            registry_payload=registry,
+            workspace_path=None,
+            project_name=f"{provider}-guidance",
+        )
+        assert expected in preview["provider_guidance"]
+        assert preview["provider_guidance"] == preview["notes"][-1]

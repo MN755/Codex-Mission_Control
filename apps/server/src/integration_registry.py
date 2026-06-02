@@ -285,10 +285,24 @@ PROVIDER_TOKEN_MARKERS: dict[str, tuple[str, ...]] = {
 }
 
 PROVIDER_ACTION_GUIDANCE: dict[str, dict[str, str]] = {
+    "github": {
+        "search": "GitHub inspection uses the local CLI when available, but the result still reflects live remote repository state rather than repo-local proof.",
+        "create": "GitHub issue creation uses the local CLI when available and still mutates remote issue state, so approvals remain mandatory.",
+        "inspect": "GitHub inspection uses the local CLI when available, but the result still reflects live remote repository state rather than repo-local proof.",
+    },
+    "gitlab": {
+        "search": "GitLab inspection uses the local CLI when available, but the result still reflects live remote repository state rather than repo-local proof.",
+        "create": "GitLab issue creation uses the local CLI when available and still mutates remote issue state, so approvals remain mandatory.",
+        "inspect": "GitLab inspection uses the local CLI when available, but the result still reflects live remote repository state rather than repo-local proof.",
+    },
     "bitbucket": {
         "search": "Bitbucket is resolved from git remote or pipeline config, but Mission Control currently expects a host-integrated or REST-backed adapter instead of pretending there is a bundled official Bitbucket CLI.",
         "create": "Bitbucket mutations are not wired to a bundled CLI here. Use a host integration or an approval-gated REST adapter lane instead of fantasy tooling.",
         "inspect": "Bitbucket inspection should route through a host integration or REST-backed adapter lane. The repo remote is enough to resolve the provider, not enough to fake a live API session.",
+    },
+    "github_issues": {
+        "search": "GitHub Issues inspection uses the local CLI when available, but the result still reflects live remote issue state rather than repo-local proof.",
+        "create": "GitHub Issues creation uses the local CLI when available and still mutates remote issue state, so approvals remain mandatory.",
     },
     "jira": {
         "search": "Jira search can use Atlassian CLI when available. Without `acli`, keep this lane host-imported or wire a project-scoped adapter with explicit auth.",
@@ -306,6 +320,17 @@ PROVIDER_ACTION_GUIDANCE: dict[str, dict[str, str]] = {
         "tail_logs": "Bitbucket pipeline log tails currently require a host-integrated or API-backed adapter lane.",
         "rerun": "Bitbucket reruns currently require a host-integrated or API-backed adapter lane.",
     },
+    "github_actions": {
+        "inspect": "GitHub Actions inspection uses the local CLI when available, but the result still reflects live remote workflow state rather than repo-local proof.",
+        "inspect_run": "GitHub Actions run inspection uses the local CLI when available, but the result still reflects live remote workflow state rather than repo-local proof.",
+        "tail_logs": "GitHub Actions log inspection uses the local CLI when available, but the result still reflects live remote workflow state rather than repo-local proof.",
+        "rerun": "GitHub Actions reruns use the local CLI when available and still mutate remote workflow state, so approvals remain mandatory.",
+    },
+    "gitlab_ci": {
+        "inspect": "GitLab CI inspection uses the local CLI when available, but the result still reflects live remote pipeline state rather than repo-local proof.",
+        "inspect_run": "GitLab CI run inspection uses the local CLI when available, but the result still reflects live remote pipeline state rather than repo-local proof.",
+        "tail_logs": "GitLab CI log inspection uses the local CLI when available, but the result still reflects live remote pipeline state rather than repo-local proof.",
+    },
     "circleci": {
         "inspect": "CircleCI inspection uses the local CLI when available and validates the current pipeline config rather than pretending the repo alone proves a live CI session.",
     },
@@ -314,6 +339,24 @@ PROVIDER_ACTION_GUIDANCE: dict[str, dict[str, str]] = {
     },
     "render": {
         "deploy": "Render deploys support the official Render CLI, but you still need a concrete service identifier before Mission Control should attempt to trigger anything.",
+    },
+    "vercel": {
+        "inspect": "Vercel inspection uses the local CLI when available, but the result still reflects live remote deployment state rather than repo-local proof.",
+        "deploy": "Vercel deploy uses the local CLI when available and still mutates remote deployment state, so approvals remain mandatory.",
+    },
+    "netlify": {
+        "inspect": "Netlify inspection uses the local CLI when available, but the result still reflects live remote deployment state rather than repo-local proof.",
+        "deploy": "Netlify deploy uses the local CLI when available and still mutates remote deployment state, so approvals remain mandatory.",
+    },
+    "cloudflare_pages": {
+        "inspect": "Cloudflare Pages inspection uses the local CLI when available, but the result still reflects live remote deployment state rather than repo-local proof.",
+        "tail_logs": "Cloudflare Pages log inspection uses the local CLI when available, but the result still reflects live remote deployment state rather than repo-local proof.",
+        "deploy": "Cloudflare Pages deploy uses the local CLI when available and still mutates remote deployment state, so approvals remain mandatory.",
+    },
+    "railway": {
+        "inspect": "Railway inspection uses the local CLI when available, but the result still reflects live remote deployment state rather than repo-local proof.",
+        "tail_logs": "Railway log inspection uses the local CLI when available, but the result still reflects live remote deployment state rather than repo-local proof.",
+        "deploy": "Railway deploy uses the local CLI when available and still mutates remote deployment state, so approvals remain mandatory.",
     },
     "figma": {
         "inspect": "Figma is intentionally a guided remote lane here. Use the host-integrated Figma plugin or API-backed design lane instead of pretending there is a local CLI.",
@@ -417,6 +460,20 @@ PROVIDER_ACTION_GUIDANCE: dict[str, dict[str, str]] = {
     },
     "auth0": {
         "inspect": "Auth0 inspection uses the local CLI when available, but it still represents live remote auth state, not a repo-only guarantee.",
+    },
+    "supabase": {
+        "inspect": "Supabase inspection uses the local CLI when available, but the result still reflects live platform state rather than repo-local proof.",
+        "sync": "Supabase sync uses the local CLI when available and still mutates remote platform state, so approvals remain mandatory.",
+    },
+    "firebase": {
+        "inspect": "Firebase inspection uses the local CLI when available, but the result still reflects live platform state rather than repo-local proof.",
+        "sync": "Firebase sync uses the local CLI when available and still mutates remote platform state, so approvals remain mandatory.",
+    },
+    "neon": {
+        "inspect": "Neon inspection uses the local CLI when available, but the result still reflects live platform state rather than repo-local proof.",
+    },
+    "planetscale": {
+        "inspect": "PlanetScale inspection uses the local CLI when available, but the result still reflects live platform state rather than repo-local proof.",
     },
     "logrocket": {
         "inspect": "LogRocket is intentionally treated as a guided remote lane here. Mission Control should not pretend a local LogRocket CLI exists when the honest path is browser/API-backed.",
@@ -563,9 +620,35 @@ PROVIDER_ACTION_GUIDANCE: dict[str, dict[str, str]] = {
         "inspect": "Docker inspection uses the local CLI when available and reflects the current local engine/runtime state rather than repo hints alone.",
         "validate": "Docker validation uses the local CLI when available and reflects the current local runtime availability rather than repo hints alone.",
     },
+    "sentry": {
+        "inspect": "Sentry inspection uses the local CLI when available, but the result still reflects live provider state rather than repo-local proof.",
+        "tail": "Sentry release and telemetry inspection uses the local CLI when available, but the result still reflects live provider state rather than repo-local proof.",
+    },
+    "datadog": {
+        "inspect": "Datadog inspection uses the local CLI when available, but the result still reflects live provider state rather than repo-local proof.",
+        "tail": "Datadog telemetry inspection uses the local CLI when available, but the result still reflects live provider state rather than repo-local proof.",
+    },
+    "new_relic": {
+        "inspect": "New Relic inspection uses the local CLI when available, but the result still reflects live provider state rather than repo-local proof.",
+    },
+    "kubernetes": {
+        "inspect": "Kubernetes inspection uses the local CLI when available, but the result still reflects live cluster context rather than repo-local proof.",
+        "deploy": "Kubernetes apply uses the local CLI when available and still mutates live cluster state, so approvals remain mandatory.",
+    },
+    "storybook": {
+        "validate": "Storybook validation uses the local CLI when available and reflects the current component preview workspace rather than a static repo hint.",
+    },
     "stripe": {
         "inspect": "Stripe inspection uses the local CLI when available, but it still reflects live sandbox/auth state rather than repo-local proof.",
         "create": "Stripe sandbox artifact creation uses the local CLI when available and still mutates remote test state, so approvals remain mandatory.",
+    },
+    "chrome_devtools": {
+        "inspect": "Chrome DevTools inspection uses the local CLI when available and reflects the current local browser runtime rather than repo-local proof.",
+        "open": "Chrome DevTools startup uses the local CLI when available and changes local browser runtime state, not remote provider state.",
+    },
+    "cdp": {
+        "inspect": "Chrome DevTools Protocol inspection uses the local CLI when available and reflects the current local browser runtime rather than repo-local proof.",
+        "open": "Chrome DevTools Protocol startup uses the local CLI when available and changes local browser runtime state, not remote provider state.",
     },
     "release_please": {
         "draft": "Release Please drafting uses the local CLI when available, but the output still depends on the repo's live release metadata and branch state.",
