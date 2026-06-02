@@ -184,6 +184,14 @@ def test_project_integrations_and_action_preview_flow(client, bridge_headers, mo
                     continue
                 grouped.setdefault(key, []).append(item["family"])
         return grouped
+    def _group_scalar_family_ids(field_name: str) -> dict[str, list[str]]:
+        grouped = {}
+        for item in family_list:
+            value = item[field_name]
+            if value in (None, ""):
+                continue
+            grouped.setdefault(value, []).append(item["family"])
+        return grouped
     def _merge_unique_lists(field_name: str) -> list[str]:
         return sorted({value for item in family_list for value in item[field_name]})
     def _families_with_values(field_name: str) -> list[str]:
@@ -240,10 +248,34 @@ def test_project_integrations_and_action_preview_flow(client, bridge_headers, mo
     assert project_integrations_payload["connection_status_counts"] == expected_connection_status_counts
     assert project_integrations_payload["connection_status_family_ids"] == expected_connection_status_family_ids
     assert project_integrations_payload["connection_status_group_count"] == len(expected_connection_status_counts)
+    expected_connection_source_family_ids = _group_scalar_family_ids("connection_source")
+    expected_connection_source_counts = {key: len(value) for key, value in expected_connection_source_family_ids.items()}
+    assert project_integrations_payload["connection_sources"] == sorted(expected_connection_source_counts)
+    assert project_integrations_payload["connection_source_counts"] == expected_connection_source_counts
+    assert project_integrations_payload["connection_source_family_ids"] == expected_connection_source_family_ids
+    assert project_integrations_payload["connection_source_group_count"] == len(expected_connection_source_counts)
+    expected_resolved_provider_family_ids = {
+        key: value
+        for key, value in _group_scalar_family_ids("resolved_provider").items()
+        if key
+    }
+    expected_resolved_provider_counts = {key: len(value) for key, value in expected_resolved_provider_family_ids.items()}
+    assert project_integrations_payload["resolved_providers"] == sorted(expected_resolved_provider_counts)
+    assert project_integrations_payload["resolved_provider_counts"] == expected_resolved_provider_counts
+    assert project_integrations_payload["resolved_provider_family_ids"] == expected_resolved_provider_family_ids
+    assert project_integrations_payload["resolved_provider_group_count"] == len(expected_resolved_provider_counts)
+    assert project_integrations_payload["resolved_provider_family_count"] == sum(1 for item in family_list if item["resolved_provider"])
+    assert project_integrations_payload["resolved_provider_families"] == [item["family"] for item in family_list if item["resolved_provider"]]
     assert project_integrations_payload["provider_resolution_states"] == sorted(expected_provider_resolution_state_counts)
     assert project_integrations_payload["provider_resolution_state_counts"] == expected_provider_resolution_state_counts
     assert project_integrations_payload["provider_resolution_state_family_ids"] == expected_provider_resolution_state_family_ids
     assert project_integrations_payload["provider_resolution_state_group_count"] == len(expected_provider_resolution_state_counts)
+    expected_provider_context_source_family_ids = _group_scalar_family_ids("provider_context_source")
+    expected_provider_context_source_counts = {key: len(value) for key, value in expected_provider_context_source_family_ids.items()}
+    assert project_integrations_payload["provider_context_sources"] == sorted(expected_provider_context_source_counts)
+    assert project_integrations_payload["provider_context_source_counts"] == expected_provider_context_source_counts
+    assert project_integrations_payload["provider_context_source_family_ids"] == expected_provider_context_source_family_ids
+    assert project_integrations_payload["provider_context_source_group_count"] == len(expected_provider_context_source_counts)
     assert project_integrations_payload["provider_context_statuses"] == sorted(expected_provider_context_status_counts)
     assert project_integrations_payload["provider_context_status_counts"] == expected_provider_context_status_counts
     assert project_integrations_payload["provider_context_status_family_ids"] == expected_provider_context_status_family_ids
@@ -297,6 +329,11 @@ def test_project_integrations_and_action_preview_flow(client, bridge_headers, mo
     assert project_integrations_payload["host_import_family_ids"] == [item["family"] for item in family_list if item["host_import_detected"]]
     assert project_integrations_payload["standalone_cli_detected_family_count"] == sum(1 for item in family_list if item["standalone_cli_detected"])
     assert project_integrations_payload["standalone_cli_detected_family_ids"] == [item["family"] for item in family_list if item["standalone_cli_detected"]]
+    assert project_integrations_payload["connection_provider_count"] == sum(item["connection_provider_count"] for item in family_list)
+    assert project_integrations_payload["connection_provider_family_count"] == sum(1 for item in family_list if item["connection_provider_count"] > 0)
+    assert project_integrations_payload["connection_provider_family_ids"] == [item["family"] for item in family_list if item["connection_provider_count"] > 0]
+    assert project_integrations_payload["connection_without_provider_identity_family_count"] == sum(1 for item in family_list if item["connection_without_provider_identity"])
+    assert project_integrations_payload["connection_without_provider_identity_family_ids"] == [item["family"] for item in family_list if item["connection_without_provider_identity"]]
     assert project_integrations_payload["provider_context_verified_family_count"] == sum(1 for item in family_list if item["provider_context_verified"])
     assert project_integrations_payload["provider_context_verified_family_ids"] == [item["family"] for item in family_list if item["provider_context_verified"]]
     assert project_integrations_payload["available_action_family_count"] == sum(1 for item in family_list if item["available_action_count"] > 0)

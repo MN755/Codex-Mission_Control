@@ -14232,10 +14232,24 @@ class MissionControlService:
         connection_statuses = sorted(connection_status_family_ids)
         connection_status_counts = {name: len(ids) for name, ids in connection_status_family_ids.items()}
         connection_status_group_count = len(connection_status_counts)
+        connection_source_family_ids = _group_scalar_family_ids("connection_source")
+        connection_sources = sorted(connection_source_family_ids)
+        connection_source_counts = {name: len(ids) for name, ids in connection_source_family_ids.items()}
+        connection_source_group_count = len(connection_source_counts)
+        resolved_provider_family_ids = _group_scalar_family_ids("resolved_provider")
+        resolved_providers = sorted(resolved_provider_family_ids)
+        resolved_provider_counts = {name: len(ids) for name, ids in resolved_provider_family_ids.items()}
+        resolved_provider_group_count = len(resolved_provider_counts)
+        resolved_provider_families = [str(item.get("family") or "") for item in families if item.get("resolved_provider") not in (None, "")]
+        resolved_provider_family_count = len(resolved_provider_families)
         provider_resolution_state_family_ids = _group_scalar_family_ids("provider_resolution_state")
         provider_resolution_states = sorted(provider_resolution_state_family_ids)
         provider_resolution_state_counts = {name: len(ids) for name, ids in provider_resolution_state_family_ids.items()}
         provider_resolution_state_group_count = len(provider_resolution_state_counts)
+        provider_context_source_family_ids = _group_scalar_family_ids("provider_context_source")
+        provider_context_sources = sorted(provider_context_source_family_ids)
+        provider_context_source_counts = {name: len(ids) for name, ids in provider_context_source_family_ids.items()}
+        provider_context_source_group_count = len(provider_context_source_counts)
         provider_context_status_family_ids = _group_scalar_family_ids("provider_context_status")
         provider_context_statuses = sorted(provider_context_status_family_ids)
         provider_context_status_counts = {name: len(ids) for name, ids in provider_context_status_family_ids.items()}
@@ -14285,6 +14299,8 @@ class MissionControlService:
         workspace_signal_family_ids = [str(item.get("family") or "") for item in families if item.get("workspace_signal_detected")]
         host_import_family_ids = [str(item.get("family") or "") for item in families if item.get("host_import_detected")]
         standalone_cli_detected_family_ids = [str(item.get("family") or "") for item in families if item.get("standalone_cli_detected")]
+        connection_provider_family_ids = [str(item.get("family") or "") for item in families if int(item.get("connection_provider_count") or 0) > 0]
+        connection_without_provider_identity_family_ids = [str(item.get("family") or "") for item in families if item.get("connection_without_provider_identity")]
         provider_context_verified_family_ids = [str(item.get("family") or "") for item in families if item.get("provider_context_verified")]
         available_action_family_ids = [str(item.get("family") or "") for item in families if int(item.get("available_action_count") or 0) > 0]
         blocked_action_family_ids = [str(item.get("family") or "") for item in families if int(item.get("blocked_action_count") or 0) > 0]
@@ -14335,6 +14351,8 @@ class MissionControlService:
         workspace_signal_family_count = len(workspace_signal_family_ids)
         host_import_family_count = len(host_import_family_ids)
         standalone_cli_detected_family_count = len(standalone_cli_detected_family_ids)
+        connection_provider_family_count = len(connection_provider_family_ids)
+        connection_without_provider_identity_family_count = len(connection_without_provider_identity_family_ids)
         provider_context_verified_family_count = len(provider_context_verified_family_ids)
         available_action_family_count = len(available_action_family_ids)
         blocked_action_family_count = len(blocked_action_family_ids)
@@ -14399,6 +14417,7 @@ class MissionControlService:
         available_provider_lane_count = sum(int(item.get("available_provider_lane_count") or 0) for item in families)
         verification_blocked_action_count = sum(int(item.get("verification_blocked_action_count") or 0) for item in families)
         context_blocked_action_count = sum(int(item.get("context_blocked_action_count") or 0) for item in families)
+        connection_provider_count = sum(int(item.get("connection_provider_count") or 0) for item in families)
         local_action_count = _sum_int_field("local_action_count")
         guided_action_count = _sum_int_field("guided_action_count")
         registry_action_count = _sum_int_field("registry_action_count")
@@ -14804,10 +14823,24 @@ class MissionControlService:
             "connection_status_counts": connection_status_counts,
             "connection_status_family_ids": connection_status_family_ids,
             "connection_status_group_count": connection_status_group_count,
+            "connection_sources": connection_sources,
+            "connection_source_counts": connection_source_counts,
+            "connection_source_family_ids": connection_source_family_ids,
+            "connection_source_group_count": connection_source_group_count,
+            "resolved_providers": resolved_providers,
+            "resolved_provider_counts": resolved_provider_counts,
+            "resolved_provider_family_ids": resolved_provider_family_ids,
+            "resolved_provider_group_count": resolved_provider_group_count,
+            "resolved_provider_family_count": resolved_provider_family_count,
+            "resolved_provider_families": resolved_provider_families,
             "provider_resolution_states": provider_resolution_states,
             "provider_resolution_state_counts": provider_resolution_state_counts,
             "provider_resolution_state_family_ids": provider_resolution_state_family_ids,
             "provider_resolution_state_group_count": provider_resolution_state_group_count,
+            "provider_context_sources": provider_context_sources,
+            "provider_context_source_counts": provider_context_source_counts,
+            "provider_context_source_family_ids": provider_context_source_family_ids,
+            "provider_context_source_group_count": provider_context_source_group_count,
             "provider_context_statuses": provider_context_statuses,
             "provider_context_status_counts": provider_context_status_counts,
             "provider_context_status_family_ids": provider_context_status_family_ids,
@@ -14864,6 +14897,11 @@ class MissionControlService:
             "host_import_family_ids": host_import_family_ids,
             "standalone_cli_detected_family_count": standalone_cli_detected_family_count,
             "standalone_cli_detected_family_ids": standalone_cli_detected_family_ids,
+            "connection_provider_count": connection_provider_count,
+            "connection_provider_family_count": connection_provider_family_count,
+            "connection_provider_family_ids": connection_provider_family_ids,
+            "connection_without_provider_identity_family_count": connection_without_provider_identity_family_count,
+            "connection_without_provider_identity_family_ids": connection_without_provider_identity_family_ids,
             "provider_context_verified_family_count": provider_context_verified_family_count,
             "provider_context_verified_family_ids": provider_context_verified_family_ids,
             "available_action_family_count": available_action_family_count,

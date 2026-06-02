@@ -3529,10 +3529,24 @@ class ProjectIntegrationsRead(BaseModel):
     connection_status_counts: dict[str, int] = Field(default_factory=dict)
     connection_status_family_ids: dict[str, list[str]] = Field(default_factory=dict)
     connection_status_group_count: int = 0
+    connection_sources: list[str] = Field(default_factory=list)
+    connection_source_counts: dict[str, int] = Field(default_factory=dict)
+    connection_source_family_ids: dict[str, list[str]] = Field(default_factory=dict)
+    connection_source_group_count: int = 0
+    resolved_providers: list[str] = Field(default_factory=list)
+    resolved_provider_counts: dict[str, int] = Field(default_factory=dict)
+    resolved_provider_family_ids: dict[str, list[str]] = Field(default_factory=dict)
+    resolved_provider_group_count: int = 0
+    resolved_provider_family_count: int = 0
+    resolved_provider_families: list[str] = Field(default_factory=list)
     provider_resolution_states: list[str] = Field(default_factory=list)
     provider_resolution_state_counts: dict[str, int] = Field(default_factory=dict)
     provider_resolution_state_family_ids: dict[str, list[str]] = Field(default_factory=dict)
     provider_resolution_state_group_count: int = 0
+    provider_context_sources: list[str] = Field(default_factory=list)
+    provider_context_source_counts: dict[str, int] = Field(default_factory=dict)
+    provider_context_source_family_ids: dict[str, list[str]] = Field(default_factory=dict)
+    provider_context_source_group_count: int = 0
     provider_context_statuses: list[str] = Field(default_factory=list)
     provider_context_status_counts: dict[str, int] = Field(default_factory=dict)
     provider_context_status_family_ids: dict[str, list[str]] = Field(default_factory=dict)
@@ -3589,6 +3603,11 @@ class ProjectIntegrationsRead(BaseModel):
     host_import_family_ids: list[str] = Field(default_factory=list)
     standalone_cli_detected_family_count: int = 0
     standalone_cli_detected_family_ids: list[str] = Field(default_factory=list)
+    connection_provider_count: int = 0
+    connection_provider_family_count: int = 0
+    connection_provider_family_ids: list[str] = Field(default_factory=list)
+    connection_without_provider_identity_family_count: int = 0
+    connection_without_provider_identity_family_ids: list[str] = Field(default_factory=list)
     provider_context_verified_family_count: int = 0
     provider_context_verified_family_ids: list[str] = Field(default_factory=list)
     available_action_family_count: int = 0
