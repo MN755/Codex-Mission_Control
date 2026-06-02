@@ -14208,44 +14208,58 @@ class MissionControlService:
         action_status_counts = _sum_count_maps("action_status_counts")
         action_status_group_count = len(action_status_counts)
         available_action_status_counts = _sum_count_maps("available_action_status_counts")
+        available_action_statuses = sorted(available_action_status_counts)
         available_action_status_group_count = len(available_action_status_counts)
         blocked_action_status_counts = _sum_count_maps("blocked_action_status_counts")
+        blocked_action_statuses = sorted(blocked_action_status_counts)
         blocked_action_status_group_count = len(blocked_action_status_counts)
         execution_mode_counts = _sum_count_maps("execution_mode_counts")
         execution_mode_group_count = len(execution_mode_counts)
         available_execution_mode_counts = _sum_count_maps("available_execution_mode_counts")
+        available_execution_modes = sorted(available_execution_mode_counts)
         available_execution_mode_group_count = len(available_execution_mode_counts)
         blocked_execution_mode_counts = _sum_count_maps("blocked_execution_mode_counts")
+        blocked_execution_modes = sorted(blocked_execution_mode_counts)
         blocked_execution_mode_group_count = len(blocked_execution_mode_counts)
         provider_support_mode_counts = _sum_count_maps("provider_support_mode_counts")
         provider_support_mode_group_count = len(provider_support_mode_counts)
         available_provider_support_mode_counts = _sum_count_maps("available_provider_support_mode_counts")
+        available_provider_support_modes = sorted(available_provider_support_mode_counts)
         available_provider_support_mode_group_count = len(available_provider_support_mode_counts)
         blocked_provider_support_mode_counts = _sum_count_maps("blocked_provider_support_mode_counts")
+        blocked_provider_support_modes = sorted(blocked_provider_support_mode_counts)
         blocked_provider_support_mode_group_count = len(blocked_provider_support_mode_counts)
         action_provider_context_status_counts = _sum_count_maps("provider_context_status_counts")
         action_provider_context_status_group_count = len(action_provider_context_status_counts)
         available_action_provider_context_status_counts = _sum_count_maps("available_provider_context_status_counts")
+        available_action_provider_context_statuses = sorted(available_action_provider_context_status_counts)
         available_action_provider_context_status_group_count = len(available_action_provider_context_status_counts)
         blocked_action_provider_context_status_counts = _sum_count_maps("blocked_provider_context_status_counts")
+        blocked_action_provider_context_statuses = sorted(blocked_action_provider_context_status_counts)
         blocked_action_provider_context_status_group_count = len(blocked_action_provider_context_status_counts)
         verification_scope_counts = _sum_count_maps("verification_scope_counts")
         verification_scope_group_count = len(verification_scope_counts)
         available_verification_scope_counts = _sum_count_maps("available_verification_scope_counts")
+        available_verification_scopes = sorted(available_verification_scope_counts)
         available_verification_scope_group_count = len(available_verification_scope_counts)
         blocked_verification_scope_counts = _sum_count_maps("blocked_verification_scope_counts")
+        blocked_verification_scopes = sorted(blocked_verification_scope_counts)
         blocked_verification_scope_group_count = len(blocked_verification_scope_counts)
         safe_command_reason_counts = _sum_count_maps("safe_command_reason_counts")
         safe_command_reason_group_count = len(safe_command_reason_counts)
         available_safe_command_reason_counts = _sum_count_maps("available_safe_command_reason_counts")
+        available_safe_command_reasons = sorted(available_safe_command_reason_counts)
         available_safe_command_reason_group_count = len(available_safe_command_reason_counts)
         blocked_safe_command_reason_counts = _sum_count_maps("blocked_safe_command_reason_counts")
+        blocked_safe_command_reasons = sorted(blocked_safe_command_reason_counts)
         blocked_safe_command_reason_group_count = len(blocked_safe_command_reason_counts)
         context_requirement_reason_counts = _sum_count_maps("context_requirement_reason_counts")
         context_requirement_reason_group_count = len(context_requirement_reason_counts)
         available_context_requirement_reason_counts = _sum_count_maps("available_context_requirement_reason_counts")
+        available_context_requirement_reasons = sorted(available_context_requirement_reason_counts)
         available_context_requirement_reason_group_count = len(available_context_requirement_reason_counts)
         blocked_context_requirement_reason_counts = _sum_count_maps("blocked_context_requirement_reason_counts")
+        blocked_context_requirement_reasons = sorted(blocked_context_requirement_reason_counts)
         blocked_context_requirement_reason_group_count = len(blocked_context_requirement_reason_counts)
         execution_block_reason_counts = _sum_count_maps("execution_block_reason_counts")
         execution_block_reason_group_count = len(execution_block_reason_counts)
@@ -14355,44 +14369,58 @@ class MissionControlService:
             "action_count": action_count,
             "action_status_counts": action_status_counts,
             "action_status_group_count": action_status_group_count,
+            "available_action_statuses": available_action_statuses,
             "available_action_status_counts": available_action_status_counts,
             "available_action_status_group_count": available_action_status_group_count,
+            "blocked_action_statuses": blocked_action_statuses,
             "blocked_action_status_counts": blocked_action_status_counts,
             "blocked_action_status_group_count": blocked_action_status_group_count,
             "execution_mode_counts": execution_mode_counts,
             "execution_mode_group_count": execution_mode_group_count,
+            "available_execution_modes": available_execution_modes,
             "available_execution_mode_counts": available_execution_mode_counts,
             "available_execution_mode_group_count": available_execution_mode_group_count,
+            "blocked_execution_modes": blocked_execution_modes,
             "blocked_execution_mode_counts": blocked_execution_mode_counts,
             "blocked_execution_mode_group_count": blocked_execution_mode_group_count,
             "provider_support_mode_counts": provider_support_mode_counts,
             "provider_support_mode_group_count": provider_support_mode_group_count,
+            "available_provider_support_modes": available_provider_support_modes,
             "available_provider_support_mode_counts": available_provider_support_mode_counts,
             "available_provider_support_mode_group_count": available_provider_support_mode_group_count,
+            "blocked_provider_support_modes": blocked_provider_support_modes,
             "blocked_provider_support_mode_counts": blocked_provider_support_mode_counts,
             "blocked_provider_support_mode_group_count": blocked_provider_support_mode_group_count,
             "action_provider_context_status_counts": action_provider_context_status_counts,
             "action_provider_context_status_group_count": action_provider_context_status_group_count,
+            "available_action_provider_context_statuses": available_action_provider_context_statuses,
             "available_action_provider_context_status_counts": available_action_provider_context_status_counts,
             "available_action_provider_context_status_group_count": available_action_provider_context_status_group_count,
+            "blocked_action_provider_context_statuses": blocked_action_provider_context_statuses,
             "blocked_action_provider_context_status_counts": blocked_action_provider_context_status_counts,
             "blocked_action_provider_context_status_group_count": blocked_action_provider_context_status_group_count,
             "verification_scope_counts": verification_scope_counts,
             "verification_scope_group_count": verification_scope_group_count,
+            "available_verification_scopes": available_verification_scopes,
             "available_verification_scope_counts": available_verification_scope_counts,
             "available_verification_scope_group_count": available_verification_scope_group_count,
+            "blocked_verification_scopes": blocked_verification_scopes,
             "blocked_verification_scope_counts": blocked_verification_scope_counts,
             "blocked_verification_scope_group_count": blocked_verification_scope_group_count,
             "safe_command_reason_counts": safe_command_reason_counts,
             "safe_command_reason_group_count": safe_command_reason_group_count,
+            "available_safe_command_reasons": available_safe_command_reasons,
             "available_safe_command_reason_counts": available_safe_command_reason_counts,
             "available_safe_command_reason_group_count": available_safe_command_reason_group_count,
+            "blocked_safe_command_reasons": blocked_safe_command_reasons,
             "blocked_safe_command_reason_counts": blocked_safe_command_reason_counts,
             "blocked_safe_command_reason_group_count": blocked_safe_command_reason_group_count,
             "context_requirement_reason_counts": context_requirement_reason_counts,
             "context_requirement_reason_group_count": context_requirement_reason_group_count,
+            "available_context_requirement_reasons": available_context_requirement_reasons,
             "available_context_requirement_reason_counts": available_context_requirement_reason_counts,
             "available_context_requirement_reason_group_count": available_context_requirement_reason_group_count,
+            "blocked_context_requirement_reasons": blocked_context_requirement_reasons,
             "blocked_context_requirement_reason_counts": blocked_context_requirement_reason_counts,
             "blocked_context_requirement_reason_group_count": blocked_context_requirement_reason_group_count,
             "execution_block_reason_counts": execution_block_reason_counts,
