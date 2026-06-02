@@ -3457,11 +3457,23 @@ def build_project_integration_status(
             for item in execution_actions
             if item["preflight_ready"]
         ]
+        not_preflight_ready_action_count = sum(1 for item in execution_actions if not item["preflight_ready"])
+        not_preflight_ready_action_ids = [
+            str(item["action_id"])
+            for item in execution_actions
+            if not item["preflight_ready"]
+        ]
         confirmation_eligible_action_count = sum(1 for item in execution_actions if item["confirmation_eligible"])
         confirmation_eligible_action_ids = [
             str(item["action_id"])
             for item in execution_actions
             if item["confirmation_eligible"]
+        ]
+        not_confirmation_eligible_action_count = sum(1 for item in execution_actions if not item["confirmation_eligible"])
+        not_confirmation_eligible_action_ids = [
+            str(item["action_id"])
+            for item in execution_actions
+            if not item["confirmation_eligible"]
         ]
         ready_to_execute_action_count = sum(1 for item in execution_actions if item["ready_to_execute"])
         ready_to_execute_action_ids = [
@@ -3469,11 +3481,23 @@ def build_project_integration_status(
             for item in execution_actions
             if item["ready_to_execute"]
         ]
+        not_ready_to_execute_action_count = sum(1 for item in execution_actions if not item["ready_to_execute"])
+        not_ready_to_execute_action_ids = [
+            str(item["action_id"])
+            for item in execution_actions
+            if not item["ready_to_execute"]
+        ]
         safe_command_action_count = sum(1 for item in execution_actions if item["safe_command_eligible"])
         safe_command_action_ids = [
             str(item["action_id"])
             for item in execution_actions
             if item["safe_command_eligible"]
+        ]
+        unsafe_command_action_count = sum(1 for item in execution_actions if not item["safe_command_eligible"])
+        unsafe_command_action_ids = [
+            str(item["action_id"])
+            for item in execution_actions
+            if not item["safe_command_eligible"]
         ]
         command_ready_action_count = sum(1 for item in execution_actions if item["command_ready"])
         command_ready_action_ids = [
@@ -3481,17 +3505,35 @@ def build_project_integration_status(
             for item in execution_actions
             if item["command_ready"]
         ]
+        command_not_ready_action_count = sum(1 for item in execution_actions if not item["command_ready"])
+        command_not_ready_action_ids = [
+            str(item["action_id"])
+            for item in execution_actions
+            if not item["command_ready"]
+        ]
         parameterized_execution_action_count = sum(1 for item in execution_actions if item["required_params"])
         parameterized_execution_action_ids = [
             str(item["action_id"])
             for item in execution_actions
             if item["required_params"]
         ]
+        non_parameterized_execution_action_count = sum(1 for item in execution_actions if not item["required_params"])
+        non_parameterized_execution_action_ids = [
+            str(item["action_id"])
+            for item in execution_actions
+            if not item["required_params"]
+        ]
         params_complete_action_count = sum(1 for item in execution_actions if item["params_complete"])
         params_complete_action_ids = [
             str(item["action_id"])
             for item in execution_actions
             if item["params_complete"]
+        ]
+        params_incomplete_action_count = sum(1 for item in execution_actions if not item["params_complete"])
+        params_incomplete_action_ids = [
+            str(item["action_id"])
+            for item in execution_actions
+            if not item["params_complete"]
         ]
         defaulted_param_action_count = sum(1 for item in execution_actions if item["defaulted_params"])
         provider_context_verified_action_count = sum(1 for item in available_actions if item["provider_context_status"] == "verified")
@@ -3858,18 +3900,32 @@ def build_project_integration_status(
                 "multi_blocked_action_ids": multi_blocked_action_ids,
                 "preflight_ready_action_count": preflight_ready_action_count,
                 "preflight_ready_action_ids": preflight_ready_action_ids,
+                "not_preflight_ready_action_count": not_preflight_ready_action_count,
+                "not_preflight_ready_action_ids": not_preflight_ready_action_ids,
                 "confirmation_eligible_action_count": confirmation_eligible_action_count,
                 "confirmation_eligible_action_ids": confirmation_eligible_action_ids,
+                "not_confirmation_eligible_action_count": not_confirmation_eligible_action_count,
+                "not_confirmation_eligible_action_ids": not_confirmation_eligible_action_ids,
                 "ready_to_execute_action_count": ready_to_execute_action_count,
                 "ready_to_execute_action_ids": ready_to_execute_action_ids,
+                "not_ready_to_execute_action_count": not_ready_to_execute_action_count,
+                "not_ready_to_execute_action_ids": not_ready_to_execute_action_ids,
                 "safe_command_action_count": safe_command_action_count,
                 "safe_command_action_ids": safe_command_action_ids,
+                "unsafe_command_action_count": unsafe_command_action_count,
+                "unsafe_command_action_ids": unsafe_command_action_ids,
                 "command_ready_action_count": command_ready_action_count,
                 "command_ready_action_ids": command_ready_action_ids,
+                "command_not_ready_action_count": command_not_ready_action_count,
+                "command_not_ready_action_ids": command_not_ready_action_ids,
                 "parameterized_execution_action_count": parameterized_execution_action_count,
                 "parameterized_execution_action_ids": parameterized_execution_action_ids,
+                "non_parameterized_execution_action_count": non_parameterized_execution_action_count,
+                "non_parameterized_execution_action_ids": non_parameterized_execution_action_ids,
                 "params_complete_action_count": params_complete_action_count,
                 "params_complete_action_ids": params_complete_action_ids,
+                "params_incomplete_action_count": params_incomplete_action_count,
+                "params_incomplete_action_ids": params_incomplete_action_ids,
                 "defaulted_param_action_count": defaulted_param_action_count,
                 "missing_params_action_count": missing_params_action_count,
                 "missing_params_action_ids": missing_params_action_ids,
@@ -4109,18 +4165,32 @@ def build_project_integration_status(
                     "multi_blocked_action_ids": multi_blocked_action_ids,
                     "preflight_ready_action_count": preflight_ready_action_count,
                     "preflight_ready_action_ids": preflight_ready_action_ids,
+                    "not_preflight_ready_action_count": not_preflight_ready_action_count,
+                    "not_preflight_ready_action_ids": not_preflight_ready_action_ids,
                     "confirmation_eligible_action_count": confirmation_eligible_action_count,
                     "confirmation_eligible_action_ids": confirmation_eligible_action_ids,
+                    "not_confirmation_eligible_action_count": not_confirmation_eligible_action_count,
+                    "not_confirmation_eligible_action_ids": not_confirmation_eligible_action_ids,
                     "ready_to_execute_action_count": ready_to_execute_action_count,
                     "ready_to_execute_action_ids": ready_to_execute_action_ids,
+                    "not_ready_to_execute_action_count": not_ready_to_execute_action_count,
+                    "not_ready_to_execute_action_ids": not_ready_to_execute_action_ids,
                     "safe_command_action_count": safe_command_action_count,
                     "safe_command_action_ids": safe_command_action_ids,
+                    "unsafe_command_action_count": unsafe_command_action_count,
+                    "unsafe_command_action_ids": unsafe_command_action_ids,
                     "command_ready_action_count": command_ready_action_count,
                     "command_ready_action_ids": command_ready_action_ids,
+                    "command_not_ready_action_count": command_not_ready_action_count,
+                    "command_not_ready_action_ids": command_not_ready_action_ids,
                     "parameterized_execution_action_count": parameterized_execution_action_count,
                     "parameterized_execution_action_ids": parameterized_execution_action_ids,
+                    "non_parameterized_execution_action_count": non_parameterized_execution_action_count,
+                    "non_parameterized_execution_action_ids": non_parameterized_execution_action_ids,
                     "params_complete_action_count": params_complete_action_count,
                     "params_complete_action_ids": params_complete_action_ids,
+                    "params_incomplete_action_count": params_incomplete_action_count,
+                    "params_incomplete_action_ids": params_incomplete_action_ids,
                     "defaulted_param_action_count": defaulted_param_action_count,
                     "missing_params_action_count": missing_params_action_count,
                     "missing_params_action_ids": missing_params_action_ids,

@@ -5674,10 +5674,28 @@ def test_project_integrations_surface_preflight_counts_and_action_readiness(monk
     assert status["execution_action_count"] == 2
     assert status["blocked_execution_action_count"] == 1
     assert status["preflight_ready_action_count"] == 1
+    assert status["not_preflight_ready_action_count"] == 1
+    assert status["not_preflight_ready_action_ids"] == ["publish"]
     assert status["confirmation_eligible_action_count"] == 0
+    assert status["not_confirmation_eligible_action_count"] == 2
+    assert status["not_confirmation_eligible_action_ids"] == ["inspect", "publish"]
     assert status["ready_to_execute_action_count"] == 1
+    assert status["not_ready_to_execute_action_count"] == 1
+    assert status["not_ready_to_execute_action_ids"] == ["publish"]
+    assert status["safe_command_action_count"] == 1
+    assert status["safe_command_action_ids"] == ["inspect"]
+    assert status["unsafe_command_action_count"] == 1
+    assert status["unsafe_command_action_ids"] == ["publish"]
+    assert status["command_ready_action_count"] == 2
+    assert status["command_ready_action_ids"] == ["inspect", "publish"]
+    assert status["command_not_ready_action_count"] == 0
+    assert status["command_not_ready_action_ids"] == []
     assert status["parameterized_execution_action_count"] == 0
+    assert status["non_parameterized_execution_action_count"] == 2
+    assert status["non_parameterized_execution_action_ids"] == ["inspect", "publish"]
     assert status["params_complete_action_count"] == 2
+    assert status["params_incomplete_action_count"] == 0
+    assert status["params_incomplete_action_ids"] == []
     assert status["defaulted_param_action_count"] == 0
     assert status["verification_blocked_action_count"] == 1
     assert status["verification_blocked_local_action_count"] == 1
@@ -5689,10 +5707,22 @@ def test_project_integrations_surface_preflight_counts_and_action_readiness(monk
     assert status["health"]["execution_action_count"] == 2
     assert status["health"]["blocked_execution_action_count"] == 1
     assert status["health"]["preflight_ready_action_count"] == 1
+    assert status["health"]["not_preflight_ready_action_count"] == 1
+    assert status["health"]["not_preflight_ready_action_ids"] == ["publish"]
     assert status["health"]["confirmation_eligible_action_count"] == 0
+    assert status["health"]["not_confirmation_eligible_action_count"] == 2
+    assert status["health"]["not_confirmation_eligible_action_ids"] == ["inspect", "publish"]
     assert status["health"]["ready_to_execute_action_count"] == 1
+    assert status["health"]["not_ready_to_execute_action_count"] == 1
+    assert status["health"]["not_ready_to_execute_action_ids"] == ["publish"]
+    assert status["health"]["safe_command_action_count"] == 1
+    assert status["health"]["unsafe_command_action_count"] == 1
+    assert status["health"]["command_ready_action_count"] == 2
+    assert status["health"]["command_not_ready_action_count"] == 0
     assert status["health"]["parameterized_execution_action_count"] == 0
+    assert status["health"]["non_parameterized_execution_action_count"] == 2
     assert status["health"]["params_complete_action_count"] == 2
+    assert status["health"]["params_incomplete_action_count"] == 0
     assert status["health"]["defaulted_param_action_count"] == 0
     assert status["health"]["verification_blocked_local_action_count"] == 1
 
@@ -5744,20 +5774,48 @@ def test_project_integrations_do_not_let_registry_actions_inflate_execution_coun
     assert status["execution_action_count"] == 2
     assert status["blocked_execution_action_count"] == 2
     assert status["preflight_ready_action_count"] == 0
+    assert status["not_preflight_ready_action_count"] == 2
+    assert status["not_preflight_ready_action_ids"] == ["inspect", "create"]
     assert status["confirmation_eligible_action_count"] == 0
+    assert status["not_confirmation_eligible_action_count"] == 2
+    assert status["not_confirmation_eligible_action_ids"] == ["inspect", "create"]
     assert status["ready_to_execute_action_count"] == 0
+    assert status["not_ready_to_execute_action_count"] == 2
+    assert status["not_ready_to_execute_action_ids"] == ["inspect", "create"]
+    assert status["safe_command_action_count"] == 0
+    assert status["unsafe_command_action_count"] == 2
+    assert status["unsafe_command_action_ids"] == ["inspect", "create"]
+    assert status["command_ready_action_count"] == 0
+    assert status["command_not_ready_action_count"] == 2
+    assert status["command_not_ready_action_ids"] == ["inspect", "create"]
     assert status["parameterized_execution_action_count"] == 0
+    assert status["non_parameterized_execution_action_count"] == 2
+    assert status["non_parameterized_execution_action_ids"] == ["inspect", "create"]
     assert status["params_complete_action_count"] == 2
+    assert status["params_incomplete_action_count"] == 0
+    assert status["params_incomplete_action_ids"] == []
     assert status["defaulted_param_action_count"] == 0
     assert status["provider_context_blocked_action_count"] == 2
     assert status["verification_blocked_action_count"] == 0
     assert status["health"]["execution_action_count"] == 2
     assert status["health"]["blocked_execution_action_count"] == 2
     assert status["health"]["preflight_ready_action_count"] == 0
+    assert status["health"]["not_preflight_ready_action_count"] == 2
+    assert status["health"]["not_preflight_ready_action_ids"] == ["inspect", "create"]
     assert status["health"]["confirmation_eligible_action_count"] == 0
+    assert status["health"]["not_confirmation_eligible_action_count"] == 2
+    assert status["health"]["not_confirmation_eligible_action_ids"] == ["inspect", "create"]
     assert status["health"]["ready_to_execute_action_count"] == 0
+    assert status["health"]["not_ready_to_execute_action_count"] == 2
+    assert status["health"]["not_ready_to_execute_action_ids"] == ["inspect", "create"]
+    assert status["health"]["safe_command_action_count"] == 0
+    assert status["health"]["unsafe_command_action_count"] == 2
+    assert status["health"]["command_ready_action_count"] == 0
+    assert status["health"]["command_not_ready_action_count"] == 2
     assert status["health"]["parameterized_execution_action_count"] == 0
+    assert status["health"]["non_parameterized_execution_action_count"] == 2
     assert status["health"]["params_complete_action_count"] == 2
+    assert status["health"]["params_incomplete_action_count"] == 0
     assert status["health"]["defaulted_param_action_count"] == 0
 
 
@@ -5963,11 +6021,34 @@ def test_project_integrations_surface_confirmation_and_safe_reason_inventories(m
     assert deploy_action["safe_command_eligible"] is False
     assert deploy_action["safe_command_reason"] == "mutates_remote_state"
     assert "deploy" in status["confirmation_eligible_action_ids"]
+    assert status["confirmation_eligible_action_count"] == 1
+    assert status["not_confirmation_eligible_action_count"] == 2
+    assert status["not_confirmation_eligible_action_ids"] == ["inspect", "tail_logs"]
     assert "deploy" not in status["safe_command_action_ids"]
     assert "inspect" in status["safe_command_action_ids"]
+    assert status["safe_command_action_count"] == 1
+    assert status["unsafe_command_action_count"] == 2
+    assert status["unsafe_command_action_ids"] == ["tail_logs", "deploy"]
     assert "deploy" in status["preflight_ready_action_ids"]
+    assert status["preflight_ready_action_count"] == 2
+    assert status["not_preflight_ready_action_count"] == 1
+    assert status["not_preflight_ready_action_ids"] == ["tail_logs"]
+    assert status["ready_to_execute_action_count"] == 1
+    assert status["not_ready_to_execute_action_count"] == 2
+    assert status["not_ready_to_execute_action_ids"] == ["tail_logs", "deploy"]
+    assert status["command_ready_action_count"] == 2
+    assert status["command_not_ready_action_count"] == 1
+    assert status["command_not_ready_action_ids"] == ["tail_logs"]
     assert "deploy" in status["health"]["confirmation_eligible_action_ids"]
     assert "inspect" in status["health"]["safe_command_action_ids"]
+    assert status["health"]["confirmation_eligible_action_count"] == 1
+    assert status["health"]["not_confirmation_eligible_action_count"] == 2
+    assert status["health"]["safe_command_action_count"] == 1
+    assert status["health"]["unsafe_command_action_count"] == 2
+    assert status["health"]["preflight_ready_action_count"] == 2
+    assert status["health"]["not_preflight_ready_action_count"] == 1
+    assert status["health"]["ready_to_execute_action_count"] == 1
+    assert status["health"]["not_ready_to_execute_action_count"] == 2
 
 
 def test_project_integrations_surface_permission_and_risk_inventories(monkeypatch, tmp_path) -> None:

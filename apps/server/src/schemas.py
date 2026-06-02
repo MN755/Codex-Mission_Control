@@ -3450,18 +3450,32 @@ class ProjectIntegrationFamilyRead(BaseModel):
     multi_blocked_action_ids: list[str] = Field(default_factory=list)
     preflight_ready_action_count: int = 0
     preflight_ready_action_ids: list[str] = Field(default_factory=list)
+    not_preflight_ready_action_count: int = 0
+    not_preflight_ready_action_ids: list[str] = Field(default_factory=list)
     confirmation_eligible_action_count: int = 0
     confirmation_eligible_action_ids: list[str] = Field(default_factory=list)
+    not_confirmation_eligible_action_count: int = 0
+    not_confirmation_eligible_action_ids: list[str] = Field(default_factory=list)
     ready_to_execute_action_count: int = 0
     ready_to_execute_action_ids: list[str] = Field(default_factory=list)
+    not_ready_to_execute_action_count: int = 0
+    not_ready_to_execute_action_ids: list[str] = Field(default_factory=list)
     safe_command_action_count: int = 0
     safe_command_action_ids: list[str] = Field(default_factory=list)
+    unsafe_command_action_count: int = 0
+    unsafe_command_action_ids: list[str] = Field(default_factory=list)
     command_ready_action_count: int = 0
     command_ready_action_ids: list[str] = Field(default_factory=list)
+    command_not_ready_action_count: int = 0
+    command_not_ready_action_ids: list[str] = Field(default_factory=list)
     parameterized_execution_action_count: int = 0
     parameterized_execution_action_ids: list[str] = Field(default_factory=list)
+    non_parameterized_execution_action_count: int = 0
+    non_parameterized_execution_action_ids: list[str] = Field(default_factory=list)
     params_complete_action_count: int = 0
     params_complete_action_ids: list[str] = Field(default_factory=list)
+    params_incomplete_action_count: int = 0
+    params_incomplete_action_ids: list[str] = Field(default_factory=list)
     defaulted_param_action_count: int = 0
     missing_params_action_count: int = 0
     missing_params_action_ids: list[str] = Field(default_factory=list)
