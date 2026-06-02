@@ -3521,14 +3521,23 @@ class ProjectIntegrationsRead(BaseModel):
     summary: str
     family_count: int = 0
     status_counts: dict[str, int] = Field(default_factory=dict)
+    status_family_ids: dict[str, list[str]] = Field(default_factory=dict)
     ready_family_count: int = 0
+    ready_family_ids: list[str] = Field(default_factory=list)
     partial_family_count: int = 0
+    partial_family_ids: list[str] = Field(default_factory=list)
     needs_setup_family_count: int = 0
+    needs_setup_family_ids: list[str] = Field(default_factory=list)
     connection_detected_family_count: int = 0
+    connection_detected_family_ids: list[str] = Field(default_factory=list)
     workspace_signal_family_count: int = 0
+    workspace_signal_family_ids: list[str] = Field(default_factory=list)
     host_import_family_count: int = 0
+    host_import_family_ids: list[str] = Field(default_factory=list)
     standalone_cli_detected_family_count: int = 0
+    standalone_cli_detected_family_ids: list[str] = Field(default_factory=list)
     provider_context_verified_family_count: int = 0
+    provider_context_verified_family_ids: list[str] = Field(default_factory=list)
     available_action_count: int = 0
     blocked_action_count: int = 0
     execution_action_count: int = 0

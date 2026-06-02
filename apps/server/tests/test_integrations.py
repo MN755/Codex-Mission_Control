@@ -92,16 +92,28 @@ def test_project_integrations_and_action_preview_flow(client, bridge_headers, mo
     assert project_integrations_payload["partial_family_count"] == sum(1 for item in family_list if item["status"] == "partial")
     assert project_integrations_payload["needs_setup_family_count"] == sum(1 for item in family_list if item["status"] == "needs_setup")
     expected_status_counts = {}
+    expected_status_family_ids = {}
     for status_name in ("ready", "partial", "needs_setup"):
         count = sum(1 for item in family_list if item["status"] == status_name)
+        family_ids = [item["family"] for item in family_list if item["status"] == status_name]
         if count:
             expected_status_counts[status_name] = count
+            expected_status_family_ids[status_name] = family_ids
     assert project_integrations_payload["status_counts"] == expected_status_counts
+    assert project_integrations_payload["status_family_ids"] == expected_status_family_ids
+    assert project_integrations_payload["ready_family_ids"] == [item["family"] for item in family_list if item["status"] == "ready"]
+    assert project_integrations_payload["partial_family_ids"] == [item["family"] for item in family_list if item["status"] == "partial"]
+    assert project_integrations_payload["needs_setup_family_ids"] == [item["family"] for item in family_list if item["status"] == "needs_setup"]
     assert project_integrations_payload["connection_detected_family_count"] == sum(1 for item in family_list if item["connection_detected"])
+    assert project_integrations_payload["connection_detected_family_ids"] == [item["family"] for item in family_list if item["connection_detected"]]
     assert project_integrations_payload["workspace_signal_family_count"] == sum(1 for item in family_list if item["workspace_signal_detected"])
+    assert project_integrations_payload["workspace_signal_family_ids"] == [item["family"] for item in family_list if item["workspace_signal_detected"]]
     assert project_integrations_payload["host_import_family_count"] == sum(1 for item in family_list if item["host_import_detected"])
+    assert project_integrations_payload["host_import_family_ids"] == [item["family"] for item in family_list if item["host_import_detected"]]
     assert project_integrations_payload["standalone_cli_detected_family_count"] == sum(1 for item in family_list if item["standalone_cli_detected"])
+    assert project_integrations_payload["standalone_cli_detected_family_ids"] == [item["family"] for item in family_list if item["standalone_cli_detected"]]
     assert project_integrations_payload["provider_context_verified_family_count"] == sum(1 for item in family_list if item["provider_context_verified"])
+    assert project_integrations_payload["provider_context_verified_family_ids"] == [item["family"] for item in family_list if item["provider_context_verified"]]
     assert project_integrations_payload["available_action_count"] == sum(item["available_action_count"] for item in family_list)
     assert project_integrations_payload["blocked_action_count"] == sum(item["blocked_action_count"] for item in family_list)
     assert project_integrations_payload["execution_action_count"] == sum(item["execution_action_count"] for item in family_list)

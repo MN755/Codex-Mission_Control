@@ -14066,19 +14066,31 @@ class MissionControlService:
             registry_payload=registry,
         )
         family_count = len(families)
+        family_ids_by_status = {
+            status_name: [str(item.get("family") or "") for item in families if str(item.get("status") or "unknown") == status_name]
+            for status_name in sorted({str(item.get("status") or "unknown") for item in families})
+        }
         status_counts = {
             name: count
             for name, count in Counter(str(item.get("status") or "unknown") for item in families).items()
             if count > 0
         }
-        ready_count = sum(1 for item in families if item.get("status") == "ready")
-        partial_count = sum(1 for item in families if item.get("status") == "partial")
-        needs_setup_count = sum(1 for item in families if item.get("status") == "needs_setup")
-        connection_detected_family_count = sum(1 for item in families if item.get("connection_detected"))
-        workspace_signal_family_count = sum(1 for item in families if item.get("workspace_signal_detected"))
-        host_import_family_count = sum(1 for item in families if item.get("host_import_detected"))
-        standalone_cli_detected_family_count = sum(1 for item in families if item.get("standalone_cli_detected"))
-        provider_context_verified_family_count = sum(1 for item in families if item.get("provider_context_verified"))
+        ready_family_ids = [str(item.get("family") or "") for item in families if item.get("status") == "ready"]
+        partial_family_ids = [str(item.get("family") or "") for item in families if item.get("status") == "partial"]
+        needs_setup_family_ids = [str(item.get("family") or "") for item in families if item.get("status") == "needs_setup"]
+        connection_detected_family_ids = [str(item.get("family") or "") for item in families if item.get("connection_detected")]
+        workspace_signal_family_ids = [str(item.get("family") or "") for item in families if item.get("workspace_signal_detected")]
+        host_import_family_ids = [str(item.get("family") or "") for item in families if item.get("host_import_detected")]
+        standalone_cli_detected_family_ids = [str(item.get("family") or "") for item in families if item.get("standalone_cli_detected")]
+        provider_context_verified_family_ids = [str(item.get("family") or "") for item in families if item.get("provider_context_verified")]
+        ready_count = len(ready_family_ids)
+        partial_count = len(partial_family_ids)
+        needs_setup_count = len(needs_setup_family_ids)
+        connection_detected_family_count = len(connection_detected_family_ids)
+        workspace_signal_family_count = len(workspace_signal_family_ids)
+        host_import_family_count = len(host_import_family_ids)
+        standalone_cli_detected_family_count = len(standalone_cli_detected_family_ids)
+        provider_context_verified_family_count = len(provider_context_verified_family_ids)
         available_action_count = sum(int(item.get("available_action_count") or 0) for item in families)
         blocked_action_count = sum(int(item.get("blocked_action_count") or 0) for item in families)
         execution_action_count = sum(int(item.get("execution_action_count") or 0) for item in families)
@@ -14094,14 +14106,23 @@ class MissionControlService:
             "summary": f"{ready_count} integration families are ready and {family_count - ready_count} still need setup or host import.",
             "family_count": family_count,
             "status_counts": status_counts,
+            "status_family_ids": family_ids_by_status,
             "ready_family_count": ready_count,
+            "ready_family_ids": ready_family_ids,
             "partial_family_count": partial_count,
+            "partial_family_ids": partial_family_ids,
             "needs_setup_family_count": needs_setup_count,
+            "needs_setup_family_ids": needs_setup_family_ids,
             "connection_detected_family_count": connection_detected_family_count,
+            "connection_detected_family_ids": connection_detected_family_ids,
             "workspace_signal_family_count": workspace_signal_family_count,
+            "workspace_signal_family_ids": workspace_signal_family_ids,
             "host_import_family_count": host_import_family_count,
+            "host_import_family_ids": host_import_family_ids,
             "standalone_cli_detected_family_count": standalone_cli_detected_family_count,
+            "standalone_cli_detected_family_ids": standalone_cli_detected_family_ids,
             "provider_context_verified_family_count": provider_context_verified_family_count,
+            "provider_context_verified_family_ids": provider_context_verified_family_ids,
             "available_action_count": available_action_count,
             "blocked_action_count": blocked_action_count,
             "execution_action_count": execution_action_count,
