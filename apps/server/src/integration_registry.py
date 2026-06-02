@@ -961,7 +961,7 @@ FAMILIES: tuple[IntegrationFamilyDefinition, ...] = (
         providers=("sentry", "logrocket", "datadog", "new_relic"),
         host_tokens=("sentry", "logrocket", "datadog", "newrelic", "new relic"),
         config_files=("sentry.properties", "datadog.yaml", "newrelic.js"),
-        workspace_tokens=("sentry", "logrocket", "datadog", "newrelic"),
+        workspace_tokens=("sentry", "logrocket", "datadog", "newrelic", "new relic"),
         cli_candidates=("sentry-cli", "datadog-ci", "newrelic"),
         legacy_account_keys=(),
         actions=COMMON_ACTIONS + (
@@ -1024,7 +1024,7 @@ FAMILIES: tuple[IntegrationFamilyDefinition, ...] = (
         providers=("kubernetes",),
         host_tokens=("kubernetes", "k8s"),
         config_files=("k8s", "kubernetes", "helm"),
-        workspace_tokens=("kubectl", "helm", "kubernetes"),
+        workspace_tokens=("kubectl", "helm", "kubernetes", "k8s"),
         cli_candidates=("kubectl", "helm"),
         legacy_account_keys=(),
         actions=COMMON_ACTIONS + (
@@ -1040,7 +1040,7 @@ FAMILIES: tuple[IntegrationFamilyDefinition, ...] = (
         providers=("terraform", "opentofu"),
         host_tokens=("terraform", "tofu", "opentofu"),
         config_files=("main.tf", "versions.tf", "terraform.tfvars", "tofu.hcl"),
-        workspace_tokens=("terraform", "opentofu"),
+        workspace_tokens=("terraform", "opentofu", "tofu"),
         cli_candidates=("terraform", "tofu"),
         legacy_account_keys=(),
         actions=COMMON_ACTIONS + (
@@ -1244,7 +1244,7 @@ FAMILIES: tuple[IntegrationFamilyDefinition, ...] = (
         providers=("auth0", "clerk", "workos", "okta", "firebase_auth", "supabase_auth"),
         host_tokens=("auth0", "clerk", "workos", "work os", "okta", "firebase auth", "supabase auth"),
         config_files=(".auth0", "auth0.json", ".auth0.json", "firebase.json", "supabase/config.toml"),
-        workspace_tokens=("auth0", "clerk", "workos", "okta", "firebase auth", "supabase auth"),
+        workspace_tokens=("auth0", "clerk", "workos", "work os", "okta", "firebase auth", "supabase auth"),
         cli_candidates=("auth0", "firebase", "supabase"),
         legacy_account_keys=(),
         actions=COMMON_ACTIONS + (
@@ -1274,7 +1274,7 @@ FAMILIES: tuple[IntegrationFamilyDefinition, ...] = (
         providers=("launchdarkly", "statsig", "configcat", "unleash", "posthog_feature_flags"),
         host_tokens=("launchdarkly", "launch darkly", "statsig", "configcat", "config cat", "unleash", "posthog"),
         config_files=(),
-        workspace_tokens=("launchdarkly", "statsig", "configcat", "unleash", "posthog"),
+        workspace_tokens=("launchdarkly", "launch darkly", "statsig", "configcat", "config cat", "unleash", "posthog"),
         cli_candidates=(),
         legacy_account_keys=(),
         actions=COMMON_ACTIONS + (
@@ -1321,7 +1321,7 @@ FAMILIES: tuple[IntegrationFamilyDefinition, ...] = (
         providers=("release_please", "changesets", "semantic_release", "github_releases", "launchnotes"),
         host_tokens=("release please", "changesets", "semantic-release", "github releases", "launchnotes", "launch notes"),
         config_files=(".release-please-manifest.json", ".changeset", ".releaserc", "release.config.js"),
-        workspace_tokens=("release please", "changesets", "semantic-release", "launchnotes", "launch notes"),
+        workspace_tokens=("release please", "changesets", "semantic-release", "github releases", "launchnotes", "launch notes"),
         cli_candidates=("gh", "changeset", "release-please", "semantic-release"),
         legacy_account_keys=(),
         actions=COMMON_ACTIONS + (
@@ -1982,7 +1982,7 @@ def _provider_hints_for_paths(family: IntegrationFamilyDefinition, matched_paths
 
 
 def _family_token_candidates(family: IntegrationFamilyDefinition) -> list[str]:
-    return _dedupe_strs([*family.workspace_tokens, *family.host_tokens])
+    return _dedupe_strs([*family.workspace_tokens])
 
 
 def _contains_token(text: str, token: str) -> bool:

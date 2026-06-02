@@ -4562,6 +4562,31 @@ def test_workspace_token_matching_uses_boundaries_for_short_family_tokens(monkey
     assert statuses["browser_devtools"]["status"] == "needs_setup"
 
 
+def test_workspace_scanning_no_longer_uses_host_only_tokens_like_chrome(monkeypatch, tmp_path) -> None:
+    workspace = tmp_path / "chrome-mention-repo"
+    workspace.mkdir(parents=True, exist_ok=True)
+    (workspace / "README.md").write_text(
+        "This documentation mentions Chrome and Docker as ordinary product references.\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr("integration_registry.shutil.which", lambda _command: None)
+
+    statuses = {
+        item["family"]: item
+        for item in build_project_integration_status(
+            workspace_path=str(workspace),
+            project_name="Host Token Boundary Demo",
+            registry_payload=normalize_integration_registry({}, {}),
+        )
+    }
+
+    assert statuses["browser_devtools"]["health"]["workspace_token_hits"] == []
+    assert statuses["browser_devtools"]["status"] == "needs_setup"
+    assert statuses["package_registries"]["health"]["workspace_token_hits"] == []
+    assert statuses["package_registries"]["status"] == "needs_setup"
+
+
 def test_provider_specific_action_overrides_relax_local_scan_and_runtime_lanes(monkeypatch, tmp_path) -> None:
     workspace = tmp_path / "local-safety"
     workspace.mkdir(parents=True, exist_ok=True)
