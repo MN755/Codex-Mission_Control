@@ -6061,8 +6061,19 @@ def test_project_integrations_surface_action_mode_and_support_ids(monkeypatch, t
     assert package_status["available_provider_lane_action_ids"] == ["inspect"]
     assert package_status["available_mutating_action_ids"] == []
     assert package_status["available_non_mutating_action_ids"] == ["import_host_state", "inspect_status", "connect", "disconnect", "inspect"]
+    assert package_status["local_execution_action_ids"] == ["inspect", "publish"]
+    assert package_status["guided_execution_action_ids"] == []
+    assert package_status["provider_specific_execution_action_ids"] == ["inspect", "publish"]
+    assert package_status["guided_only_execution_action_ids"] == []
+    assert package_status["commandful_execution_action_ids"] == ["inspect", "publish"]
+    assert package_status["blocked_local_execution_action_ids"] == ["publish"]
+    assert package_status["blocked_guided_execution_action_ids"] == []
+    assert package_status["blocked_provider_specific_execution_action_ids"] == ["publish"]
+    assert package_status["blocked_guided_only_execution_action_ids"] == []
     assert package_status["health"]["local_action_ids"] == ["inspect"]
     assert package_status["health"]["provider_specific_action_ids"] == ["inspect", "publish"]
+    assert package_status["health"]["local_execution_action_ids"] == ["inspect", "publish"]
+    assert package_status["health"]["blocked_provider_specific_execution_action_ids"] == ["publish"]
 
     registry = normalize_integration_registry(
         {
@@ -6098,8 +6109,19 @@ def test_project_integrations_surface_action_mode_and_support_ids(monkeypatch, t
     assert docs_status["available_provider_lane_action_ids"] == ["inspect", "sync"]
     assert docs_status["available_mutating_action_ids"] == ["sync"]
     assert docs_status["available_non_mutating_action_ids"] == ["import_host_state", "inspect_status", "connect", "disconnect", "inspect"]
+    assert docs_status["local_execution_action_ids"] == []
+    assert docs_status["guided_execution_action_ids"] == ["inspect", "sync"]
+    assert docs_status["provider_specific_execution_action_ids"] == ["inspect", "sync"]
+    assert docs_status["guided_only_execution_action_ids"] == []
+    assert docs_status["commandful_execution_action_ids"] == []
+    assert docs_status["blocked_local_execution_action_ids"] == []
+    assert docs_status["blocked_guided_execution_action_ids"] == []
+    assert docs_status["blocked_provider_specific_execution_action_ids"] == []
+    assert docs_status["blocked_guided_only_execution_action_ids"] == []
     assert docs_status["health"]["guided_action_ids"] == ["inspect", "sync"]
     assert docs_status["health"]["available_mutating_action_ids"] == ["sync"]
+    assert docs_status["health"]["guided_execution_action_ids"] == ["inspect", "sync"]
+    assert docs_status["health"]["blocked_guided_execution_action_ids"] == []
 
 
 def test_project_integrations_surface_context_and_preflight_inventory_ids(monkeypatch, tmp_path) -> None:
@@ -6255,11 +6277,14 @@ def test_project_integrations_surface_context_and_preflight_inventory_ids(monkey
     assert docs_status["provider_guidance_action_ids"] == ["inspect", "sync"]
     assert docs_status["commandless_execution_action_count"] == 2
     assert docs_status["commandless_execution_action_ids"] == ["inspect", "sync"]
+    assert docs_status["blocked_guided_execution_action_ids"] == ["sync"]
+    assert docs_status["blocked_provider_specific_execution_action_ids"] == ["sync"]
     assert docs_status["provider_context_verified_action_ids"] == []
     assert docs_status["provider_context_inferred_action_ids"] == ["inspect", "sync"]
     assert docs_status["provider_context_missing_action_ids"] == ["import_host_state", "inspect_status", "connect", "disconnect"]
     assert docs_status["health"]["provider_context_inferred_action_ids"] == ["inspect", "sync"]
     assert docs_status["health"]["commandless_execution_action_ids"] == ["inspect", "sync"]
+    assert docs_status["health"]["blocked_guided_execution_action_ids"] == ["sync"]
 
     source_control_status = next(
         item

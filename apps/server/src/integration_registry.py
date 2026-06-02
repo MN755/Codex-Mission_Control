@@ -3205,6 +3205,40 @@ def build_project_integration_status(
         available_execution_permission_policy_action_ids = _action_ids_by_key(available_execution_actions, "permission_policy")
         available_execution_risk_level_counts = _count_by_key(available_execution_actions, "risk_level")
         available_execution_risk_level_action_ids = _action_ids_by_key(available_execution_actions, "risk_level")
+        local_execution_action_count = sum(1 for item in execution_actions if item["execution_mode"] == "local_cli")
+        local_execution_action_ids = [
+            str(item["action_id"])
+            for item in execution_actions
+            if item["execution_mode"] == "local_cli"
+        ]
+        guided_execution_action_count = sum(1 for item in execution_actions if item["execution_mode"] == "guided_remote")
+        guided_execution_action_ids = [
+            str(item["action_id"])
+            for item in execution_actions
+            if item["execution_mode"] == "guided_remote"
+        ]
+        provider_specific_execution_action_count = sum(
+            1 for item in execution_actions if item["provider_support_mode"] == "provider_specific"
+        )
+        provider_specific_execution_action_ids = [
+            str(item["action_id"])
+            for item in execution_actions
+            if item["provider_support_mode"] == "provider_specific"
+        ]
+        guided_only_execution_action_count = sum(
+            1 for item in execution_actions if item["provider_support_mode"] == "guided_only"
+        )
+        guided_only_execution_action_ids = [
+            str(item["action_id"])
+            for item in execution_actions
+            if item["provider_support_mode"] == "guided_only"
+        ]
+        commandful_execution_action_count = sum(1 for item in execution_actions if item.get("command"))
+        commandful_execution_action_ids = [
+            str(item["action_id"])
+            for item in execution_actions
+            if item.get("command")
+        ]
         mutating_execution_action_count = sum(1 for item in execution_actions if item["mutates_remote_state"])
         mutating_execution_action_ids = [
             str(item["action_id"])
@@ -3247,6 +3281,46 @@ def build_project_integration_status(
             str(item["action_id"])
             for item in execution_actions
             if item["status"] != "available"
+        ]
+        blocked_local_execution_action_count = sum(
+            1
+            for item in execution_actions
+            if item["status"] != "available" and item["execution_mode"] == "local_cli"
+        )
+        blocked_local_execution_action_ids = [
+            str(item["action_id"])
+            for item in execution_actions
+            if item["status"] != "available" and item["execution_mode"] == "local_cli"
+        ]
+        blocked_guided_execution_action_count = sum(
+            1
+            for item in execution_actions
+            if item["status"] != "available" and item["execution_mode"] == "guided_remote"
+        )
+        blocked_guided_execution_action_ids = [
+            str(item["action_id"])
+            for item in execution_actions
+            if item["status"] != "available" and item["execution_mode"] == "guided_remote"
+        ]
+        blocked_provider_specific_execution_action_count = sum(
+            1
+            for item in execution_actions
+            if item["status"] != "available" and item["provider_support_mode"] == "provider_specific"
+        )
+        blocked_provider_specific_execution_action_ids = [
+            str(item["action_id"])
+            for item in execution_actions
+            if item["status"] != "available" and item["provider_support_mode"] == "provider_specific"
+        ]
+        blocked_guided_only_execution_action_count = sum(
+            1
+            for item in execution_actions
+            if item["status"] != "available" and item["provider_support_mode"] == "guided_only"
+        )
+        blocked_guided_only_execution_action_ids = [
+            str(item["action_id"])
+            for item in execution_actions
+            if item["status"] != "available" and item["provider_support_mode"] == "guided_only"
         ]
         multi_blocked_action_count = sum(1 for item in execution_actions if item.get("blocking_reason_count", 0) > 1)
         multi_blocked_action_ids = [
@@ -3528,6 +3602,16 @@ def build_project_integration_status(
                 "verification_blocked_local_action_ids": verification_blocked_local_action_ids,
                 "execution_action_count": execution_action_count,
                 "execution_action_ids": execution_action_ids,
+                "local_execution_action_count": local_execution_action_count,
+                "local_execution_action_ids": local_execution_action_ids,
+                "guided_execution_action_count": guided_execution_action_count,
+                "guided_execution_action_ids": guided_execution_action_ids,
+                "provider_specific_execution_action_count": provider_specific_execution_action_count,
+                "provider_specific_execution_action_ids": provider_specific_execution_action_ids,
+                "guided_only_execution_action_count": guided_only_execution_action_count,
+                "guided_only_execution_action_ids": guided_only_execution_action_ids,
+                "commandful_execution_action_count": commandful_execution_action_count,
+                "commandful_execution_action_ids": commandful_execution_action_ids,
                 "mutating_execution_action_count": mutating_execution_action_count,
                 "mutating_execution_action_ids": mutating_execution_action_ids,
                 "non_mutating_execution_action_count": non_mutating_execution_action_count,
@@ -3542,6 +3626,14 @@ def build_project_integration_status(
                 "provider_guidance_action_ids": provider_guidance_action_ids,
                 "blocked_execution_action_count": blocked_execution_action_count,
                 "blocked_execution_action_ids": blocked_execution_action_ids,
+                "blocked_local_execution_action_count": blocked_local_execution_action_count,
+                "blocked_local_execution_action_ids": blocked_local_execution_action_ids,
+                "blocked_guided_execution_action_count": blocked_guided_execution_action_count,
+                "blocked_guided_execution_action_ids": blocked_guided_execution_action_ids,
+                "blocked_provider_specific_execution_action_count": blocked_provider_specific_execution_action_count,
+                "blocked_provider_specific_execution_action_ids": blocked_provider_specific_execution_action_ids,
+                "blocked_guided_only_execution_action_count": blocked_guided_only_execution_action_count,
+                "blocked_guided_only_execution_action_ids": blocked_guided_only_execution_action_ids,
                 "multi_blocked_action_count": multi_blocked_action_count,
                 "multi_blocked_action_ids": multi_blocked_action_ids,
                 "preflight_ready_action_count": preflight_ready_action_count,
@@ -3643,6 +3735,16 @@ def build_project_integration_status(
                     "verification_blocked_local_action_ids": verification_blocked_local_action_ids,
                     "execution_action_count": execution_action_count,
                     "execution_action_ids": execution_action_ids,
+                    "local_execution_action_count": local_execution_action_count,
+                    "local_execution_action_ids": local_execution_action_ids,
+                    "guided_execution_action_count": guided_execution_action_count,
+                    "guided_execution_action_ids": guided_execution_action_ids,
+                    "provider_specific_execution_action_count": provider_specific_execution_action_count,
+                    "provider_specific_execution_action_ids": provider_specific_execution_action_ids,
+                    "guided_only_execution_action_count": guided_only_execution_action_count,
+                    "guided_only_execution_action_ids": guided_only_execution_action_ids,
+                    "commandful_execution_action_count": commandful_execution_action_count,
+                    "commandful_execution_action_ids": commandful_execution_action_ids,
                     "mutating_execution_action_count": mutating_execution_action_count,
                     "mutating_execution_action_ids": mutating_execution_action_ids,
                     "non_mutating_execution_action_count": non_mutating_execution_action_count,
@@ -3657,6 +3759,14 @@ def build_project_integration_status(
                     "provider_guidance_action_ids": provider_guidance_action_ids,
                     "blocked_execution_action_count": blocked_execution_action_count,
                     "blocked_execution_action_ids": blocked_execution_action_ids,
+                    "blocked_local_execution_action_count": blocked_local_execution_action_count,
+                    "blocked_local_execution_action_ids": blocked_local_execution_action_ids,
+                    "blocked_guided_execution_action_count": blocked_guided_execution_action_count,
+                    "blocked_guided_execution_action_ids": blocked_guided_execution_action_ids,
+                    "blocked_provider_specific_execution_action_count": blocked_provider_specific_execution_action_count,
+                    "blocked_provider_specific_execution_action_ids": blocked_provider_specific_execution_action_ids,
+                    "blocked_guided_only_execution_action_count": blocked_guided_only_execution_action_count,
+                    "blocked_guided_only_execution_action_ids": blocked_guided_only_execution_action_ids,
                     "multi_blocked_action_count": multi_blocked_action_count,
                     "multi_blocked_action_ids": multi_blocked_action_ids,
                     "preflight_ready_action_count": preflight_ready_action_count,

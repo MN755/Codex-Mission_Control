@@ -3311,8 +3311,26 @@ class ProjectIntegrationFamilyRead(BaseModel):
     context_available_execution_action_ids: list[str] = Field(default_factory=list)
     provider_guidance_action_count: int = 0
     provider_guidance_action_ids: list[str] = Field(default_factory=list)
+    local_execution_action_count: int = 0
+    local_execution_action_ids: list[str] = Field(default_factory=list)
+    guided_execution_action_count: int = 0
+    guided_execution_action_ids: list[str] = Field(default_factory=list)
+    provider_specific_execution_action_count: int = 0
+    provider_specific_execution_action_ids: list[str] = Field(default_factory=list)
+    guided_only_execution_action_count: int = 0
+    guided_only_execution_action_ids: list[str] = Field(default_factory=list)
+    commandful_execution_action_count: int = 0
+    commandful_execution_action_ids: list[str] = Field(default_factory=list)
     blocked_execution_action_count: int = 0
     blocked_execution_action_ids: list[str] = Field(default_factory=list)
+    blocked_local_execution_action_count: int = 0
+    blocked_local_execution_action_ids: list[str] = Field(default_factory=list)
+    blocked_guided_execution_action_count: int = 0
+    blocked_guided_execution_action_ids: list[str] = Field(default_factory=list)
+    blocked_provider_specific_execution_action_count: int = 0
+    blocked_provider_specific_execution_action_ids: list[str] = Field(default_factory=list)
+    blocked_guided_only_execution_action_count: int = 0
+    blocked_guided_only_execution_action_ids: list[str] = Field(default_factory=list)
     multi_blocked_action_count: int = 0
     multi_blocked_action_ids: list[str] = Field(default_factory=list)
     preflight_ready_action_count: int = 0
