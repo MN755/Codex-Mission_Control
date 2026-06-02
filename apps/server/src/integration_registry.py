@@ -64,6 +64,12 @@ PROVIDER_CLIS: dict[str, tuple[str, ...]] = {
     "doppler": ("doppler",),
     "vault": ("vault",),
     "stripe": ("stripe",),
+    "openapi": ("swagger-cli",),
+    "swagger": ("swagger-cli",),
+    "sourcegraph": ("src",),
+    "zoekt": ("zoekt-query",),
+    "firebase_auth": ("firebase",),
+    "supabase_auth": ("supabase",),
 }
 
 PROVIDER_WORKSPACE_MARKERS: dict[str, tuple[str, ...]] = {
@@ -152,6 +158,10 @@ PROVIDER_ACTION_REQUIRED_PARAMS: dict[tuple[str, str], tuple[str, ...]] = {
     ("docker_hub", "publish"): ("image",),
     ("github_releases", "create"): ("tag",),
     ("stripe", "create"): ("name",),
+    ("openapi", "inspect"): ("spec",),
+    ("openapi", "validate"): ("spec",),
+    ("swagger", "inspect"): ("spec",),
+    ("swagger", "validate"): ("spec",),
 }
 
 
@@ -491,7 +501,7 @@ FAMILIES: tuple[IntegrationFamilyDefinition, ...] = (
         host_tokens=("openapi", "swagger"),
         config_files=("openapi.yaml", "openapi.yml", "swagger.yaml", "swagger.yml", "openapi.json"),
         workspace_tokens=("openapi", "swagger"),
-        cli_candidates=(),
+        cli_candidates=("swagger-cli",),
         legacy_account_keys=(),
         actions=COMMON_ACTIONS + (
             _action("inspect", "Inspect spec", "Inspect OpenAPI/Swagger contract assets.", risk_level="low", permission_policy="ask_once_per_project"),
@@ -600,10 +610,10 @@ FAMILIES: tuple[IntegrationFamilyDefinition, ...] = (
         host_tokens=("sourcegraph", "opengrok", "zoekt"),
         config_files=(),
         workspace_tokens=("sourcegraph", "opengrok", "zoekt"),
-        cli_candidates=(),
+        cli_candidates=("src", "zoekt-query"),
         legacy_account_keys=(),
         actions=COMMON_ACTIONS + (
-            _action("search", "Search code", "Run a code-search query through the configured engine.", risk_level="low", permission_policy="ask_once_per_project"),
+            _action("search", "Search code", "Run a code-search query through the configured engine.", risk_level="low", permission_policy="ask_once_per_project", required_params=("query",)),
         ),
     ),
     IntegrationFamilyDefinition(
@@ -647,7 +657,7 @@ FAMILIES: tuple[IntegrationFamilyDefinition, ...] = (
         host_tokens=("auth0", "clerk", "workos", "okta", "firebase auth", "supabase auth"),
         config_files=(),
         workspace_tokens=("auth0", "clerk", "workos", "okta", "firebase auth", "supabase auth"),
-        cli_candidates=(),
+        cli_candidates=("firebase", "supabase"),
         legacy_account_keys=(),
         actions=COMMON_ACTIONS + (
             _action("inspect", "Inspect auth config", "Inspect provider auth config and runtime expectations.", risk_level="low", permission_policy="ask_once_per_project"),
@@ -1037,6 +1047,26 @@ def _provider_command_template(provider: str, action_id: str) -> str | None:
             "inspect": "stripe config --list",
             "create": "stripe customers create --name {name_q}",
         },
+        "openapi": {
+            "inspect": "swagger-cli validate {spec_q}",
+            "validate": "swagger-cli validate {spec_q}",
+        },
+        "swagger": {
+            "inspect": "swagger-cli validate {spec_q}",
+            "validate": "swagger-cli validate {spec_q}",
+        },
+        "sourcegraph": {
+            "search": "src search -json {query_q}",
+        },
+        "zoekt": {
+            "search": "zoekt-query {query_q}",
+        },
+        "firebase_auth": {
+            "inspect": "firebase apps:list --json",
+        },
+        "supabase_auth": {
+            "inspect": "supabase projects list",
+        },
     }
     return commands.get(provider, {}).get(action_id)
 
@@ -1403,6 +1433,14 @@ def _infer_cloudflare_pages_directory(root: Path | None, relative_files: list[st
     return None
 
 
+def _infer_openapi_spec_path(relative_files: list[str]) -> str | None:
+    for candidate in ("openapi.yaml", "openapi.yml", "openapi.json", "swagger.yaml", "swagger.yml"):
+        for relative in relative_files:
+            if relative == candidate or relative.endswith("/" + candidate):
+                return relative
+    return None
+
+
 def _provider_default_params(
     *,
     provider: str | None,
@@ -1414,6 +1452,10 @@ def _provider_default_params(
         directory = _infer_cloudflare_pages_directory(root, relative_files)
         if directory:
             return {"directory": directory}
+    if provider in {"openapi", "swagger"} and action_id in {"inspect", "validate"}:
+        spec = _infer_openapi_spec_path(relative_files)
+        if spec:
+            return {"spec": spec}
     return {}
 
 

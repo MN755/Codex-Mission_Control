@@ -1346,6 +1346,173 @@ def test_provider_specific_preview_supports_stripe_create_lane(monkeypatch) -> N
     assert complete_preview["command"] == 'stripe customers create --name "Mission Control Test Customer"'
 
 
+def test_provider_specific_preview_supports_openapi_spec_lane(monkeypatch, tmp_path) -> None:
+    workspace = tmp_path / "openapi-repo"
+    workspace.mkdir(parents=True, exist_ok=True)
+    (workspace / "openapi.yaml").write_text("openapi: 3.1.0\ninfo:\n  title: Demo\n  version: 1.0.0\n", encoding="utf-8")
+
+    monkeypatch.setattr(
+        "integration_registry.shutil.which",
+        lambda command: f"C:/tools/{command}.exe" if command == "swagger-cli" else None,
+    )
+
+    inspect_preview = preview_integration_action(
+        family_id="openapi",
+        action_id="inspect",
+        params={},
+        registry_payload=normalize_integration_registry({}, {}),
+        workspace_path=str(workspace),
+        project_name="OpenAPI Demo",
+    )
+    validate_preview = preview_integration_action(
+        family_id="openapi",
+        action_id="validate",
+        params={},
+        registry_payload=normalize_integration_registry({}, {}),
+        workspace_path=str(workspace),
+        project_name="OpenAPI Demo",
+    )
+
+    assert inspect_preview["provider"] == "openapi"
+    assert inspect_preview["defaulted_params"] == {"spec": "openapi.yaml"}
+    assert inspect_preview["command"] == 'swagger-cli validate "openapi.yaml"'
+    assert validate_preview["provider"] == "openapi"
+    assert validate_preview["command"] == 'swagger-cli validate "openapi.yaml"'
+
+
+def test_provider_specific_preview_supports_sourcegraph_query_lane(monkeypatch) -> None:
+    registry = normalize_integration_registry(
+        {
+            "connections": {
+                "code_search": {
+                    "family": "code_search",
+                    "status": "connected",
+                    "providers": ["sourcegraph"],
+                    "connection_source": "mission_control",
+                    "host_imported": False,
+                }
+            }
+        },
+        {},
+    )
+
+    monkeypatch.setattr(
+        "integration_registry.shutil.which",
+        lambda command: f"C:/tools/{command}.exe" if command == "src" else None,
+    )
+
+    missing_preview = preview_integration_action(
+        family_id="code_search",
+        action_id="search",
+        params={},
+        registry_payload=registry,
+        workspace_path=None,
+        project_name="Sourcegraph Demo",
+    )
+    complete_preview = preview_integration_action(
+        family_id="code_search",
+        action_id="search",
+        params={"query": "repo:mission-control integration"},
+        registry_payload=registry,
+        workspace_path=None,
+        project_name="Sourcegraph Demo",
+    )
+
+    assert missing_preview["provider"] == "sourcegraph"
+    assert missing_preview["missing_params"] == ["query"]
+    assert missing_preview["command"] == "src search -json {query_q}"
+    assert complete_preview["command"] == 'src search -json "repo:mission-control integration"'
+
+
+def test_provider_specific_preview_supports_zoekt_query_lane(monkeypatch) -> None:
+    registry = normalize_integration_registry(
+        {
+            "connections": {
+                "code_search": {
+                    "family": "code_search",
+                    "status": "connected",
+                    "providers": ["zoekt"],
+                    "connection_source": "mission_control",
+                    "host_imported": False,
+                }
+            }
+        },
+        {},
+    )
+
+    monkeypatch.setattr(
+        "integration_registry.shutil.which",
+        lambda command: f"C:/tools/{command}.exe" if command == "zoekt-query" else None,
+    )
+
+    preview = preview_integration_action(
+        family_id="code_search",
+        action_id="search",
+        params={"query": "symbol:ManagerService"},
+        registry_payload=registry,
+        workspace_path=None,
+        project_name="Zoekt Demo",
+    )
+
+    assert preview["provider"] == "zoekt"
+    assert preview["command"] == 'zoekt-query "symbol:ManagerService"'
+
+
+def test_provider_specific_preview_supports_supabase_and_firebase_auth_lanes(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "integration_registry.shutil.which",
+        lambda command: f"C:/tools/{command}.exe" if command in {"supabase", "firebase"} else None,
+    )
+
+    supabase_preview = preview_integration_action(
+        family_id="auth_providers",
+        action_id="inspect",
+        params={},
+        registry_payload=normalize_integration_registry(
+            {
+                "connections": {
+                    "auth_providers": {
+                        "family": "auth_providers",
+                        "status": "connected",
+                        "providers": ["supabase_auth"],
+                        "connection_source": "mission_control",
+                        "host_imported": False,
+                    }
+                }
+            },
+            {},
+        ),
+        workspace_path=None,
+        project_name="Supabase Auth Demo",
+    )
+    firebase_preview = preview_integration_action(
+        family_id="auth_providers",
+        action_id="inspect",
+        params={},
+        registry_payload=normalize_integration_registry(
+            {
+                "connections": {
+                    "auth_providers": {
+                        "family": "auth_providers",
+                        "status": "connected",
+                        "providers": ["firebase_auth"],
+                        "connection_source": "mission_control",
+                        "host_imported": False,
+                    }
+                }
+            },
+            {},
+        ),
+        workspace_path=None,
+        project_name="Firebase Auth Demo",
+    )
+
+    assert supabase_preview["provider"] == "supabase_auth"
+    assert supabase_preview["command"] == "supabase projects list"
+    assert firebase_preview["provider"] == "firebase_auth"
+    assert firebase_preview["command"] == "firebase apps:list --json"
+
+
 def test_project_integrations_surface_provider_specific_required_params_and_host_import_artifacts(monkeypatch, tmp_path) -> None:
     workspace = tmp_path / "integration-status-details"
     (workspace / ".jira").mkdir(parents=True, exist_ok=True)
