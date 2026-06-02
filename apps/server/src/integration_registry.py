@@ -64,10 +64,13 @@ PROVIDER_CLIS: dict[str, tuple[str, ...]] = {
     "doppler": ("doppler",),
     "vault": ("vault",),
     "stripe": ("stripe",),
+    "postman": ("newman",),
+    "insomnia": ("inso",),
     "openapi": ("swagger-cli",),
     "swagger": ("swagger-cli",),
     "sourcegraph": ("src",),
     "zoekt": ("zoekt-query",),
+    "auth0": ("auth0",),
     "firebase_auth": ("firebase",),
     "supabase_auth": ("supabase",),
 }
@@ -91,6 +94,10 @@ PROVIDER_WORKSPACE_MARKERS: dict[str, tuple[str, ...]] = {
     "cloudflare_pages": ("wrangler.toml",),
     "railway": ("railway.json",),
     "render": ("render.yaml",),
+    "postman": ("postman.json", ".postman.json", "postman_collection.json", ".postman_collection.json"),
+    "insomnia": (".insomnia", "insomnia.json", ".insomnia.json"),
+    "bruno": ("bruno.json",),
+    "auth0": (".auth0", "auth0.json", ".auth0.json"),
     "opentofu": ("tofu.hcl",),
     "docusaurus": ("docusaurus.config.js", "docusaurus.config.ts", "docusaurus.config.mjs"),
     "playwright": ("playwright.config.ts", "playwright.config.js"),
@@ -117,6 +124,10 @@ PROVIDER_TOKEN_MARKERS: dict[str, tuple[str, ...]] = {
     "cloudflare_pages": ("cloudflare pages", "wrangler",),
     "railway": ("railway",),
     "render": ("render",),
+    "postman": ("postman", "newman"),
+    "insomnia": ("insomnia", "inso"),
+    "bruno": ("bruno", "bru"),
+    "auth0": ("auth0",),
     "opentofu": ("opentofu", "tofu",),
     "docusaurus": ("docusaurus",),
     "playwright": ("playwright",),
@@ -158,6 +169,8 @@ PROVIDER_ACTION_REQUIRED_PARAMS: dict[tuple[str, str], tuple[str, ...]] = {
     ("docker_hub", "publish"): ("image",),
     ("github_releases", "create"): ("tag",),
     ("stripe", "create"): ("name",),
+    ("postman", "validate"): ("collection",),
+    ("insomnia", "validate"): ("collection",),
     ("openapi", "inspect"): ("spec",),
     ("openapi", "validate"): ("spec",),
     ("swagger", "inspect"): ("spec",),
@@ -483,9 +496,9 @@ FAMILIES: tuple[IntegrationFamilyDefinition, ...] = (
         category="api",
         providers=("postman", "insomnia", "bruno"),
         host_tokens=("postman", "insomnia", "bruno"),
-        config_files=("postman", "insomnia", "bruno"),
+        config_files=("postman.json", ".postman.json", "postman_collection.json", ".postman_collection.json", ".insomnia", "insomnia.json", ".insomnia.json", "bruno.json"),
         workspace_tokens=("postman", "insomnia", "bruno"),
-        cli_candidates=("bru",),
+        cli_candidates=("newman", "inso", "bru"),
         legacy_account_keys=(),
         actions=COMMON_ACTIONS + (
             _action("inspect", "Inspect collections", "Inspect API collection assets and runtime support.", risk_level="low", permission_policy="ask_once_per_project"),
@@ -655,9 +668,9 @@ FAMILIES: tuple[IntegrationFamilyDefinition, ...] = (
         category="product",
         providers=("auth0", "clerk", "workos", "okta", "firebase_auth", "supabase_auth"),
         host_tokens=("auth0", "clerk", "workos", "okta", "firebase auth", "supabase auth"),
-        config_files=(),
+        config_files=(".auth0", "auth0.json", ".auth0.json", "firebase.json", "supabase/config.toml"),
         workspace_tokens=("auth0", "clerk", "workos", "okta", "firebase auth", "supabase auth"),
-        cli_candidates=("firebase", "supabase"),
+        cli_candidates=("auth0", "firebase", "supabase"),
         legacy_account_keys=(),
         actions=COMMON_ACTIONS + (
             _action("inspect", "Inspect auth config", "Inspect provider auth config and runtime expectations.", risk_level="low", permission_policy="ask_once_per_project"),
@@ -957,6 +970,14 @@ def _provider_command_template(provider: str, action_id: str) -> str | None:
             "tail_logs": "render logs --resources {resource_id_q} --limit 200 --output json",
             "deploy": "render deploys create {service_id_q} --wait",
         },
+        "postman": {
+            "inspect": "newman --version",
+            "validate": "newman run {collection_q}",
+        },
+        "insomnia": {
+            "inspect": "inso --version",
+            "validate": "inso run test {collection_q}",
+        },
         "opentofu": {
             "validate": "tofu validate",
             "deploy": "tofu apply -auto-approve",
@@ -1061,6 +1082,9 @@ def _provider_command_template(provider: str, action_id: str) -> str | None:
         "zoekt": {
             "search": "zoekt-query {query_q}",
         },
+        "auth0": {
+            "inspect": "auth0 apps list --json",
+        },
         "firebase_auth": {
             "inspect": "firebase apps:list --json",
         },
@@ -1083,6 +1107,23 @@ def _provider_hints_for_paths(family: IntegrationFamilyDefinition, matched_paths
         if any(token and token in path for path in lowered_paths for token in provider_tokens):
             hints.append(provider)
     return _dedupe_strs(hints or [provider for provider in family.providers if provider])
+
+
+def _path_matches_marker(path: str, marker: str) -> bool:
+    lowered_path = str(path or "").lower()
+    lowered_marker = str(marker or "").lower().rstrip("/")
+    if not lowered_path or not lowered_marker:
+        return False
+    if (
+        lowered_path == lowered_marker
+        or lowered_path.endswith("/" + lowered_marker)
+        or lowered_path.startswith(lowered_marker + "/")
+        or Path(lowered_path).name == lowered_marker
+    ):
+        return True
+    if "." in lowered_marker and Path(lowered_path).name.endswith(lowered_marker):
+        return True
+    return False
 
 
 def _host_import_entries_for_family(registry: dict[str, Any], family_id: str) -> list[dict[str, Any]]:
@@ -1140,13 +1181,7 @@ def _provider_candidates_for_family(
     installed_cli_set = {item.lower() for item in installed_clis}
     for provider in family.providers:
         markers = PROVIDER_WORKSPACE_MARKERS.get(provider, ())
-        if any(
-            file_path == marker.lower()
-            or file_path.endswith("/" + marker.lower())
-            or file_path.startswith(marker.lower().rstrip("/") + "/")
-            for file_path in lowered_files
-            for marker in markers
-        ):
+        if any(_path_matches_marker(file_path, marker) for file_path in lowered_files for marker in markers):
             scores[provider] = scores.get(provider, 0) + 60
         tokens = PROVIDER_TOKEN_MARKERS.get(provider, ())
         if any(token in hit for hit in lowered_hits for token in tokens):
@@ -1441,6 +1476,27 @@ def _infer_openapi_spec_path(relative_files: list[str]) -> str | None:
     return None
 
 
+def _infer_api_client_collection_path(*, provider: str | None, relative_files: list[str]) -> str | None:
+    if provider == "postman":
+        for relative in relative_files:
+            name = Path(relative).name.lower()
+            if name in {"postman_collection.json", ".postman_collection.json"} or name.endswith(".postman_collection.json"):
+                return relative
+        for relative in relative_files:
+            name = Path(relative).name.lower()
+            if name in {"postman.json", ".postman.json"}:
+                return relative
+    if provider == "insomnia":
+        for relative in relative_files:
+            name = Path(relative).name.lower()
+            if name in {"insomnia.json", ".insomnia.json"}:
+                return relative
+        for relative in relative_files:
+            if relative.lower().startswith(".insomnia/") and relative.lower().endswith(".json"):
+                return relative
+    return None
+
+
 def _provider_default_params(
     *,
     provider: str | None,
@@ -1452,6 +1508,10 @@ def _provider_default_params(
         directory = _infer_cloudflare_pages_directory(root, relative_files)
         if directory:
             return {"directory": directory}
+    if provider in {"postman", "insomnia"} and action_id == "validate":
+        collection = _infer_api_client_collection_path(provider=provider, relative_files=relative_files)
+        if collection:
+            return {"collection": collection}
     if provider in {"openapi", "swagger"} and action_id in {"inspect", "validate"}:
         spec = _infer_openapi_spec_path(relative_files)
         if spec:
@@ -1498,13 +1558,7 @@ def build_project_integration_status(
         detected_files = [
             path
             for path in relative_files
-            if any(
-                path == item
-                or path.endswith("/" + item)
-                or path.startswith(item.rstrip("/") + "/")
-                or Path(path).name == item
-                for item in family.config_files
-            )
+            if any(_path_matches_marker(path, item) for item in family.config_files)
         ]
         token_hits = [token for token in family.workspace_tokens if token and token.lower() in haystack]
         installed_clis = [cli for cli in family.cli_candidates if shutil.which(cli)]
@@ -1758,13 +1812,7 @@ def preview_integration_action(
     detected_files = [
         path
         for path in relative_files
-        if any(
-            path == item
-            or path.endswith("/" + item)
-            or path.startswith(item.rstrip("/") + "/")
-            or Path(path).name == item
-            for item in family.config_files
-        )
+        if any(_path_matches_marker(path, item) for item in family.config_files)
     ]
     token_hits = [token for token in family.workspace_tokens if token and token.lower() in haystack]
     installed_clis = [cli for cli in family.cli_candidates if shutil.which(cli)]

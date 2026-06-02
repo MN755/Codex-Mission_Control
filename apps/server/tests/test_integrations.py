@@ -1167,6 +1167,136 @@ def test_provider_specific_preview_supports_bruno_collection_lane(monkeypatch, t
     assert validate_preview["command"] == "bru run"
 
 
+def test_provider_specific_preview_supports_postman_collection_lane(monkeypatch, tmp_path) -> None:
+    workspace = tmp_path / "postman-repo"
+    workspace.mkdir(parents=True, exist_ok=True)
+    (workspace / "orders.postman_collection.json").write_text('{"info":{"name":"orders"}}\n', encoding="utf-8")
+
+    monkeypatch.setattr(
+        "integration_registry.shutil.which",
+        lambda command: f"C:/tools/{command}.exe" if command == "newman" else None,
+    )
+
+    inspect_preview = preview_integration_action(
+        family_id="api_clients",
+        action_id="inspect",
+        params={},
+        registry_payload=normalize_integration_registry({}, {}),
+        workspace_path=str(workspace),
+        project_name="Postman Demo",
+    )
+    validate_preview = preview_integration_action(
+        family_id="api_clients",
+        action_id="validate",
+        params={},
+        registry_payload=normalize_integration_registry({}, {}),
+        workspace_path=str(workspace),
+        project_name="Postman Demo",
+    )
+
+    assert inspect_preview["provider"] == "postman"
+    assert inspect_preview["command"] == "newman --version"
+    assert validate_preview["provider"] == "postman"
+    assert validate_preview["command"] == 'newman run "orders.postman_collection.json"'
+    assert validate_preview["defaulted_params"] == {"collection": "orders.postman_collection.json"}
+    assert validate_preview["command_ready"] is True
+
+
+def test_provider_specific_preview_supports_insomnia_collection_lane(monkeypatch, tmp_path) -> None:
+    workspace = tmp_path / "insomnia-repo"
+    workspace.mkdir(parents=True, exist_ok=True)
+    (workspace / "insomnia.json").write_text('{"resources":[]}\n', encoding="utf-8")
+
+    monkeypatch.setattr(
+        "integration_registry.shutil.which",
+        lambda command: f"C:/tools/{command}.exe" if command == "inso" else None,
+    )
+
+    inspect_preview = preview_integration_action(
+        family_id="api_clients",
+        action_id="inspect",
+        params={},
+        registry_payload=normalize_integration_registry({}, {}),
+        workspace_path=str(workspace),
+        project_name="Insomnia Demo",
+    )
+    validate_preview = preview_integration_action(
+        family_id="api_clients",
+        action_id="validate",
+        params={},
+        registry_payload=normalize_integration_registry({}, {}),
+        workspace_path=str(workspace),
+        project_name="Insomnia Demo",
+    )
+
+    assert inspect_preview["provider"] == "insomnia"
+    assert inspect_preview["command"] == "inso --version"
+    assert validate_preview["provider"] == "insomnia"
+    assert validate_preview["command"] == 'inso run test "insomnia.json"'
+    assert validate_preview["defaulted_params"] == {"collection": "insomnia.json"}
+    assert validate_preview["command_ready"] is True
+
+
+def test_provider_specific_preview_supports_auth0_inspect_lane(monkeypatch) -> None:
+    registry = normalize_integration_registry(
+        {
+            "connections": {
+                "auth_providers": {
+                    "family": "auth_providers",
+                    "status": "connected",
+                    "providers": ["auth0"],
+                    "connection_source": "mission_control",
+                    "host_imported": False,
+                }
+            }
+        },
+        {},
+    )
+
+    monkeypatch.setattr(
+        "integration_registry.shutil.which",
+        lambda command: f"C:/tools/{command}.exe" if command == "auth0" else None,
+    )
+
+    preview = preview_integration_action(
+        family_id="auth_providers",
+        action_id="inspect",
+        params={},
+        registry_payload=registry,
+        workspace_path=None,
+        project_name="Auth0 Demo",
+    )
+
+    assert preview["provider"] == "auth0"
+    assert preview["command"] == "auth0 apps list --json"
+    assert preview["command_ready"] is True
+
+
+def test_project_integrations_detect_auth0_from_workspace_and_cli(monkeypatch, tmp_path) -> None:
+    workspace = tmp_path / "auth0-repo"
+    workspace.mkdir(parents=True, exist_ok=True)
+    (workspace / "auth0.json").write_text('{"AUTH0_DOMAIN":"demo"}\n', encoding="utf-8")
+
+    monkeypatch.setattr(
+        "integration_registry.shutil.which",
+        lambda command: f"C:/tools/{command}.exe" if command == "auth0" else None,
+    )
+
+    status = {
+        item["family"]: item
+        for item in build_project_integration_status(
+            workspace_path=str(workspace),
+            project_name="Auth0 Workspace Demo",
+            registry_payload=normalize_integration_registry({}, {}),
+        )
+    }["auth_providers"]
+
+    assert status["resolved_provider"] == "auth0"
+    assert status["status"] == "ready"
+    assert status["resolved_cli_candidates"] == ["auth0"]
+    assert status["local_action_count"] >= 1
+
+
 def test_provider_specific_preview_supports_semgrep_scan_lane(monkeypatch, tmp_path) -> None:
     workspace = tmp_path / "semgrep-repo"
     (workspace / ".semgrep").mkdir(parents=True, exist_ok=True)
