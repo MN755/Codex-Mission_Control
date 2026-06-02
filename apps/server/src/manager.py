@@ -14066,16 +14066,59 @@ class MissionControlService:
             registry_payload=registry,
         )
         family_count = len(families)
+
+        def _group_scalar_family_ids(key: str, *, fallback: str | None = None) -> dict[str, list[str]]:
+            grouped: dict[str, list[str]] = {}
+            for item in families:
+                family_id = str(item.get("family") or "")
+                raw_value = item.get(key)
+                if raw_value in (None, ""):
+                    if fallback is None:
+                        continue
+                    group_key = fallback
+                else:
+                    group_key = str(raw_value)
+                grouped.setdefault(group_key, []).append(family_id)
+            return grouped
+
+        def _group_list_family_ids(key: str) -> dict[str, list[str]]:
+            grouped: dict[str, list[str]] = {}
+            for item in families:
+                family_id = str(item.get("family") or "")
+                seen: set[str] = set()
+                for raw_value in item.get(key) or []:
+                    if raw_value in (None, ""):
+                        continue
+                    group_key = str(raw_value)
+                    if group_key in seen:
+                        continue
+                    seen.add(group_key)
+                    grouped.setdefault(group_key, []).append(family_id)
+            return grouped
+
         family_ids = [str(item.get("family") or "") for item in families]
-        family_ids_by_status = {
-            status_name: [str(item.get("family") or "") for item in families if str(item.get("status") or "unknown") == status_name]
-            for status_name in sorted({str(item.get("status") or "unknown") for item in families})
-        }
+        family_ids_by_status = _group_scalar_family_ids("status", fallback="unknown")
         status_counts = {
             name: count
             for name, count in Counter(str(item.get("status") or "unknown") for item in families).items()
             if count > 0
         }
+        status_group_count = len(status_counts)
+        connection_status_family_ids = _group_scalar_family_ids("connection_status")
+        connection_status_counts = {name: len(ids) for name, ids in connection_status_family_ids.items()}
+        connection_status_group_count = len(connection_status_counts)
+        provider_resolution_state_family_ids = _group_scalar_family_ids("provider_resolution_state")
+        provider_resolution_state_counts = {name: len(ids) for name, ids in provider_resolution_state_family_ids.items()}
+        provider_resolution_state_group_count = len(provider_resolution_state_counts)
+        provider_context_status_family_ids = _group_scalar_family_ids("provider_context_status")
+        provider_context_status_counts = {name: len(ids) for name, ids in provider_context_status_family_ids.items()}
+        provider_context_status_group_count = len(provider_context_status_counts)
+        signal_source_family_ids = _group_list_family_ids("signal_sources")
+        signal_source_counts = {name: len(ids) for name, ids in signal_source_family_ids.items()}
+        signal_source_group_count = len(signal_source_counts)
+        provider_family_ids = _group_list_family_ids("providers")
+        provider_counts = {name: len(ids) for name, ids in provider_family_ids.items()}
+        provider_group_count = len(provider_counts)
         ready_family_ids = [str(item.get("family") or "") for item in families if item.get("status") == "ready"]
         partial_family_ids = [str(item.get("family") or "") for item in families if item.get("status") == "partial"]
         needs_setup_family_ids = [str(item.get("family") or "") for item in families if item.get("status") == "needs_setup"]
@@ -14125,6 +14168,22 @@ class MissionControlService:
             "family_ids": family_ids,
             "status_counts": status_counts,
             "status_family_ids": family_ids_by_status,
+            "status_group_count": status_group_count,
+            "connection_status_counts": connection_status_counts,
+            "connection_status_family_ids": connection_status_family_ids,
+            "connection_status_group_count": connection_status_group_count,
+            "provider_resolution_state_counts": provider_resolution_state_counts,
+            "provider_resolution_state_family_ids": provider_resolution_state_family_ids,
+            "provider_resolution_state_group_count": provider_resolution_state_group_count,
+            "provider_context_status_counts": provider_context_status_counts,
+            "provider_context_status_family_ids": provider_context_status_family_ids,
+            "provider_context_status_group_count": provider_context_status_group_count,
+            "signal_source_counts": signal_source_counts,
+            "signal_source_family_ids": signal_source_family_ids,
+            "signal_source_group_count": signal_source_group_count,
+            "provider_counts": provider_counts,
+            "provider_family_ids": provider_family_ids,
+            "provider_group_count": provider_group_count,
             "ready_family_count": ready_count,
             "ready_family_ids": ready_family_ids,
             "partial_family_count": partial_count,

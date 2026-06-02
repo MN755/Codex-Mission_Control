@@ -3523,6 +3523,22 @@ class ProjectIntegrationsRead(BaseModel):
     family_ids: list[str] = Field(default_factory=list)
     status_counts: dict[str, int] = Field(default_factory=dict)
     status_family_ids: dict[str, list[str]] = Field(default_factory=dict)
+    status_group_count: int = 0
+    connection_status_counts: dict[str, int] = Field(default_factory=dict)
+    connection_status_family_ids: dict[str, list[str]] = Field(default_factory=dict)
+    connection_status_group_count: int = 0
+    provider_resolution_state_counts: dict[str, int] = Field(default_factory=dict)
+    provider_resolution_state_family_ids: dict[str, list[str]] = Field(default_factory=dict)
+    provider_resolution_state_group_count: int = 0
+    provider_context_status_counts: dict[str, int] = Field(default_factory=dict)
+    provider_context_status_family_ids: dict[str, list[str]] = Field(default_factory=dict)
+    provider_context_status_group_count: int = 0
+    signal_source_counts: dict[str, int] = Field(default_factory=dict)
+    signal_source_family_ids: dict[str, list[str]] = Field(default_factory=dict)
+    signal_source_group_count: int = 0
+    provider_counts: dict[str, int] = Field(default_factory=dict)
+    provider_family_ids: dict[str, list[str]] = Field(default_factory=dict)
+    provider_group_count: int = 0
     ready_family_count: int = 0
     ready_family_ids: list[str] = Field(default_factory=list)
     partial_family_count: int = 0

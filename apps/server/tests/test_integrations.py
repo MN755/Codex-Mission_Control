@@ -94,14 +94,60 @@ def test_project_integrations_and_action_preview_flow(client, bridge_headers, mo
     assert project_integrations_payload["needs_setup_family_count"] == sum(1 for item in family_list if item["status"] == "needs_setup")
     expected_status_counts = {}
     expected_status_family_ids = {}
+    expected_connection_status_counts = {}
+    expected_connection_status_family_ids = {}
+    expected_provider_resolution_state_counts = {}
+    expected_provider_resolution_state_family_ids = {}
+    expected_provider_context_status_counts = {}
+    expected_provider_context_status_family_ids = {}
     for status_name in ("ready", "partial", "needs_setup"):
         count = sum(1 for item in family_list if item["status"] == status_name)
         family_ids = [item["family"] for item in family_list if item["status"] == status_name]
         if count:
             expected_status_counts[status_name] = count
             expected_status_family_ids[status_name] = family_ids
+    for connection_status in sorted({item["connection_status"] for item in family_list}):
+        family_ids = [item["family"] for item in family_list if item["connection_status"] == connection_status]
+        expected_connection_status_counts[connection_status] = len(family_ids)
+        expected_connection_status_family_ids[connection_status] = family_ids
+    for resolution_state in sorted({item["provider_resolution_state"] for item in family_list}):
+        family_ids = [item["family"] for item in family_list if item["provider_resolution_state"] == resolution_state]
+        expected_provider_resolution_state_counts[resolution_state] = len(family_ids)
+        expected_provider_resolution_state_family_ids[resolution_state] = family_ids
+    for context_status in sorted({item["provider_context_status"] for item in family_list}):
+        family_ids = [item["family"] for item in family_list if item["provider_context_status"] == context_status]
+        expected_provider_context_status_counts[context_status] = len(family_ids)
+        expected_provider_context_status_family_ids[context_status] = family_ids
+    expected_signal_source_counts = {}
+    expected_signal_source_family_ids = {}
+    for signal_source in sorted({source for item in family_list for source in item["signal_sources"]}):
+        family_ids = [item["family"] for item in family_list if signal_source in item["signal_sources"]]
+        expected_signal_source_counts[signal_source] = len(family_ids)
+        expected_signal_source_family_ids[signal_source] = family_ids
+    expected_provider_counts = {}
+    expected_provider_family_ids = {}
+    for provider_name in sorted({provider for item in family_list for provider in item["providers"]}):
+        family_ids = [item["family"] for item in family_list if provider_name in item["providers"]]
+        expected_provider_counts[provider_name] = len(family_ids)
+        expected_provider_family_ids[provider_name] = family_ids
     assert project_integrations_payload["status_counts"] == expected_status_counts
     assert project_integrations_payload["status_family_ids"] == expected_status_family_ids
+    assert project_integrations_payload["status_group_count"] == len(expected_status_counts)
+    assert project_integrations_payload["connection_status_counts"] == expected_connection_status_counts
+    assert project_integrations_payload["connection_status_family_ids"] == expected_connection_status_family_ids
+    assert project_integrations_payload["connection_status_group_count"] == len(expected_connection_status_counts)
+    assert project_integrations_payload["provider_resolution_state_counts"] == expected_provider_resolution_state_counts
+    assert project_integrations_payload["provider_resolution_state_family_ids"] == expected_provider_resolution_state_family_ids
+    assert project_integrations_payload["provider_resolution_state_group_count"] == len(expected_provider_resolution_state_counts)
+    assert project_integrations_payload["provider_context_status_counts"] == expected_provider_context_status_counts
+    assert project_integrations_payload["provider_context_status_family_ids"] == expected_provider_context_status_family_ids
+    assert project_integrations_payload["provider_context_status_group_count"] == len(expected_provider_context_status_counts)
+    assert project_integrations_payload["signal_source_counts"] == expected_signal_source_counts
+    assert project_integrations_payload["signal_source_family_ids"] == expected_signal_source_family_ids
+    assert project_integrations_payload["signal_source_group_count"] == len(expected_signal_source_counts)
+    assert project_integrations_payload["provider_counts"] == expected_provider_counts
+    assert project_integrations_payload["provider_family_ids"] == expected_provider_family_ids
+    assert project_integrations_payload["provider_group_count"] == len(expected_provider_counts)
     assert project_integrations_payload["ready_family_ids"] == [item["family"] for item in family_list if item["status"] == "ready"]
     assert project_integrations_payload["partial_family_ids"] == [item["family"] for item in family_list if item["status"] == "partial"]
     assert project_integrations_payload["needs_setup_family_ids"] == [item["family"] for item in family_list if item["status"] == "needs_setup"]
