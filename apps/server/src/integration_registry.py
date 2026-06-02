@@ -106,6 +106,7 @@ PROVIDER_CLIS: dict[str, tuple[str, ...]] = {
     "cypress": ("cypress",),
     "gitleaks": ("gitleaks",),
     "ollama": ("ollama",),
+    "vllm": ("vllm",),
 }
 
 PROVIDER_WORKSPACE_MARKERS: dict[str, tuple[str, ...]] = {
@@ -153,6 +154,12 @@ PROVIDER_WORKSPACE_MARKERS: dict[str, tuple[str, ...]] = {
     "playwright": ("playwright.config.ts", "playwright.config.js"),
     "cypress": ("cypress.config.ts", "cypress.config.js"),
     "gitleaks": (".gitleaks.toml",),
+    "semgrep": (".semgrep",),
+    "codeql": (".github/codeql",),
+    "openapi": ("openapi.yaml", "openapi.yml", "openapi.json"),
+    "swagger": ("swagger.yaml", "swagger.yml"),
+    "firebase_auth": ("firebase.json",),
+    "supabase_auth": ("supabase/config.toml",),
     "changesets": (".changeset",),
     "release_please": (".release-please-manifest.json", "release-please-config.json"),
     "semantic_release": (".releaserc", ".releaserc.json", ".releaserc.yml", ".releaserc.yaml", "release.config.js", "release.config.cjs"),
@@ -240,12 +247,22 @@ PROVIDER_TOKEN_MARKERS: dict[str, tuple[str, ...]] = {
     "azure": ("azure",),
     "gcp": ("gcp", "google cloud", "gcloud"),
     "mintlify": ("mintlify",),
+    "doppler": ("doppler",),
+    "vault": ("vault",),
     "opentofu": ("opentofu", "tofu",),
     "docusaurus": ("docusaurus",),
     "playwright": ("playwright",),
     "cypress": ("cypress",),
     "gitleaks": ("gitleaks",),
     "ollama": ("ollama",),
+    "vllm": ("vllm",),
+    "openapi": ("openapi",),
+    "swagger": ("swagger",),
+    "sourcegraph": ("sourcegraph",),
+    "zoekt": ("zoekt",),
+    "stripe": ("stripe",),
+    "firebase_auth": ("firebase auth",),
+    "supabase_auth": ("supabase auth",),
     "changesets": ("changesets", ".changeset",),
     "launchnotes": ("launchnotes", "launch notes"),
     "dependabot": ("dependabot", "dependabot alerts"),
@@ -2017,7 +2034,7 @@ def _relative_files(root: Path) -> list[str]:
             continue
         if any(
             part.startswith(".")
-            and part not in {".github", ".storybook", ".devcontainer", ".linear", ".jira", ".circleci", ".buildkite", ".changeset"}
+            and part not in {".github", ".storybook", ".devcontainer", ".linear", ".jira", ".circleci", ".buildkite", ".changeset", ".semgrep", ".insomnia", ".auth0"}
             for part in rel.parts[:-1]
         ):
             continue

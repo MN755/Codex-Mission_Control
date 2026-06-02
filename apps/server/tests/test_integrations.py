@@ -3535,3 +3535,250 @@ def test_project_integrations_detect_ollama_provider_and_preview_open_lane(monke
     assert preview["provider"] == "ollama"
     assert preview["command"] == "ollama serve"
     assert preview["command_ready"] is True
+
+
+def test_workspace_config_detection_resolves_semgrep_codeql_openapi_and_auth_providers_without_cli(tmp_path) -> None:
+    semgrep_workspace = tmp_path / "semgrep-config-repo"
+    (semgrep_workspace / ".semgrep").mkdir(parents=True, exist_ok=True)
+    (semgrep_workspace / ".semgrep" / "rules.yml").write_text("rules: []\n", encoding="utf-8")
+
+    codeql_workspace = tmp_path / "codeql-config-repo"
+    (codeql_workspace / ".github" / "codeql").mkdir(parents=True, exist_ok=True)
+    (codeql_workspace / ".github" / "codeql" / "config.yml").write_text("name: codeql\n", encoding="utf-8")
+
+    openapi_workspace = tmp_path / "openapi-config-repo"
+    openapi_workspace.mkdir(parents=True, exist_ok=True)
+    (openapi_workspace / "openapi.yaml").write_text("openapi: 3.1.0\n", encoding="utf-8")
+
+    swagger_workspace = tmp_path / "swagger-config-repo"
+    swagger_workspace.mkdir(parents=True, exist_ok=True)
+    (swagger_workspace / "swagger.yaml").write_text('swagger: "2.0"\n', encoding="utf-8")
+
+    firebase_auth_workspace = tmp_path / "firebase-auth-repo"
+    firebase_auth_workspace.mkdir(parents=True, exist_ok=True)
+    (firebase_auth_workspace / "firebase.json").write_text("{}\n", encoding="utf-8")
+
+    supabase_auth_workspace = tmp_path / "supabase-auth-repo"
+    (supabase_auth_workspace / "supabase").mkdir(parents=True, exist_ok=True)
+    (supabase_auth_workspace / "supabase" / "config.toml").write_text("[project]\n", encoding="utf-8")
+
+    auth0_workspace = tmp_path / "auth0-config-repo"
+    (auth0_workspace / ".auth0").mkdir(parents=True, exist_ok=True)
+    (auth0_workspace / ".auth0" / "config.json").write_text("{}\n", encoding="utf-8")
+
+    semgrep_status = {
+        item["family"]: item
+        for item in build_project_integration_status(
+            workspace_path=str(semgrep_workspace),
+            project_name="Semgrep Config Demo",
+            registry_payload=normalize_integration_registry({}, {}),
+        )
+    }["security_scanners"]
+    codeql_status = {
+        item["family"]: item
+        for item in build_project_integration_status(
+            workspace_path=str(codeql_workspace),
+            project_name="CodeQL Config Demo",
+            registry_payload=normalize_integration_registry({}, {}),
+        )
+    }["security_scanners"]
+    openapi_status = {
+        item["family"]: item
+        for item in build_project_integration_status(
+            workspace_path=str(openapi_workspace),
+            project_name="OpenAPI Config Demo",
+            registry_payload=normalize_integration_registry({}, {}),
+        )
+    }["openapi"]
+    swagger_status = {
+        item["family"]: item
+        for item in build_project_integration_status(
+            workspace_path=str(swagger_workspace),
+            project_name="Swagger Config Demo",
+            registry_payload=normalize_integration_registry({}, {}),
+        )
+    }["openapi"]
+    firebase_auth_status = {
+        item["family"]: item
+        for item in build_project_integration_status(
+            workspace_path=str(firebase_auth_workspace),
+            project_name="Firebase Auth Config Demo",
+            registry_payload=normalize_integration_registry({}, {}),
+        )
+    }["auth_providers"]
+    supabase_auth_status = {
+        item["family"]: item
+        for item in build_project_integration_status(
+            workspace_path=str(supabase_auth_workspace),
+            project_name="Supabase Auth Config Demo",
+            registry_payload=normalize_integration_registry({}, {}),
+        )
+    }["auth_providers"]
+    auth0_status = {
+        item["family"]: item
+        for item in build_project_integration_status(
+            workspace_path=str(auth0_workspace),
+            project_name="Auth0 Config Demo",
+            registry_payload=normalize_integration_registry({}, {}),
+        )
+    }["auth_providers"]
+
+    assert semgrep_status["resolved_provider"] == "semgrep"
+    assert semgrep_status["status"] == "partial"
+    assert ".semgrep/rules.yml" in semgrep_status["health"]["workspace_config_files"]
+    assert codeql_status["resolved_provider"] == "codeql"
+    assert codeql_status["status"] == "partial"
+    assert ".github/codeql/config.yml" in codeql_status["health"]["workspace_config_files"]
+    assert openapi_status["resolved_provider"] == "openapi"
+    assert openapi_status["status"] == "partial"
+    assert "openapi.yaml" in openapi_status["health"]["workspace_config_files"]
+    assert swagger_status["resolved_provider"] == "swagger"
+    assert swagger_status["status"] == "partial"
+    assert "swagger.yaml" in swagger_status["health"]["workspace_config_files"]
+    assert firebase_auth_status["resolved_provider"] == "firebase_auth"
+    assert firebase_auth_status["status"] == "partial"
+    assert "firebase.json" in firebase_auth_status["health"]["workspace_config_files"]
+    assert supabase_auth_status["resolved_provider"] == "supabase_auth"
+    assert supabase_auth_status["status"] == "partial"
+    assert "supabase/config.toml" in supabase_auth_status["health"]["workspace_config_files"]
+    assert auth0_status["resolved_provider"] == "auth0"
+    assert auth0_status["status"] == "partial"
+    assert ".auth0/config.json" in auth0_status["health"]["workspace_config_files"]
+
+
+def test_workspace_token_detection_resolves_provider_identity_without_cli(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr("integration_registry.shutil.which", lambda _command: None)
+
+    doppler_workspace = tmp_path / "doppler-token-repo"
+    doppler_workspace.mkdir(parents=True, exist_ok=True)
+    (doppler_workspace / "README.md").write_text("Doppler manages runtime secrets.\n", encoding="utf-8")
+
+    vault_workspace = tmp_path / "vault-token-repo"
+    vault_workspace.mkdir(parents=True, exist_ok=True)
+    (vault_workspace / "README.md").write_text("Vault stores runtime secrets.\n", encoding="utf-8")
+
+    sourcegraph_workspace = tmp_path / "sourcegraph-token-repo"
+    sourcegraph_workspace.mkdir(parents=True, exist_ok=True)
+    (sourcegraph_workspace / "README.md").write_text("Sourcegraph indexes this codebase.\n", encoding="utf-8")
+
+    zoekt_workspace = tmp_path / "zoekt-token-repo"
+    zoekt_workspace.mkdir(parents=True, exist_ok=True)
+    (zoekt_workspace / "README.md").write_text("Zoekt powers code search here.\n", encoding="utf-8")
+
+    stripe_workspace = tmp_path / "stripe-token-repo"
+    stripe_workspace.mkdir(parents=True, exist_ok=True)
+    (stripe_workspace / "README.md").write_text("Stripe handles sandbox billing.\n", encoding="utf-8")
+
+    vllm_workspace = tmp_path / "vllm-token-repo"
+    vllm_workspace.mkdir(parents=True, exist_ok=True)
+    (vllm_workspace / "README.md").write_text("vLLM serves local models.\n", encoding="utf-8")
+
+    doppler_status = {
+        item["family"]: item
+        for item in build_project_integration_status(
+            workspace_path=str(doppler_workspace),
+            project_name="Doppler Token Demo",
+            registry_payload=normalize_integration_registry({}, {}),
+        )
+    }["secrets"]
+    vault_status = {
+        item["family"]: item
+        for item in build_project_integration_status(
+            workspace_path=str(vault_workspace),
+            project_name="Vault Token Demo",
+            registry_payload=normalize_integration_registry({}, {}),
+        )
+    }["secrets"]
+    sourcegraph_status = {
+        item["family"]: item
+        for item in build_project_integration_status(
+            workspace_path=str(sourcegraph_workspace),
+            project_name="Sourcegraph Token Demo",
+            registry_payload=normalize_integration_registry({}, {}),
+        )
+    }["code_search"]
+    zoekt_status = {
+        item["family"]: item
+        for item in build_project_integration_status(
+            workspace_path=str(zoekt_workspace),
+            project_name="Zoekt Token Demo",
+            registry_payload=normalize_integration_registry({}, {}),
+        )
+    }["code_search"]
+    stripe_status = {
+        item["family"]: item
+        for item in build_project_integration_status(
+            workspace_path=str(stripe_workspace),
+            project_name="Stripe Token Demo",
+            registry_payload=normalize_integration_registry({}, {}),
+        )
+    }["payments"]
+    vllm_status = {
+        item["family"]: item
+        for item in build_project_integration_status(
+            workspace_path=str(vllm_workspace),
+            project_name="vLLM Token Demo",
+            registry_payload=normalize_integration_registry({}, {}),
+        )
+    }["local_model_runtimes"]
+
+    assert doppler_status["resolved_provider"] == "doppler"
+    assert doppler_status["status"] == "partial"
+    assert vault_status["resolved_provider"] == "vault"
+    assert vault_status["status"] == "partial"
+    assert sourcegraph_status["resolved_provider"] == "sourcegraph"
+    assert sourcegraph_status["status"] == "partial"
+    assert zoekt_status["resolved_provider"] == "zoekt"
+    assert zoekt_status["status"] == "partial"
+    assert stripe_status["resolved_provider"] == "stripe"
+    assert stripe_status["status"] == "partial"
+    assert vllm_status["resolved_provider"] == "vllm"
+    assert vllm_status["status"] == "partial"
+
+
+def test_provider_specific_preview_supports_insomnia_hidden_workspace_collection(monkeypatch, tmp_path) -> None:
+    workspace = tmp_path / "insomnia-hidden-repo"
+    (workspace / ".insomnia").mkdir(parents=True, exist_ok=True)
+    (workspace / ".insomnia" / "collection.json").write_text('{"resources":[]}\n', encoding="utf-8")
+
+    monkeypatch.setattr(
+        "integration_registry.shutil.which",
+        lambda command: f"C:/tools/{command}.exe" if command == "inso" else None,
+    )
+
+    preview = preview_integration_action(
+        family_id="api_clients",
+        action_id="validate",
+        params={},
+        registry_payload=normalize_integration_registry({}, {}),
+        workspace_path=str(workspace),
+        project_name="Insomnia Hidden Workspace Demo",
+    )
+
+    assert preview["provider"] == "insomnia"
+    assert preview["defaulted_params"] == {"collection": ".insomnia/collection.json"}
+    assert preview["command"] == 'inso run test ".insomnia/collection.json"'
+
+
+def test_project_integrations_detect_vllm_cli_metadata(monkeypatch, tmp_path) -> None:
+    workspace = tmp_path / "vllm-ready-repo"
+    workspace.mkdir(parents=True, exist_ok=True)
+    (workspace / "README.md").write_text("vLLM serves local models.\n", encoding="utf-8")
+
+    monkeypatch.setattr(
+        "integration_registry.shutil.which",
+        lambda command: f"C:/tools/{command}.exe" if command == "vllm" else None,
+    )
+
+    status = {
+        item["family"]: item
+        for item in build_project_integration_status(
+            workspace_path=str(workspace),
+            project_name="vLLM Ready Demo",
+            registry_payload=normalize_integration_registry({}, {}),
+        )
+    }["local_model_runtimes"]
+
+    assert status["resolved_provider"] == "vllm"
+    assert status["resolved_cli_candidates"] == ["vllm"]
+    assert status["health"]["resolved_cli_detected"] == ["vllm"]
