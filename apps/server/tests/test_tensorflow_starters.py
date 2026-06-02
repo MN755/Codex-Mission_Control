@@ -1,6 +1,11 @@
 from __future__ import annotations
 
+import pytest
+
 from tensorflow_starters import generate_tensorflow_feature_bundle, tensorflow_feature_catalog
+
+
+pytestmark = pytest.mark.no_db_reset
 
 
 def test_tensorflow_feature_catalog_covers_the_full_product_list() -> None:

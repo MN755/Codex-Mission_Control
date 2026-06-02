@@ -7,6 +7,7 @@ import shutil
 import time
 import uuid
 from pathlib import Path
+from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
@@ -24,21 +25,47 @@ def _cleanup_test_root() -> None:
 
 atexit.register(_cleanup_test_root)
 
-from config import DB_PATH
-from daemon_state import ensure_daemon_token
-from db import Base, engine, init_db
-from main import app
-from startup import startup_service
+_DB_STATE: tuple[Path, Any, Any, Any] | None = None
+_APP: Any | None = None
+
+
+def _db_state() -> tuple[Path, Any, Any, Any]:
+    global _DB_STATE
+    if _DB_STATE is None:
+        from config import DB_PATH
+        from db import engine, init_db
+        from startup import startup_service
+
+        _DB_STATE = (DB_PATH, engine, init_db, startup_service)
+    return _DB_STATE
+
+
+def _app() -> Any:
+    global _APP
+    if _APP is None:
+        from main import app
+
+        _APP = app
+    return _APP
+
+
+def _daemon_token() -> str:
+    from daemon_state import ensure_daemon_token
+
+    return ensure_daemon_token()
 
 
 @pytest.fixture(autouse=True)
-def reset_db() -> None:
+def reset_db(request: pytest.FixtureRequest) -> None:
+    if request.node.get_closest_marker("no_db_reset") is not None:
+        return None
+    db_path, engine, init_db, startup_service = _db_state()
     engine.dispose()
-    if DB_PATH.exists():
+    if db_path.exists():
         last_error: Exception | None = None
         for _ in range(30):
             try:
-                DB_PATH.unlink()
+                db_path.unlink()
                 last_error = None
                 break
             except FileNotFoundError:
@@ -58,18 +85,19 @@ def reset_db() -> None:
 
 @pytest.fixture
 def client() -> TestClient:
-    with TestClient(app) as test_client:
-        test_client.headers.update({"X-Mission-Control-Token": ensure_daemon_token()})
+    with TestClient(_app()) as test_client:
+        test_client.headers.update({"X-Mission-Control-Token": _daemon_token()})
         yield test_client
 
 
 @pytest.fixture
 def bridge_headers() -> dict[str, str]:
-    return {"X-Mission-Control-Token": ensure_daemon_token()}
+    return {"X-Mission-Control-Token": _daemon_token()}
 
 
 def pytest_sessionfinish(session, exitstatus) -> None:  # type: ignore[no-untyped-def]
-    engine.dispose()
+    if _DB_STATE is not None:
+        _db_state()[1].dispose()
     gc.collect()
     shutil.rmtree(TEST_ROOT, ignore_errors=True)
 

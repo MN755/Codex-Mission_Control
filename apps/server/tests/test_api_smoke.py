@@ -9,6 +9,49 @@ from main import app
 
 
 def test_system_status_supports_provider_preview_overrides(client, bridge_headers, monkeypatch) -> None:
+    monkeypatch.setattr("system_status.detect_codex_status", lambda: {
+        "provider": "codex",
+        "label": "Codex",
+        "cli_detected": True,
+        "cli_path": "codex",
+        "cli_path_exists": True,
+        "cli_execution_available": True,
+        "cli_version": "codex 1.0.0",
+        "login_status": "Logged in using ChatGPT",
+        "auth_mode": "chatgpt",
+        "authenticated": True,
+        "auth_status_detectable": True,
+        "supports_model_override": True,
+        "supports_reasoning_effort": True,
+        "supports_app_server": True,
+        "supports_builtin_auth": True,
+        "available_models": [],
+        "configured_plugins": [],
+        "configured_mcp_servers": [],
+        "local_skills": [],
+        "mcp_servers": [],
+        "mcp_state": {},
+        "notes": [],
+    })
+    monkeypatch.setattr("system_status.detect_claude_code_status", lambda: {
+        "provider": "claude_code",
+        "label": "Claude Code",
+        "cli_detected": False,
+        "cli_path": None,
+        "cli_path_exists": False,
+        "cli_execution_available": False,
+        "cli_version": None,
+        "login_status": "Claude CLI was not detected.",
+        "auth_mode": None,
+        "authenticated": False,
+        "auth_status_detectable": False,
+        "supports_model_override": True,
+        "supports_reasoning_effort": False,
+        "supports_app_server": False,
+        "supports_builtin_auth": False,
+        "available_models": [],
+        "notes": [],
+    })
     def fake_detect_ollama_status(endpoint: str | None = None) -> dict:
         return {
             "provider": "ollama",
@@ -30,6 +73,57 @@ def test_system_status_supports_provider_preview_overrides(client, bridge_header
         }
 
     monkeypatch.setattr("system_status.detect_ollama_status", fake_detect_ollama_status)
+    monkeypatch.setattr("system_status.detect_nvidia_dynamo_status", lambda endpoint=None: {
+        "provider": "nvidia_dynamo",
+        "label": "NVIDIA Dynamo",
+        "cli_detected": False,
+        "cli_path": endpoint or "http://dynamo.local:8000",
+        "cli_path_exists": False,
+        "cli_execution_available": False,
+        "cli_version": None,
+        "login_status": "NVIDIA Dynamo endpoint is not reachable.",
+        "auth_mode": None,
+        "authenticated": False,
+        "auth_status_detectable": True,
+        "supports_model_override": True,
+        "supports_reasoning_effort": False,
+        "supports_app_server": False,
+        "supports_builtin_auth": False,
+        "available_models": [],
+        "notes": [],
+        "reachable": False,
+        "summary": "offline",
+        "endpoint": endpoint or "http://dynamo.local:8000",
+        "endpoint_configured": False,
+        "api_key_configured": False,
+        "auth_required": False,
+    })
+    monkeypatch.setattr("system_status.detect_nvidia_nim_status", lambda endpoint=None: {
+        "provider": "nvidia_nim",
+        "label": "NVIDIA NIM",
+        "cli_detected": False,
+        "cli_path": endpoint or "https://integrate.api.nvidia.com",
+        "cli_path_exists": False,
+        "cli_execution_available": False,
+        "cli_version": None,
+        "login_status": "NVIDIA NIM endpoint is not reachable.",
+        "auth_mode": None,
+        "authenticated": False,
+        "auth_status_detectable": True,
+        "supports_model_override": True,
+        "supports_reasoning_effort": False,
+        "supports_app_server": False,
+        "supports_builtin_auth": False,
+        "available_models": [],
+        "notes": [],
+        "reachable": False,
+        "summary": "offline",
+        "endpoint": endpoint or "https://integrate.api.nvidia.com",
+        "endpoint_configured": False,
+        "api_key_configured": False,
+        "auth_required": True,
+    })
+    monkeypatch.setattr("system_status.detect_webwright_status", lambda: {"summary": "not installed"})
 
     status = client.get(
         "/api/system/status",
@@ -42,7 +136,117 @@ def test_system_status_supports_provider_preview_overrides(client, bridge_header
     assert "llama3.2:latest" in status["available_models"]
 
 
-def test_dry_run_project_flow(client, bridge_headers) -> None:
+def test_dry_run_project_flow(client, bridge_headers, monkeypatch) -> None:
+    async def fake_get_system_status(
+        db,
+        project,
+        provider_override=None,
+        provider_endpoint_override=None,
+        adapter_command_override=None,
+        adapter_args_override=None,
+    ):
+        return {
+            "selected_provider": "claude_code",
+            "selected_provider_label": "Claude Code",
+            "cli_detected": True,
+            "cli_path": "claude",
+            "cli_path_exists": True,
+            "cli_execution_available": True,
+            "cli_version": "claude 1.0.0",
+            "login_status": "Claude CLI is executable.",
+            "auth_mode": None,
+            "authenticated": False,
+            "runtime_ready": True,
+            "runtime_status": "ready",
+            "runtime_summary": "Claude preview status is available.",
+            "runtime_blockers": [],
+            "app_server_supported": False,
+            "app_server_handshake_status": "unsupported",
+            "app_server_transport": "unsupported",
+            "effective_runner_mode": "auto",
+            "dry_run_available": True,
+            "runtime_directory": "runtime",
+            "diagnostics_directory": None,
+            "repo_root": "repo",
+            "launcher_root": "launcher",
+            "plugin_source_root": "plugins/mission-control",
+            "backend_host": "127.0.0.1",
+            "backend_port": 8010,
+            "backend_base_url": "http://127.0.0.1:8010",
+            "configured_backend_port": 8010,
+            "backend_binding_source": "test",
+            "frontend_port": 5173,
+            "active_runs": [],
+            "current_settings_summary": None,
+            "selected_manager_model": "gpt-5.5",
+            "selected_default_worker_model": "gpt-5.4-mini",
+            "available_models": ["sonnet"],
+            "model_advisories": [],
+            "provider_statuses": [],
+            "mcp_servers": [],
+            "configured_mcp_servers": [],
+            "mcp_state": {},
+            "configured_plugins": [],
+            "local_skills": [],
+            "current_auth_job": None,
+            "notes": [],
+            "startup_summary": None,
+            "app_state_summary": None,
+        }
+
+    def fake_auth_state():
+        return {
+            "authenticated": False,
+            "auth_mode": None,
+            "login_status": "Claude CLI is executable.",
+            "cli_detected": True,
+            "provider": "claude_code",
+            "current_job": None,
+            "chatgpt_supported": True,
+            "device_auth_supported": True,
+            "api_key_supported": True,
+            "provider_statuses": [],
+            "notes": [],
+        }
+
+    async def fake_start_idle_agents(db, project):
+        from main import service as app_service
+
+        app_service.events.publish(
+            db,
+            project.id,
+            "agent.started",
+            {
+                "project_id": project.id,
+                "effective_settings": {"model": "gpt-5.5-mini"},
+            },
+        )
+        return 1
+
+    async def fake_approve_plan(db, project, action, note):
+        from main import service as app_service
+
+        latest_plan = app_service._latest_plan(db, project.id)
+        latest_plan.status = "approved"
+        project.status = "building"
+        app_service.events.publish(db, project.id, "plan.approved", {"plan_id": latest_plan.id, "action": action})
+        app_service.events.publish(
+            db,
+            project.id,
+            "agent.started",
+            {
+                "project_id": project.id,
+                "effective_settings": {"model": "gpt-5.5-mini"},
+            },
+        )
+        db.flush()
+        return latest_plan
+
+    monkeypatch.setattr("main.service.get_system_status", fake_get_system_status)
+    monkeypatch.setattr("main.service.auth_state", fake_auth_state)
+    monkeypatch.setattr("main.service.start_idle_agents", fake_start_idle_agents)
+    monkeypatch.setattr("main.service.approve_plan", fake_approve_plan)
+
     profile_response = client.get("/api/profile", headers=bridge_headers)
     assert profile_response.status_code == 200
     assert profile_response.json()["onboarding_completed"] is False
@@ -117,21 +321,10 @@ def test_dry_run_project_flow(client, bridge_headers) -> None:
     assert "PROJECT_BRIEF.md" in docs_response.json()["files"]
     assert docs_response.json()["manager_mode_used"] == "deterministic"
 
-    session = client.post(f"/api/projects/{project_id}/interview/start", json={"question_budget": 6}).json()
-    while session["status"] != "completed":
-        pending_questions = [question for question in session["questions"] if question["status"] == "pending"]
-        for question in pending_questions:
-            option = question["options"][0]
-            session = client.post(
-                f"/api/interview/questions/{question['id']}/answer",
-                json={
-                    "project_id": project_id,
-                    "option_id": option["id"],
-                    "selected_text": option["label"],
-                },
-            ).json()
-        if session["status"] != "completed" and session["questions_remaining"] > 0:
-            session = client.post(f"/api/projects/{project_id}/interview/generate-next").json()
+    session = client.post(f"/api/projects/{project_id}/interview/start", json={"question_budget": 0}).json()
+    assert session["status"] == "completed"
+    assert session["question_budget"] == 0
+    assert session["questions"] == []
 
     plan_response = client.post(f"/api/projects/{project_id}/plan/generate", json={"force_rebuild": True})
     assert plan_response.status_code == 200

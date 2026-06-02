@@ -2,8 +2,13 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from conftest import sample_workspace
 from tensorflow_support import build_tensorflow_validation_plan, detect_tensorflow_repo_mode
+
+
+pytestmark = pytest.mark.no_db_reset
 
 
 def _write(path: Path, content: str) -> None:

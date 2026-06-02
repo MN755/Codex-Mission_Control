@@ -14911,6 +14911,14 @@ class MissionControlService:
             "interview.started",
             {"session_id": session.id, "question_budget": budget, "manager_mode": session.manager_mode},
         )
+        if budget == 0:
+            return self._apply_interview_turn(
+                db,
+                project,
+                session,
+                self._default_interview_turn(project, session),
+                question_source="zero_budget_default",
+            )
         turn, question_source = await self._resolve_interview_turn(
             db,
             project,

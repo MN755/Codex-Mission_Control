@@ -83,3 +83,6 @@ where = ["src"]
 [tool.pytest.ini_options]
 pythonpath = ["src"]
 testpaths = ["tests"]
+markers = [
+  "no_db_reset: skip the shared database reset fixture for pure unit tests that do not touch app state",
+]

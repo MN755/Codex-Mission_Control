@@ -1,6 +1,97 @@
 from __future__ import annotations
 
+import pytest
+
+import tool_catalog
 from tool_catalog import catalog_with_permissions
+
+
+pytestmark = pytest.mark.no_db_reset
+
+
+@pytest.fixture(autouse=True)
+def _stub_expensive_default_probes(monkeypatch) -> None:
+    monkeypatch.setattr(tool_catalog, "_PROCESS_PROBE_CACHE", {})
+    monkeypatch.setattr(
+        tool_catalog,
+        "detect_tensorflow_repo_mode",
+        lambda _root: {"enabled": False, "mode": None, "frameworks": [], "product_workflows": []},
+    )
+    monkeypatch.setattr(
+        tool_catalog,
+        "build_tensorflow_validation_plan",
+        lambda _root: {"summary": "TensorFlow validation planning is not applicable."},
+    )
+    monkeypatch.setattr(
+        tool_catalog,
+        "detect_pytorch_repo_mode",
+        lambda _root: {
+            "enabled": False,
+            "mode": None,
+            "frameworks": [],
+            "product_workflows": [],
+            "distributed_stack": [],
+            "checkpoint_paths": [],
+            "training_commands": [],
+            "export_commands": [],
+            "observability_commands": [],
+        },
+    )
+    monkeypatch.setattr(
+        tool_catalog,
+        "build_pytorch_validation_plan",
+        lambda _root: {"summary": "PyTorch validation planning is not applicable."},
+    )
+    monkeypatch.setattr(
+        tool_catalog,
+        "detect_pytorch_runtime_status",
+        lambda _root: {"status": "not_applicable", "summary": "This workspace does not currently look like a PyTorch repo."},
+    )
+    monkeypatch.setattr(
+        tool_catalog,
+        "detect_spatial3d_repo_mode",
+        lambda _root: {"enabled": False, "mode": None, "frameworks": [], "product_workflows": [], "asset_paths": []},
+    )
+    monkeypatch.setattr(
+        tool_catalog,
+        "build_spatial3d_validation_plan",
+        lambda _root: {"summary": "Spatial validation planning is not applicable."},
+    )
+    monkeypatch.setattr(
+        tool_catalog,
+        "detect_webwright_status",
+        lambda: {"available": False, "install_status": "missing", "workspace_signals": [], "summary": "Webwright is not installed."},
+    )
+    monkeypatch.setattr(
+        tool_catalog,
+        "detect_nvidia_dynamo_status",
+        lambda: {"reachable": False, "summary": "NVIDIA Dynamo is not configured."},
+    )
+    monkeypatch.setattr(
+        tool_catalog,
+        "detect_nvidia_nim_status",
+        lambda: {"reachable": False, "summary": "NVIDIA NIM is not configured."},
+    )
+    monkeypatch.setattr(
+        tool_catalog,
+        "detect_nvidia_aiq_status",
+        lambda: {"available": False, "summary": "NVIDIA AI-Q is not configured."},
+    )
+    monkeypatch.setattr(
+        tool_catalog,
+        "detect_project_nvidia_gpu_diagnostics",
+        lambda _root: {"available": False, "status": "missing", "summary": "NVIDIA GPU diagnostics are not configured."},
+    )
+    monkeypatch.setattr(
+        tool_catalog,
+        "detect_nvidia_local_runtime_status",
+        lambda _root: {"available": False, "summary": "NVIDIA local runtime is not configured."},
+    )
+    monkeypatch.setattr(
+        tool_catalog,
+        "build_nvidia_validation_plan",
+        lambda _root: {"available": False, "status": "not_applicable", "summary": "NVIDIA validation planning is not applicable."},
+    )
 
 
 def test_tool_catalog_surfaces_tensorflow_tools_when_repo_signals_exist(monkeypatch) -> None:
@@ -376,6 +467,86 @@ def test_tool_catalog_caches_repo_detection_and_runtime_probes(monkeypatch) -> N
     assert counters["pytorch_mode"] == 1
     assert counters["pytorch_plan"] == 1
     assert counters["pytorch_runtime"] == 1
+
+
+def test_tool_catalog_reuses_process_probe_cache_across_catalog_calls(monkeypatch) -> None:
+    counters = {
+        "tensorflow_mode": 0,
+        "tensorflow_plan": 0,
+        "pytorch_mode": 0,
+        "pytorch_plan": 0,
+        "pytorch_runtime": 0,
+        "spatial_mode": 0,
+        "spatial_plan": 0,
+    }
+
+    monkeypatch.setattr("tool_catalog._PROCESS_PROBE_CACHE", {})
+
+    def fake_tensorflow_mode(_root):
+        counters["tensorflow_mode"] += 1
+        return {"enabled": False, "mode": None, "frameworks": [], "product_workflows": []}
+
+    def fake_tensorflow_plan(_root):
+        counters["tensorflow_plan"] += 1
+        return {"summary": "TensorFlow validation planning is not applicable."}
+
+    def fake_pytorch_mode(_root):
+        counters["pytorch_mode"] += 1
+        return {
+            "enabled": False,
+            "mode": None,
+            "frameworks": [],
+            "product_workflows": [],
+            "distributed_stack": [],
+            "checkpoint_paths": [],
+            "training_commands": [],
+            "export_commands": [],
+            "observability_commands": [],
+        }
+
+    def fake_pytorch_plan(_root):
+        counters["pytorch_plan"] += 1
+        return {"summary": "PyTorch validation planning is not applicable."}
+
+    def fake_pytorch_runtime(_root):
+        counters["pytorch_runtime"] += 1
+        return {"status": "not_applicable", "summary": "No PyTorch repo."}
+
+    def fake_spatial_mode(_root):
+        counters["spatial_mode"] += 1
+        return {"enabled": False, "mode": None, "frameworks": [], "product_workflows": [], "asset_paths": []}
+
+    def fake_spatial_plan(_root):
+        counters["spatial_plan"] += 1
+        return {"summary": "Spatial validation planning is not applicable."}
+
+    monkeypatch.setattr("tool_catalog.detect_tensorflow_repo_mode", fake_tensorflow_mode)
+    monkeypatch.setattr("tool_catalog.build_tensorflow_validation_plan", fake_tensorflow_plan)
+    monkeypatch.setattr("tool_catalog.detect_pytorch_repo_mode", fake_pytorch_mode)
+    monkeypatch.setattr("tool_catalog.build_pytorch_validation_plan", fake_pytorch_plan)
+    monkeypatch.setattr("tool_catalog.detect_pytorch_runtime_status", fake_pytorch_runtime)
+    monkeypatch.setattr("tool_catalog.detect_spatial3d_repo_mode", fake_spatial_mode)
+    monkeypatch.setattr("tool_catalog.build_spatial3d_validation_plan", fake_spatial_plan)
+    monkeypatch.setattr("tool_catalog.detect_webwright_status", lambda: {"available": False, "install_status": "missing", "summary": "missing"})
+    monkeypatch.setattr("tool_catalog.detect_nvidia_dynamo_status", lambda: {"reachable": False, "summary": "missing"})
+    monkeypatch.setattr("tool_catalog.detect_nvidia_nim_status", lambda: {"reachable": False, "summary": "missing"})
+    monkeypatch.setattr("tool_catalog.detect_nvidia_aiq_status", lambda: {"available": False, "summary": "missing"})
+    monkeypatch.setattr("tool_catalog.detect_project_nvidia_gpu_diagnostics", lambda _root: {"available": False, "status": "missing", "summary": "missing"})
+    monkeypatch.setattr("tool_catalog.detect_nvidia_local_runtime_status", lambda _root: {"available": False, "summary": "missing"})
+    monkeypatch.setattr("tool_catalog.build_nvidia_validation_plan", lambda _root: {"summary": "missing"})
+    monkeypatch.setattr("tool_catalog.shutil.which", lambda _command: None)
+
+    first = catalog_with_permissions(provider="codex", connected_accounts={}, permission_overrides={})
+    second = catalog_with_permissions(provider="codex", connected_accounts={}, permission_overrides={})
+
+    assert first and second
+    assert counters["tensorflow_mode"] == 1
+    assert counters["tensorflow_plan"] == 1
+    assert counters["pytorch_mode"] == 1
+    assert counters["pytorch_plan"] == 1
+    assert counters["pytorch_runtime"] == 1
+    assert counters["spatial_mode"] == 1
+    assert counters["spatial_plan"] == 1
 
 
 def test_tool_catalog_accepts_repo_native_tensorflow_export_commands_without_clis(monkeypatch) -> None:

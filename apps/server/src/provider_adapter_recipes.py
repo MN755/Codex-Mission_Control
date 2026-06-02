@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sys
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 
 from config import REPO_ROOT
@@ -37,6 +38,7 @@ def _normalize_args(values: list[str] | None) -> list[str]:
     return [item.strip() for item in list(values or []) if item and item.strip()]
 
 
+@lru_cache(maxsize=None)
 def default_adapter_recipe(provider: str) -> AdapterRecipe | None:
     normalized = normalize_provider(provider)
     script_path = _BUILTIN_ADAPTER_SCRIPTS.get(normalized)

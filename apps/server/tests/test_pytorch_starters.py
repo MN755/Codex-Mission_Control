@@ -1,6 +1,11 @@
 from __future__ import annotations
 
+import pytest
+
 from pytorch_starters import generate_pytorch_feature_bundle, pytorch_feature_catalog
+
+
+pytestmark = pytest.mark.no_db_reset
 
 
 def test_pytorch_feature_catalog_covers_the_core_product_list() -> None:

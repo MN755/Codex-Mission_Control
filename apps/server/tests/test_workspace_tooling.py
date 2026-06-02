@@ -4,9 +4,14 @@ import json
 import subprocess
 from pathlib import Path
 
+import pytest
+
 from manager import service
 from models import Project
 from workspace_tooling import detect_workspace_tooling
+
+
+pytestmark = pytest.mark.no_db_reset
 
 
 def test_detect_workspace_tooling_summarizes_repo_native_helpers(tmp_path: Path, monkeypatch) -> None:

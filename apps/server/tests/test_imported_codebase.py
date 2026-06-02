@@ -2,7 +2,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from imported_codebase import import_service
+
+
+pytestmark = pytest.mark.no_db_reset
 
 
 def test_scan_payload_uses_repo_relative_metadata_paths(tmp_path) -> None:

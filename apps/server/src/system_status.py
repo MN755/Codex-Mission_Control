@@ -425,12 +425,16 @@ def _runtime_details(
     adapter_command: str | None = None,
     adapter_args: list[str] | None = None,
     provider_endpoint: str | None = None,
+    provider_status: dict[str, Any] | None = None,
+    adapter_recipe: Any | None = None,
+    adapter_status: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     normalized = normalize_provider(provider)
-    recipe = resolve_adapter_recipe(normalized, adapter_command, adapter_args)
+    recipe = adapter_recipe if adapter_recipe is not None else resolve_adapter_recipe(normalized, adapter_command, adapter_args)
     effective_command = recipe.command if recipe else None
     effective_args = list(recipe.args) if recipe else []
-    adapter_status = detect_custom_status(effective_command, effective_args) if provider_uses_adapter(normalized) else None
+    if adapter_status is None and provider_uses_adapter(normalized):
+        adapter_status = detect_custom_status(effective_command, effective_args)
     adapter_required = provider_uses_adapter(normalized)
     adapter_configured = bool(effective_command) if adapter_required else False
     adapter_ready = bool(adapter_status and adapter_status.get("cli_detected"))
@@ -441,7 +445,7 @@ def _runtime_details(
     )
 
     if normalized == "codex":
-        codex = detect_codex_status()
+        codex = provider_status if provider_status is not None else detect_codex_status()
         ready = bool(codex.get("authenticated"))
         summary = "Codex runtime is ready." if ready else "Codex runtime is not authenticated yet."
         if not codex.get("cli_detected"):
@@ -451,7 +455,7 @@ def _runtime_details(
         elif not ready:
             runtime_blockers.append("codex_not_authenticated")
     elif normalized == "claude_code":
-        claude = detect_claude_code_status()
+        claude = provider_status if provider_status is not None else detect_claude_code_status()
         ready = bool(claude.get("cli_execution_available")) and bool(claude.get("auth_status_detectable"))
         summary = (
             "Claude CLI is executable, but Mission Control still cannot guarantee the interactive Claude login state."
@@ -465,7 +469,7 @@ def _runtime_details(
         elif not ready:
             runtime_blockers.append("claude_auth_state_unverified")
     elif normalized == "ollama":
-        ollama = detect_ollama_status(provider_endpoint)
+        ollama = provider_status if provider_status is not None else detect_ollama_status(provider_endpoint)
         reachable = bool(ollama.get("reachable"))
         ready = reachable and adapter_ready
         if reachable and adapter_ready:
@@ -497,7 +501,9 @@ def _runtime_details(
         if not key_present:
             runtime_blockers.append("api_key_missing")
     elif normalized in {"nvidia_dynamo", "nvidia_nim"}:
-        runtime = detect_nvidia_dynamo_status(provider_endpoint) if normalized == "nvidia_dynamo" else detect_nvidia_nim_status(provider_endpoint)
+        runtime = provider_status if provider_status is not None else (
+            detect_nvidia_dynamo_status(provider_endpoint) if normalized == "nvidia_dynamo" else detect_nvidia_nim_status(provider_endpoint)
+        )
         reachable = bool(runtime.get("reachable"))
         auth_required = bool(runtime.get("auth_required"))
         api_key_configured = bool(runtime.get("api_key_configured"))
@@ -644,16 +650,33 @@ def detect_provider_statuses(
         detect_custom_status(adapter_command, adapter_args),
     ]
     enriched: list[dict[str, Any]] = []
+    adapter_recipe_cache: dict[tuple[str, str | None, tuple[str, ...]], Any] = {}
+    adapter_status_cache: dict[tuple[str | None, tuple[str, ...]], dict[str, Any] | None] = {}
     for item in providers:
         normalized = normalize_provider(item.get("provider"))
         endpoint = provider_endpoint if normalized == selected and provider_uses_endpoint(normalized) else None
         provider_command = adapter_command if normalized == selected else None
         provider_args = adapter_args if normalized == selected else None
+        recipe_key = (normalized, provider_command, tuple(provider_args or []))
+        recipe = adapter_recipe_cache.get(recipe_key)
+        if recipe_key not in adapter_recipe_cache:
+            recipe = resolve_adapter_recipe(normalized, provider_command, provider_args)
+            adapter_recipe_cache[recipe_key] = recipe
+        effective_command = recipe.command if recipe else None
+        effective_args = tuple(recipe.args) if recipe else tuple()
+        status_key = (effective_command, effective_args)
+        cached_adapter_status = adapter_status_cache.get(status_key)
+        if status_key not in adapter_status_cache:
+            cached_adapter_status = detect_custom_status(effective_command, list(effective_args)) if provider_uses_adapter(normalized) else None
+            adapter_status_cache[status_key] = cached_adapter_status
         runtime = _runtime_details(
             provider=normalized,
             adapter_command=provider_command,
             adapter_args=provider_args,
             provider_endpoint=endpoint,
+            provider_status=item,
+            adapter_recipe=recipe,
+            adapter_status=cached_adapter_status,
         )
         enriched.append({**item, **runtime})
     return enriched

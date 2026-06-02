@@ -3,12 +3,17 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from conftest import sample_workspace
 from pytorch_support import (
     build_pytorch_validation_plan,
     detect_pytorch_repo_mode,
     detect_pytorch_runtime_status,
 )
+
+
+pytestmark = pytest.mark.no_db_reset
 
 
 def _write(path: Path, content: str) -> None:

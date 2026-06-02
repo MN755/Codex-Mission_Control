@@ -2,8 +2,13 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from conftest import sample_workspace
 from spatial3d_support import build_spatial3d_validation_plan, detect_spatial3d_repo_mode
+
+
+pytestmark = pytest.mark.no_db_reset
 
 
 def _write(path: Path, content: str) -> None:

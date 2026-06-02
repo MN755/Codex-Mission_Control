@@ -1,10 +1,15 @@
 from __future__ import annotations
 
+import pytest
+
 from spatial3d_starters import (
     generate_spatial3d_feature_bundle,
     get_spatial3d_feature_catalog_entry,
     spatial3d_feature_catalog,
 )
+
+
+pytestmark = pytest.mark.no_db_reset
 
 
 def test_spatial3d_feature_catalog_covers_requested_feature_families() -> None:

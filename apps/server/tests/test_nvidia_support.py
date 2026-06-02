@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from nvidia_support import (
     build_nvidia_validation_plan,
     detect_nvidia_aiq_status,
@@ -10,6 +12,9 @@ from nvidia_support import (
     detect_project_nvidia_gpu_diagnostics,
     run_nvidia_aiq_research,
 )
+
+
+pytestmark = pytest.mark.no_db_reset
 
 
 def test_detect_nvidia_dynamo_status_reports_reachable_frontend(monkeypatch) -> None:

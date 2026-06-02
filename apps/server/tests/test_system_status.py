@@ -2,7 +2,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from system_status import _parse_configured_mcp_servers, _strip_codex_cli_noise, detect_codex_status, detect_custom_status
+
+
+pytestmark = pytest.mark.no_db_reset
 
 
 def test_strip_codex_cli_noise_removes_arg0_warnings() -> None:
@@ -232,6 +237,31 @@ def test_detect_system_status_reports_runtime_blockers_for_selected_provider(mon
         "endpoint_configured": False,
         "api_key_configured": False,
         "auth_required": True,
+    })
+    monkeypatch.setattr("system_status.detect_nvidia_dynamo_status", lambda endpoint=None: {
+        "provider": "nvidia_dynamo",
+        "label": "NVIDIA Dynamo",
+        "cli_detected": False,
+        "cli_path": endpoint or "http://dynamo.local:8000",
+        "cli_path_exists": False,
+        "cli_execution_available": False,
+        "cli_version": None,
+        "login_status": "NVIDIA Dynamo endpoint is not reachable.",
+        "auth_mode": None,
+        "authenticated": False,
+        "auth_status_detectable": True,
+        "supports_model_override": True,
+        "supports_reasoning_effort": False,
+        "supports_app_server": False,
+        "supports_builtin_auth": False,
+        "available_models": [],
+        "notes": [],
+        "reachable": False,
+        "summary": "offline",
+        "endpoint": endpoint or "http://dynamo.local:8000",
+        "endpoint_configured": False,
+        "api_key_configured": False,
+        "auth_required": False,
     })
     monkeypatch.setattr("system_status.detect_webwright_status", lambda: {"summary": "not installed"})
     monkeypatch.setattr("system_status.shutil.which", lambda _command: None)
