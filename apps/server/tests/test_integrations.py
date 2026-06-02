@@ -231,6 +231,9 @@ def test_project_integration_api_surfaces_context_suppression_metadata(client, b
     assert inspect_action["provider_verification_required"] is False
     assert inspect_action["provider_verification_reason"] is None
     assert inspect_action["verification_scope"] is None
+    assert inspect_action["missing_params"] == []
+    assert inspect_action["defaulted_params"] == {}
+    assert inspect_action["params_complete"] is True
     assert inspect_action["executable_name"] is None
     assert inspect_action["execution_block_reason"] == "provider_context_missing"
     assert inspect_action["preflight_ready"] is False
@@ -5667,6 +5670,9 @@ def test_project_integrations_surface_preflight_counts_and_action_readiness(monk
     assert status["preflight_ready_action_count"] == 1
     assert status["confirmation_eligible_action_count"] == 0
     assert status["ready_to_execute_action_count"] == 1
+    assert status["parameterized_execution_action_count"] == 0
+    assert status["params_complete_action_count"] == 2
+    assert status["defaulted_param_action_count"] == 0
     assert status["verification_blocked_action_count"] == 1
     assert status["verification_blocked_local_action_count"] == 1
     assert status["verification_blocked_guided_action_count"] == 0
@@ -5679,9 +5685,15 @@ def test_project_integrations_surface_preflight_counts_and_action_readiness(monk
     assert status["health"]["preflight_ready_action_count"] == 1
     assert status["health"]["confirmation_eligible_action_count"] == 0
     assert status["health"]["ready_to_execute_action_count"] == 1
+    assert status["health"]["parameterized_execution_action_count"] == 0
+    assert status["health"]["params_complete_action_count"] == 2
+    assert status["health"]["defaulted_param_action_count"] == 0
     assert status["health"]["verification_blocked_local_action_count"] == 1
 
     assert inspect_action["status"] == "available"
+    assert inspect_action["missing_params"] == []
+    assert inspect_action["defaulted_params"] == {}
+    assert inspect_action["params_complete"] is True
     assert inspect_action["execution_block_reason"] is None
     assert inspect_action["preflight_ready"] is True
     assert inspect_action["confirmation_eligible"] is False
@@ -5689,6 +5701,9 @@ def test_project_integrations_surface_preflight_counts_and_action_readiness(monk
     assert inspect_action["executable_name"] == "npm"
 
     assert publish_action["status"] == "needs_setup"
+    assert publish_action["missing_params"] == []
+    assert publish_action["defaulted_params"] == {}
+    assert publish_action["params_complete"] is True
     assert publish_action["provider_verification_required"] is True
     assert publish_action["verification_scope"] == "local_cli_mutation"
     assert publish_action["execution_block_reason"] == "provider_verification_required"
@@ -5725,6 +5740,9 @@ def test_project_integrations_do_not_let_registry_actions_inflate_execution_coun
     assert status["preflight_ready_action_count"] == 0
     assert status["confirmation_eligible_action_count"] == 0
     assert status["ready_to_execute_action_count"] == 0
+    assert status["parameterized_execution_action_count"] == 0
+    assert status["params_complete_action_count"] == 2
+    assert status["defaulted_param_action_count"] == 0
     assert status["provider_context_blocked_action_count"] == 2
     assert status["verification_blocked_action_count"] == 0
     assert status["health"]["execution_action_count"] == 2
@@ -5732,6 +5750,68 @@ def test_project_integrations_do_not_let_registry_actions_inflate_execution_coun
     assert status["health"]["preflight_ready_action_count"] == 0
     assert status["health"]["confirmation_eligible_action_count"] == 0
     assert status["health"]["ready_to_execute_action_count"] == 0
+    assert status["health"]["parameterized_execution_action_count"] == 0
+    assert status["health"]["params_complete_action_count"] == 2
+    assert status["health"]["defaulted_param_action_count"] == 0
+
+
+def test_project_integrations_surface_missing_and_defaulted_params_in_action_status(monkeypatch, tmp_path) -> None:
+    workspace = tmp_path / "action-param-surface"
+    workspace.mkdir(parents=True, exist_ok=True)
+    (workspace / ".github").mkdir(exist_ok=True)
+    (workspace / ".github" / "workflows").mkdir(exist_ok=True)
+    (workspace / ".github" / "workflows" / "ci.yml").write_text("name: ci\n", encoding="utf-8")
+    (workspace / "orders.postman_collection.json").write_text("{\"info\": {\"name\": \"orders\"}}\n", encoding="utf-8")
+    (workspace / "openapi.yaml").write_text("openapi: 3.1.0\ninfo:\n  title: demo\n  version: 1.0.0\npaths: {}\n", encoding="utf-8")
+
+    monkeypatch.setattr(
+        "integration_registry.shutil.which",
+        lambda command: f"C:/tools/{command}.exe" if command in {"gh", "newman", "swagger-cli"} else None,
+    )
+
+    statuses = {
+        item["family"]: item
+        for item in build_project_integration_status(
+            workspace_path=str(workspace),
+            project_name="Action Param Surface Demo",
+            registry_payload=normalize_integration_registry({}, {}),
+        )
+    }
+
+    ci_run = next(item for item in statuses["ci_cd"]["available_actions"] if item["action_id"] == "inspect_run")
+    ci_rerun = next(item for item in statuses["ci_cd"]["available_actions"] if item["action_id"] == "rerun")
+    api_validate = next(item for item in statuses["api_clients"]["available_actions"] if item["action_id"] == "validate")
+    spec_inspect = next(item for item in statuses["openapi"]["available_actions"] if item["action_id"] == "inspect")
+
+    assert ci_run["required_params"] == ["run_id"]
+    assert ci_run["missing_params"] == ["run_id"]
+    assert ci_run["defaulted_params"] == {}
+    assert ci_run["params_complete"] is False
+    assert ci_run["execution_block_reason"] == "missing_params"
+
+    assert ci_rerun["required_params"] == ["run_id"]
+    assert ci_rerun["missing_params"] == ["run_id"]
+    assert ci_rerun["defaulted_params"] == {}
+    assert ci_rerun["params_complete"] is False
+    assert ci_rerun["execution_block_reason"] == "missing_params"
+
+    assert api_validate["required_params"] == ["collection"]
+    assert api_validate["missing_params"] == []
+    assert api_validate["defaulted_params"] == {"collection": "orders.postman_collection.json"}
+    assert api_validate["params_complete"] is True
+
+    assert spec_inspect["required_params"] == ["spec"]
+    assert spec_inspect["missing_params"] == []
+    assert spec_inspect["defaulted_params"] == {"spec": "openapi.yaml"}
+    assert spec_inspect["params_complete"] is True
+
+    assert statuses["ci_cd"]["missing_params_action_count"] >= 3
+    assert "inspect_run" in statuses["ci_cd"]["health"]["missing_params_action_ids"]
+    assert "rerun" in statuses["ci_cd"]["health"]["missing_params_action_ids"]
+    assert statuses["api_clients"]["defaulted_param_action_count"] >= 1
+    assert "validate" in statuses["api_clients"]["health"]["defaulted_param_action_ids"]
+    assert statuses["openapi"]["defaulted_param_action_count"] >= 1
+    assert "inspect" in statuses["openapi"]["health"]["defaulted_param_action_ids"]
 
 
 def test_execute_integration_action_blocks_missing_executable_before_confirmation(monkeypatch) -> None:

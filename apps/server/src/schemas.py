@@ -3141,6 +3141,9 @@ class IntegrationActionRead(BaseModel):
     mutates_remote_state: bool = False
     requires_confirmation: bool = False
     required_params: list[str] = Field(default_factory=list)
+    missing_params: list[str] = Field(default_factory=list)
+    defaulted_params: dict[str, Any] = Field(default_factory=dict)
+    params_complete: bool = True
     status: ToolAvailability = "available"
     provider: str | None = None
     command_template: str | None = None
@@ -3232,6 +3235,9 @@ class ProjectIntegrationFamilyRead(BaseModel):
     preflight_ready_action_count: int = 0
     confirmation_eligible_action_count: int = 0
     ready_to_execute_action_count: int = 0
+    parameterized_execution_action_count: int = 0
+    params_complete_action_count: int = 0
+    defaulted_param_action_count: int = 0
     missing_params_action_count: int = 0
     missing_executable_action_count: int = 0
     no_local_command_action_count: int = 0

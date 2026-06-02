@@ -1584,6 +1584,7 @@ def _action_preflight_summary(
         "defaulted_params": effective_params,
         "required_params": required_params,
         "missing_params": missing_params,
+        "params_complete": not missing_params,
         "command": command,
         "command_ready": executable_available,
         "executable_name": executable_name,
@@ -2932,6 +2933,9 @@ def build_project_integration_status(
                     "mutates_remote_state": bool(action_metadata["mutates_remote_state"]),
                     "requires_confirmation": bool(action_metadata["requires_confirmation"]),
                     "required_params": preflight["required_params"],
+                    "missing_params": preflight["missing_params"],
+                    "defaulted_params": preflight["defaulted_params"],
+                    "params_complete": preflight["params_complete"],
                     "status": "available" if action_ready else "needs_setup",
                     "provider": action_provider,
                     "command_template": action_template,
@@ -3005,10 +3009,23 @@ def build_project_integration_status(
         preflight_ready_action_count = sum(1 for item in execution_actions if item["preflight_ready"])
         confirmation_eligible_action_count = sum(1 for item in execution_actions if item["confirmation_eligible"])
         ready_to_execute_action_count = sum(1 for item in execution_actions if item["ready_to_execute"])
+        parameterized_execution_action_count = sum(1 for item in execution_actions if item["required_params"])
+        params_complete_action_count = sum(1 for item in execution_actions if item["params_complete"])
+        defaulted_param_action_count = sum(1 for item in execution_actions if item["defaulted_params"])
         missing_params_action_count = sum(1 for item in execution_actions if item.get("execution_block_reason") == "missing_params")
         missing_executable_action_count = sum(1 for item in execution_actions if item.get("execution_block_reason") == "missing_executable")
         no_local_command_action_count = sum(1 for item in execution_actions if item.get("execution_block_reason") == "no_local_command")
         provider_context_blocked_action_count = sum(1 for item in execution_actions if item.get("execution_block_reason") == "provider_context_missing")
+        missing_params_action_ids = [
+            str(item["action_id"])
+            for item in execution_actions
+            if item.get("execution_block_reason") == "missing_params"
+        ]
+        defaulted_param_action_ids = [
+            str(item["action_id"])
+            for item in execution_actions
+            if item["defaulted_params"]
+        ]
         has_actionable_lane = available_action_count > registry_action_count
         has_provider_cli = not provider_cli_candidates or len(installed_provider_clis) == len(provider_cli_candidates)
         if not has_context_signal:
@@ -3127,6 +3144,9 @@ def build_project_integration_status(
                 "preflight_ready_action_count": preflight_ready_action_count,
                 "confirmation_eligible_action_count": confirmation_eligible_action_count,
                 "ready_to_execute_action_count": ready_to_execute_action_count,
+                "parameterized_execution_action_count": parameterized_execution_action_count,
+                "params_complete_action_count": params_complete_action_count,
+                "defaulted_param_action_count": defaulted_param_action_count,
                 "missing_params_action_count": missing_params_action_count,
                 "missing_executable_action_count": missing_executable_action_count,
                 "no_local_command_action_count": no_local_command_action_count,
@@ -3166,10 +3186,15 @@ def build_project_integration_status(
                     "preflight_ready_action_count": preflight_ready_action_count,
                     "confirmation_eligible_action_count": confirmation_eligible_action_count,
                     "ready_to_execute_action_count": ready_to_execute_action_count,
+                    "parameterized_execution_action_count": parameterized_execution_action_count,
+                    "params_complete_action_count": params_complete_action_count,
+                    "defaulted_param_action_count": defaulted_param_action_count,
                     "missing_params_action_count": missing_params_action_count,
                     "missing_executable_action_count": missing_executable_action_count,
                     "no_local_command_action_count": no_local_command_action_count,
                     "provider_context_blocked_action_count": provider_context_blocked_action_count,
+                    "missing_params_action_ids": missing_params_action_ids,
+                    "defaulted_param_action_ids": defaulted_param_action_ids,
                     "git_remote_url": git_remote_url or None,
                 },
                 "artifacts": artifacts,
