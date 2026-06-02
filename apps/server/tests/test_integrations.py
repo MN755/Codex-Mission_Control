@@ -162,34 +162,45 @@ def test_project_integrations_and_action_preview_flow(client, bridge_headers, mo
         expected_workspace_token_hit_family_ids[token_hit] = family_ids
     assert project_integrations_payload["status_counts"] == expected_status_counts
     assert project_integrations_payload["status_family_ids"] == expected_status_family_ids
+    assert project_integrations_payload["statuses"] == sorted(expected_status_counts)
     assert project_integrations_payload["status_group_count"] == len(expected_status_counts)
+    assert project_integrations_payload["connection_statuses"] == sorted(expected_connection_status_counts)
     assert project_integrations_payload["connection_status_counts"] == expected_connection_status_counts
     assert project_integrations_payload["connection_status_family_ids"] == expected_connection_status_family_ids
     assert project_integrations_payload["connection_status_group_count"] == len(expected_connection_status_counts)
+    assert project_integrations_payload["provider_resolution_states"] == sorted(expected_provider_resolution_state_counts)
     assert project_integrations_payload["provider_resolution_state_counts"] == expected_provider_resolution_state_counts
     assert project_integrations_payload["provider_resolution_state_family_ids"] == expected_provider_resolution_state_family_ids
     assert project_integrations_payload["provider_resolution_state_group_count"] == len(expected_provider_resolution_state_counts)
+    assert project_integrations_payload["provider_context_statuses"] == sorted(expected_provider_context_status_counts)
     assert project_integrations_payload["provider_context_status_counts"] == expected_provider_context_status_counts
     assert project_integrations_payload["provider_context_status_family_ids"] == expected_provider_context_status_family_ids
     assert project_integrations_payload["provider_context_status_group_count"] == len(expected_provider_context_status_counts)
+    assert project_integrations_payload["signal_sources"] == sorted(expected_signal_source_counts)
     assert project_integrations_payload["signal_source_counts"] == expected_signal_source_counts
     assert project_integrations_payload["signal_source_family_ids"] == expected_signal_source_family_ids
     assert project_integrations_payload["signal_source_group_count"] == len(expected_signal_source_counts)
+    assert project_integrations_payload["providers"] == sorted(expected_provider_counts)
     assert project_integrations_payload["provider_counts"] == expected_provider_counts
     assert project_integrations_payload["provider_family_ids"] == expected_provider_family_ids
     assert project_integrations_payload["provider_group_count"] == len(expected_provider_counts)
+    assert project_integrations_payload["provider_candidates"] == sorted(expected_provider_candidate_counts)
     assert project_integrations_payload["provider_candidate_counts"] == expected_provider_candidate_counts
     assert project_integrations_payload["provider_candidate_family_ids"] == expected_provider_candidate_family_ids
     assert project_integrations_payload["provider_candidate_group_count"] == len(expected_provider_candidate_counts)
+    assert project_integrations_payload["cli_detected"] == sorted(expected_cli_detected_counts)
     assert project_integrations_payload["cli_detected_counts"] == expected_cli_detected_counts
     assert project_integrations_payload["cli_detected_family_ids"] == expected_cli_detected_family_ids
     assert project_integrations_payload["cli_detected_group_count"] == len(expected_cli_detected_counts)
+    assert project_integrations_payload["resolved_cli_detected"] == sorted(expected_resolved_cli_detected_counts)
     assert project_integrations_payload["resolved_cli_detected_counts"] == expected_resolved_cli_detected_counts
     assert project_integrations_payload["resolved_cli_detected_family_ids"] == expected_resolved_cli_detected_family_ids
     assert project_integrations_payload["resolved_cli_detected_group_count"] == len(expected_resolved_cli_detected_counts)
+    assert project_integrations_payload["workspace_config_files"] == sorted(expected_workspace_config_file_counts)
     assert project_integrations_payload["workspace_config_file_counts"] == expected_workspace_config_file_counts
     assert project_integrations_payload["workspace_config_file_family_ids"] == expected_workspace_config_file_family_ids
     assert project_integrations_payload["workspace_config_file_group_count"] == len(expected_workspace_config_file_counts)
+    assert project_integrations_payload["workspace_token_hits"] == sorted(expected_workspace_token_hit_counts)
     assert project_integrations_payload["workspace_token_hit_counts"] == expected_workspace_token_hit_counts
     assert project_integrations_payload["workspace_token_hit_family_ids"] == expected_workspace_token_hit_family_ids
     assert project_integrations_payload["workspace_token_hit_group_count"] == len(expected_workspace_token_hit_counts)

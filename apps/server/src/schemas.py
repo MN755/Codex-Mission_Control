@@ -3521,36 +3521,47 @@ class ProjectIntegrationsRead(BaseModel):
     summary: str
     family_count: int = 0
     family_ids: list[str] = Field(default_factory=list)
+    statuses: list[str] = Field(default_factory=list)
     status_counts: dict[str, int] = Field(default_factory=dict)
     status_family_ids: dict[str, list[str]] = Field(default_factory=dict)
     status_group_count: int = 0
+    connection_statuses: list[str] = Field(default_factory=list)
     connection_status_counts: dict[str, int] = Field(default_factory=dict)
     connection_status_family_ids: dict[str, list[str]] = Field(default_factory=dict)
     connection_status_group_count: int = 0
+    provider_resolution_states: list[str] = Field(default_factory=list)
     provider_resolution_state_counts: dict[str, int] = Field(default_factory=dict)
     provider_resolution_state_family_ids: dict[str, list[str]] = Field(default_factory=dict)
     provider_resolution_state_group_count: int = 0
+    provider_context_statuses: list[str] = Field(default_factory=list)
     provider_context_status_counts: dict[str, int] = Field(default_factory=dict)
     provider_context_status_family_ids: dict[str, list[str]] = Field(default_factory=dict)
     provider_context_status_group_count: int = 0
+    signal_sources: list[str] = Field(default_factory=list)
     signal_source_counts: dict[str, int] = Field(default_factory=dict)
     signal_source_family_ids: dict[str, list[str]] = Field(default_factory=dict)
     signal_source_group_count: int = 0
+    providers: list[str] = Field(default_factory=list)
     provider_counts: dict[str, int] = Field(default_factory=dict)
     provider_family_ids: dict[str, list[str]] = Field(default_factory=dict)
     provider_group_count: int = 0
+    provider_candidates: list[str] = Field(default_factory=list)
     provider_candidate_counts: dict[str, int] = Field(default_factory=dict)
     provider_candidate_family_ids: dict[str, list[str]] = Field(default_factory=dict)
     provider_candidate_group_count: int = 0
+    cli_detected: list[str] = Field(default_factory=list)
     cli_detected_counts: dict[str, int] = Field(default_factory=dict)
     cli_detected_family_ids: dict[str, list[str]] = Field(default_factory=dict)
     cli_detected_group_count: int = 0
+    resolved_cli_detected: list[str] = Field(default_factory=list)
     resolved_cli_detected_counts: dict[str, int] = Field(default_factory=dict)
     resolved_cli_detected_family_ids: dict[str, list[str]] = Field(default_factory=dict)
     resolved_cli_detected_group_count: int = 0
+    workspace_config_files: list[str] = Field(default_factory=list)
     workspace_config_file_counts: dict[str, int] = Field(default_factory=dict)
     workspace_config_file_family_ids: dict[str, list[str]] = Field(default_factory=dict)
     workspace_config_file_group_count: int = 0
+    workspace_token_hits: list[str] = Field(default_factory=list)
     workspace_token_hit_counts: dict[str, int] = Field(default_factory=dict)
     workspace_token_hit_family_ids: dict[str, list[str]] = Field(default_factory=dict)
     workspace_token_hit_group_count: int = 0

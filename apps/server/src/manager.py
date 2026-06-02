@@ -14098,6 +14098,7 @@ class MissionControlService:
 
         family_ids = [str(item.get("family") or "") for item in families]
         family_ids_by_status = _group_scalar_family_ids("status", fallback="unknown")
+        statuses = sorted(family_ids_by_status)
         status_counts = {
             name: count
             for name, count in Counter(str(item.get("status") or "unknown") for item in families).items()
@@ -14105,33 +14106,43 @@ class MissionControlService:
         }
         status_group_count = len(status_counts)
         connection_status_family_ids = _group_scalar_family_ids("connection_status")
+        connection_statuses = sorted(connection_status_family_ids)
         connection_status_counts = {name: len(ids) for name, ids in connection_status_family_ids.items()}
         connection_status_group_count = len(connection_status_counts)
         provider_resolution_state_family_ids = _group_scalar_family_ids("provider_resolution_state")
+        provider_resolution_states = sorted(provider_resolution_state_family_ids)
         provider_resolution_state_counts = {name: len(ids) for name, ids in provider_resolution_state_family_ids.items()}
         provider_resolution_state_group_count = len(provider_resolution_state_counts)
         provider_context_status_family_ids = _group_scalar_family_ids("provider_context_status")
+        provider_context_statuses = sorted(provider_context_status_family_ids)
         provider_context_status_counts = {name: len(ids) for name, ids in provider_context_status_family_ids.items()}
         provider_context_status_group_count = len(provider_context_status_counts)
         signal_source_family_ids = _group_list_family_ids("signal_sources")
+        signal_sources = sorted(signal_source_family_ids)
         signal_source_counts = {name: len(ids) for name, ids in signal_source_family_ids.items()}
         signal_source_group_count = len(signal_source_counts)
         provider_family_ids = _group_list_family_ids("providers")
+        providers = sorted(provider_family_ids)
         provider_counts = {name: len(ids) for name, ids in provider_family_ids.items()}
         provider_group_count = len(provider_counts)
         provider_candidate_family_ids = _group_list_family_ids("provider_candidates")
+        provider_candidates = sorted(provider_candidate_family_ids)
         provider_candidate_counts = {name: len(ids) for name, ids in provider_candidate_family_ids.items()}
         provider_candidate_group_count = len(provider_candidate_counts)
         cli_detected_family_ids = _group_list_family_ids("cli_detected")
+        cli_detected = sorted(cli_detected_family_ids)
         cli_detected_counts = {name: len(ids) for name, ids in cli_detected_family_ids.items()}
         cli_detected_group_count = len(cli_detected_counts)
         resolved_cli_detected_family_ids = _group_list_family_ids("resolved_cli_detected")
+        resolved_cli_detected = sorted(resolved_cli_detected_family_ids)
         resolved_cli_detected_counts = {name: len(ids) for name, ids in resolved_cli_detected_family_ids.items()}
         resolved_cli_detected_group_count = len(resolved_cli_detected_counts)
         workspace_config_file_family_ids = _group_list_family_ids("workspace_config_files")
+        workspace_config_files = sorted(workspace_config_file_family_ids)
         workspace_config_file_counts = {name: len(ids) for name, ids in workspace_config_file_family_ids.items()}
         workspace_config_file_group_count = len(workspace_config_file_counts)
         workspace_token_hit_family_ids = _group_list_family_ids("workspace_token_hits")
+        workspace_token_hits = sorted(workspace_token_hit_family_ids)
         workspace_token_hit_counts = {name: len(ids) for name, ids in workspace_token_hit_family_ids.items()}
         workspace_token_hit_group_count = len(workspace_token_hit_counts)
         ready_family_ids = [str(item.get("family") or "") for item in families if item.get("status") == "ready"]
@@ -14181,36 +14192,47 @@ class MissionControlService:
             "summary": f"{ready_count} integration families are ready and {family_count - ready_count} still need setup or host import.",
             "family_count": family_count,
             "family_ids": family_ids,
+            "statuses": statuses,
             "status_counts": status_counts,
             "status_family_ids": family_ids_by_status,
             "status_group_count": status_group_count,
+            "connection_statuses": connection_statuses,
             "connection_status_counts": connection_status_counts,
             "connection_status_family_ids": connection_status_family_ids,
             "connection_status_group_count": connection_status_group_count,
+            "provider_resolution_states": provider_resolution_states,
             "provider_resolution_state_counts": provider_resolution_state_counts,
             "provider_resolution_state_family_ids": provider_resolution_state_family_ids,
             "provider_resolution_state_group_count": provider_resolution_state_group_count,
+            "provider_context_statuses": provider_context_statuses,
             "provider_context_status_counts": provider_context_status_counts,
             "provider_context_status_family_ids": provider_context_status_family_ids,
             "provider_context_status_group_count": provider_context_status_group_count,
+            "signal_sources": signal_sources,
             "signal_source_counts": signal_source_counts,
             "signal_source_family_ids": signal_source_family_ids,
             "signal_source_group_count": signal_source_group_count,
+            "providers": providers,
             "provider_counts": provider_counts,
             "provider_family_ids": provider_family_ids,
             "provider_group_count": provider_group_count,
+            "provider_candidates": provider_candidates,
             "provider_candidate_counts": provider_candidate_counts,
             "provider_candidate_family_ids": provider_candidate_family_ids,
             "provider_candidate_group_count": provider_candidate_group_count,
+            "cli_detected": cli_detected,
             "cli_detected_counts": cli_detected_counts,
             "cli_detected_family_ids": cli_detected_family_ids,
             "cli_detected_group_count": cli_detected_group_count,
+            "resolved_cli_detected": resolved_cli_detected,
             "resolved_cli_detected_counts": resolved_cli_detected_counts,
             "resolved_cli_detected_family_ids": resolved_cli_detected_family_ids,
             "resolved_cli_detected_group_count": resolved_cli_detected_group_count,
+            "workspace_config_files": workspace_config_files,
             "workspace_config_file_counts": workspace_config_file_counts,
             "workspace_config_file_family_ids": workspace_config_file_family_ids,
             "workspace_config_file_group_count": workspace_config_file_group_count,
+            "workspace_token_hits": workspace_token_hits,
             "workspace_token_hit_counts": workspace_token_hit_counts,
             "workspace_token_hit_family_ids": workspace_token_hit_family_ids,
             "workspace_token_hit_group_count": workspace_token_hit_group_count,
