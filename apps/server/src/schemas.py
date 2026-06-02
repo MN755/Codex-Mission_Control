@@ -3653,72 +3653,119 @@ class ProjectIntegrationsRead(BaseModel):
     action_statuses: list[str] = Field(default_factory=list)
     action_status_counts: dict[str, int] = Field(default_factory=dict)
     action_status_group_count: int = 0
+    action_status_action_refs: dict[str, list[str]] = Field(default_factory=dict)
     available_action_statuses: list[str] = Field(default_factory=list)
     available_action_status_counts: dict[str, int] = Field(default_factory=dict)
     available_action_status_group_count: int = 0
+    available_action_status_action_refs: dict[str, list[str]] = Field(default_factory=dict)
     blocked_action_statuses: list[str] = Field(default_factory=list)
     blocked_action_status_counts: dict[str, int] = Field(default_factory=dict)
     blocked_action_status_group_count: int = 0
+    blocked_action_status_action_refs: dict[str, list[str]] = Field(default_factory=dict)
     execution_modes: list[str] = Field(default_factory=list)
     execution_mode_counts: dict[str, int] = Field(default_factory=dict)
     execution_mode_group_count: int = 0
+    execution_mode_action_refs: dict[str, list[str]] = Field(default_factory=dict)
     available_execution_modes: list[str] = Field(default_factory=list)
     available_execution_mode_counts: dict[str, int] = Field(default_factory=dict)
     available_execution_mode_group_count: int = 0
+    available_execution_mode_action_refs: dict[str, list[str]] = Field(default_factory=dict)
     blocked_execution_modes: list[str] = Field(default_factory=list)
     blocked_execution_mode_counts: dict[str, int] = Field(default_factory=dict)
     blocked_execution_mode_group_count: int = 0
+    blocked_execution_mode_action_refs: dict[str, list[str]] = Field(default_factory=dict)
     provider_support_modes: list[str] = Field(default_factory=list)
     provider_support_mode_counts: dict[str, int] = Field(default_factory=dict)
     provider_support_mode_group_count: int = 0
+    provider_support_mode_action_refs: dict[str, list[str]] = Field(default_factory=dict)
     available_provider_support_modes: list[str] = Field(default_factory=list)
     available_provider_support_mode_counts: dict[str, int] = Field(default_factory=dict)
     available_provider_support_mode_group_count: int = 0
+    available_provider_support_mode_action_refs: dict[str, list[str]] = Field(default_factory=dict)
     blocked_provider_support_modes: list[str] = Field(default_factory=list)
     blocked_provider_support_mode_counts: dict[str, int] = Field(default_factory=dict)
     blocked_provider_support_mode_group_count: int = 0
+    blocked_provider_support_mode_action_refs: dict[str, list[str]] = Field(default_factory=dict)
     action_provider_context_statuses: list[str] = Field(default_factory=list)
     action_provider_context_status_counts: dict[str, int] = Field(default_factory=dict)
     action_provider_context_status_group_count: int = 0
+    action_provider_context_status_action_refs: dict[str, list[str]] = Field(default_factory=dict)
     available_action_provider_context_statuses: list[str] = Field(default_factory=list)
     available_action_provider_context_status_counts: dict[str, int] = Field(default_factory=dict)
     available_action_provider_context_status_group_count: int = 0
+    available_action_provider_context_status_action_refs: dict[str, list[str]] = Field(default_factory=dict)
     blocked_action_provider_context_statuses: list[str] = Field(default_factory=list)
     blocked_action_provider_context_status_counts: dict[str, int] = Field(default_factory=dict)
     blocked_action_provider_context_status_group_count: int = 0
+    blocked_action_provider_context_status_action_refs: dict[str, list[str]] = Field(default_factory=dict)
     verification_scopes: list[str] = Field(default_factory=list)
     verification_scope_counts: dict[str, int] = Field(default_factory=dict)
     verification_scope_group_count: int = 0
+    verification_scope_action_refs: dict[str, list[str]] = Field(default_factory=dict)
     available_verification_scopes: list[str] = Field(default_factory=list)
     available_verification_scope_counts: dict[str, int] = Field(default_factory=dict)
     available_verification_scope_group_count: int = 0
+    available_verification_scope_action_refs: dict[str, list[str]] = Field(default_factory=dict)
     blocked_verification_scopes: list[str] = Field(default_factory=list)
     blocked_verification_scope_counts: dict[str, int] = Field(default_factory=dict)
     blocked_verification_scope_group_count: int = 0
+    blocked_verification_scope_action_refs: dict[str, list[str]] = Field(default_factory=dict)
     safe_command_reasons: list[str] = Field(default_factory=list)
     safe_command_reason_counts: dict[str, int] = Field(default_factory=dict)
     safe_command_reason_group_count: int = 0
+    safe_command_reason_action_refs: dict[str, list[str]] = Field(default_factory=dict)
     available_safe_command_reasons: list[str] = Field(default_factory=list)
     available_safe_command_reason_counts: dict[str, int] = Field(default_factory=dict)
     available_safe_command_reason_group_count: int = 0
+    available_safe_command_reason_action_refs: dict[str, list[str]] = Field(default_factory=dict)
     blocked_safe_command_reasons: list[str] = Field(default_factory=list)
     blocked_safe_command_reason_counts: dict[str, int] = Field(default_factory=dict)
     blocked_safe_command_reason_group_count: int = 0
+    blocked_safe_command_reason_action_refs: dict[str, list[str]] = Field(default_factory=dict)
     context_requirement_reasons: list[str] = Field(default_factory=list)
     context_requirement_reason_counts: dict[str, int] = Field(default_factory=dict)
     context_requirement_reason_group_count: int = 0
+    context_requirement_reason_action_refs: dict[str, list[str]] = Field(default_factory=dict)
     available_context_requirement_reasons: list[str] = Field(default_factory=list)
     available_context_requirement_reason_counts: dict[str, int] = Field(default_factory=dict)
     available_context_requirement_reason_group_count: int = 0
+    available_context_requirement_reason_action_refs: dict[str, list[str]] = Field(default_factory=dict)
     blocked_context_requirement_reasons: list[str] = Field(default_factory=list)
     blocked_context_requirement_reason_counts: dict[str, int] = Field(default_factory=dict)
     blocked_context_requirement_reason_group_count: int = 0
+    blocked_context_requirement_reason_action_refs: dict[str, list[str]] = Field(default_factory=dict)
+    action_providers: list[str] = Field(default_factory=list)
+    action_provider_counts: dict[str, int] = Field(default_factory=dict)
+    action_provider_group_count: int = 0
+    action_provider_action_refs: dict[str, list[str]] = Field(default_factory=dict)
+    available_action_providers: list[str] = Field(default_factory=list)
+    available_action_provider_counts: dict[str, int] = Field(default_factory=dict)
+    available_action_provider_group_count: int = 0
+    available_action_provider_action_refs: dict[str, list[str]] = Field(default_factory=dict)
+    blocked_action_providers: list[str] = Field(default_factory=list)
+    blocked_action_provider_counts: dict[str, int] = Field(default_factory=dict)
+    blocked_action_provider_group_count: int = 0
+    blocked_action_provider_action_refs: dict[str, list[str]] = Field(default_factory=dict)
+    executable_names: list[str] = Field(default_factory=list)
+    executable_name_counts: dict[str, int] = Field(default_factory=dict)
+    executable_name_group_count: int = 0
+    executable_name_action_refs: dict[str, list[str]] = Field(default_factory=dict)
+    available_executable_names: list[str] = Field(default_factory=list)
+    available_executable_name_counts: dict[str, int] = Field(default_factory=dict)
+    available_executable_name_group_count: int = 0
+    available_executable_name_action_refs: dict[str, list[str]] = Field(default_factory=dict)
+    blocked_executable_names: list[str] = Field(default_factory=list)
+    blocked_executable_name_counts: dict[str, int] = Field(default_factory=dict)
+    blocked_executable_name_group_count: int = 0
+    blocked_executable_name_action_refs: dict[str, list[str]] = Field(default_factory=dict)
     execution_block_reasons: list[str] = Field(default_factory=list)
     execution_block_reason_counts: dict[str, int] = Field(default_factory=dict)
     execution_block_reason_group_count: int = 0
+    execution_block_reason_action_refs: dict[str, list[str]] = Field(default_factory=dict)
     blocking_reasons: list[str] = Field(default_factory=list)
     blocking_reason_counts: dict[str, int] = Field(default_factory=dict)
     blocking_reason_group_count: int = 0
+    blocking_reason_action_refs: dict[str, list[str]] = Field(default_factory=dict)
     required_permissions: list[str] = Field(default_factory=list)
     required_permission_count: int = 0
     required_permission_family_ids: dict[str, list[str]] = Field(default_factory=dict)
@@ -3728,36 +3775,42 @@ class ProjectIntegrationsRead(BaseModel):
     permission_policies: list[str] = Field(default_factory=list)
     permission_policy_counts: dict[str, int] = Field(default_factory=dict)
     permission_policy_group_count: int = 0
+    permission_policy_action_refs: dict[str, list[str]] = Field(default_factory=dict)
     permission_policy_family_ids: dict[str, list[str]] = Field(default_factory=dict)
     permission_policy_family_count: int = 0
     permission_policy_families: list[str] = Field(default_factory=list)
     available_permission_policies: list[str] = Field(default_factory=list)
     available_permission_policy_counts: dict[str, int] = Field(default_factory=dict)
     available_permission_policy_group_count: int = 0
+    available_permission_policy_action_refs: dict[str, list[str]] = Field(default_factory=dict)
     available_permission_policy_family_ids: dict[str, list[str]] = Field(default_factory=dict)
     available_permission_policy_family_count: int = 0
     available_permission_policy_families: list[str] = Field(default_factory=list)
     blocked_permission_policies: list[str] = Field(default_factory=list)
     blocked_permission_policy_counts: dict[str, int] = Field(default_factory=dict)
     blocked_permission_policy_group_count: int = 0
+    blocked_permission_policy_action_refs: dict[str, list[str]] = Field(default_factory=dict)
     blocked_permission_policy_family_ids: dict[str, list[str]] = Field(default_factory=dict)
     blocked_permission_policy_family_count: int = 0
     blocked_permission_policy_families: list[str] = Field(default_factory=list)
     risk_levels: list[str] = Field(default_factory=list)
     risk_level_counts: dict[str, int] = Field(default_factory=dict)
     risk_level_group_count: int = 0
+    risk_level_action_refs: dict[str, list[str]] = Field(default_factory=dict)
     risk_level_family_ids: dict[str, list[str]] = Field(default_factory=dict)
     risk_level_family_count: int = 0
     risk_level_families: list[str] = Field(default_factory=list)
     available_risk_levels: list[str] = Field(default_factory=list)
     available_risk_level_counts: dict[str, int] = Field(default_factory=dict)
     available_risk_level_group_count: int = 0
+    available_risk_level_action_refs: dict[str, list[str]] = Field(default_factory=dict)
     available_risk_level_family_ids: dict[str, list[str]] = Field(default_factory=dict)
     available_risk_level_family_count: int = 0
     available_risk_level_families: list[str] = Field(default_factory=list)
     blocked_risk_levels: list[str] = Field(default_factory=list)
     blocked_risk_level_counts: dict[str, int] = Field(default_factory=dict)
     blocked_risk_level_group_count: int = 0
+    blocked_risk_level_action_refs: dict[str, list[str]] = Field(default_factory=dict)
     blocked_risk_level_family_ids: dict[str, list[str]] = Field(default_factory=dict)
     blocked_risk_level_family_count: int = 0
     blocked_risk_level_families: list[str] = Field(default_factory=list)
@@ -3770,36 +3823,42 @@ class ProjectIntegrationsRead(BaseModel):
     execution_permission_policies: list[str] = Field(default_factory=list)
     execution_permission_policy_counts: dict[str, int] = Field(default_factory=dict)
     execution_permission_policy_group_count: int = 0
+    execution_permission_policy_action_refs: dict[str, list[str]] = Field(default_factory=dict)
     execution_permission_policy_family_ids: dict[str, list[str]] = Field(default_factory=dict)
     execution_permission_policy_family_count: int = 0
     execution_permission_policy_families: list[str] = Field(default_factory=list)
     available_execution_permission_policies: list[str] = Field(default_factory=list)
     available_execution_permission_policy_counts: dict[str, int] = Field(default_factory=dict)
     available_execution_permission_policy_group_count: int = 0
+    available_execution_permission_policy_action_refs: dict[str, list[str]] = Field(default_factory=dict)
     available_execution_permission_policy_family_ids: dict[str, list[str]] = Field(default_factory=dict)
     available_execution_permission_policy_family_count: int = 0
     available_execution_permission_policy_families: list[str] = Field(default_factory=list)
     blocked_execution_permission_policies: list[str] = Field(default_factory=list)
     blocked_execution_permission_policy_counts: dict[str, int] = Field(default_factory=dict)
     blocked_execution_permission_policy_group_count: int = 0
+    blocked_execution_permission_policy_action_refs: dict[str, list[str]] = Field(default_factory=dict)
     blocked_execution_permission_policy_family_ids: dict[str, list[str]] = Field(default_factory=dict)
     blocked_execution_permission_policy_family_count: int = 0
     blocked_execution_permission_policy_families: list[str] = Field(default_factory=list)
     execution_risk_levels: list[str] = Field(default_factory=list)
     execution_risk_level_counts: dict[str, int] = Field(default_factory=dict)
     execution_risk_level_group_count: int = 0
+    execution_risk_level_action_refs: dict[str, list[str]] = Field(default_factory=dict)
     execution_risk_level_family_ids: dict[str, list[str]] = Field(default_factory=dict)
     execution_risk_level_family_count: int = 0
     execution_risk_level_families: list[str] = Field(default_factory=list)
     available_execution_risk_levels: list[str] = Field(default_factory=list)
     available_execution_risk_level_counts: dict[str, int] = Field(default_factory=dict)
     available_execution_risk_level_group_count: int = 0
+    available_execution_risk_level_action_refs: dict[str, list[str]] = Field(default_factory=dict)
     available_execution_risk_level_family_ids: dict[str, list[str]] = Field(default_factory=dict)
     available_execution_risk_level_family_count: int = 0
     available_execution_risk_level_families: list[str] = Field(default_factory=list)
     blocked_execution_risk_levels: list[str] = Field(default_factory=list)
     blocked_execution_risk_level_counts: dict[str, int] = Field(default_factory=dict)
     blocked_execution_risk_level_group_count: int = 0
+    blocked_execution_risk_level_action_refs: dict[str, list[str]] = Field(default_factory=dict)
     blocked_execution_risk_level_family_ids: dict[str, list[str]] = Field(default_factory=dict)
     blocked_execution_risk_level_family_count: int = 0
     blocked_execution_risk_level_families: list[str] = Field(default_factory=list)
