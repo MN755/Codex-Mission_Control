@@ -3050,27 +3050,54 @@ def build_project_integration_status(
         available_action_count = sum(1 for item in available_actions if item["status"] == "available")
         actionable_actions = [item for item in available_actions if item["status"] == "available"]
         blocked_actions = [item for item in available_actions if item["status"] != "available"]
+        available_action_ids = [str(item["action_id"]) for item in actionable_actions]
+        blocked_action_ids = [str(item["action_id"]) for item in blocked_actions]
         local_action_count = sum(
             1
             for item in actionable_actions
             if item["execution_mode"] == "local_cli"
         )
+        local_action_ids = [
+            str(item["action_id"])
+            for item in actionable_actions
+            if item["execution_mode"] == "local_cli"
+        ]
         guided_action_count = sum(
             1
             for item in actionable_actions
             if item["execution_mode"] == "guided_remote"
         )
+        guided_action_ids = [
+            str(item["action_id"])
+            for item in actionable_actions
+            if item["execution_mode"] == "guided_remote"
+        ]
         registry_action_count = sum(
             1
             for item in actionable_actions
             if item["execution_mode"] == "registry_state"
         )
+        registry_action_ids = [
+            str(item["action_id"])
+            for item in actionable_actions
+            if item["execution_mode"] == "registry_state"
+        ]
         provider_specific_action_count = sum(
             1 for item in available_actions if item["provider_support_mode"] == "provider_specific"
         )
+        provider_specific_action_ids = [
+            str(item["action_id"])
+            for item in available_actions
+            if item["provider_support_mode"] == "provider_specific"
+        ]
         guided_only_action_count = sum(
             1 for item in available_actions if item["provider_support_mode"] == "guided_only"
         )
+        guided_only_action_ids = [
+            str(item["action_id"])
+            for item in available_actions
+            if item["provider_support_mode"] == "guided_only"
+        ]
         available_provider_lane_count = sum(
             1
             for item in available_actions
@@ -3078,6 +3105,25 @@ def build_project_integration_status(
             and item["provider_lane_resolved"]
             and item["execution_mode"] != "registry_state"
         )
+        available_provider_lane_action_ids = [
+            str(item["action_id"])
+            for item in available_actions
+            if item["status"] == "available"
+            and item["provider_lane_resolved"]
+            and item["execution_mode"] != "registry_state"
+        ]
+        available_mutating_action_count = sum(1 for item in actionable_actions if item["mutates_remote_state"])
+        available_mutating_action_ids = [
+            str(item["action_id"])
+            for item in actionable_actions
+            if item["mutates_remote_state"]
+        ]
+        available_non_mutating_action_count = sum(1 for item in actionable_actions if not item["mutates_remote_state"])
+        available_non_mutating_action_ids = [
+            str(item["action_id"])
+            for item in actionable_actions
+            if not item["mutates_remote_state"]
+        ]
         context_blocked_action_count = sum(1 for item in available_actions if item["context_required"])
         verification_blocked_action_count = sum(1 for item in available_actions if item["provider_verification_required"])
         verification_blocked_action_ids = [
@@ -3328,11 +3374,23 @@ def build_project_integration_status(
                 "available_execution_risk_level_counts": available_execution_risk_level_counts,
                 "available_execution_risk_level_action_ids": available_execution_risk_level_action_ids,
                 "local_action_count": local_action_count,
+                "available_action_ids": available_action_ids,
+                "blocked_action_ids": blocked_action_ids,
+                "local_action_ids": local_action_ids,
                 "guided_action_count": guided_action_count,
+                "guided_action_ids": guided_action_ids,
                 "registry_action_count": registry_action_count,
+                "registry_action_ids": registry_action_ids,
                 "provider_specific_action_count": provider_specific_action_count,
+                "provider_specific_action_ids": provider_specific_action_ids,
                 "guided_only_action_count": guided_only_action_count,
+                "guided_only_action_ids": guided_only_action_ids,
                 "available_provider_lane_count": available_provider_lane_count,
+                "available_provider_lane_action_ids": available_provider_lane_action_ids,
+                "available_mutating_action_count": available_mutating_action_count,
+                "available_mutating_action_ids": available_mutating_action_ids,
+                "available_non_mutating_action_count": available_non_mutating_action_count,
+                "available_non_mutating_action_ids": available_non_mutating_action_ids,
                 "context_blocked_action_count": context_blocked_action_count,
                 "context_blocked_action_ids": context_blocked_action_ids,
                 "verification_blocked_action_count": verification_blocked_action_count,
@@ -3414,6 +3472,18 @@ def build_project_integration_status(
                     "available_execution_permission_policy_action_ids": available_execution_permission_policy_action_ids,
                     "available_execution_risk_level_counts": available_execution_risk_level_counts,
                     "available_execution_risk_level_action_ids": available_execution_risk_level_action_ids,
+                    "available_action_ids": available_action_ids,
+                    "blocked_action_ids": blocked_action_ids,
+                    "local_action_ids": local_action_ids,
+                    "guided_action_ids": guided_action_ids,
+                    "registry_action_ids": registry_action_ids,
+                    "provider_specific_action_ids": provider_specific_action_ids,
+                    "guided_only_action_ids": guided_only_action_ids,
+                    "available_provider_lane_action_ids": available_provider_lane_action_ids,
+                    "available_mutating_action_count": available_mutating_action_count,
+                    "available_mutating_action_ids": available_mutating_action_ids,
+                    "available_non_mutating_action_count": available_non_mutating_action_count,
+                    "available_non_mutating_action_ids": available_non_mutating_action_ids,
                     "verification_blocked_action_ids": verification_blocked_action_ids,
                     "verification_blocked_guided_action_count": verification_blocked_guided_action_count,
                     "verification_blocked_guided_action_ids": verification_blocked_guided_action_ids,

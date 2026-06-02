@@ -6031,6 +6031,77 @@ def test_project_integrations_surface_permission_and_risk_inventories(monkeypatc
     assert package_status["health"]["blocked_risk_level_counts"] == {"high": 1}
 
 
+def test_project_integrations_surface_action_mode_and_support_ids(monkeypatch, tmp_path) -> None:
+    package_workspace = tmp_path / "mode-support-package"
+    package_workspace.mkdir(parents=True, exist_ok=True)
+    (package_workspace / "package.json").write_text('{"name":"mode-support-package"}\n', encoding="utf-8")
+
+    monkeypatch.setattr(
+        "integration_registry.shutil.which",
+        lambda command: f"C:/tools/{command}.exe" if command == "npm" else None,
+    )
+
+    package_status = next(
+        item
+        for item in build_project_integration_status(
+            registry_payload=normalize_integration_registry({}, {}),
+            workspace_path=str(package_workspace),
+            project_name="Mode Support Package Demo",
+        )
+        if item["family"] == "package_registries"
+    )
+
+    assert package_status["available_action_ids"] == ["import_host_state", "inspect_status", "connect", "disconnect", "inspect"]
+    assert package_status["blocked_action_ids"] == ["publish"]
+    assert package_status["local_action_ids"] == ["inspect"]
+    assert package_status["guided_action_ids"] == []
+    assert package_status["registry_action_ids"] == ["import_host_state", "inspect_status", "connect", "disconnect"]
+    assert package_status["provider_specific_action_ids"] == ["inspect", "publish"]
+    assert package_status["guided_only_action_ids"] == []
+    assert package_status["available_provider_lane_action_ids"] == ["inspect"]
+    assert package_status["available_mutating_action_ids"] == []
+    assert package_status["available_non_mutating_action_ids"] == ["import_host_state", "inspect_status", "connect", "disconnect", "inspect"]
+    assert package_status["health"]["local_action_ids"] == ["inspect"]
+    assert package_status["health"]["provider_specific_action_ids"] == ["inspect", "publish"]
+
+    registry = normalize_integration_registry(
+        {
+            "connections": {
+                "docs_systems": {
+                    "family": "docs_systems",
+                    "status": "connected",
+                    "providers": ["notion"],
+                    "connection_source": "mission_control",
+                    "host_imported": False,
+                }
+            }
+        },
+        {},
+    )
+
+    monkeypatch.setattr("integration_registry.shutil.which", lambda _command: None)
+
+    docs_status = next(
+        item
+        for item in build_project_integration_status(
+            registry_payload=registry,
+            workspace_path=None,
+            project_name="Mode Support Docs Demo",
+        )
+        if item["family"] == "docs_systems"
+    )
+
+    assert docs_status["guided_action_ids"] == ["inspect", "sync"]
+    assert docs_status["local_action_ids"] == []
+    assert docs_status["registry_action_ids"] == ["import_host_state", "inspect_status", "connect", "disconnect"]
+    assert docs_status["provider_specific_action_ids"] == ["inspect", "sync"]
+    assert docs_status["available_provider_lane_action_ids"] == ["inspect", "sync"]
+    assert docs_status["available_mutating_action_ids"] == ["sync"]
+    assert docs_status["available_non_mutating_action_ids"] == ["import_host_state", "inspect_status", "connect", "disconnect", "inspect"]
+    assert docs_status["health"]["guided_action_ids"] == ["inspect", "sync"]
+    assert docs_status["health"]["available_mutating_action_ids"] == ["sync"]
+
+
 def test_project_integrations_surface_multi_blocked_action_inventories(monkeypatch, tmp_path) -> None:
     pypi_workspace = tmp_path / "pypi-demo"
     pypi_workspace.mkdir(parents=True, exist_ok=True)

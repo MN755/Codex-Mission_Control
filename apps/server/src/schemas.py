@@ -3245,11 +3245,23 @@ class ProjectIntegrationFamilyRead(BaseModel):
     available_execution_risk_level_counts: dict[str, int] = Field(default_factory=dict)
     available_execution_risk_level_action_ids: dict[str, list[str]] = Field(default_factory=dict)
     local_action_count: int = 0
+    available_action_ids: list[str] = Field(default_factory=list)
+    blocked_action_ids: list[str] = Field(default_factory=list)
+    local_action_ids: list[str] = Field(default_factory=list)
     guided_action_count: int = 0
+    guided_action_ids: list[str] = Field(default_factory=list)
     registry_action_count: int = 0
+    registry_action_ids: list[str] = Field(default_factory=list)
     provider_specific_action_count: int = 0
+    provider_specific_action_ids: list[str] = Field(default_factory=list)
     guided_only_action_count: int = 0
+    guided_only_action_ids: list[str] = Field(default_factory=list)
     available_provider_lane_count: int = 0
+    available_provider_lane_action_ids: list[str] = Field(default_factory=list)
+    available_mutating_action_count: int = 0
+    available_mutating_action_ids: list[str] = Field(default_factory=list)
+    available_non_mutating_action_count: int = 0
+    available_non_mutating_action_ids: list[str] = Field(default_factory=list)
     context_blocked_action_count: int = 0
     context_blocked_action_ids: list[str] = Field(default_factory=list)
     verification_blocked_action_count: int = 0
