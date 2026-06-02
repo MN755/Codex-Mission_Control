@@ -2295,6 +2295,23 @@ def _action_ids_by_key(items: list[dict[str, Any]], key: str) -> dict[str, list[
     return {name: ids for name, ids in grouped.items() if ids}
 
 
+def _count_by_list_members(items: list[dict[str, Any]], key: str) -> dict[str, int]:
+    counts: Counter[str] = Counter()
+    for item in items:
+        for value in list(item.get(key) or []):
+            counts[str(value)] += 1
+    return {name: count for name, count in counts.items() if count > 0}
+
+
+def _action_ids_by_list_members(items: list[dict[str, Any]], key: str) -> dict[str, list[str]]:
+    grouped: dict[str, list[str]] = {}
+    for item in items:
+        action_id = str(item["action_id"])
+        for value in list(item.get(key) or []):
+            grouped.setdefault(str(value), []).append(action_id)
+    return {name: ids for name, ids in grouped.items() if ids}
+
+
 def _provider_verification_reason(
     *,
     family: IntegrationFamilyDefinition,
@@ -3380,10 +3397,6 @@ def build_project_integration_status(
             if item["params_complete"]
         ]
         defaulted_param_action_count = sum(1 for item in execution_actions if item["defaulted_params"])
-        missing_params_action_count = sum(1 for item in execution_actions if item.get("execution_block_reason") == "missing_params")
-        missing_executable_action_count = sum(1 for item in execution_actions if item.get("execution_block_reason") == "missing_executable")
-        no_local_command_action_count = sum(1 for item in execution_actions if item.get("execution_block_reason") == "no_local_command")
-        provider_context_blocked_action_count = sum(1 for item in execution_actions if item.get("execution_block_reason") == "provider_context_missing")
         provider_context_verified_action_count = sum(1 for item in available_actions if item["provider_context_status"] == "verified")
         provider_context_verified_action_ids = [
             str(item["action_id"])
@@ -3413,49 +3426,31 @@ def build_project_integration_status(
             for item in available_actions
             if item["context_required"]
         ]
-        missing_params_action_ids = [
-            str(item["action_id"])
-            for item in execution_actions
-            if item.get("execution_block_reason") == "missing_params"
-        ]
-        missing_executable_action_ids = [
-            str(item["action_id"])
-            for item in execution_actions
-            if item.get("execution_block_reason") == "missing_executable"
-        ]
-        no_local_command_action_ids = [
-            str(item["action_id"])
-            for item in execution_actions
-            if item.get("execution_block_reason") == "no_local_command"
-        ]
-        provider_context_blocked_action_ids = [
-            str(item["action_id"])
-            for item in execution_actions
-            if item.get("execution_block_reason") == "provider_context_missing"
-        ]
         defaulted_param_action_ids = [
             str(item["action_id"])
             for item in execution_actions
             if item["defaulted_params"]
         ]
+        execution_block_reason_action_ids = _action_ids_by_key(blocked_execution_actions, "execution_block_reason")
+        blocking_reason_action_ids = _action_ids_by_list_members(blocked_execution_actions, "blocking_reasons")
+        missing_params_action_ids = list(blocking_reason_action_ids.get("missing_params") or [])
+        missing_executable_action_ids = list(blocking_reason_action_ids.get("missing_executable") or [])
+        no_local_command_action_ids = list(blocking_reason_action_ids.get("no_local_command") or [])
+        provider_context_blocked_action_ids = list(blocking_reason_action_ids.get("provider_context_missing") or [])
+        missing_params_action_count = len(missing_params_action_ids)
+        missing_executable_action_count = len(missing_executable_action_ids)
+        no_local_command_action_count = len(no_local_command_action_ids)
+        provider_context_blocked_action_count = len(provider_context_blocked_action_ids)
         execution_block_reason_counts = {
             reason: count
             for reason, count in Counter(
                 str(item["execution_block_reason"])
-                for item in execution_actions
+                for item in blocked_execution_actions
                 if item.get("execution_block_reason")
             ).items()
             if count > 0
         }
-        blocking_reason_counts = {
-            reason: count
-            for reason, count in Counter(
-                reason
-                for item in execution_actions
-                for reason in list(item.get("blocking_reasons") or [])
-            ).items()
-            if count > 0
-        }
+        blocking_reason_counts = _count_by_list_members(blocked_execution_actions, "blocking_reasons")
         has_actionable_lane = available_action_count > registry_action_count
         has_provider_cli = not provider_cli_candidates or len(installed_provider_clis) == len(provider_cli_candidates)
         if not has_context_signal:
@@ -3686,7 +3681,9 @@ def build_project_integration_status(
                 "commandless_execution_action_count": commandless_execution_action_count,
                 "commandless_execution_action_ids": commandless_execution_action_ids,
                 "execution_block_reason_counts": execution_block_reason_counts,
+                "execution_block_reason_action_ids": execution_block_reason_action_ids,
                 "blocking_reason_counts": blocking_reason_counts,
+                "blocking_reason_action_ids": blocking_reason_action_ids,
                 "health": {
                     "cli_detected": installed_clis,
                     "resolved_cli_detected": installed_provider_clis,
@@ -3828,7 +3825,9 @@ def build_project_integration_status(
                     "commandless_execution_action_count": commandless_execution_action_count,
                     "commandless_execution_action_ids": commandless_execution_action_ids,
                     "execution_block_reason_counts": execution_block_reason_counts,
+                    "execution_block_reason_action_ids": execution_block_reason_action_ids,
                     "blocking_reason_counts": blocking_reason_counts,
+                    "blocking_reason_action_ids": blocking_reason_action_ids,
                     "git_remote_url": git_remote_url or None,
                 },
                 "artifacts": artifacts,

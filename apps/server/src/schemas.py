@@ -3374,7 +3374,9 @@ class ProjectIntegrationFamilyRead(BaseModel):
     commandless_execution_action_count: int = 0
     commandless_execution_action_ids: list[str] = Field(default_factory=list)
     execution_block_reason_counts: dict[str, int] = Field(default_factory=dict)
+    execution_block_reason_action_ids: dict[str, list[str]] = Field(default_factory=dict)
     blocking_reason_counts: dict[str, int] = Field(default_factory=dict)
+    blocking_reason_action_ids: dict[str, list[str]] = Field(default_factory=dict)
     health: dict[str, Any] = Field(default_factory=dict)
     artifacts: list[dict[str, Any]] = Field(default_factory=list)
     safe_commands: list[str] = Field(default_factory=list)

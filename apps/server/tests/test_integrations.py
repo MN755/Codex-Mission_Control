@@ -6391,10 +6391,18 @@ def test_project_integrations_surface_multi_blocked_action_inventories(monkeypat
     assert "publish" in package_status["multi_blocked_action_ids"]
     assert package_status["blocking_reason_counts"]["missing_params"] >= 1
     assert package_status["blocking_reason_counts"]["provider_verification_required"] >= 1
+    assert "publish" in package_status["missing_params_action_ids"]
+    assert "publish" in package_status["verification_blocked_action_ids"]
+    assert "publish" in package_status["execution_block_reason_action_ids"]["missing_params"]
+    assert "publish" in package_status["blocking_reason_action_ids"]["missing_params"]
+    assert "publish" in package_status["blocking_reason_action_ids"]["provider_verification_required"]
     assert "publish" in package_status["health"]["multi_blocked_action_ids"]
     assert package_status["health"]["multi_blocked_action_count"] >= 1
     assert package_status["health"]["blocking_reason_counts"]["missing_params"] >= 1
     assert package_status["health"]["blocking_reason_counts"]["provider_verification_required"] >= 1
+    assert "publish" in package_status["health"]["missing_params_action_ids"]
+    assert "publish" in package_status["health"]["execution_block_reason_action_ids"]["missing_params"]
+    assert "publish" in package_status["health"]["blocking_reason_action_ids"]["provider_verification_required"]
 
     empty_statuses = {
         item["family"]: item
@@ -6414,8 +6422,14 @@ def test_project_integrations_surface_multi_blocked_action_inventories(monkeypat
     assert "create" in source_control["multi_blocked_action_ids"]
     assert source_control["blocking_reason_counts"]["missing_params"] >= 1
     assert source_control["blocking_reason_counts"]["provider_context_missing"] >= 1
+    assert "create" in source_control["missing_params_action_ids"]
+    assert "create" in source_control["provider_context_blocked_action_ids"]
+    assert "create" in source_control["execution_block_reason_action_ids"]["missing_params"]
+    assert "create" in source_control["blocking_reason_action_ids"]["provider_context_missing"]
     assert "create" in source_control["health"]["multi_blocked_action_ids"]
     assert source_control["health"]["blocking_reason_counts"]["provider_context_missing"] >= 1
+    assert "create" in source_control["health"]["provider_context_blocked_action_ids"]
+    assert "create" in source_control["health"]["blocking_reason_action_ids"]["missing_params"]
 
 
 def test_execute_integration_action_blocks_missing_executable_before_confirmation(monkeypatch) -> None:
