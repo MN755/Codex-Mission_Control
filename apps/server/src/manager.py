@@ -14065,12 +14065,51 @@ class MissionControlService:
             project_name=project.name,
             registry_payload=registry,
         )
+        family_count = len(families)
+        status_counts = {
+            name: count
+            for name, count in Counter(str(item.get("status") or "unknown") for item in families).items()
+            if count > 0
+        }
         ready_count = sum(1 for item in families if item.get("status") == "ready")
+        partial_count = sum(1 for item in families if item.get("status") == "partial")
+        needs_setup_count = sum(1 for item in families if item.get("status") == "needs_setup")
+        connection_detected_family_count = sum(1 for item in families if item.get("connection_detected"))
+        workspace_signal_family_count = sum(1 for item in families if item.get("workspace_signal_detected"))
+        host_import_family_count = sum(1 for item in families if item.get("host_import_detected"))
+        standalone_cli_detected_family_count = sum(1 for item in families if item.get("standalone_cli_detected"))
+        provider_context_verified_family_count = sum(1 for item in families if item.get("provider_context_verified"))
+        available_action_count = sum(int(item.get("available_action_count") or 0) for item in families)
+        blocked_action_count = sum(int(item.get("blocked_action_count") or 0) for item in families)
+        execution_action_count = sum(int(item.get("execution_action_count") or 0) for item in families)
+        blocked_execution_action_count = sum(int(item.get("blocked_execution_action_count") or 0) for item in families)
+        safe_command_count = sum(int(item.get("safe_command_action_count") or 0) for item in families)
+        available_provider_lane_count = sum(int(item.get("available_provider_lane_count") or 0) for item in families)
+        verification_blocked_action_count = sum(int(item.get("verification_blocked_action_count") or 0) for item in families)
+        context_blocked_action_count = sum(int(item.get("context_blocked_action_count") or 0) for item in families)
         return {
             "project_id": project.id,
             "project_name": project.name,
             "workspace_path": project.workspace_path,
-            "summary": f"{ready_count} integration families are ready and {len(families) - ready_count} still need setup or host import.",
+            "summary": f"{ready_count} integration families are ready and {family_count - ready_count} still need setup or host import.",
+            "family_count": family_count,
+            "status_counts": status_counts,
+            "ready_family_count": ready_count,
+            "partial_family_count": partial_count,
+            "needs_setup_family_count": needs_setup_count,
+            "connection_detected_family_count": connection_detected_family_count,
+            "workspace_signal_family_count": workspace_signal_family_count,
+            "host_import_family_count": host_import_family_count,
+            "standalone_cli_detected_family_count": standalone_cli_detected_family_count,
+            "provider_context_verified_family_count": provider_context_verified_family_count,
+            "available_action_count": available_action_count,
+            "blocked_action_count": blocked_action_count,
+            "execution_action_count": execution_action_count,
+            "blocked_execution_action_count": blocked_execution_action_count,
+            "safe_command_count": safe_command_count,
+            "available_provider_lane_count": available_provider_lane_count,
+            "verification_blocked_action_count": verification_blocked_action_count,
+            "context_blocked_action_count": context_blocked_action_count,
             "families": families,
         }
 

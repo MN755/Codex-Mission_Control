@@ -3519,6 +3519,24 @@ class ProjectIntegrationsRead(BaseModel):
     project_name: str
     workspace_path: str | None = None
     summary: str
+    family_count: int = 0
+    status_counts: dict[str, int] = Field(default_factory=dict)
+    ready_family_count: int = 0
+    partial_family_count: int = 0
+    needs_setup_family_count: int = 0
+    connection_detected_family_count: int = 0
+    workspace_signal_family_count: int = 0
+    host_import_family_count: int = 0
+    standalone_cli_detected_family_count: int = 0
+    provider_context_verified_family_count: int = 0
+    available_action_count: int = 0
+    blocked_action_count: int = 0
+    execution_action_count: int = 0
+    blocked_execution_action_count: int = 0
+    safe_command_count: int = 0
+    available_provider_lane_count: int = 0
+    verification_blocked_action_count: int = 0
+    context_blocked_action_count: int = 0
     families: list[ProjectIntegrationFamilyRead] = Field(default_factory=list)
 
 
