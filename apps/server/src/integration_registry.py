@@ -1520,6 +1520,16 @@ def _execution_block_reason(
     return None
 
 
+def _verification_scope(*, provider_verification_reason: str | None, execution_mode: str) -> str | None:
+    if provider_verification_reason != "provider_verification_required":
+        return None
+    if execution_mode == "local_cli":
+        return "local_cli_mutation"
+    if execution_mode == "guided_remote":
+        return "guided_remote_mutation"
+    return None
+
+
 def _provider_extra_required_params(provider: str | None, action_id: str) -> tuple[str, ...]:
     if not provider:
         return ()
@@ -2162,6 +2172,7 @@ def _provider_context_status(*, provider_lane_resolved: bool, provider_context_v
 
 def _provider_verification_reason(
     *,
+    family: IntegrationFamilyDefinition,
     action_metadata: dict[str, Any],
     execution_mode: str,
     provider_lane_resolved: bool,
@@ -2170,11 +2181,13 @@ def _provider_verification_reason(
 ) -> str | None:
     if not provider_lane_resolved or provider_context_verified:
         return None
-    if execution_mode != "guided_remote":
-        return None
     if not bool(action_metadata.get("mutates_remote_state")):
         return None
-    if provider_context_source in {"workspace", "host_import", "connection_family_only"}:
+    if len(family.providers) <= 1:
+        return None
+    if execution_mode == "guided_remote" and provider_context_source in {"workspace", "host_import", "connection_family_only"}:
+        return "provider_verification_required"
+    if execution_mode == "local_cli" and provider_context_source in {"workspace", "host_import"}:
         return "provider_verification_required"
     return None
 
@@ -2808,6 +2821,7 @@ def build_project_integration_status(
                 provider_context_source=provider_context_source,
             )
             provider_verification_reason = _provider_verification_reason(
+                family=family,
                 action_metadata=action_metadata,
                 execution_mode=execution_mode,
                 provider_lane_resolved=provider_lane_resolved,
@@ -2815,6 +2829,10 @@ def build_project_integration_status(
                 provider_context_source=provider_context_source,
             )
             provider_verification_required = bool(provider_verification_reason)
+            verification_scope = _verification_scope(
+                provider_verification_reason=provider_verification_reason,
+                execution_mode=execution_mode,
+            )
             context_requirement_reason = _context_requirement_reason(
                 family=family,
                 action=action,
@@ -2863,6 +2881,7 @@ def build_project_integration_status(
                     "provider_context_status": provider_context_status,
                     "provider_verification_required": provider_verification_required,
                     "provider_verification_reason": provider_verification_reason,
+                    "verification_scope": verification_scope,
                     "context_required": context_required,
                     "context_requirement_reason": context_requirement_reason,
                     "suppressed_command_reason": suppressed_command_reason,
@@ -2904,6 +2923,12 @@ def build_project_integration_status(
             for item in available_actions
             if item["provider_verification_required"]
         ]
+        verification_blocked_guided_action_count = sum(
+            1 for item in available_actions if item.get("verification_scope") == "guided_remote_mutation"
+        )
+        verification_blocked_local_action_count = sum(
+            1 for item in available_actions if item.get("verification_scope") == "local_cli_mutation"
+        )
         has_actionable_lane = available_action_count > registry_action_count
         has_provider_cli = not provider_cli_candidates or len(installed_provider_clis) == len(provider_cli_candidates)
         if not has_context_signal:
@@ -3015,6 +3040,8 @@ def build_project_integration_status(
                 "available_provider_lane_count": available_provider_lane_count,
                 "context_blocked_action_count": context_blocked_action_count,
                 "verification_blocked_action_count": verification_blocked_action_count,
+                "verification_blocked_guided_action_count": verification_blocked_guided_action_count,
+                "verification_blocked_local_action_count": verification_blocked_local_action_count,
                 "health": {
                     "cli_detected": installed_clis,
                     "resolved_cli_detected": installed_provider_clis,
@@ -3043,6 +3070,8 @@ def build_project_integration_status(
                     "resolved_provider": resolved_provider,
                     "provider_candidates": provider_candidates,
                     "verification_blocked_action_ids": verification_blocked_action_ids,
+                    "verification_blocked_guided_action_count": verification_blocked_guided_action_count,
+                    "verification_blocked_local_action_count": verification_blocked_local_action_count,
                     "git_remote_url": git_remote_url or None,
                 },
                 "artifacts": artifacts,
@@ -3216,6 +3245,7 @@ def preview_integration_action(
     executable_name = _command_executable_name(command or command_template or "")
     execution_mode = _execution_mode(action_id=action.action_id, command_template=command_template, provider=resolved_provider)
     provider_verification_reason = _provider_verification_reason(
+        family=family,
         action_metadata=action_metadata,
         execution_mode=execution_mode,
         provider_lane_resolved=provider_lane_resolved,
@@ -3223,6 +3253,10 @@ def preview_integration_action(
         provider_context_source=provider_context_source,
     )
     provider_verification_required = bool(provider_verification_reason)
+    verification_scope = _verification_scope(
+        provider_verification_reason=provider_verification_reason,
+        execution_mode=execution_mode,
+    )
     context_requirement_reason = _context_requirement_reason(
         family=family,
         action=action,
@@ -3257,8 +3291,10 @@ def preview_integration_action(
     ]
     if provider_context_status == "inferred":
         notes.append("Provider identity is inferred from workspace or host signals, but Mission Control has not verified a live provider session yet.")
-    if provider_verification_required:
+    if verification_scope == "guided_remote_mutation":
         notes.append("Guided remote mutation remains blocked until Mission Control verifies the live provider identity for this provider-specific lane.")
+    elif verification_scope == "local_cli_mutation":
+        notes.append("Local CLI mutation remains blocked until Mission Control verifies the live provider identity for this provider-specific lane.")
     if suppressed_command_reason == "provider_context_missing":
         notes.append("Executable preview was intentionally suppressed until Mission Control has real provider context for this family.")
     if effective_params != params:
@@ -3294,6 +3330,7 @@ def preview_integration_action(
         "provider_context_status": provider_context_status,
         "provider_verification_required": provider_verification_required,
         "provider_verification_reason": provider_verification_reason,
+        "verification_scope": verification_scope,
         "executable_name": executable_name,
         "defaulted_params": {key: value for key, value in effective_params.items() if key not in params},
         "command_ready": executable_available,
@@ -3401,11 +3438,14 @@ def execute_integration_action(
             "updated_registry": updated_registry,
         }
     if preview.get("provider_verification_required"):
+        stderr = "Mission Control must verify the live provider identity for this guided remote mutation before it can approve or execute the action."
+        if preview.get("verification_scope") == "local_cli_mutation":
+            stderr = "Mission Control must verify the live provider identity for this local CLI mutation before it can approve or execute the action."
         return {
             **preview,
             "status": "blocked",
             "stdout": "",
-            "stderr": "Mission Control must verify the live provider identity for this guided remote mutation before it can approve or execute the action.",
+            "stderr": stderr,
             "returncode": None,
             "approval_required": False,
         }

@@ -3117,6 +3117,7 @@ ToolPermissionPolicy = Literal["ask_every_time", "ask_once_per_project", "allow_
 IntegrationProviderResolutionState = Literal["resolved", "suppressed_cli_only", "unresolved"]
 IntegrationActionSupportMode = Literal["registry_state", "provider_specific", "family_default", "guided_only", "unsupported"]
 IntegrationProviderContextStatus = Literal["verified", "inferred", "missing"]
+IntegrationVerificationScope = Literal["guided_remote_mutation", "local_cli_mutation"]
 
 
 class ToolCatalogItemRead(BaseModel):
@@ -3154,6 +3155,7 @@ class IntegrationActionRead(BaseModel):
     provider_context_status: IntegrationProviderContextStatus = "missing"
     provider_verification_required: bool = False
     provider_verification_reason: str | None = None
+    verification_scope: IntegrationVerificationScope | None = None
     context_required: bool = False
     context_requirement_reason: str | None = None
     suppressed_command_reason: str | None = None
@@ -3218,6 +3220,8 @@ class ProjectIntegrationFamilyRead(BaseModel):
     available_provider_lane_count: int = 0
     context_blocked_action_count: int = 0
     verification_blocked_action_count: int = 0
+    verification_blocked_guided_action_count: int = 0
+    verification_blocked_local_action_count: int = 0
     health: dict[str, Any] = Field(default_factory=dict)
     artifacts: list[dict[str, Any]] = Field(default_factory=list)
     safe_commands: list[str] = Field(default_factory=list)
@@ -3269,6 +3273,7 @@ class IntegrationActionPreviewRead(BaseModel):
     provider_context_status: IntegrationProviderContextStatus = "missing"
     provider_verification_required: bool = False
     provider_verification_reason: str | None = None
+    verification_scope: IntegrationVerificationScope | None = None
     executable_name: str | None = None
     defaulted_params: dict[str, Any] = Field(default_factory=dict)
     command_ready: bool = False

@@ -112,12 +112,13 @@ def test_project_integrations_and_action_preview_flow(client, bridge_headers, mo
     assert preview_payload["provider_context_verified"] is False
     assert preview_payload["provider_context_source"] == "workspace"
     assert preview_payload["provider_context_status"] == "inferred"
-    assert preview_payload["provider_verification_required"] is False
-    assert preview_payload["provider_verification_reason"] is None
+    assert preview_payload["provider_verification_required"] is True
+    assert preview_payload["provider_verification_reason"] == "provider_verification_required"
+    assert preview_payload["verification_scope"] == "local_cli_mutation"
     assert preview_payload["executable_name"] == "gh"
-    assert preview_payload["execution_block_reason"] is None
-    assert preview_payload["preflight_ready"] is True
-    assert preview_payload["confirmation_eligible"] is True
+    assert preview_payload["execution_block_reason"] == "provider_verification_required"
+    assert preview_payload["preflight_ready"] is False
+    assert preview_payload["confirmation_eligible"] is False
     assert preview_payload["ready_to_execute"] is False
     assert preview_payload["context_required"] is False
     assert preview_payload["context_requirement_reason"] is None
@@ -136,7 +137,7 @@ def test_project_integrations_and_action_preview_flow(client, bridge_headers, mo
     )
     assert execute.status_code == 200
     execute_payload = execute.json()
-    assert execute_payload["status"] == "approval_required"
+    assert execute_payload["status"] == "blocked"
     assert execute_payload["provider"] == "github"
     assert execute_payload["provider_resolution_state"] == "resolved"
     assert execute_payload["provider_support_mode"] == "provider_specific"
@@ -146,12 +147,13 @@ def test_project_integrations_and_action_preview_flow(client, bridge_headers, mo
     assert execute_payload["provider_context_verified"] is False
     assert execute_payload["provider_context_source"] == "workspace"
     assert execute_payload["provider_context_status"] == "inferred"
-    assert execute_payload["provider_verification_required"] is False
-    assert execute_payload["provider_verification_reason"] is None
+    assert execute_payload["provider_verification_required"] is True
+    assert execute_payload["provider_verification_reason"] == "provider_verification_required"
+    assert execute_payload["verification_scope"] == "local_cli_mutation"
     assert execute_payload["executable_name"] == "gh"
-    assert execute_payload["execution_block_reason"] is None
-    assert execute_payload["preflight_ready"] is True
-    assert execute_payload["confirmation_eligible"] is True
+    assert execute_payload["execution_block_reason"] == "provider_verification_required"
+    assert execute_payload["preflight_ready"] is False
+    assert execute_payload["confirmation_eligible"] is False
     assert execute_payload["ready_to_execute"] is False
     assert execute_payload["context_required"] is False
     assert execute_payload["context_requirement_reason"] is None
@@ -161,6 +163,7 @@ def test_project_integrations_and_action_preview_flow(client, bridge_headers, mo
     assert execute_payload["provider_signal_breakdown"]["github"]["has_non_cli_evidence"] is True
     assert execute_payload["resolved_provider_evidence"]["has_non_cli_evidence"] is True
     assert execute_payload["provider_guidance"] == preview_payload["provider_guidance"]
+    assert "local cli mutation" in execute_payload["stderr"].lower()
 
 
 def test_project_integration_api_surfaces_context_suppression_metadata(client, bridge_headers, monkeypatch, tmp_path) -> None:
@@ -200,6 +203,8 @@ def test_project_integration_api_surfaces_context_suppression_metadata(client, b
     assert payments["available_provider_lane_count"] == 0
     assert payments["context_blocked_action_count"] >= 2
     assert payments["verification_blocked_action_count"] == 0
+    assert payments["verification_blocked_guided_action_count"] == 0
+    assert payments["verification_blocked_local_action_count"] == 0
     assert payments["health"]["provider_context_verified"] is False
     assert payments["health"]["provider_context_source"] == "standalone_cli_only"
     assert payments["health"]["provider_context_status"] == "missing"
@@ -216,6 +221,7 @@ def test_project_integration_api_surfaces_context_suppression_metadata(client, b
     assert inspect_action["provider_context_status"] == "missing"
     assert inspect_action["provider_verification_required"] is False
     assert inspect_action["provider_verification_reason"] is None
+    assert inspect_action["verification_scope"] is None
     assert inspect_action["context_required"] is True
     assert inspect_action["context_requirement_reason"] == "provider_context_missing"
     assert inspect_action["suppressed_command_reason"] == "provider_context_missing"
@@ -241,6 +247,7 @@ def test_project_integration_api_surfaces_context_suppression_metadata(client, b
     assert preview_payload["provider_context_status"] == "missing"
     assert preview_payload["provider_verification_required"] is False
     assert preview_payload["provider_verification_reason"] is None
+    assert preview_payload["verification_scope"] is None
     assert preview_payload["execution_block_reason"] == "provider_context_missing"
     assert preview_payload["preflight_ready"] is False
     assert preview_payload["confirmation_eligible"] is False
@@ -5469,7 +5476,9 @@ def test_unverified_guided_remote_mutations_no_longer_claim_available_across_hos
         assert action["provider_context_status"] == "inferred"
         assert action["provider_verification_required"] is True
         assert action["provider_verification_reason"] == "provider_verification_required"
+        assert action["verification_scope"] == "guided_remote_mutation"
         assert status["verification_blocked_action_count"] >= 1
+        assert status["verification_blocked_guided_action_count"] >= 1
         assert action_id in status["health"]["verification_blocked_action_ids"]
         assert any("guided actions remain blocked" in blocker.lower() for blocker in status["blockers"])
 
@@ -5514,6 +5523,7 @@ def test_preview_and_execute_surface_provider_verification_requirement_for_guide
         assert preview["provider_context_status"] == "inferred"
         assert preview["provider_verification_required"] is True
         assert preview["provider_verification_reason"] == "provider_verification_required"
+        assert preview["verification_scope"] == "guided_remote_mutation"
         assert preview["execution_block_reason"] == "provider_verification_required"
         assert preview["preflight_ready"] is False
         assert preview["confirmation_eligible"] is False
@@ -5533,11 +5543,81 @@ def test_preview_and_execute_surface_provider_verification_requirement_for_guide
         assert result["approval_required"] is False
         assert result["provider_verification_required"] is True
         assert result["provider_verification_reason"] == "provider_verification_required"
+        assert result["verification_scope"] == "guided_remote_mutation"
         assert result["execution_block_reason"] == "provider_verification_required"
         assert result["preflight_ready"] is False
         assert result["confirmation_eligible"] is False
         assert result["ready_to_execute"] is False
         assert "must verify the live provider identity" in result["stderr"].lower()
+
+
+def test_unverified_local_cli_mutations_no_longer_claim_confirmation_eligibility(monkeypatch, tmp_path) -> None:
+    workspace = tmp_path / "local-cli-unverified"
+    workspace.mkdir(parents=True, exist_ok=True)
+    (workspace / ".github").mkdir(exist_ok=True)
+    (workspace / ".github" / "workflows").mkdir(exist_ok=True)
+    (workspace / ".github" / "workflows" / "ci.yml").write_text("name: ci\n", encoding="utf-8")
+    (workspace / "vercel.json").write_text('{"framework":"nextjs"}\n', encoding="utf-8")
+    (workspace / "supabase").mkdir(exist_ok=True)
+    (workspace / "supabase" / "config.toml").write_text("project_id = 'x'\n", encoding="utf-8")
+    (workspace / "package.json").write_text('{"name":"demo","version":"1.0.0"}\n', encoding="utf-8")
+    (workspace / ".release-please-manifest.json").write_text("{}\n", encoding="utf-8")
+    (workspace / "README.md").write_text("Stripe payments live here.\n", encoding="utf-8")
+
+    monkeypatch.setattr(
+        "integration_registry.shutil.which",
+        lambda command: f"C:/tools/{command}.exe" if command in {"gh", "vercel", "supabase", "npm", "stripe", "release-please"} else None,
+    )
+
+    registry = normalize_integration_registry({}, {})
+
+    for family_id, action_id, params, expected_provider in (
+        ("ci_cd", "rerun", {"run_id": "42"}, "github_actions"),
+        ("hosting_deploy", "deploy", {}, "vercel"),
+        ("database_platforms", "sync", {}, "supabase"),
+        ("package_registries", "publish", {}, "npm"),
+        ("payments", "create", {"name": "Example"}, "stripe"),
+        ("release_management", "create", {}, "release_please"),
+    ):
+        preview = preview_integration_action(
+            family_id=family_id,
+            action_id=action_id,
+            params=params,
+            registry_payload=registry,
+            workspace_path=str(workspace),
+            project_name="Local CLI Unverified Demo",
+        )
+        assert preview["provider"] == expected_provider
+        assert preview["execution_mode"] == "local_cli"
+        assert preview["provider_context_status"] == "inferred"
+        assert preview["provider_verification_required"] is True
+        assert preview["provider_verification_reason"] == "provider_verification_required"
+        assert preview["verification_scope"] == "local_cli_mutation"
+        assert preview["execution_block_reason"] == "provider_verification_required"
+        assert preview["preflight_ready"] is False
+        assert preview["confirmation_eligible"] is False
+        assert preview["ready_to_execute"] is False
+        assert any("local cli mutation remains blocked" in note.lower() for note in preview["notes"])
+
+        result = execute_integration_action(
+            family_id=family_id,
+            action_id=action_id,
+            params=params,
+            registry_payload=registry,
+            workspace_path=str(workspace),
+            project_name="Local CLI Unverified Demo",
+            confirmed=False,
+        )
+        assert result["status"] == "blocked"
+        assert result["approval_required"] is False
+        assert result["provider_verification_required"] is True
+        assert result["provider_verification_reason"] == "provider_verification_required"
+        assert result["verification_scope"] == "local_cli_mutation"
+        assert result["execution_block_reason"] == "provider_verification_required"
+        assert result["preflight_ready"] is False
+        assert result["confirmation_eligible"] is False
+        assert result["ready_to_execute"] is False
+        assert "local cli mutation" in result["stderr"].lower()
 
 
 def test_execute_integration_action_blocks_missing_executable_before_confirmation(monkeypatch) -> None:
