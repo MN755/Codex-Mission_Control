@@ -8,6 +8,7 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 from config import REPO_ROOT, get_codex_home
 
@@ -824,6 +825,36 @@ def _read_git_remote_url(root: Path | None) -> str:
     return ""
 
 
+def _git_remote_hostname(git_remote_url: str) -> str:
+    remote = str(git_remote_url or "").strip().lower()
+    if not remote:
+        return ""
+    if "://" in remote:
+        return str(urlsplit(remote).hostname or "").strip().rstrip(".")
+    scp_like = remote
+    if "@" in scp_like:
+        scp_like = scp_like.rsplit("@", 1)[1]
+    host, separator, _remainder = scp_like.partition(":")
+    if separator and host and "/" not in host:
+        return host.strip().rstrip(".")
+    return ""
+
+
+def _git_remote_host_matches_provider(hostname: str, provider: str) -> bool:
+    host = str(hostname or "").strip().lower().rstrip(".")
+    if not host:
+        return False
+    exact_hosts = {
+        "github": ("github.com", "ssh.github.com"),
+        "gitlab": ("gitlab.com",),
+        "bitbucket": ("bitbucket.org",),
+    }.get(provider, ())
+    if any(host == exact_host or host.endswith(f".{exact_host}") for exact_host in exact_hosts):
+        return True
+    first_label = host.split(".", 1)[0]
+    return provider in {"gitlab", "bitbucket"} and first_label == provider
+
+
 def _provider_command_template(provider: str, action_id: str) -> str | None:
     commands: dict[str, dict[str, str]] = {
         "github": {
@@ -950,12 +981,13 @@ def _provider_candidates_for_family(
     for provider in connection_providers:
         if provider in family.providers:
             scores[provider] = scores.get(provider, 0) + (80 if connection_source in AUTHORITATIVE_CONNECTION_SOURCES else 40)
-    if git_remote_url:
-        if "github.com" in git_remote_url and "github" in family.providers:
+    git_remote_host = _git_remote_hostname(git_remote_url)
+    if git_remote_host:
+        if _git_remote_host_matches_provider(git_remote_host, "github") and "github" in family.providers:
             scores["github"] = scores.get("github", 0) + 70
-        if "gitlab" in git_remote_url and "gitlab" in family.providers:
+        if _git_remote_host_matches_provider(git_remote_host, "gitlab") and "gitlab" in family.providers:
             scores["gitlab"] = scores.get("gitlab", 0) + 70
-        if "bitbucket" in git_remote_url and "bitbucket" in family.providers:
+        if _git_remote_host_matches_provider(git_remote_host, "bitbucket") and "bitbucket" in family.providers:
             scores["bitbucket"] = scores.get("bitbucket", 0) + 70
     lowered_files = [path.lower() for path in detected_files]
     lowered_hits = [hit.lower() for hit in token_hits]

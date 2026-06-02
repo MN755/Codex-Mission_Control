@@ -344,6 +344,57 @@ def test_provider_specific_preview_prefers_gitlab_for_gitlab_repo(monkeypatch, t
     assert preview["command"] == "glab repo view"
 
 
+def test_provider_specific_preview_does_not_trust_github_substring_inside_evil_host(monkeypatch, tmp_path) -> None:
+    workspace = tmp_path / "evil-github-lookalike"
+    workspace.mkdir(parents=True, exist_ok=True)
+    (workspace / ".git").mkdir()
+    (workspace / ".git" / "config").write_text(
+        '[remote "origin"]\n    url = https://github.com.evil.example/demo/project.git\n',
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr("integration_registry.shutil.which", lambda _command: None)
+
+    preview = preview_integration_action(
+        family_id="source_control",
+        action_id="search",
+        params={},
+        registry_payload=normalize_integration_registry({}, {}),
+        workspace_path=str(workspace),
+        project_name="Evil Host Demo",
+    )
+
+    assert preview["provider"] is None
+    assert preview["provider_candidates"] == []
+
+
+def test_provider_specific_preview_accepts_self_hosted_gitlab_hostname(monkeypatch, tmp_path) -> None:
+    workspace = tmp_path / "gitlab-self-hosted"
+    workspace.mkdir(parents=True, exist_ok=True)
+    (workspace / ".git").mkdir()
+    (workspace / ".git" / "config").write_text(
+        '[remote "origin"]\n    url = ssh://git@gitlab.internal.example:2222/demo/project.git\n',
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(
+        "integration_registry.shutil.which",
+        lambda command: f"C:/tools/{command}.exe" if command == "glab" else None,
+    )
+
+    preview = preview_integration_action(
+        family_id="source_control",
+        action_id="search",
+        params={},
+        registry_payload=normalize_integration_registry({}, {}),
+        workspace_path=str(workspace),
+        project_name="Self-Hosted GitLab Demo",
+    )
+
+    assert preview["provider"] == "gitlab"
+    assert preview["command"] == "glab repo view"
+
+
 def test_provider_specific_preview_prefers_devcontainer_when_available(monkeypatch, tmp_path) -> None:
     workspace = tmp_path / "devcontainer-repo"
     (workspace / ".devcontainer").mkdir(parents=True, exist_ok=True)
@@ -437,6 +488,30 @@ def test_provider_specific_preview_resolves_bitbucket_with_guided_lane(monkeypat
     assert preview["provider"] == "bitbucket"
     assert preview["command"] is None
     assert any("bitbucket" in note.lower() and "adapter" in note.lower() for note in preview["notes"])
+
+
+def test_provider_specific_preview_accepts_ssh_bitbucket_host_with_port(monkeypatch, tmp_path) -> None:
+    workspace = tmp_path / "bitbucket-ssh-port"
+    workspace.mkdir(parents=True, exist_ok=True)
+    (workspace / ".git").mkdir()
+    (workspace / ".git" / "config").write_text(
+        '[remote "origin"]\n    url = ssh://git@bitbucket.org:7999/demo/project.git\n',
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr("integration_registry.shutil.which", lambda _command: None)
+
+    preview = preview_integration_action(
+        family_id="source_control",
+        action_id="search",
+        params={},
+        registry_payload=normalize_integration_registry({}, {}),
+        workspace_path=str(workspace),
+        project_name="Bitbucket SSH Demo",
+    )
+
+    assert preview["provider"] == "bitbucket"
+    assert preview["provider_candidates"] == ["bitbucket"]
 
 
 def test_provider_specific_preview_prefers_jira_over_generic_issue_lane(monkeypatch, tmp_path) -> None:
