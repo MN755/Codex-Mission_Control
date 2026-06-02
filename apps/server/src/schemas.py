@@ -3243,6 +3243,13 @@ class ProjectIntegrationFamilyRead(BaseModel):
     connection_detected: bool = False
     standalone_cli_detected: bool = False
     signal_sources: list[str] = Field(default_factory=list)
+    cli_detected: list[str] = Field(default_factory=list)
+    resolved_cli_detected: list[str] = Field(default_factory=list)
+    workspace_config_files: list[str] = Field(default_factory=list)
+    workspace_token_hits: list[str] = Field(default_factory=list)
+    connection_provider_count: int = 0
+    connection_without_provider_identity: bool = False
+    git_remote_url: str | None = None
     required_permissions: list[str] = Field(default_factory=list)
     permission_policy_counts: dict[str, int] = Field(default_factory=dict)
     available_permission_policy_counts: dict[str, int] = Field(default_factory=dict)

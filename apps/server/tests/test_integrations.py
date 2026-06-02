@@ -6134,6 +6134,13 @@ def test_project_integrations_surface_context_and_preflight_inventory_ids(monkey
     assert package_status["standalone_cli_detected"] is False
     assert package_status["signal_sources"] == ["workspace"]
     assert package_status["cli_only_candidates_suppressed"] == []
+    assert package_status["cli_detected"] == ["npm"]
+    assert package_status["resolved_cli_detected"] == ["npm"]
+    assert package_status["workspace_config_files"] == ["package.json"]
+    assert package_status["workspace_token_hits"] == []
+    assert package_status["connection_provider_count"] == 0
+    assert package_status["connection_without_provider_identity"] is False
+    assert package_status["git_remote_url"] is None
     assert inspect_action["context_available"] is True
     assert inspect_action["provider_guidance"]
     assert inspect_action["provider_candidates"] == ["npm"]
@@ -6214,6 +6221,13 @@ def test_project_integrations_surface_context_and_preflight_inventory_ids(monkey
     assert docs_status["standalone_cli_detected"] is False
     assert docs_status["signal_sources"] == ["connection", "workspace"]
     assert docs_status["cli_only_candidates_suppressed"] == []
+    assert docs_status["cli_detected"] == []
+    assert docs_status["resolved_cli_detected"] == []
+    assert docs_status["workspace_config_files"] == []
+    assert docs_status["workspace_token_hits"] == ["notion"]
+    assert docs_status["connection_provider_count"] == 0
+    assert docs_status["connection_without_provider_identity"] is True
+    assert docs_status["git_remote_url"] is None
     assert docs_inspect["context_available"] is True
     assert docs_inspect["provider_guidance"]
     assert docs_inspect["provider_candidates"] == ["notion"]
@@ -6267,6 +6281,13 @@ def test_project_integrations_surface_context_and_preflight_inventory_ids(monkey
     assert source_control_status["standalone_cli_detected"] is False
     assert source_control_status["signal_sources"] == []
     assert source_control_status["cli_only_candidates_suppressed"] == []
+    assert source_control_status["cli_detected"] == []
+    assert source_control_status["resolved_cli_detected"] == []
+    assert source_control_status["workspace_config_files"] == []
+    assert source_control_status["workspace_token_hits"] == []
+    assert source_control_status["connection_provider_count"] == 0
+    assert source_control_status["connection_without_provider_identity"] is False
+    assert source_control_status["git_remote_url"] is None
     assert create_action["context_available"] is False
     assert create_action["provider_guidance"] is None
     assert create_action["provider_candidates"] == []
