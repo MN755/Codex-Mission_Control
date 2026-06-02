@@ -14105,6 +14105,15 @@ class MissionControlService:
                     summed[str(group_key)] += int(count)
             return dict(summed)
 
+        def _merge_unique_lists(key: str) -> list[str]:
+            values: set[str] = set()
+            for item in families:
+                for raw_value in item.get(key) or []:
+                    if raw_value in (None, ""):
+                        continue
+                    values.add(str(raw_value))
+            return sorted(values)
+
         family_ids = [str(item.get("family") or "") for item in families]
         family_ids_by_status = _group_scalar_family_ids("status", fallback="unknown")
         statuses = sorted(family_ids_by_status)
@@ -14274,6 +14283,46 @@ class MissionControlService:
         blocking_reason_counts = _sum_count_maps("blocking_reason_counts")
         blocking_reasons = sorted(blocking_reason_counts)
         blocking_reason_group_count = len(blocking_reason_counts)
+        required_permissions = _merge_unique_lists("required_permissions")
+        required_permission_count = len(required_permissions)
+        permission_policy_counts = _sum_count_maps("permission_policy_counts")
+        permission_policies = sorted(permission_policy_counts)
+        permission_policy_group_count = len(permission_policy_counts)
+        available_permission_policy_counts = _sum_count_maps("available_permission_policy_counts")
+        available_permission_policies = sorted(available_permission_policy_counts)
+        available_permission_policy_group_count = len(available_permission_policy_counts)
+        blocked_permission_policy_counts = _sum_count_maps("blocked_permission_policy_counts")
+        blocked_permission_policies = sorted(blocked_permission_policy_counts)
+        blocked_permission_policy_group_count = len(blocked_permission_policy_counts)
+        risk_level_counts = _sum_count_maps("risk_level_counts")
+        risk_levels = sorted(risk_level_counts)
+        risk_level_group_count = len(risk_level_counts)
+        available_risk_level_counts = _sum_count_maps("available_risk_level_counts")
+        available_risk_levels = sorted(available_risk_level_counts)
+        available_risk_level_group_count = len(available_risk_level_counts)
+        blocked_risk_level_counts = _sum_count_maps("blocked_risk_level_counts")
+        blocked_risk_levels = sorted(blocked_risk_level_counts)
+        blocked_risk_level_group_count = len(blocked_risk_level_counts)
+        execution_required_permissions = _merge_unique_lists("execution_required_permissions")
+        execution_required_permission_count = len(execution_required_permissions)
+        execution_permission_policy_counts = _sum_count_maps("execution_permission_policy_counts")
+        execution_permission_policies = sorted(execution_permission_policy_counts)
+        execution_permission_policy_group_count = len(execution_permission_policy_counts)
+        available_execution_permission_policy_counts = _sum_count_maps("available_execution_permission_policy_counts")
+        available_execution_permission_policies = sorted(available_execution_permission_policy_counts)
+        available_execution_permission_policy_group_count = len(available_execution_permission_policy_counts)
+        blocked_execution_permission_policy_counts = _sum_count_maps("blocked_execution_permission_policy_counts")
+        blocked_execution_permission_policies = sorted(blocked_execution_permission_policy_counts)
+        blocked_execution_permission_policy_group_count = len(blocked_execution_permission_policy_counts)
+        execution_risk_level_counts = _sum_count_maps("execution_risk_level_counts")
+        execution_risk_levels = sorted(execution_risk_level_counts)
+        execution_risk_level_group_count = len(execution_risk_level_counts)
+        available_execution_risk_level_counts = _sum_count_maps("available_execution_risk_level_counts")
+        available_execution_risk_levels = sorted(available_execution_risk_level_counts)
+        available_execution_risk_level_group_count = len(available_execution_risk_level_counts)
+        blocked_execution_risk_level_counts = _sum_count_maps("blocked_execution_risk_level_counts")
+        blocked_execution_risk_levels = sorted(blocked_execution_risk_level_counts)
+        blocked_execution_risk_level_group_count = len(blocked_execution_risk_level_counts)
         return {
             "project_id": project.id,
             "project_name": project.name,
@@ -14445,6 +14494,46 @@ class MissionControlService:
             "blocking_reasons": blocking_reasons,
             "blocking_reason_counts": blocking_reason_counts,
             "blocking_reason_group_count": blocking_reason_group_count,
+            "required_permissions": required_permissions,
+            "required_permission_count": required_permission_count,
+            "permission_policies": permission_policies,
+            "permission_policy_counts": permission_policy_counts,
+            "permission_policy_group_count": permission_policy_group_count,
+            "available_permission_policies": available_permission_policies,
+            "available_permission_policy_counts": available_permission_policy_counts,
+            "available_permission_policy_group_count": available_permission_policy_group_count,
+            "blocked_permission_policies": blocked_permission_policies,
+            "blocked_permission_policy_counts": blocked_permission_policy_counts,
+            "blocked_permission_policy_group_count": blocked_permission_policy_group_count,
+            "risk_levels": risk_levels,
+            "risk_level_counts": risk_level_counts,
+            "risk_level_group_count": risk_level_group_count,
+            "available_risk_levels": available_risk_levels,
+            "available_risk_level_counts": available_risk_level_counts,
+            "available_risk_level_group_count": available_risk_level_group_count,
+            "blocked_risk_levels": blocked_risk_levels,
+            "blocked_risk_level_counts": blocked_risk_level_counts,
+            "blocked_risk_level_group_count": blocked_risk_level_group_count,
+            "execution_required_permissions": execution_required_permissions,
+            "execution_required_permission_count": execution_required_permission_count,
+            "execution_permission_policies": execution_permission_policies,
+            "execution_permission_policy_counts": execution_permission_policy_counts,
+            "execution_permission_policy_group_count": execution_permission_policy_group_count,
+            "available_execution_permission_policies": available_execution_permission_policies,
+            "available_execution_permission_policy_counts": available_execution_permission_policy_counts,
+            "available_execution_permission_policy_group_count": available_execution_permission_policy_group_count,
+            "blocked_execution_permission_policies": blocked_execution_permission_policies,
+            "blocked_execution_permission_policy_counts": blocked_execution_permission_policy_counts,
+            "blocked_execution_permission_policy_group_count": blocked_execution_permission_policy_group_count,
+            "execution_risk_levels": execution_risk_levels,
+            "execution_risk_level_counts": execution_risk_level_counts,
+            "execution_risk_level_group_count": execution_risk_level_group_count,
+            "available_execution_risk_levels": available_execution_risk_levels,
+            "available_execution_risk_level_counts": available_execution_risk_level_counts,
+            "available_execution_risk_level_group_count": available_execution_risk_level_group_count,
+            "blocked_execution_risk_levels": blocked_execution_risk_levels,
+            "blocked_execution_risk_level_counts": blocked_execution_risk_level_counts,
+            "blocked_execution_risk_level_group_count": blocked_execution_risk_level_group_count,
             "families": families,
         }
 

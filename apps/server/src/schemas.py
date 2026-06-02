@@ -3685,6 +3685,46 @@ class ProjectIntegrationsRead(BaseModel):
     blocking_reasons: list[str] = Field(default_factory=list)
     blocking_reason_counts: dict[str, int] = Field(default_factory=dict)
     blocking_reason_group_count: int = 0
+    required_permissions: list[str] = Field(default_factory=list)
+    required_permission_count: int = 0
+    permission_policies: list[str] = Field(default_factory=list)
+    permission_policy_counts: dict[str, int] = Field(default_factory=dict)
+    permission_policy_group_count: int = 0
+    available_permission_policies: list[str] = Field(default_factory=list)
+    available_permission_policy_counts: dict[str, int] = Field(default_factory=dict)
+    available_permission_policy_group_count: int = 0
+    blocked_permission_policies: list[str] = Field(default_factory=list)
+    blocked_permission_policy_counts: dict[str, int] = Field(default_factory=dict)
+    blocked_permission_policy_group_count: int = 0
+    risk_levels: list[str] = Field(default_factory=list)
+    risk_level_counts: dict[str, int] = Field(default_factory=dict)
+    risk_level_group_count: int = 0
+    available_risk_levels: list[str] = Field(default_factory=list)
+    available_risk_level_counts: dict[str, int] = Field(default_factory=dict)
+    available_risk_level_group_count: int = 0
+    blocked_risk_levels: list[str] = Field(default_factory=list)
+    blocked_risk_level_counts: dict[str, int] = Field(default_factory=dict)
+    blocked_risk_level_group_count: int = 0
+    execution_required_permissions: list[str] = Field(default_factory=list)
+    execution_required_permission_count: int = 0
+    execution_permission_policies: list[str] = Field(default_factory=list)
+    execution_permission_policy_counts: dict[str, int] = Field(default_factory=dict)
+    execution_permission_policy_group_count: int = 0
+    available_execution_permission_policies: list[str] = Field(default_factory=list)
+    available_execution_permission_policy_counts: dict[str, int] = Field(default_factory=dict)
+    available_execution_permission_policy_group_count: int = 0
+    blocked_execution_permission_policies: list[str] = Field(default_factory=list)
+    blocked_execution_permission_policy_counts: dict[str, int] = Field(default_factory=dict)
+    blocked_execution_permission_policy_group_count: int = 0
+    execution_risk_levels: list[str] = Field(default_factory=list)
+    execution_risk_level_counts: dict[str, int] = Field(default_factory=dict)
+    execution_risk_level_group_count: int = 0
+    available_execution_risk_levels: list[str] = Field(default_factory=list)
+    available_execution_risk_level_counts: dict[str, int] = Field(default_factory=dict)
+    available_execution_risk_level_group_count: int = 0
+    blocked_execution_risk_levels: list[str] = Field(default_factory=list)
+    blocked_execution_risk_level_counts: dict[str, int] = Field(default_factory=dict)
+    blocked_execution_risk_level_group_count: int = 0
     families: list[ProjectIntegrationFamilyRead] = Field(default_factory=list)
 
 
