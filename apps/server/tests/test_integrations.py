@@ -1168,7 +1168,7 @@ def test_multi_provider_families_no_longer_fall_back_to_unrelated_generic_comman
         workspace_path=None,
         project_name="Notion Demo",
     )
-    datadog_preview = preview_integration_action(
+    logrocket_preview = preview_integration_action(
         family_id="observability",
         action_id="inspect",
         params={},
@@ -1178,7 +1178,7 @@ def test_multi_provider_families_no_longer_fall_back_to_unrelated_generic_comman
                     "observability": {
                         "family": "observability",
                         "status": "connected",
-                        "providers": ["datadog"],
+                        "providers": ["logrocket"],
                         "connection_source": "mission_control",
                         "host_imported": False,
                     }
@@ -1187,15 +1187,130 @@ def test_multi_provider_families_no_longer_fall_back_to_unrelated_generic_comman
             {},
         ),
         workspace_path=None,
-        project_name="Datadog Demo",
+        project_name="LogRocket Demo",
     )
 
     assert notion_preview["provider"] == "notion"
     assert notion_preview["command"] is None
     assert notion_preview["execution_mode"] == "guided_remote"
-    assert datadog_preview["provider"] == "datadog"
-    assert datadog_preview["command"] is None
-    assert datadog_preview["execution_mode"] == "guided_remote"
+    assert logrocket_preview["provider"] == "logrocket"
+    assert logrocket_preview["command"] is None
+    assert logrocket_preview["execution_mode"] == "guided_remote"
+
+
+def test_provider_specific_preview_supports_sentry_datadog_and_newrelic_lanes(monkeypatch, tmp_path) -> None:
+    sentry_workspace = tmp_path / "sentry-repo"
+    sentry_workspace.mkdir(parents=True, exist_ok=True)
+    (sentry_workspace / "sentry.properties").write_text("defaults.url=https://sentry.io/\n", encoding="utf-8")
+
+    datadog_workspace = tmp_path / "datadog-repo"
+    datadog_workspace.mkdir(parents=True, exist_ok=True)
+    (datadog_workspace / "datadog.yaml").write_text("api_key: redacted\n", encoding="utf-8")
+
+    newrelic_workspace = tmp_path / "newrelic-repo"
+    newrelic_workspace.mkdir(parents=True, exist_ok=True)
+    (newrelic_workspace / "newrelic.js").write_text("exports.config = {};\n", encoding="utf-8")
+
+    monkeypatch.setattr(
+        "integration_registry.shutil.which",
+        lambda command: f"C:/tools/{command}.exe" if command in {"sentry-cli", "datadog-ci", "newrelic"} else None,
+    )
+
+    sentry_inspect = preview_integration_action(
+        family_id="observability",
+        action_id="inspect",
+        params={},
+        registry_payload=normalize_integration_registry({}, {}),
+        workspace_path=str(sentry_workspace),
+        project_name="Sentry Demo",
+    )
+    sentry_tail = preview_integration_action(
+        family_id="observability",
+        action_id="tail",
+        params={},
+        registry_payload=normalize_integration_registry({}, {}),
+        workspace_path=str(sentry_workspace),
+        project_name="Sentry Demo",
+    )
+    datadog_inspect = preview_integration_action(
+        family_id="observability",
+        action_id="inspect",
+        params={},
+        registry_payload=normalize_integration_registry({}, {}),
+        workspace_path=str(datadog_workspace),
+        project_name="Datadog Demo",
+    )
+    datadog_tail = preview_integration_action(
+        family_id="observability",
+        action_id="tail",
+        params={},
+        registry_payload=normalize_integration_registry({}, {}),
+        workspace_path=str(datadog_workspace),
+        project_name="Datadog Demo",
+    )
+    newrelic_inspect = preview_integration_action(
+        family_id="observability",
+        action_id="inspect",
+        params={},
+        registry_payload=normalize_integration_registry({}, {}),
+        workspace_path=str(newrelic_workspace),
+        project_name="New Relic Demo",
+    )
+
+    assert sentry_inspect["provider"] == "sentry"
+    assert sentry_inspect["command"] == "sentry-cli info"
+    assert sentry_inspect["command_ready"] is True
+    assert sentry_tail["provider"] == "sentry"
+    assert sentry_tail["command"] == "sentry-cli releases list"
+    assert sentry_tail["command_ready"] is True
+    assert datadog_inspect["provider"] == "datadog"
+    assert datadog_inspect["command"] == "datadog-ci --version"
+    assert datadog_inspect["command_ready"] is True
+    assert datadog_tail["provider"] == "datadog"
+    assert datadog_tail["command"] == "datadog-ci gate evaluate"
+    assert datadog_tail["command_ready"] is True
+    assert newrelic_inspect["provider"] == "new_relic"
+    assert newrelic_inspect["command"] == "newrelic --version"
+    assert newrelic_inspect["command_ready"] is True
+
+
+def test_project_integrations_detect_datadog_and_newrelic_from_workspace_and_cli(monkeypatch, tmp_path) -> None:
+    datadog_workspace = tmp_path / "datadog-repo"
+    datadog_workspace.mkdir(parents=True, exist_ok=True)
+    (datadog_workspace / "datadog.yaml").write_text("api_key: redacted\n", encoding="utf-8")
+
+    newrelic_workspace = tmp_path / "newrelic-repo"
+    newrelic_workspace.mkdir(parents=True, exist_ok=True)
+    (newrelic_workspace / "newrelic.js").write_text("exports.config = {};\n", encoding="utf-8")
+
+    monkeypatch.setattr(
+        "integration_registry.shutil.which",
+        lambda command: f"C:/tools/{command}.exe" if command in {"datadog-ci", "newrelic"} else None,
+    )
+
+    datadog_status = {
+        item["family"]: item
+        for item in build_project_integration_status(
+            workspace_path=str(datadog_workspace),
+            project_name="Datadog Workspace Demo",
+            registry_payload=normalize_integration_registry({}, {}),
+        )
+    }["observability"]
+    newrelic_status = {
+        item["family"]: item
+        for item in build_project_integration_status(
+            workspace_path=str(newrelic_workspace),
+            project_name="New Relic Workspace Demo",
+            registry_payload=normalize_integration_registry({}, {}),
+        )
+    }["observability"]
+
+    assert datadog_status["resolved_provider"] == "datadog"
+    assert datadog_status["status"] == "ready"
+    assert datadog_status["resolved_cli_candidates"] == ["datadog-ci"]
+    assert newrelic_status["resolved_provider"] == "new_relic"
+    assert newrelic_status["status"] == "ready"
+    assert newrelic_status["resolved_cli_candidates"] == ["newrelic"]
 
 
 def test_provider_specific_preview_supports_chrome_devtools_and_cdp_lanes(monkeypatch) -> None:

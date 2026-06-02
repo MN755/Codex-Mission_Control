@@ -65,6 +65,9 @@ PROVIDER_CLIS: dict[str, tuple[str, ...]] = {
     "nuget": ("dotnet",),
     "rubygems": ("gem",),
     "docker_hub": ("docker",),
+    "sentry": ("sentry-cli",),
+    "datadog": ("datadog-ci",),
+    "new_relic": ("newrelic",),
     "supabase": ("supabase",),
     "firebase": ("firebase",),
     "neon": ("neon",),
@@ -115,6 +118,9 @@ PROVIDER_WORKSPACE_MARKERS: dict[str, tuple[str, ...]] = {
     "cloudflare_pages": ("wrangler.toml",),
     "railway": ("railway.json",),
     "render": ("render.yaml",),
+    "sentry": ("sentry.properties",),
+    "datadog": ("datadog.yaml", "datadog.yml"),
+    "new_relic": ("newrelic.js", "newrelic.ts", "newrelic.cjs", "newrelic.mjs"),
     "supabase": ("supabase/config.toml",),
     "firebase": ("firebase.json",),
     "neon": ("neon.json",),
@@ -160,6 +166,10 @@ PROVIDER_TOKEN_MARKERS: dict[str, tuple[str, ...]] = {
     "cloudflare_pages": ("cloudflare pages", "wrangler",),
     "railway": ("railway",),
     "render": ("render",),
+    "sentry": ("sentry", "sentry-cli"),
+    "logrocket": ("logrocket",),
+    "datadog": ("datadog", "datadog-ci"),
+    "new_relic": ("new relic", "newrelic", "newrelic-cli"),
     "supabase": ("supabase",),
     "firebase": ("firebase",),
     "neon": ("neon",),
@@ -216,6 +226,10 @@ PROVIDER_ACTION_GUIDANCE: dict[str, dict[str, str]] = {
     },
     "render": {
         "deploy": "Render deploys support the official Render CLI, but you still need a concrete service identifier before Mission Control should attempt to trigger anything.",
+    },
+    "logrocket": {
+        "inspect": "LogRocket is intentionally treated as a guided remote lane here. Mission Control should not pretend a local LogRocket CLI exists when the honest path is browser/API-backed.",
+        "tail": "LogRocket session and telemetry review should route through a host-integrated or API-backed lane instead of a fake local CLI.",
     },
 }
 
@@ -447,7 +461,7 @@ FAMILIES: tuple[IntegrationFamilyDefinition, ...] = (
         host_tokens=("sentry", "logrocket", "datadog", "newrelic", "new relic"),
         config_files=("sentry.properties", "datadog.yaml", "newrelic.js"),
         workspace_tokens=("sentry", "logrocket", "datadog", "newrelic"),
-        cli_candidates=("sentry-cli",),
+        cli_candidates=("sentry-cli", "datadog-ci", "newrelic"),
         legacy_account_keys=(),
         actions=COMMON_ACTIONS + (
             _action("inspect", "Inspect release health", "Inspect release or issue health.", command_template="sentry-cli info", risk_level="low", permission_policy="ask_once_per_project"),
@@ -1049,6 +1063,17 @@ def _provider_command_template(provider: str, action_id: str) -> str | None:
         },
         "planetscale": {
             "inspect": "pscale database list",
+        },
+        "sentry": {
+            "inspect": "sentry-cli info",
+            "tail": "sentry-cli releases list",
+        },
+        "datadog": {
+            "inspect": "datadog-ci --version",
+            "tail": "datadog-ci gate evaluate",
+        },
+        "new_relic": {
+            "inspect": "newrelic --version",
         },
         "postman": {
             "inspect": "newman --version",
