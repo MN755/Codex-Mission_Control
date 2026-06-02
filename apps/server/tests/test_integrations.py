@@ -96,8 +96,10 @@ def test_project_integrations_and_action_preview_flow(client, bridge_headers, mo
         headers=bridge_headers,
     )
     assert preview.status_code == 200
-    assert "gh issue create" in preview.json()["command"]
+    assert preview.json()["command"] == 'gh issue create --title "Bridge it" --body "Stop lying about status."'
     assert preview.json()["requires_confirmation"] is True
+    assert preview.json()["command_ready"] is True
+    assert preview.json()["execution_mode"] == "local_cli"
 
     execute = client.post(
         f"/api/projects/{project_id}/integrations/source_control/actions/create/execute",
@@ -173,8 +175,10 @@ def test_import_host_state_preserves_authoritative_connection_state(monkeypatch,
     assert connection["status"] == "connected"
     assert connection["connection_source"] == "mission_control"
     assert connection["host_imported"] is True
+    assert connection["providers"] == ["github"]
     assert any("already verified" in note.lower() for note in connection["notes"])
     assert imported["host_imports"]["codex"]["source_control"]["detected"] is True
+    assert imported["host_imports"]["codex"]["source_control"]["provider_hints"] == ["github"]
 
 
 def test_project_integrations_report_partial_when_only_host_or_workspace_signals_exist(monkeypatch, tmp_path) -> None:
@@ -210,8 +214,11 @@ def test_project_integrations_report_partial_when_only_host_or_workspace_signals
 
     hosting = statuses["hosting_deploy"]
     assert hosting["status"] == "partial"
+    assert hosting["resolved_provider"] == "vercel"
+    assert hosting["providers"] == ["vercel"]
     assert any("host-imported metadata" in blocker.lower() for blocker in hosting["blockers"])
     assert any("install one of" in fix.lower() for fix in hosting["recommended_fixes"])
+    assert hosting["provider_candidates"] == ["vercel"]
 
 
 def test_execute_integration_action_is_shell_free_and_blocks_missing_executable(monkeypatch) -> None:
@@ -239,6 +246,45 @@ def test_execute_integration_action_is_shell_free_and_blocks_missing_executable(
     assert result["approval_required"] is False
     assert "not available on PATH" in result["stderr"]
     assert called["ran"] is False
+
+
+def test_execute_integration_action_parses_quoted_args_correctly(monkeypatch) -> None:
+    monkeypatch.setattr("integration_registry.shutil.which", lambda command: f"C:/tools/{command}.exe" if command == "gh" else None)
+
+    captured: dict[str, object] = {}
+
+    class Completed:
+        returncode = 0
+        stdout = "created"
+        stderr = ""
+
+    def fake_run(args, **kwargs):
+        captured["args"] = args
+        captured["kwargs"] = kwargs
+        return Completed()
+
+    monkeypatch.setattr("integration_registry.subprocess.run", fake_run)
+
+    result = execute_integration_action(
+        family_id="source_control",
+        action_id="create",
+        params={"title": 'Need "quotes" now', "body": "spaces still matter"},
+        registry_payload=normalize_integration_registry({}, {}),
+        workspace_path=None,
+        project_name="Quote Demo",
+        confirmed=True,
+    )
+
+    assert result["status"] == "completed"
+    assert captured["args"] == [
+        "gh",
+        "issue",
+        "create",
+        "--title",
+        'Need "quotes" now',
+        "--body",
+        "spaces still matter",
+    ]
 
 
 def test_connect_and_disconnect_actions_update_registry_state() -> None:
@@ -440,6 +486,7 @@ def test_provider_specific_preview_surfaces_jira_create_param_requirements(monke
     assert preview["provider"] == "jira"
     assert sorted(preview["missing_params"]) == ["issue_type", "project_key"]
     assert 'acli jira workitem create' in str(preview["command"])
+    assert preview["execution_mode"] == "local_cli"
 
 
 def test_provider_specific_preview_surfaces_linear_guidance_without_fake_cli(monkeypatch, tmp_path) -> None:
@@ -483,7 +530,7 @@ def test_provider_specific_preview_uses_gitlab_ci_run_inspection(monkeypatch, tm
     )
 
     assert preview["provider"] == "gitlab_ci"
-    assert preview["command"] == "glab ci get --pipeline-id 12345 --with-job-details --output json"
+    assert preview["command"] == 'glab ci get --pipeline-id "12345" --with-job-details --output json'
 
 
 def test_provider_specific_preview_uses_gitlab_ci_log_tail(monkeypatch, tmp_path) -> None:
@@ -506,7 +553,7 @@ def test_provider_specific_preview_uses_gitlab_ci_log_tail(monkeypatch, tmp_path
     )
 
     assert preview["provider"] == "gitlab_ci"
-    assert preview["command"] == "glab ci trace --pipeline-id 987"
+    assert preview["command"] == 'glab ci trace --pipeline-id "987"'
 
 
 def test_provider_specific_preview_uses_github_actions_run_inspection(monkeypatch, tmp_path) -> None:
@@ -529,7 +576,7 @@ def test_provider_specific_preview_uses_github_actions_run_inspection(monkeypatc
     )
 
     assert preview["provider"] == "github_actions"
-    assert preview["command"] == "gh run view 654321"
+    assert preview["command"] == 'gh run view "654321"'
 
 
 def test_provider_specific_preview_inferrs_cloudflare_pages_deploy_directory(monkeypatch, tmp_path) -> None:
@@ -553,8 +600,9 @@ def test_provider_specific_preview_inferrs_cloudflare_pages_deploy_directory(mon
     )
 
     assert preview["provider"] == "cloudflare_pages"
-    assert preview["command"] == "wrangler pages deploy dist"
+    assert preview["command"] == 'wrangler pages deploy "dist"'
     assert any("directory" in note.lower() for note in preview["notes"])
+    assert preview["defaulted_params"] == {"directory": "dist"}
 
 
 def test_provider_specific_preview_uses_railway_status_and_logs(monkeypatch, tmp_path) -> None:
@@ -619,7 +667,61 @@ def test_provider_specific_preview_requires_render_service_and_resource_ids(monk
 
     assert deploy_preview["provider"] == "render"
     assert deploy_preview["missing_params"] == ["service_id"]
-    assert "render deploys create {service_id} --wait" == deploy_preview["command"]
+    assert "render deploys create {service_id_q} --wait" == deploy_preview["command"]
     assert logs_preview["provider"] == "render"
     assert logs_preview["missing_params"] == ["resource_id"]
-    assert "render logs --resources {resource_id} --limit 200 --output json" == logs_preview["command"]
+    assert "render logs --resources {resource_id_q} --limit 200 --output json" == logs_preview["command"]
+
+
+def test_project_integrations_surface_provider_specific_required_params_and_host_import_artifacts(monkeypatch, tmp_path) -> None:
+    workspace = tmp_path / "integration-status-details"
+    (workspace / ".jira").mkdir(parents=True, exist_ok=True)
+    (workspace / ".jira" / "config.json").write_text('{"project":"MC"}\n', encoding="utf-8")
+
+    registry = normalize_integration_registry(
+        {
+            "connections": {
+                "work_tracking": {
+                    "family": "work_tracking",
+                    "status": "partial",
+                    "providers": ["jira"],
+                    "connection_source": "codex_host",
+                    "host_imported": True,
+                }
+            },
+            "host_imports": {
+                "codex": {
+                    "work_tracking": {
+                        "detected": True,
+                        "paths": ["C:/Users/mike/.codex/plugins/jira/plugin.json"],
+                        "provider_hints": ["jira"],
+                    }
+                },
+                "claude_code": {},
+            },
+        },
+        {},
+    )
+
+    monkeypatch.setattr(
+        "integration_registry.shutil.which",
+        lambda command: f"C:/tools/{command}.exe" if command == "acli" else None,
+    )
+
+    status = {
+        item["family"]: item
+        for item in build_project_integration_status(
+            workspace_path=str(workspace),
+            project_name="Integration Details Demo",
+            registry_payload=registry,
+        )
+    }["work_tracking"]
+
+    create_action = next(item for item in status["available_actions"] if item["action_id"] == "create")
+
+    assert status["resolved_provider"] == "jira"
+    assert status["providers"] == ["jira"]
+    assert any(item["type"] == "host_import_path" and item["host"] == "codex" for item in status["artifacts"])
+    assert create_action["required_params"] == ["title", "body", "project_key", "issue_type"]
+    assert create_action["command_ready"] is True
+    assert create_action["execution_mode"] == "local_cli"

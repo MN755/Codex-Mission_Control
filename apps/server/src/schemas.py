@@ -3140,6 +3140,8 @@ class IntegrationActionRead(BaseModel):
     status: ToolAvailability = "available"
     provider: str | None = None
     command_template: str | None = None
+    command_ready: bool = False
+    execution_mode: str = "unavailable"
 
 
 class IntegrationCatalogEntryRead(BaseModel):
@@ -3188,6 +3190,8 @@ class ProjectIntegrationFamilyRead(BaseModel):
     connection_source: str = "mission_control"
     host_imported: bool = False
     providers: list[str] = Field(default_factory=list)
+    resolved_provider: str | None = None
+    provider_candidates: list[str] = Field(default_factory=list)
     required_permissions: list[str] = Field(default_factory=list)
     health: dict[str, Any] = Field(default_factory=dict)
     artifacts: list[dict[str, Any]] = Field(default_factory=list)
@@ -3227,6 +3231,9 @@ class IntegrationActionPreviewRead(BaseModel):
     missing_params: list[str] = Field(default_factory=list)
     provider: str | None = None
     provider_candidates: list[str] = Field(default_factory=list)
+    defaulted_params: dict[str, Any] = Field(default_factory=dict)
+    command_ready: bool = False
+    execution_mode: str = "unavailable"
     notes: list[str] = Field(default_factory=list)
 
 

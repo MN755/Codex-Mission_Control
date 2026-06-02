@@ -248,7 +248,7 @@ FAMILIES: tuple[IntegrationFamilyDefinition, ...] = (
         legacy_account_keys=("github",),
         actions=COMMON_ACTIONS + (
             _action("search", "Search repos", "Inspect repo host metadata or issue state.", command_template="gh repo view --json name,defaultBranchRef", risk_level="low", permission_policy="ask_once_per_project"),
-            _action("create", "Create issue", "Create a work item against the connected source host.", command_template='gh issue create --title "{title}" --body "{body}"', mutates_remote_state=True, requires_confirmation=True, required_params=("title", "body")),
+            _action("create", "Create issue", "Create a work item against the connected source host.", command_template="gh issue create --title {title_q} --body {body_q}", mutates_remote_state=True, requires_confirmation=True, required_params=("title", "body")),
         ),
     ),
     IntegrationFamilyDefinition(
@@ -264,7 +264,7 @@ FAMILIES: tuple[IntegrationFamilyDefinition, ...] = (
         legacy_account_keys=(),
         actions=COMMON_ACTIONS + (
             _action("search", "Search work items", "Inspect tracked work items from the current host or CLI.", command_template="gh issue list --limit 20", risk_level="low", permission_policy="ask_once_per_project"),
-            _action("create", "Create work item", "Create a tracked work item.", command_template='gh issue create --title "{title}" --body "{body}"', mutates_remote_state=True, requires_confirmation=True, required_params=("title", "body")),
+            _action("create", "Create work item", "Create a tracked work item.", command_template="gh issue create --title {title_q} --body {body_q}", mutates_remote_state=True, requires_confirmation=True, required_params=("title", "body")),
         ),
     ),
     IntegrationFamilyDefinition(
@@ -296,9 +296,9 @@ FAMILIES: tuple[IntegrationFamilyDefinition, ...] = (
         legacy_account_keys=(),
         actions=COMMON_ACTIONS + (
             _action("inspect", "Inspect CI status", "Inspect CI workflow status.", command_template="gh run list --limit 10", risk_level="low", permission_policy="ask_once_per_project"),
-            _action("inspect_run", "Inspect CI run", "Inspect a specific CI run or pipeline.", command_template="gh run view {run_id}", risk_level="low", permission_policy="ask_once_per_project", required_params=("run_id",)),
-            _action("tail_logs", "Tail CI logs", "Inspect logs for a specific CI run or pipeline.", command_template="gh run view {run_id} --log", risk_level="low", permission_policy="ask_once_per_project", required_params=("run_id",)),
-            _action("rerun", "Rerun pipeline", "Rerun the most recent CI pipeline.", command_template="gh run rerun {run_id}", mutates_remote_state=True, requires_confirmation=True, required_params=("run_id",)),
+            _action("inspect_run", "Inspect CI run", "Inspect a specific CI run or pipeline.", command_template="gh run view {run_id_q}", risk_level="low", permission_policy="ask_once_per_project", required_params=("run_id",)),
+            _action("tail_logs", "Tail CI logs", "Inspect logs for a specific CI run or pipeline.", command_template="gh run view {run_id_q} --log", risk_level="low", permission_policy="ask_once_per_project", required_params=("run_id",)),
+            _action("rerun", "Rerun pipeline", "Rerun the most recent CI pipeline.", command_template="gh run rerun {run_id_q}", mutates_remote_state=True, requires_confirmation=True, required_params=("run_id",)),
         ),
     ),
     IntegrationFamilyDefinition(
@@ -410,7 +410,7 @@ FAMILIES: tuple[IntegrationFamilyDefinition, ...] = (
         legacy_account_keys=(),
         actions=COMMON_ACTIONS + (
             _action("inspect", "Inspect cluster", "Inspect current cluster context and workload state.", command_template="kubectl config current-context", risk_level="low", permission_policy="ask_once_per_project"),
-            _action("deploy", "Apply manifests", "Apply Kubernetes manifests.", command_template="kubectl apply -f {path}", risk_level="high", mutates_remote_state=True, requires_confirmation=True, required_params=("path",)),
+            _action("deploy", "Apply manifests", "Apply Kubernetes manifests.", command_template="kubectl apply -f {path_q}", risk_level="high", mutates_remote_state=True, requires_confirmation=True, required_params=("path",)),
         ),
     ),
     IntegrationFamilyDefinition(
@@ -776,7 +776,7 @@ def _format_command(template: str, params: dict[str, Any]) -> str:
 
 
 def _command_to_args(command: str) -> list[str]:
-    return shlex.split(command, posix=os.name != "nt")
+    return shlex.split(command, posix=True)
 
 
 def _command_executable_name(command: str) -> str | None:
@@ -828,12 +828,12 @@ def _provider_command_template(provider: str, action_id: str) -> str | None:
     commands: dict[str, dict[str, str]] = {
         "github": {
             "search": "gh repo view --json name,defaultBranchRef,isPrivate,url",
-            "create": 'gh issue create --title "{title}" --body "{body}"',
+            "create": "gh issue create --title {title_q} --body {body_q}",
             "inspect": "gh repo view --json name,defaultBranchRef,isPrivate,url",
         },
         "gitlab": {
             "search": "glab repo view",
-            "create": 'glab issue create --title "{title}" --description "{body}"',
+            "create": "glab issue create --title {title_q} --description {body_q}",
             "inspect": "glab repo view",
         },
         "bitbucket": {
@@ -843,11 +843,11 @@ def _provider_command_template(provider: str, action_id: str) -> str | None:
         },
         "github_issues": {
             "search": "gh issue list --limit 20",
-            "create": 'gh issue create --title "{title}" --body "{body}"',
+            "create": "gh issue create --title {title_q} --body {body_q}",
         },
         "jira": {
             "search": 'acli jira workitem search --jql "order by updated DESC" --limit 20 --json',
-            "create": 'acli jira workitem create --summary "{title}" --description "{body}" --project "{project_key}" --type "{issue_type}" --json',
+            "create": "acli jira workitem create --summary {title_q} --description {body_q} --project {project_key_q} --type {issue_type_q} --json",
         },
         "linear": {
             "search": None,
@@ -864,14 +864,14 @@ def _provider_command_template(provider: str, action_id: str) -> str | None:
         },
         "github_actions": {
             "inspect": "gh run list --limit 10 --json databaseId,status,conclusion,name,workflowName",
-            "inspect_run": "gh run view {run_id}",
-            "tail_logs": "gh run view {run_id} --log",
-            "rerun": "gh run rerun {run_id}",
+            "inspect_run": "gh run view {run_id_q}",
+            "tail_logs": "gh run view {run_id_q} --log",
+            "rerun": "gh run rerun {run_id_q}",
         },
         "gitlab_ci": {
             "inspect": "glab ci list --output json",
-            "inspect_run": "glab ci get --pipeline-id {run_id} --with-job-details --output json",
-            "tail_logs": "glab ci trace --pipeline-id {run_id}",
+            "inspect_run": "glab ci get --pipeline-id {run_id_q} --with-job-details --output json",
+            "tail_logs": "glab ci trace --pipeline-id {run_id_q}",
         },
         "vercel": {
             "inspect": "vercel whoami",
@@ -884,7 +884,7 @@ def _provider_command_template(provider: str, action_id: str) -> str | None:
         "cloudflare_pages": {
             "inspect": "wrangler pages project list --json",
             "tail_logs": "wrangler pages deployment tail",
-            "deploy": "wrangler pages deploy {directory}",
+            "deploy": "wrangler pages deploy {directory_q}",
         },
         "railway": {
             "inspect": "railway status --json",
@@ -893,11 +893,46 @@ def _provider_command_template(provider: str, action_id: str) -> str | None:
         },
         "render": {
             "inspect": "render services --output json",
-            "tail_logs": "render logs --resources {resource_id} --limit 200 --output json",
-            "deploy": "render deploys create {service_id} --wait",
+            "tail_logs": "render logs --resources {resource_id_q} --limit 200 --output json",
+            "deploy": "render deploys create {service_id_q} --wait",
         },
     }
     return commands.get(provider, {}).get(action_id)
+
+
+def _provider_hints_for_paths(family: IntegrationFamilyDefinition, matched_paths: list[str]) -> list[str]:
+    lowered_paths = [item.lower() for item in matched_paths]
+    hints: list[str] = []
+    for provider in family.providers:
+        provider_tokens = {
+            provider.lower(),
+            provider.replace("_", " ").lower(),
+            *[token.lower() for token in PROVIDER_CLIS.get(provider, ())],
+        }
+        if any(token and token in path for path in lowered_paths for token in provider_tokens):
+            hints.append(provider)
+    return _dedupe_strs(hints or [provider for provider in family.providers if provider])
+
+
+def _host_import_entries_for_family(registry: dict[str, Any], family_id: str) -> list[dict[str, Any]]:
+    entries: list[dict[str, Any]] = []
+    for host_name, families in dict(registry.get("host_imports") or {}).items():
+        payload = dict(dict(families or {}).get(family_id) or {})
+        if not payload:
+            continue
+        for path in list(payload.get("paths") or []):
+            entries.append({"host": host_name, "path": str(path)})
+    return entries
+
+
+def _execution_mode(*, action_id: str, command_template: str | None, provider: str | None) -> str:
+    if action_id in {"import_host_state", "connect", "disconnect", "inspect_status"}:
+        return "registry_state"
+    if command_template:
+        return "local_cli"
+    if provider:
+        return "guided_remote"
+    return "unavailable"
 
 
 def _provider_candidates_for_family(
@@ -1132,16 +1167,17 @@ def import_host_state(
                     if _token_in_path(path, family.host_tokens):
                         matched_paths.append(str(path))
             if matched_paths:
+                provider_hints = _provider_hints_for_paths(family, matched_paths)
                 imported[family.family_id] = {
                     "detected": True,
                     "paths": _dedupe_strs(matched_paths),
-                    "provider_hints": list(family.providers),
+                    "provider_hints": provider_hints,
                 }
                 registry["connections"][family.family_id] = _merge_connection_entry(
                     dict(registry["connections"].get(family.family_id) or {}),
                     family=family,
                     status="partial",
-                    providers=list(family.providers),
+                    providers=provider_hints,
                     connection_source=f"{host_name}_host",
                     host_imported=True,
                     notes=[f"Imported metadata from {host_name} host assets. Host import does not override Mission Control-owned connection state."],
@@ -1291,6 +1327,7 @@ def build_project_integration_status(
             git_remote_url=git_remote_url,
         )
         resolved_provider = provider_candidates[0] if provider_candidates else None
+        displayed_providers = provider_candidates or list(connection.get("providers") or []) or list(family.providers)
         has_host_import = bool(connection.get("host_imported"))
         has_workspace_signal = bool(detected_files or token_hits)
         has_cli = bool(installed_clis)
@@ -1327,6 +1364,13 @@ def build_project_integration_status(
                 git_remote_url=git_remote_url,
             )
             action_command_ready = bool(action_template and _command_is_available(action_template))
+            action_required_params = _dedupe_strs(
+                [
+                    *[str(item) for item in action.required_params],
+                    *[str(item) for item in _provider_extra_required_params(action_provider, action.action_id)],
+                ]
+            )
+            execution_mode = _execution_mode(action_id=action.action_id, command_template=action_template, provider=action_provider)
             action_ready = bool(
                 action.action_id in {"import_host_state", "connect", "disconnect", "inspect_status"}
                 or action_command_ready
@@ -1345,10 +1389,12 @@ def build_project_integration_status(
                     "preview_supported": action.preview_supported,
                     "mutates_remote_state": action.mutates_remote_state,
                     "requires_confirmation": action.requires_confirmation,
-                    "required_params": list(action.required_params),
+                    "required_params": action_required_params,
                     "status": "available" if action_ready else "needs_setup",
                     "provider": action_provider,
                     "command_template": action_template,
+                    "command_ready": action_command_ready,
+                    "execution_mode": execution_mode,
                 }
             )
         safe_commands = [
@@ -1368,6 +1414,14 @@ def build_project_integration_status(
             if template and not action.mutates_remote_state and _command_is_available(template)
         ]
         artifacts = [{"type": "config_file", "path": path} for path in detected_files]
+        artifacts.extend(
+            {
+                "type": "host_import_path",
+                "host": item["host"],
+                "path": item["path"],
+            }
+            for item in _host_import_entries_for_family(registry, family.family_id)
+        )
         statuses.append(
             {
                 "family": family.family_id,
@@ -1379,7 +1433,9 @@ def build_project_integration_status(
                 "status": status,
                 "connection_source": connection.get("connection_source") or "mission_control",
                 "host_imported": bool(connection.get("host_imported")),
-                "providers": list(connection.get("providers") or family.providers),
+                "providers": displayed_providers,
+                "resolved_provider": resolved_provider,
+                "provider_candidates": provider_candidates,
                 "required_permissions": _dedupe_strs([action.permission_policy for action in family.actions]),
                 "health": {
                     "cli_detected": installed_clis,
@@ -1523,6 +1579,7 @@ def preview_integration_action(
         else:
             command = _format_command(command_template, effective_params)
     executable_available = bool(command and _command_is_available(command))
+    execution_mode = _execution_mode(action_id=action.action_id, command_template=command_template, provider=resolved_provider)
     provider_guidance = _provider_guidance(resolved_provider, action.action_id)
     notes = [
         "Mission Control previews the action before execution so approvals are tied to a concrete command or host import step.",
@@ -1551,6 +1608,9 @@ def preview_integration_action(
         "missing_params": missing,
         "provider": resolved_provider,
         "provider_candidates": provider_candidates,
+        "defaulted_params": {key: value for key, value in effective_params.items() if key not in params},
+        "command_ready": executable_available,
+        "execution_mode": execution_mode,
         "notes": notes,
     }
 
