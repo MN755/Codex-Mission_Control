@@ -2999,13 +2999,16 @@ def build_project_integration_status(
         verification_blocked_local_action_count = sum(
             1 for item in available_actions if item.get("verification_scope") == "local_cli_mutation"
         )
-        preflight_ready_action_count = sum(1 for item in available_actions if item["preflight_ready"])
-        confirmation_eligible_action_count = sum(1 for item in available_actions if item["confirmation_eligible"])
-        ready_to_execute_action_count = sum(1 for item in available_actions if item["ready_to_execute"])
-        missing_params_action_count = sum(1 for item in available_actions if item.get("execution_block_reason") == "missing_params")
-        missing_executable_action_count = sum(1 for item in available_actions if item.get("execution_block_reason") == "missing_executable")
-        no_local_command_action_count = sum(1 for item in available_actions if item.get("execution_block_reason") == "no_local_command")
-        provider_context_blocked_action_count = sum(1 for item in available_actions if item.get("execution_block_reason") == "provider_context_missing")
+        execution_actions = [item for item in available_actions if item["execution_mode"] != "registry_state"]
+        execution_action_count = len(execution_actions)
+        blocked_execution_action_count = sum(1 for item in execution_actions if item["status"] != "available")
+        preflight_ready_action_count = sum(1 for item in execution_actions if item["preflight_ready"])
+        confirmation_eligible_action_count = sum(1 for item in execution_actions if item["confirmation_eligible"])
+        ready_to_execute_action_count = sum(1 for item in execution_actions if item["ready_to_execute"])
+        missing_params_action_count = sum(1 for item in execution_actions if item.get("execution_block_reason") == "missing_params")
+        missing_executable_action_count = sum(1 for item in execution_actions if item.get("execution_block_reason") == "missing_executable")
+        no_local_command_action_count = sum(1 for item in execution_actions if item.get("execution_block_reason") == "no_local_command")
+        provider_context_blocked_action_count = sum(1 for item in execution_actions if item.get("execution_block_reason") == "provider_context_missing")
         has_actionable_lane = available_action_count > registry_action_count
         has_provider_cli = not provider_cli_candidates or len(installed_provider_clis) == len(provider_cli_candidates)
         if not has_context_signal:
@@ -3119,6 +3122,8 @@ def build_project_integration_status(
                 "verification_blocked_action_count": verification_blocked_action_count,
                 "verification_blocked_guided_action_count": verification_blocked_guided_action_count,
                 "verification_blocked_local_action_count": verification_blocked_local_action_count,
+                "execution_action_count": execution_action_count,
+                "blocked_execution_action_count": blocked_execution_action_count,
                 "preflight_ready_action_count": preflight_ready_action_count,
                 "confirmation_eligible_action_count": confirmation_eligible_action_count,
                 "ready_to_execute_action_count": ready_to_execute_action_count,
@@ -3156,6 +3161,8 @@ def build_project_integration_status(
                     "verification_blocked_action_ids": verification_blocked_action_ids,
                     "verification_blocked_guided_action_count": verification_blocked_guided_action_count,
                     "verification_blocked_local_action_count": verification_blocked_local_action_count,
+                    "execution_action_count": execution_action_count,
+                    "blocked_execution_action_count": blocked_execution_action_count,
                     "preflight_ready_action_count": preflight_ready_action_count,
                     "confirmation_eligible_action_count": confirmation_eligible_action_count,
                     "ready_to_execute_action_count": ready_to_execute_action_count,

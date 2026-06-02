@@ -205,9 +205,11 @@ def test_project_integration_api_surfaces_context_suppression_metadata(client, b
     assert payments["verification_blocked_action_count"] == 0
     assert payments["verification_blocked_guided_action_count"] == 0
     assert payments["verification_blocked_local_action_count"] == 0
-    assert payments["preflight_ready_action_count"] == 4
-    assert payments["confirmation_eligible_action_count"] == 1
-    assert payments["ready_to_execute_action_count"] == 3
+    assert payments["execution_action_count"] == 2
+    assert payments["blocked_execution_action_count"] == 2
+    assert payments["preflight_ready_action_count"] == 0
+    assert payments["confirmation_eligible_action_count"] == 0
+    assert payments["ready_to_execute_action_count"] == 0
     assert payments["missing_params_action_count"] == 0
     assert payments["missing_executable_action_count"] == 0
     assert payments["no_local_command_action_count"] == 0
@@ -5660,9 +5662,11 @@ def test_project_integrations_surface_preflight_counts_and_action_readiness(monk
     assert status["available_action_count"] == 5
     assert status["local_action_count"] == 1
     assert status["registry_action_count"] == 4
-    assert status["preflight_ready_action_count"] == 5
-    assert status["confirmation_eligible_action_count"] == 1
-    assert status["ready_to_execute_action_count"] == 4
+    assert status["execution_action_count"] == 2
+    assert status["blocked_execution_action_count"] == 1
+    assert status["preflight_ready_action_count"] == 1
+    assert status["confirmation_eligible_action_count"] == 0
+    assert status["ready_to_execute_action_count"] == 1
     assert status["verification_blocked_action_count"] == 1
     assert status["verification_blocked_local_action_count"] == 1
     assert status["verification_blocked_guided_action_count"] == 0
@@ -5670,9 +5674,11 @@ def test_project_integrations_surface_preflight_counts_and_action_readiness(monk
     assert status["missing_params_action_count"] == 0
     assert status["missing_executable_action_count"] == 0
     assert status["no_local_command_action_count"] == 0
-    assert status["health"]["preflight_ready_action_count"] == 5
-    assert status["health"]["confirmation_eligible_action_count"] == 1
-    assert status["health"]["ready_to_execute_action_count"] == 4
+    assert status["health"]["execution_action_count"] == 2
+    assert status["health"]["blocked_execution_action_count"] == 1
+    assert status["health"]["preflight_ready_action_count"] == 1
+    assert status["health"]["confirmation_eligible_action_count"] == 0
+    assert status["health"]["ready_to_execute_action_count"] == 1
     assert status["health"]["verification_blocked_local_action_count"] == 1
 
     assert inspect_action["status"] == "available"
@@ -5690,6 +5696,42 @@ def test_project_integrations_surface_preflight_counts_and_action_readiness(monk
     assert publish_action["confirmation_eligible"] is False
     assert publish_action["ready_to_execute"] is False
     assert publish_action["executable_name"] == "npm"
+
+
+def test_project_integrations_do_not_let_registry_actions_inflate_execution_counts(monkeypatch, tmp_path) -> None:
+    workspace = tmp_path / "registry-only-counts"
+    workspace.mkdir(parents=True, exist_ok=True)
+    (workspace / "README.md").write_text("plain repo\n", encoding="utf-8")
+
+    monkeypatch.setattr(
+        "integration_registry.shutil.which",
+        lambda command: f"C:/tools/{command}.exe" if command in {"gh", "vercel", "supabase", "aws", "newman", "chrome", "stripe", "release-please"} else None,
+    )
+
+    status = next(
+        item
+        for item in build_project_integration_status(
+            workspace_path=str(workspace),
+            project_name="Registry Counts Demo",
+            registry_payload=normalize_integration_registry({}, {}),
+        )
+        if item["family"] == "payments"
+    )
+
+    assert status["available_action_count"] == 4
+    assert status["registry_action_count"] == 4
+    assert status["execution_action_count"] == 2
+    assert status["blocked_execution_action_count"] == 2
+    assert status["preflight_ready_action_count"] == 0
+    assert status["confirmation_eligible_action_count"] == 0
+    assert status["ready_to_execute_action_count"] == 0
+    assert status["provider_context_blocked_action_count"] == 2
+    assert status["verification_blocked_action_count"] == 0
+    assert status["health"]["execution_action_count"] == 2
+    assert status["health"]["blocked_execution_action_count"] == 2
+    assert status["health"]["preflight_ready_action_count"] == 0
+    assert status["health"]["confirmation_eligible_action_count"] == 0
+    assert status["health"]["ready_to_execute_action_count"] == 0
 
 
 def test_execute_integration_action_blocks_missing_executable_before_confirmation(monkeypatch) -> None:

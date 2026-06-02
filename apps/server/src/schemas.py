@@ -3227,6 +3227,8 @@ class ProjectIntegrationFamilyRead(BaseModel):
     verification_blocked_action_count: int = 0
     verification_blocked_guided_action_count: int = 0
     verification_blocked_local_action_count: int = 0
+    execution_action_count: int = 0
+    blocked_execution_action_count: int = 0
     preflight_ready_action_count: int = 0
     confirmation_eligible_action_count: int = 0
     ready_to_execute_action_count: int = 0
