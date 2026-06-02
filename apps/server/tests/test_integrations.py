@@ -1007,6 +1007,30 @@ def test_provider_specific_preview_supports_circleci_inspect_lane(monkeypatch, t
     assert preview["command_ready"] is True
 
 
+def test_provider_specific_preview_supports_buildkite_inspect_lane(monkeypatch, tmp_path) -> None:
+    workspace = tmp_path / "buildkite-repo"
+    (workspace / ".buildkite").mkdir(parents=True, exist_ok=True)
+    (workspace / ".buildkite" / "pipeline.yml").write_text("steps: []\n", encoding="utf-8")
+
+    monkeypatch.setattr(
+        "integration_registry.shutil.which",
+        lambda command: f"C:/tools/{command}.exe" if command == "buildkite-agent" else None,
+    )
+
+    preview = preview_integration_action(
+        family_id="ci_cd",
+        action_id="inspect",
+        params={},
+        registry_payload=normalize_integration_registry({}, {}),
+        workspace_path=str(workspace),
+        project_name="Buildkite Demo",
+    )
+
+    assert preview["provider"] == "buildkite"
+    assert preview["command"] == "buildkite-agent pipeline upload --dry-run .buildkite/pipeline.yml"
+    assert preview["command_ready"] is True
+
+
 def test_provider_specific_preview_supports_codeql_scan_lane(monkeypatch, tmp_path) -> None:
     workspace = tmp_path / "codeql-repo"
     (workspace / ".github" / "codeql").mkdir(parents=True, exist_ok=True)
@@ -1029,6 +1053,149 @@ def test_provider_specific_preview_supports_codeql_scan_lane(monkeypatch, tmp_pa
     assert preview["provider"] == "codeql"
     assert preview["command"] == "codeql resolve qlpacks"
     assert preview["command_ready"] is True
+
+
+def test_provider_specific_preview_supports_firebase_neon_and_planetscale_lanes(monkeypatch, tmp_path) -> None:
+    firebase_workspace = tmp_path / "firebase-repo"
+    firebase_workspace.mkdir(parents=True, exist_ok=True)
+    (firebase_workspace / "firebase.json").write_text('{"firestore":{}}\n', encoding="utf-8")
+
+    neon_workspace = tmp_path / "neon-repo"
+    neon_workspace.mkdir(parents=True, exist_ok=True)
+    (neon_workspace / "neon.json").write_text('{"project":"demo"}\n', encoding="utf-8")
+
+    planetscale_workspace = tmp_path / "pscale-repo"
+    planetscale_workspace.mkdir(parents=True, exist_ok=True)
+    (planetscale_workspace / "pscale.yml").write_text("org: demo\n", encoding="utf-8")
+
+    monkeypatch.setattr(
+        "integration_registry.shutil.which",
+        lambda command: f"C:/tools/{command}.exe" if command in {"firebase", "neon", "pscale"} else None,
+    )
+
+    firebase_preview = preview_integration_action(
+        family_id="database_platforms",
+        action_id="inspect",
+        params={},
+        registry_payload=normalize_integration_registry({}, {}),
+        workspace_path=str(firebase_workspace),
+        project_name="Firebase Demo",
+    )
+    neon_preview = preview_integration_action(
+        family_id="database_platforms",
+        action_id="inspect",
+        params={},
+        registry_payload=normalize_integration_registry({}, {}),
+        workspace_path=str(neon_workspace),
+        project_name="Neon Demo",
+    )
+    planetscale_preview = preview_integration_action(
+        family_id="database_platforms",
+        action_id="inspect",
+        params={},
+        registry_payload=normalize_integration_registry({}, {}),
+        workspace_path=str(planetscale_workspace),
+        project_name="PlanetScale Demo",
+    )
+
+    assert firebase_preview["provider"] == "firebase"
+    assert firebase_preview["command"] == "firebase apps:list --json"
+    assert firebase_preview["command_ready"] is True
+    assert neon_preview["provider"] == "neon"
+    assert neon_preview["command"] == "neon projects list --output json"
+    assert neon_preview["command_ready"] is True
+    assert planetscale_preview["provider"] == "planetscale"
+    assert planetscale_preview["command"] == "pscale database list"
+    assert planetscale_preview["command_ready"] is True
+
+
+def test_provider_specific_preview_supports_kubernetes_lane(monkeypatch, tmp_path) -> None:
+    workspace = tmp_path / "k8s-repo"
+    (workspace / "k8s").mkdir(parents=True, exist_ok=True)
+    (workspace / "k8s" / "deployment.yaml").write_text("apiVersion: apps/v1\nkind: Deployment\n", encoding="utf-8")
+
+    monkeypatch.setattr(
+        "integration_registry.shutil.which",
+        lambda command: f"C:/tools/{command}.exe" if command == "kubectl" else None,
+    )
+
+    inspect_preview = preview_integration_action(
+        family_id="kubernetes",
+        action_id="inspect",
+        params={},
+        registry_payload=normalize_integration_registry({}, {}),
+        workspace_path=str(workspace),
+        project_name="Kubernetes Demo",
+    )
+    deploy_preview = preview_integration_action(
+        family_id="kubernetes",
+        action_id="deploy",
+        params={"path": "k8s/deployment.yaml"},
+        registry_payload=normalize_integration_registry({}, {}),
+        workspace_path=str(workspace),
+        project_name="Kubernetes Demo",
+    )
+
+    assert inspect_preview["provider"] == "kubernetes"
+    assert inspect_preview["command"] == "kubectl config current-context"
+    assert inspect_preview["command_ready"] is True
+    assert deploy_preview["provider"] == "kubernetes"
+    assert deploy_preview["command"] == 'kubectl apply -f "k8s/deployment.yaml"'
+    assert deploy_preview["command_ready"] is True
+
+
+def test_multi_provider_families_no_longer_fall_back_to_unrelated_generic_commands(monkeypatch) -> None:
+    monkeypatch.setattr("integration_registry.shutil.which", lambda _command: None)
+
+    notion_preview = preview_integration_action(
+        family_id="docs_systems",
+        action_id="inspect",
+        params={},
+        registry_payload=normalize_integration_registry(
+            {
+                "connections": {
+                    "docs_systems": {
+                        "family": "docs_systems",
+                        "status": "connected",
+                        "providers": ["notion"],
+                        "connection_source": "mission_control",
+                        "host_imported": False,
+                    }
+                }
+            },
+            {},
+        ),
+        workspace_path=None,
+        project_name="Notion Demo",
+    )
+    datadog_preview = preview_integration_action(
+        family_id="observability",
+        action_id="inspect",
+        params={},
+        registry_payload=normalize_integration_registry(
+            {
+                "connections": {
+                    "observability": {
+                        "family": "observability",
+                        "status": "connected",
+                        "providers": ["datadog"],
+                        "connection_source": "mission_control",
+                        "host_imported": False,
+                    }
+                }
+            },
+            {},
+        ),
+        workspace_path=None,
+        project_name="Datadog Demo",
+    )
+
+    assert notion_preview["provider"] == "notion"
+    assert notion_preview["command"] is None
+    assert notion_preview["execution_mode"] == "guided_remote"
+    assert datadog_preview["provider"] == "datadog"
+    assert datadog_preview["command"] is None
+    assert datadog_preview["execution_mode"] == "guided_remote"
 
 
 def test_provider_specific_preview_supports_chrome_devtools_and_cdp_lanes(monkeypatch) -> None:

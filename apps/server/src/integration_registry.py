@@ -51,7 +51,7 @@ PROVIDER_CLIS: dict[str, tuple[str, ...]] = {
     "gitlab_ci": ("glab",),
     "bitbucket_pipelines": (),
     "circleci": ("circleci",),
-    "buildkite": (),
+    "buildkite": ("buildkite-agent",),
     "vercel": ("vercel",),
     "netlify": ("netlify",),
     "cloudflare_pages": ("wrangler",),
@@ -65,6 +65,11 @@ PROVIDER_CLIS: dict[str, tuple[str, ...]] = {
     "nuget": ("dotnet",),
     "rubygems": ("gem",),
     "docker_hub": ("docker",),
+    "supabase": ("supabase",),
+    "firebase": ("firebase",),
+    "neon": ("neon",),
+    "planetscale": ("pscale",),
+    "kubernetes": ("kubectl",),
     "release_please": ("release-please",),
     "semantic_release": ("semantic-release",),
     "bruno": ("bru",),
@@ -110,6 +115,10 @@ PROVIDER_WORKSPACE_MARKERS: dict[str, tuple[str, ...]] = {
     "cloudflare_pages": ("wrangler.toml",),
     "railway": ("railway.json",),
     "render": ("render.yaml",),
+    "supabase": ("supabase/config.toml",),
+    "firebase": ("firebase.json",),
+    "neon": ("neon.json",),
+    "planetscale": ("pscale.yml",),
     "storybook": (".storybook/main.js", ".storybook/main.ts"),
     "npm": ("package.json", ".npmrc"),
     "pypi": ("pyproject.toml", "setup.py", "requirements.txt"),
@@ -129,6 +138,7 @@ PROVIDER_WORKSPACE_MARKERS: dict[str, tuple[str, ...]] = {
     "changesets": (".changeset",),
     "release_please": (".release-please-manifest.json", "release-please-config.json"),
     "semantic_release": (".releaserc", ".releaserc.json", ".releaserc.yml", ".releaserc.yaml", "release.config.js", "release.config.cjs"),
+    "kubernetes": ("k8s", "kubernetes", "helm"),
 }
 
 PROVIDER_TOKEN_MARKERS: dict[str, tuple[str, ...]] = {
@@ -150,6 +160,10 @@ PROVIDER_TOKEN_MARKERS: dict[str, tuple[str, ...]] = {
     "cloudflare_pages": ("cloudflare pages", "wrangler",),
     "railway": ("railway",),
     "render": ("render",),
+    "supabase": ("supabase",),
+    "firebase": ("firebase",),
+    "neon": ("neon",),
+    "planetscale": ("planetscale", "pscale"),
     "onepassword": ("1password", "op"),
     "aws_secrets_manager": ("aws secrets manager", "aws secretsmanager"),
     "gcp_secret_manager": ("gcp secret manager", "gcloud secrets", "google secret manager"),
@@ -161,6 +175,7 @@ PROVIDER_TOKEN_MARKERS: dict[str, tuple[str, ...]] = {
     "nuget": ("nuget", "dotnet", "nuspec"),
     "rubygems": ("rubygems", "gemfile", "gemspec", "gem"),
     "docker_hub": ("docker hub", "dockerfile", "docker"),
+    "kubernetes": ("kubernetes", "kubectl", "helm", "k8s"),
     "codeql": ("codeql",),
     "chrome_devtools": ("chrome devtools", "devtools"),
     "cdp": ("chrome debug protocol", "chrome devtools protocol", "cdp"),
@@ -381,7 +396,7 @@ FAMILIES: tuple[IntegrationFamilyDefinition, ...] = (
         host_tokens=("workflow", "pipeline", "ci"),
         config_files=(".github/workflows", ".gitlab-ci.yml", "bitbucket-pipelines.yml", ".circleci/config.yml"),
         workspace_tokens=("workflow", "pipeline", "ci"),
-        cli_candidates=("gh", "glab", "circleci"),
+        cli_candidates=("gh", "glab", "circleci", "buildkite-agent"),
         legacy_account_keys=(),
         actions=COMMON_ACTIONS + (
             _action("inspect", "Inspect CI status", "Inspect CI workflow status.", command_template="gh run list --limit 10", risk_level="low", permission_policy="ask_once_per_project"),
@@ -416,7 +431,7 @@ FAMILIES: tuple[IntegrationFamilyDefinition, ...] = (
         host_tokens=("supabase", "firebase", "neon", "planetscale"),
         config_files=("supabase/config.toml", "firebase.json", "neon.json", "pscale.yml"),
         workspace_tokens=("supabase", "firebase", "neon", "planetscale"),
-        cli_candidates=("supabase", "firebase"),
+        cli_candidates=("supabase", "firebase", "neon", "pscale"),
         legacy_account_keys=(),
         actions=COMMON_ACTIONS + (
             _action("inspect", "Inspect platform", "Inspect platform project or auth status.", command_template="supabase projects list", risk_level="low", permission_policy="ask_once_per_project"),
@@ -995,6 +1010,9 @@ def _provider_command_template(provider: str, action_id: str) -> str | None:
         "circleci": {
             "inspect": "circleci config validate .circleci/config.yml",
         },
+        "buildkite": {
+            "inspect": "buildkite-agent pipeline upload --dry-run .buildkite/pipeline.yml",
+        },
         "vercel": {
             "inspect": "vercel whoami",
             "deploy": "vercel deploy --yes",
@@ -1017,6 +1035,20 @@ def _provider_command_template(provider: str, action_id: str) -> str | None:
             "inspect": "render services --output json",
             "tail_logs": "render logs --resources {resource_id_q} --limit 200 --output json",
             "deploy": "render deploys create {service_id_q} --wait",
+        },
+        "supabase": {
+            "inspect": "supabase projects list",
+            "sync": "supabase db push",
+        },
+        "firebase": {
+            "inspect": "firebase apps:list --json",
+            "sync": "firebase deploy --only firestore",
+        },
+        "neon": {
+            "inspect": "neon projects list --output json",
+        },
+        "planetscale": {
+            "inspect": "pscale database list",
         },
         "postman": {
             "inspect": "newman --version",
@@ -1087,6 +1119,10 @@ def _provider_command_template(provider: str, action_id: str) -> str | None:
         "docker_hub": {
             "inspect": "docker info --format {{json .}}",
             "publish": "docker push {image_q}",
+        },
+        "kubernetes": {
+            "inspect": "kubectl config current-context",
+            "deploy": "kubectl apply -f {path_q}",
         },
         "terraform": {
             "validate": "terraform validate",
@@ -1322,6 +1358,8 @@ def _resolve_provider_command(
         if template:
             return template, candidates, provider
     if candidates:
+        if len(family.providers) == 1:
+            return action.command_template, candidates, candidates[0]
         return None, candidates, candidates[0]
     return action.command_template, candidates, None
 
