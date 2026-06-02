@@ -78,6 +78,11 @@ PROVIDER_WORKSPACE_MARKERS: dict[str, tuple[str, ...]] = {
     "cloudflare_pages": ("wrangler.toml",),
     "railway": ("railway.json",),
     "render": ("render.yaml",),
+    "opentofu": ("tofu.hcl",),
+    "docusaurus": ("docusaurus.config.js", "docusaurus.config.ts", "docusaurus.config.mjs"),
+    "playwright": ("playwright.config.ts", "playwright.config.js"),
+    "cypress": ("cypress.config.ts", "cypress.config.js"),
+    "changesets": (".changeset",),
 }
 
 PROVIDER_TOKEN_MARKERS: dict[str, tuple[str, ...]] = {
@@ -99,6 +104,11 @@ PROVIDER_TOKEN_MARKERS: dict[str, tuple[str, ...]] = {
     "cloudflare_pages": ("cloudflare pages", "wrangler",),
     "railway": ("railway",),
     "render": ("render",),
+    "opentofu": ("opentofu", "tofu",),
+    "docusaurus": ("docusaurus",),
+    "playwright": ("playwright",),
+    "cypress": ("cypress",),
+    "changesets": ("changesets", ".changeset",),
 }
 
 PROVIDER_ACTION_GUIDANCE: dict[str, dict[str, str]] = {
@@ -132,6 +142,8 @@ PROVIDER_ACTION_REQUIRED_PARAMS: dict[tuple[str, str], tuple[str, ...]] = {
     ("jira", "create"): ("project_key", "issue_type"),
     ("render", "deploy"): ("service_id",),
     ("render", "tail_logs"): ("resource_id",),
+    ("docker_hub", "publish"): ("image",),
+    ("github_releases", "create"): ("tag",),
 }
 
 
@@ -391,7 +403,7 @@ FAMILIES: tuple[IntegrationFamilyDefinition, ...] = (
         host_tokens=("notion", "confluence", "mintlify", "docusaurus"),
         config_files=("mint.json", "docusaurus.config.js", "docusaurus.config.ts", "docusaurus.config.mjs"),
         workspace_tokens=("notion", "confluence", "mintlify", "docusaurus"),
-        cli_candidates=("mintlify",),
+        cli_candidates=("mintlify", "npm"),
         legacy_account_keys=("notion",),
         actions=COMMON_ACTIONS + (
             _action("inspect", "Inspect docs lane", "Inspect docs build or sync readiness.", command_template="mintlify --help", risk_level="low", permission_policy="ask_once_per_project"),
@@ -927,6 +939,53 @@ def _provider_command_template(provider: str, action_id: str) -> str | None:
             "tail_logs": "render logs --resources {resource_id_q} --limit 200 --output json",
             "deploy": "render deploys create {service_id_q} --wait",
         },
+        "opentofu": {
+            "validate": "tofu validate",
+            "deploy": "tofu apply -auto-approve",
+        },
+        "aws": {
+            "inspect": "aws sts get-caller-identity",
+            "open": "aws configure list",
+        },
+        "azure": {
+            "inspect": "az account show --output json",
+            "open": "az login",
+        },
+        "gcp": {
+            "inspect": "gcloud config list --format json",
+            "open": "gcloud auth login",
+        },
+        "cypress": {
+            "validate": "cypress run",
+        },
+        "docusaurus": {
+            "inspect": "npm exec docusaurus -- --help",
+            "sync": "npm exec docusaurus -- build",
+        },
+        "vllm": {
+            "inspect": "vllm --help",
+            "open": "vllm serve --help",
+        },
+        "npm": {
+            "inspect": "npm whoami",
+            "publish": "npm publish",
+        },
+        "crates": {
+            "inspect": "cargo --version",
+            "publish": "cargo publish --dry-run",
+        },
+        "docker_hub": {
+            "inspect": "docker info --format {{json .}}",
+            "publish": "docker push {image_q}",
+        },
+        "changesets": {
+            "draft": "changeset status",
+            "create": "changeset version",
+        },
+        "github_releases": {
+            "draft": "gh release view --json name,tagName,isDraft",
+            "create": "gh release create {tag_q}",
+        },
     }
     return commands.get(provider, {}).get(action_id)
 
@@ -1235,7 +1294,7 @@ def _relative_files(root: Path) -> list[str]:
             continue
         if any(
             part.startswith(".")
-            and part not in {".github", ".storybook", ".devcontainer", ".linear", ".jira", ".circleci", ".buildkite"}
+            and part not in {".github", ".storybook", ".devcontainer", ".linear", ".jira", ".circleci", ".buildkite", ".changeset"}
             for part in rel.parts[:-1]
         ):
             continue

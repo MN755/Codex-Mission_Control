@@ -748,6 +748,291 @@ def test_provider_specific_preview_requires_render_service_and_resource_ids(monk
     assert "render logs --resources {resource_id_q} --limit 200 --output json" == logs_preview["command"]
 
 
+def test_provider_specific_preview_prefers_opentofu_for_tofu_repo(monkeypatch, tmp_path) -> None:
+    workspace = tmp_path / "tofu-repo"
+    workspace.mkdir(parents=True, exist_ok=True)
+    (workspace / "tofu.hcl").write_text("terraform {}\n", encoding="utf-8")
+
+    monkeypatch.setattr(
+        "integration_registry.shutil.which",
+        lambda command: f"C:/tools/{command}.exe" if command == "tofu" else None,
+    )
+
+    validate_preview = preview_integration_action(
+        family_id="terraform",
+        action_id="validate",
+        params={},
+        registry_payload=normalize_integration_registry({}, {}),
+        workspace_path=str(workspace),
+        project_name="OpenTofu Demo",
+    )
+    deploy_preview = preview_integration_action(
+        family_id="terraform",
+        action_id="deploy",
+        params={},
+        registry_payload=normalize_integration_registry({}, {}),
+        workspace_path=str(workspace),
+        project_name="OpenTofu Demo",
+    )
+
+    assert validate_preview["provider"] == "opentofu"
+    assert validate_preview["command"] == "tofu validate"
+    assert deploy_preview["provider"] == "opentofu"
+    assert deploy_preview["command"] == "tofu apply -auto-approve"
+
+
+def test_provider_specific_preview_prefers_azure_commands(monkeypatch) -> None:
+    registry = normalize_integration_registry(
+        {
+            "connections": {
+                "cloud_platforms": {
+                    "family": "cloud_platforms",
+                    "status": "connected",
+                    "providers": ["azure"],
+                    "connection_source": "mission_control",
+                    "host_imported": False,
+                }
+            }
+        },
+        {},
+    )
+
+    monkeypatch.setattr(
+        "integration_registry.shutil.which",
+        lambda command: f"C:/tools/{command}.exe" if command == "az" else None,
+    )
+
+    inspect_preview = preview_integration_action(
+        family_id="cloud_platforms",
+        action_id="inspect",
+        params={},
+        registry_payload=registry,
+        workspace_path=None,
+        project_name="Azure Demo",
+    )
+    open_preview = preview_integration_action(
+        family_id="cloud_platforms",
+        action_id="open",
+        params={},
+        registry_payload=registry,
+        workspace_path=None,
+        project_name="Azure Demo",
+    )
+
+    assert inspect_preview["provider"] == "azure"
+    assert inspect_preview["command"] == "az account show --output json"
+    assert open_preview["provider"] == "azure"
+    assert open_preview["command"] == "az login"
+
+
+def test_provider_specific_preview_prefers_gcp_commands(monkeypatch) -> None:
+    registry = normalize_integration_registry(
+        {
+            "connections": {
+                "cloud_platforms": {
+                    "family": "cloud_platforms",
+                    "status": "connected",
+                    "providers": ["gcp"],
+                    "connection_source": "mission_control",
+                    "host_imported": False,
+                }
+            }
+        },
+        {},
+    )
+
+    monkeypatch.setattr(
+        "integration_registry.shutil.which",
+        lambda command: f"C:/tools/{command}.exe" if command == "gcloud" else None,
+    )
+
+    inspect_preview = preview_integration_action(
+        family_id="cloud_platforms",
+        action_id="inspect",
+        params={},
+        registry_payload=registry,
+        workspace_path=None,
+        project_name="GCP Demo",
+    )
+
+    assert inspect_preview["provider"] == "gcp"
+    assert inspect_preview["command"] == "gcloud config list --format json"
+
+
+def test_provider_specific_preview_prefers_cypress_for_cypress_repo(monkeypatch, tmp_path) -> None:
+    workspace = tmp_path / "cypress-repo"
+    workspace.mkdir(parents=True, exist_ok=True)
+    (workspace / "cypress.config.ts").write_text("export default {};\n", encoding="utf-8")
+
+    monkeypatch.setattr(
+        "integration_registry.shutil.which",
+        lambda command: f"C:/tools/{command}.exe" if command == "cypress" else None,
+    )
+
+    preview = preview_integration_action(
+        family_id="browser_testing",
+        action_id="validate",
+        params={},
+        registry_payload=normalize_integration_registry({}, {}),
+        workspace_path=str(workspace),
+        project_name="Cypress Demo",
+    )
+
+    assert preview["provider"] == "cypress"
+    assert preview["command"] == "cypress run"
+
+
+def test_provider_specific_preview_supports_docusaurus_docs_lane(monkeypatch, tmp_path) -> None:
+    workspace = tmp_path / "docusaurus-repo"
+    workspace.mkdir(parents=True, exist_ok=True)
+    (workspace / "docusaurus.config.js").write_text("module.exports = {};\n", encoding="utf-8")
+
+    monkeypatch.setattr(
+        "integration_registry.shutil.which",
+        lambda command: f"C:/tools/{command}.exe" if command == "npm" else None,
+    )
+
+    inspect_preview = preview_integration_action(
+        family_id="docs_systems",
+        action_id="inspect",
+        params={},
+        registry_payload=normalize_integration_registry({}, {}),
+        workspace_path=str(workspace),
+        project_name="Docusaurus Demo",
+    )
+
+    assert inspect_preview["provider"] == "docusaurus"
+    assert inspect_preview["command"] == "npm exec docusaurus -- --help"
+
+
+def test_provider_specific_preview_supports_vllm_runtime(monkeypatch) -> None:
+    registry = normalize_integration_registry(
+        {
+            "connections": {
+                "local_model_runtimes": {
+                    "family": "local_model_runtimes",
+                    "status": "connected",
+                    "providers": ["vllm"],
+                    "connection_source": "mission_control",
+                    "host_imported": False,
+                }
+            }
+        },
+        {},
+    )
+
+    monkeypatch.setattr(
+        "integration_registry.shutil.which",
+        lambda command: f"C:/tools/{command}.exe" if command == "vllm" else None,
+    )
+
+    preview = preview_integration_action(
+        family_id="local_model_runtimes",
+        action_id="inspect",
+        params={},
+        registry_payload=registry,
+        workspace_path=None,
+        project_name="vLLM Demo",
+    )
+
+    assert preview["provider"] == "vllm"
+    assert preview["command"] == "vllm --help"
+
+
+def test_provider_specific_preview_supports_npm_publish_lane(monkeypatch) -> None:
+    registry = normalize_integration_registry(
+        {
+            "connections": {
+                "package_registries": {
+                    "family": "package_registries",
+                    "status": "connected",
+                    "providers": ["npm"],
+                    "connection_source": "mission_control",
+                    "host_imported": False,
+                }
+            }
+        },
+        {},
+    )
+
+    monkeypatch.setattr(
+        "integration_registry.shutil.which",
+        lambda command: f"C:/tools/{command}.exe" if command == "npm" else None,
+    )
+
+    inspect_preview = preview_integration_action(
+        family_id="package_registries",
+        action_id="inspect",
+        params={},
+        registry_payload=registry,
+        workspace_path=None,
+        project_name="npm Demo",
+    )
+    publish_preview = preview_integration_action(
+        family_id="package_registries",
+        action_id="publish",
+        params={},
+        registry_payload=registry,
+        workspace_path=None,
+        project_name="npm Demo",
+    )
+
+    assert inspect_preview["provider"] == "npm"
+    assert inspect_preview["command"] == "npm whoami"
+    assert publish_preview["provider"] == "npm"
+    assert publish_preview["command"] == "npm publish"
+
+
+def test_provider_specific_preview_supports_changesets_and_github_release_lanes(monkeypatch, tmp_path) -> None:
+    workspace = tmp_path / "changesets-repo"
+    (workspace / ".changeset").mkdir(parents=True, exist_ok=True)
+    (workspace / ".changeset" / "hello.md").write_text("---\n---\n", encoding="utf-8")
+
+    monkeypatch.setattr(
+        "integration_registry.shutil.which",
+        lambda command: f"C:/tools/{command}.exe" if command in {"changeset", "gh"} else None,
+    )
+
+    draft_preview = preview_integration_action(
+        family_id="release_management",
+        action_id="draft",
+        params={},
+        registry_payload=normalize_integration_registry({}, {}),
+        workspace_path=str(workspace),
+        project_name="Changesets Demo",
+    )
+
+    github_registry = normalize_integration_registry(
+        {
+            "connections": {
+                "release_management": {
+                    "family": "release_management",
+                    "status": "connected",
+                    "providers": ["github_releases"],
+                    "connection_source": "mission_control",
+                    "host_imported": False,
+                }
+            }
+        },
+        {},
+    )
+
+    create_preview = preview_integration_action(
+        family_id="release_management",
+        action_id="create",
+        params={},
+        registry_payload=github_registry,
+        workspace_path=str(workspace),
+        project_name="GitHub Releases Demo",
+    )
+
+    assert draft_preview["provider"] == "changesets"
+    assert draft_preview["command"] == "changeset status"
+    assert create_preview["provider"] == "github_releases"
+    assert create_preview["missing_params"] == ["tag"]
+    assert create_preview["command"] == "gh release create {tag_q}"
+
+
 def test_project_integrations_surface_provider_specific_required_params_and_host_import_artifacts(monkeypatch, tmp_path) -> None:
     workspace = tmp_path / "integration-status-details"
     (workspace / ".jira").mkdir(parents=True, exist_ok=True)
