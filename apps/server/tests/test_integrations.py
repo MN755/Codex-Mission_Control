@@ -5867,6 +5867,96 @@ def test_project_integrations_surface_execution_block_reason_inventories(monkeyp
     assert package_status["health"]["verification_blocked_guided_action_ids"] == []
 
 
+def test_project_integrations_surface_safe_command_inventories_and_concrete_commands(monkeypatch, tmp_path) -> None:
+    workspace = tmp_path / "safe-command-demo"
+    workspace.mkdir(parents=True, exist_ok=True)
+    (workspace / "orders.postman_collection.json").write_text("{}", encoding="utf-8")
+    (workspace / "openapi.yaml").write_text("openapi: 3.1.0\ninfo:\n  title: demo\n  version: 1.0.0\npaths: {}\n", encoding="utf-8")
+
+    monkeypatch.setattr(
+        "integration_registry.shutil.which",
+        lambda command: f"C:/tools/{command}.exe" if command in {"newman", "swagger-cli"} else None,
+    )
+
+    statuses = {
+        item["family"]: item
+        for item in build_project_integration_status(
+            registry_payload=normalize_integration_registry({}, {}),
+            workspace_path=str(workspace),
+            project_name="Safe Command Demo",
+        )
+    }
+
+    api_status = statuses["api_clients"]
+    openapi_status = statuses["openapi"]
+    api_validate = next(item for item in api_status["available_actions"] if item["action_id"] == "validate")
+    openapi_inspect = next(item for item in openapi_status["available_actions"] if item["action_id"] == "inspect")
+
+    assert api_validate["safe_command_eligible"] is True
+    assert api_validate["safe_command_reason"] is None
+    assert "orders.postman_collection.json" in str(api_validate["command"])
+    assert "validate" in api_status["safe_command_action_ids"]
+    assert api_status["safe_command_action_count"] >= 1
+    assert any("orders.postman_collection.json" in command for command in api_status["safe_commands"])
+    assert "validate" in api_status["ready_to_execute_action_ids"]
+    assert "validate" in api_status["preflight_ready_action_ids"]
+    assert "validate" in api_status["health"]["safe_command_action_ids"]
+
+    assert openapi_inspect["safe_command_eligible"] is True
+    assert openapi_inspect["safe_command_reason"] is None
+    assert "openapi.yaml" in str(openapi_inspect["command"])
+    assert "inspect" in openapi_status["safe_command_action_ids"]
+    assert any("openapi.yaml" in command for command in openapi_status["safe_commands"])
+    assert "inspect" in openapi_status["ready_to_execute_action_ids"]
+    assert "inspect" in openapi_status["health"]["safe_command_action_ids"]
+
+
+def test_project_integrations_surface_confirmation_and_safe_reason_inventories(monkeypatch) -> None:
+    registry = normalize_integration_registry(
+        {
+            "connections": {
+                "hosting_deploy": {
+                    "family": "hosting_deploy",
+                    "status": "connected",
+                    "providers": ["vercel"],
+                    "connection_source": "mission_control",
+                    "host_imported": False,
+                }
+            }
+        },
+        {},
+    )
+
+    monkeypatch.setattr(
+        "integration_registry.shutil.which",
+        lambda command: f"C:/tools/{command}.exe" if command == "vercel" else None,
+    )
+
+    status = next(
+        item
+        for item in build_project_integration_status(
+            registry_payload=registry,
+            workspace_path=None,
+            project_name="Vercel Confirmation Demo",
+        )
+        if item["family"] == "hosting_deploy"
+    )
+
+    inspect_action = next(item for item in status["available_actions"] if item["action_id"] == "inspect")
+    deploy_action = next(item for item in status["available_actions"] if item["action_id"] == "deploy")
+
+    assert inspect_action["safe_command_eligible"] is True
+    assert inspect_action["safe_command_reason"] is None
+    assert deploy_action["safe_command_eligible"] is False
+    assert deploy_action["safe_command_reason"] == "mutates_remote_state"
+    assert "deploy" in status["confirmation_eligible_action_ids"]
+    assert "deploy" not in status["safe_command_action_ids"]
+    assert "inspect" in status["safe_command_action_ids"]
+    assert "deploy" in status["preflight_ready_action_ids"]
+    assert "deploy" in status["health"]["confirmation_eligible_action_ids"]
+    assert "inspect" in status["health"]["safe_command_action_ids"]
+
+
 def test_project_integrations_surface_multi_blocked_action_inventories(monkeypatch, tmp_path) -> None:
     pypi_workspace = tmp_path / "pypi-demo"
     pypi_workspace.mkdir(parents=True, exist_ok=True)
@@ -6018,3 +6108,47 @@ def test_execute_integration_action_surfaces_secondary_blockers(monkeypatch, tmp
     assert result["provider_verification_required"] is True
     assert result["missing_params"] == ["body"]
     assert result["preflight_ready"] is False
+
+
+def test_preview_surfaces_safe_command_eligibility_and_reason(monkeypatch) -> None:
+    registry = normalize_integration_registry(
+        {
+            "connections": {
+                "hosting_deploy": {
+                    "family": "hosting_deploy",
+                    "status": "connected",
+                    "providers": ["vercel"],
+                    "connection_source": "mission_control",
+                    "host_imported": False,
+                }
+            }
+        },
+        {},
+    )
+
+    monkeypatch.setattr(
+        "integration_registry.shutil.which",
+        lambda command: f"C:/tools/{command}.exe" if command == "vercel" else None,
+    )
+
+    inspect_preview = preview_integration_action(
+        family_id="hosting_deploy",
+        action_id="inspect",
+        params={},
+        registry_payload=registry,
+        workspace_path=None,
+        project_name="Preview Safe Command Demo",
+    )
+    deploy_preview = preview_integration_action(
+        family_id="hosting_deploy",
+        action_id="deploy",
+        params={},
+        registry_payload=registry,
+        workspace_path=None,
+        project_name="Preview Safe Command Demo",
+    )
+
+    assert inspect_preview["safe_command_eligible"] is True
+    assert inspect_preview["safe_command_reason"] is None
+    assert deploy_preview["safe_command_eligible"] is False
+    assert deploy_preview["safe_command_reason"] == "mutates_remote_state"

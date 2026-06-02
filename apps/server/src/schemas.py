@@ -3146,6 +3146,7 @@ class IntegrationActionRead(BaseModel):
     params_complete: bool = True
     status: ToolAvailability = "available"
     provider: str | None = None
+    command: str | None = None
     command_template: str | None = None
     command_ready: bool = False
     execution_mode: str = "unavailable"
@@ -3166,6 +3167,8 @@ class IntegrationActionRead(BaseModel):
     preflight_ready: bool = False
     confirmation_eligible: bool = False
     ready_to_execute: bool = False
+    safe_command_eligible: bool = False
+    safe_command_reason: str | None = None
     context_required: bool = False
     context_requirement_reason: str | None = None
     suppressed_command_reason: str | None = None
@@ -3242,8 +3245,13 @@ class ProjectIntegrationFamilyRead(BaseModel):
     multi_blocked_action_count: int = 0
     multi_blocked_action_ids: list[str] = Field(default_factory=list)
     preflight_ready_action_count: int = 0
+    preflight_ready_action_ids: list[str] = Field(default_factory=list)
     confirmation_eligible_action_count: int = 0
+    confirmation_eligible_action_ids: list[str] = Field(default_factory=list)
     ready_to_execute_action_count: int = 0
+    ready_to_execute_action_ids: list[str] = Field(default_factory=list)
+    safe_command_action_count: int = 0
+    safe_command_action_ids: list[str] = Field(default_factory=list)
     parameterized_execution_action_count: int = 0
     params_complete_action_count: int = 0
     defaulted_param_action_count: int = 0
@@ -3322,6 +3330,8 @@ class IntegrationActionPreviewRead(BaseModel):
     preflight_ready: bool = False
     confirmation_eligible: bool = False
     ready_to_execute: bool = False
+    safe_command_eligible: bool = False
+    safe_command_reason: str | None = None
     context_required: bool = False
     context_requirement_reason: str | None = None
     context_available: bool = False

@@ -1552,6 +1552,24 @@ def _verification_scope(*, provider_verification_reason: str | None, execution_m
     return None
 
 
+def _safe_command_reason(
+    *,
+    action_metadata: dict[str, Any],
+    execution_mode: str,
+    preflight_ready: bool,
+    execution_block_reason: str | None,
+) -> str | None:
+    if execution_mode != "local_cli":
+        return "non_local_execution"
+    if not preflight_ready:
+        return execution_block_reason or "not_ready"
+    if action_metadata["mutates_remote_state"]:
+        return "mutates_remote_state"
+    if action_metadata["requires_confirmation"]:
+        return "requires_confirmation"
+    return None
+
+
 def _action_preflight_summary(
     *,
     family: IntegrationFamilyDefinition,
@@ -2956,6 +2974,18 @@ def build_project_integration_status(
                 action_ready = bool(preflight["preflight_ready"] and has_context_signal)
             if provider_verification_required:
                 action_ready = False
+            safe_command_reason = _safe_command_reason(
+                action_metadata=action_metadata,
+                execution_mode=execution_mode,
+                preflight_ready=preflight["preflight_ready"],
+                execution_block_reason=preflight["execution_block_reason"],
+            )
+            safe_command_eligible = bool(
+                preflight["command"]
+                and preflight["command_ready"]
+                and preflight["ready_to_execute"]
+                and safe_command_reason is None
+            )
             available_actions.append(
                 {
                     "action_id": action.action_id,
@@ -2972,6 +3002,7 @@ def build_project_integration_status(
                     "params_complete": preflight["params_complete"],
                     "status": "available" if action_ready else "needs_setup",
                     "provider": action_provider,
+                    "command": preflight["command"],
                     "command_template": action_template,
                     "command_ready": preflight["command_ready"],
                     "execution_mode": execution_mode,
@@ -2992,6 +3023,8 @@ def build_project_integration_status(
                     "preflight_ready": preflight["preflight_ready"],
                     "confirmation_eligible": preflight["confirmation_eligible"],
                     "ready_to_execute": preflight["ready_to_execute"],
+                    "safe_command_eligible": safe_command_eligible,
+                    "safe_command_reason": safe_command_reason,
                     "context_required": context_required,
                     "context_requirement_reason": context_requirement_reason,
                     "suppressed_command_reason": suppressed_command_reason,
@@ -3064,8 +3097,29 @@ def build_project_integration_status(
             if item.get("blocking_reason_count", 0) > 1
         ]
         preflight_ready_action_count = sum(1 for item in execution_actions if item["preflight_ready"])
+        preflight_ready_action_ids = [
+            str(item["action_id"])
+            for item in execution_actions
+            if item["preflight_ready"]
+        ]
         confirmation_eligible_action_count = sum(1 for item in execution_actions if item["confirmation_eligible"])
+        confirmation_eligible_action_ids = [
+            str(item["action_id"])
+            for item in execution_actions
+            if item["confirmation_eligible"]
+        ]
         ready_to_execute_action_count = sum(1 for item in execution_actions if item["ready_to_execute"])
+        ready_to_execute_action_ids = [
+            str(item["action_id"])
+            for item in execution_actions
+            if item["ready_to_execute"]
+        ]
+        safe_command_action_count = sum(1 for item in execution_actions if item["safe_command_eligible"])
+        safe_command_action_ids = [
+            str(item["action_id"])
+            for item in execution_actions
+            if item["safe_command_eligible"]
+        ]
         parameterized_execution_action_count = sum(1 for item in execution_actions if item["required_params"])
         params_complete_action_count = sum(1 for item in execution_actions if item["params_complete"])
         defaulted_param_action_count = sum(1 for item in execution_actions if item["defaulted_params"])
@@ -3165,22 +3219,13 @@ def build_project_integration_status(
             blockers.append("Some provider-specific guided actions remain blocked until Mission Control verifies the live provider identity for this family.")
             if resolved_provider:
                 recommended_fixes.append(f"Verify the `{resolved_provider}` connection in Mission Control before using guided remote mutation actions in this family.")
-        safe_commands = [
-            template
-            for action in family.actions
-            for template, _, _provider in [
-                _resolve_provider_command(
-                    family=family,
-                    action=action,
-                    connection=connection,
-                    detected_files=detected_files,
-                    token_hits=token_hits,
-                    installed_clis=installed_clis,
-                    git_remote_url=git_remote_url,
-                )
+        safe_commands = _dedupe_strs(
+            [
+                str(item["command"])
+                for item in execution_actions
+                if item["safe_command_eligible"] and item.get("command")
             ]
-            if template and has_context_signal and not _effective_action_metadata(action, _provider).get("mutates_remote_state") and _command_is_available(template)
-        ]
+        )
         signal_sources = _dedupe_strs(
             [
                 "connection" if has_connection else "",
@@ -3244,8 +3289,13 @@ def build_project_integration_status(
                 "multi_blocked_action_count": multi_blocked_action_count,
                 "multi_blocked_action_ids": multi_blocked_action_ids,
                 "preflight_ready_action_count": preflight_ready_action_count,
+                "preflight_ready_action_ids": preflight_ready_action_ids,
                 "confirmation_eligible_action_count": confirmation_eligible_action_count,
+                "confirmation_eligible_action_ids": confirmation_eligible_action_ids,
                 "ready_to_execute_action_count": ready_to_execute_action_count,
+                "ready_to_execute_action_ids": ready_to_execute_action_ids,
+                "safe_command_action_count": safe_command_action_count,
+                "safe_command_action_ids": safe_command_action_ids,
                 "parameterized_execution_action_count": parameterized_execution_action_count,
                 "params_complete_action_count": params_complete_action_count,
                 "defaulted_param_action_count": defaulted_param_action_count,
@@ -3298,8 +3348,13 @@ def build_project_integration_status(
                     "multi_blocked_action_count": multi_blocked_action_count,
                     "multi_blocked_action_ids": multi_blocked_action_ids,
                     "preflight_ready_action_count": preflight_ready_action_count,
+                    "preflight_ready_action_ids": preflight_ready_action_ids,
                     "confirmation_eligible_action_count": confirmation_eligible_action_count,
+                    "confirmation_eligible_action_ids": confirmation_eligible_action_ids,
                     "ready_to_execute_action_count": ready_to_execute_action_count,
+                    "ready_to_execute_action_ids": ready_to_execute_action_ids,
+                    "safe_command_action_count": safe_command_action_count,
+                    "safe_command_action_ids": safe_command_action_ids,
                     "parameterized_execution_action_count": parameterized_execution_action_count,
                     "params_complete_action_count": params_complete_action_count,
                     "defaulted_param_action_count": defaulted_param_action_count,
@@ -3533,6 +3588,18 @@ def preview_integration_action(
     preflight_ready = not blocking_reasons
     confirmation_eligible = bool(preflight_ready and action_metadata["requires_confirmation"])
     ready_to_execute = bool(preflight_ready and not action_metadata["requires_confirmation"])
+    safe_command_reason = _safe_command_reason(
+        action_metadata=action_metadata,
+        execution_mode=execution_mode,
+        preflight_ready=preflight_ready,
+        execution_block_reason=execution_block_reason,
+    )
+    safe_command_eligible = bool(
+        command
+        and executable_available
+        and ready_to_execute
+        and safe_command_reason is None
+    )
     notes = [
         "Mission Control previews the action before execution so approvals are tied to a concrete command or host import step.",
         "Local execution stays shell-free and only runs when the previewed executable is actually present.",
@@ -3599,6 +3666,8 @@ def preview_integration_action(
         "preflight_ready": preflight_ready,
         "confirmation_eligible": confirmation_eligible,
         "ready_to_execute": ready_to_execute,
+        "safe_command_eligible": safe_command_eligible,
+        "safe_command_reason": safe_command_reason,
         "context_required": context_required,
         "context_requirement_reason": context_requirement_reason,
         "context_available": bool(has_workspace_signal or has_host_import or connection_status == "connected"),
