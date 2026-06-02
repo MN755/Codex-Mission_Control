@@ -111,6 +111,9 @@ def test_project_integrations_and_action_preview_flow(client, bridge_headers, mo
     assert preview_payload["provider_lane_resolved"] is True
     assert preview_payload["provider_context_verified"] is False
     assert preview_payload["provider_context_source"] == "workspace"
+    assert preview_payload["provider_context_status"] == "inferred"
+    assert preview_payload["provider_verification_required"] is False
+    assert preview_payload["provider_verification_reason"] is None
     assert preview_payload["context_required"] is False
     assert preview_payload["context_requirement_reason"] is None
     assert preview_payload["context_available"] is True
@@ -137,6 +140,9 @@ def test_project_integrations_and_action_preview_flow(client, bridge_headers, mo
     assert execute_payload["provider_lane_resolved"] is True
     assert execute_payload["provider_context_verified"] is False
     assert execute_payload["provider_context_source"] == "workspace"
+    assert execute_payload["provider_context_status"] == "inferred"
+    assert execute_payload["provider_verification_required"] is False
+    assert execute_payload["provider_verification_reason"] is None
     assert execute_payload["context_required"] is False
     assert execute_payload["context_requirement_reason"] is None
     assert execute_payload["context_available"] is True
@@ -183,8 +189,10 @@ def test_project_integration_api_surfaces_context_suppression_metadata(client, b
     assert payments["guided_only_action_count"] == 0
     assert payments["available_provider_lane_count"] == 0
     assert payments["context_blocked_action_count"] >= 2
+    assert payments["verification_blocked_action_count"] == 0
     assert payments["health"]["provider_context_verified"] is False
     assert payments["health"]["provider_context_source"] == "standalone_cli_only"
+    assert payments["health"]["provider_context_status"] == "missing"
     assert payments["health"]["connection_provider_count"] == 0
     assert payments["health"]["connection_without_provider_identity"] is False
     assert inspect_action["status"] == "needs_setup"
@@ -195,6 +203,9 @@ def test_project_integration_api_surfaces_context_suppression_metadata(client, b
     assert inspect_action["provider_lane_resolved"] is False
     assert inspect_action["provider_context_verified"] is False
     assert inspect_action["provider_context_source"] == "standalone_cli_only"
+    assert inspect_action["provider_context_status"] == "missing"
+    assert inspect_action["provider_verification_required"] is False
+    assert inspect_action["provider_verification_reason"] is None
     assert inspect_action["context_required"] is True
     assert inspect_action["context_requirement_reason"] == "provider_context_missing"
     assert inspect_action["suppressed_command_reason"] == "provider_context_missing"
@@ -217,6 +228,9 @@ def test_project_integration_api_surfaces_context_suppression_metadata(client, b
     assert preview_payload["provider_lane_resolved"] is False
     assert preview_payload["provider_context_verified"] is False
     assert preview_payload["provider_context_source"] == "standalone_cli_only"
+    assert preview_payload["provider_context_status"] == "missing"
+    assert preview_payload["provider_verification_required"] is False
+    assert preview_payload["provider_verification_reason"] is None
     assert preview_payload["context_required"] is True
     assert preview_payload["context_requirement_reason"] == "provider_context_missing"
     assert preview_payload["context_available"] is False
@@ -5323,10 +5337,22 @@ def test_workspace_inferred_provider_does_not_upgrade_connected_family_without_v
     assert status["status"] == "partial"
     assert status["resolved_provider"] == "notion"
     assert status["available_provider_lane_count"] >= 1
+    assert status["verification_blocked_action_count"] == 1
     assert status["health"]["provider_context_verified"] is False
     assert status["health"]["provider_context_source"] == "workspace"
+    assert status["health"]["provider_context_status"] == "inferred"
     assert status["health"]["connection_without_provider_identity"] is True
+    assert "sync" in status["health"]["verification_blocked_action_ids"]
     assert any("workspace or host signals suggest `notion`" in fix.lower() for fix in status["recommended_fixes"])
+    inspect_action = next(item for item in status["available_actions"] if item["action_id"] == "inspect")
+    sync_action = next(item for item in status["available_actions"] if item["action_id"] == "sync")
+    assert inspect_action["status"] == "available"
+    assert inspect_action["provider_context_status"] == "inferred"
+    assert inspect_action["provider_verification_required"] is False
+    assert sync_action["status"] == "needs_setup"
+    assert sync_action["provider_context_status"] == "inferred"
+    assert sync_action["provider_verification_required"] is True
+    assert sync_action["provider_verification_reason"] == "provider_verification_required"
 
 
 def test_single_provider_connected_family_still_reports_ready_with_verified_context(monkeypatch, tmp_path) -> None:
@@ -5366,4 +5392,123 @@ def test_single_provider_connected_family_still_reports_ready_with_verified_cont
     assert status["available_provider_lane_count"] >= 1
     assert status["health"]["provider_context_verified"] is True
     assert status["health"]["provider_context_source"] == "connection"
+    assert status["health"]["provider_context_status"] == "verified"
     assert status["health"]["connection_provider_count"] == 0
+
+
+def test_unverified_guided_remote_mutations_no_longer_claim_available_across_host_backed_families(monkeypatch, tmp_path) -> None:
+    workspace = tmp_path / "host-backed-unverified"
+    workspace.mkdir(parents=True, exist_ok=True)
+    (workspace / "README.md").write_text(
+        "Bitbucket repository workflow. Linear sprint planning. Slack workspace notifications. "
+        "Notion keeps docs synced. LaunchDarkly feature flags. Intercom support. "
+        "Lemon Squeezy payments. LaunchNotes release updates.\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr("integration_registry.shutil.which", lambda _command: None)
+
+    registry = normalize_integration_registry(
+        {
+            "connections": {
+                family_id: {
+                    "family": family_id,
+                    "status": "partial",
+                    "providers": [],
+                    "connection_source": "manual",
+                    "host_imported": False,
+                }
+                for family_id in {"source_control", "work_tracking", "chatops", "docs_systems", "feature_flags", "support_desk", "payments", "release_management"}
+            }
+        },
+        {},
+    )
+
+    statuses = {
+        item["family"]: item
+        for item in build_project_integration_status(
+            workspace_path=str(workspace),
+            project_name="Host Backed Unverified Demo",
+            registry_payload=registry,
+        )
+    }
+
+    for family_id, action_id, expected_provider in (
+        ("source_control", "create", "bitbucket"),
+        ("work_tracking", "create", "linear"),
+        ("chatops", "create", "slack"),
+        ("docs_systems", "sync", "notion"),
+        ("feature_flags", "sync", "launchdarkly"),
+        ("support_desk", "create", "intercom"),
+        ("payments", "create", "lemon_squeezy"),
+        ("release_management", "create", "launchnotes"),
+    ):
+        status = statuses[family_id]
+        action = next(item for item in status["available_actions"] if item["action_id"] == action_id)
+        assert action["status"] == "needs_setup"
+        assert action["provider"] == expected_provider
+        assert action["execution_mode"] == "guided_remote"
+        assert action["provider_context_status"] == "inferred"
+        assert action["provider_verification_required"] is True
+        assert action["provider_verification_reason"] == "provider_verification_required"
+        assert status["verification_blocked_action_count"] >= 1
+        assert action_id in status["health"]["verification_blocked_action_ids"]
+        assert any("guided actions remain blocked" in blocker.lower() for blocker in status["blockers"])
+
+
+def test_preview_and_execute_surface_provider_verification_requirement_for_guided_remote_mutations(monkeypatch, tmp_path) -> None:
+    workspace = tmp_path / "guided-remote-preview"
+    workspace.mkdir(parents=True, exist_ok=True)
+    (workspace / "README.md").write_text("Notion keeps docs synced. Slack workspace notifications. LaunchNotes release updates.\n", encoding="utf-8")
+
+    monkeypatch.setattr("integration_registry.shutil.which", lambda _command: None)
+
+    registry = normalize_integration_registry(
+        {
+            "connections": {
+                family_id: {
+                    "family": family_id,
+                    "status": "partial",
+                    "providers": [],
+                    "connection_source": "manual",
+                    "host_imported": False,
+                }
+                for family_id in {"docs_systems", "chatops", "release_management"}
+            }
+        },
+        {},
+    )
+
+    for family_id, action_id, provider, params in (
+        ("docs_systems", "sync", "notion", {}),
+        ("chatops", "create", "slack", {"message": "Heads up"}),
+        ("release_management", "create", "launchnotes", {}),
+    ):
+        preview = preview_integration_action(
+            family_id=family_id,
+            action_id=action_id,
+            params=params,
+            registry_payload=registry,
+            workspace_path=str(workspace),
+            project_name="Guided Remote Preview Demo",
+        )
+        assert preview["provider"] == provider
+        assert preview["provider_context_status"] == "inferred"
+        assert preview["provider_verification_required"] is True
+        assert preview["provider_verification_reason"] == "provider_verification_required"
+        assert any("guided remote mutation remains blocked" in note.lower() for note in preview["notes"])
+
+        result = execute_integration_action(
+            family_id=family_id,
+            action_id=action_id,
+            params=params,
+            registry_payload=registry,
+            workspace_path=str(workspace),
+            project_name="Guided Remote Preview Demo",
+            confirmed=False,
+        )
+        assert result["status"] == "blocked"
+        assert result["approval_required"] is False
+        assert result["provider_verification_required"] is True
+        assert result["provider_verification_reason"] == "provider_verification_required"
+        assert "must verify the live provider identity" in result["stderr"].lower()

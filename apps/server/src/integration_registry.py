@@ -2130,6 +2130,33 @@ def _provider_context_source(
     return "none"
 
 
+def _provider_context_status(*, provider_lane_resolved: bool, provider_context_verified: bool, provider_context_source: str) -> str:
+    if provider_context_verified:
+        return "verified"
+    if provider_lane_resolved and provider_context_source in {"workspace", "host_import", "connection_family_only"}:
+        return "inferred"
+    return "missing"
+
+
+def _provider_verification_reason(
+    *,
+    action_metadata: dict[str, Any],
+    execution_mode: str,
+    provider_lane_resolved: bool,
+    provider_context_verified: bool,
+    provider_context_source: str,
+) -> str | None:
+    if not provider_lane_resolved or provider_context_verified:
+        return None
+    if execution_mode != "guided_remote":
+        return None
+    if not bool(action_metadata.get("mutates_remote_state")):
+        return None
+    if provider_context_source in {"workspace", "host_import", "connection_family_only"}:
+        return "provider_verification_required"
+    return None
+
+
 def _provider_hint_tokens(provider: str) -> list[str]:
     tokens = {
         provider.lower(),
@@ -2752,6 +2779,20 @@ def build_project_integration_status(
                 ]
             )
             execution_mode = _execution_mode(action_id=action.action_id, command_template=action_template, provider=action_provider)
+            provider_lane_resolved = bool(action_provider and (not supported_providers or action_provider in supported_providers))
+            provider_context_status = _provider_context_status(
+                provider_lane_resolved=provider_lane_resolved,
+                provider_context_verified=provider_context_verified,
+                provider_context_source=provider_context_source,
+            )
+            provider_verification_reason = _provider_verification_reason(
+                action_metadata=action_metadata,
+                execution_mode=execution_mode,
+                provider_lane_resolved=provider_lane_resolved,
+                provider_context_verified=provider_context_verified,
+                provider_context_source=provider_context_source,
+            )
+            provider_verification_required = bool(provider_verification_reason)
             context_requirement_reason = _context_requirement_reason(
                 family=family,
                 action=action,
@@ -2762,12 +2803,19 @@ def build_project_integration_status(
             suppressed_command_reason = context_requirement_reason if context_required and not action_template else None
             action_ready = bool(
                 action.action_id in {"import_host_state", "connect", "disconnect", "inspect_status"}
+                or (
+                    execution_mode == "local_cli"
+                    and action_command_ready
+                    and has_context_signal
+                )
                 or (action_command_ready and has_context_signal)
                 or (
                     execution_mode in {"guided_remote", "registry_state"}
                     and has_context_signal
                 )
             )
+            if provider_verification_required:
+                action_ready = False
             available_actions.append(
                 {
                     "action_id": action.action_id,
@@ -2787,9 +2835,12 @@ def build_project_integration_status(
                     "provider_support_mode": support_mode,
                     "supported_providers": supported_providers,
                     "supported_provider_count": len(supported_providers),
-                    "provider_lane_resolved": bool(action_provider and (not supported_providers or action_provider in supported_providers)),
+                    "provider_lane_resolved": provider_lane_resolved,
                     "provider_context_verified": provider_context_verified,
                     "provider_context_source": provider_context_source,
+                    "provider_context_status": provider_context_status,
+                    "provider_verification_required": provider_verification_required,
+                    "provider_verification_reason": provider_verification_reason,
                     "context_required": context_required,
                     "context_requirement_reason": context_requirement_reason,
                     "suppressed_command_reason": suppressed_command_reason,
@@ -2825,6 +2876,12 @@ def build_project_integration_status(
             and item["execution_mode"] != "registry_state"
         )
         context_blocked_action_count = sum(1 for item in available_actions if item["context_required"])
+        verification_blocked_action_count = sum(1 for item in available_actions if item["provider_verification_required"])
+        verification_blocked_action_ids = [
+            str(item["action_id"])
+            for item in available_actions
+            if item["provider_verification_required"]
+        ]
         has_actionable_lane = available_action_count > registry_action_count
         has_provider_cli = not provider_cli_candidates or len(installed_provider_clis) == len(provider_cli_candidates)
         if not has_context_signal:
@@ -2865,6 +2922,10 @@ def build_project_integration_status(
                 recommended_fixes.append("Refresh the connection in Mission Control or use a verified local CLI before treating this lane as live.")
             if has_workspace_signal and not has_connection:
                 recommended_fixes.append("Workspace signals exist, but Mission Control has not verified the live provider context yet.")
+        if verification_blocked_action_count:
+            blockers.append("Some provider-specific guided actions remain blocked until Mission Control verifies the live provider identity for this family.")
+            if resolved_provider:
+                recommended_fixes.append(f"Verify the `{resolved_provider}` connection in Mission Control before using guided remote mutation actions in this family.")
         safe_commands = [
             template
             for action in family.actions
@@ -2931,6 +2992,7 @@ def build_project_integration_status(
                 "guided_only_action_count": guided_only_action_count,
                 "available_provider_lane_count": available_provider_lane_count,
                 "context_blocked_action_count": context_blocked_action_count,
+                "verification_blocked_action_count": verification_blocked_action_count,
                 "health": {
                     "cli_detected": installed_clis,
                     "resolved_cli_detected": installed_provider_clis,
@@ -2945,6 +3007,11 @@ def build_project_integration_status(
                     "connection_without_provider_identity": connection_without_provider_identity,
                     "provider_context_verified": provider_context_verified,
                     "provider_context_source": provider_context_source,
+                    "provider_context_status": _provider_context_status(
+                        provider_lane_resolved=bool(resolved_provider),
+                        provider_context_verified=provider_context_verified,
+                        provider_context_source=provider_context_source,
+                    ),
                     "standalone_cli_detected": has_any_cli_signal and not has_context_signal,
                     "signal_sources": signal_sources,
                     "provider_signal_breakdown": provider_signal_breakdown,
@@ -2953,6 +3020,7 @@ def build_project_integration_status(
                     "provider_resolution_state": provider_resolution_state,
                     "resolved_provider": resolved_provider,
                     "provider_candidates": provider_candidates,
+                    "verification_blocked_action_ids": verification_blocked_action_ids,
                     "git_remote_url": git_remote_url or None,
                 },
                 "artifacts": artifacts,
@@ -3095,6 +3163,12 @@ def preview_integration_action(
         has_workspace_signal=has_workspace_signal,
         has_any_cli_signal=has_any_cli_signal,
     )
+    provider_lane_resolved = bool(resolved_provider and (not supported_providers or resolved_provider in supported_providers))
+    provider_context_status = _provider_context_status(
+        provider_lane_resolved=provider_lane_resolved,
+        provider_context_verified=provider_context_verified,
+        provider_context_source=provider_context_source,
+    )
     action_metadata = _effective_action_metadata(action, resolved_provider)
     effective_params = {
         **_provider_default_params(
@@ -3118,6 +3192,14 @@ def preview_integration_action(
             command = _format_command(command_template, effective_params)
     executable_available = bool(command and _command_is_available(command))
     execution_mode = _execution_mode(action_id=action.action_id, command_template=command_template, provider=resolved_provider)
+    provider_verification_reason = _provider_verification_reason(
+        action_metadata=action_metadata,
+        execution_mode=execution_mode,
+        provider_lane_resolved=provider_lane_resolved,
+        provider_context_verified=provider_context_verified,
+        provider_context_source=provider_context_source,
+    )
+    provider_verification_required = bool(provider_verification_reason)
     context_requirement_reason = _context_requirement_reason(
         family=family,
         action=action,
@@ -3139,6 +3221,10 @@ def preview_integration_action(
         f"Executable detected: {'yes' if executable_available else 'no'}.",
         f"Resolved provider: {resolved_provider or 'none'}.",
     ]
+    if provider_context_status == "inferred":
+        notes.append("Provider identity is inferred from workspace or host signals, but Mission Control has not verified a live provider session yet.")
+    if provider_verification_required:
+        notes.append("Guided remote mutation remains blocked until Mission Control verifies the live provider identity for this provider-specific lane.")
     if suppressed_command_reason == "provider_context_missing":
         notes.append("Executable preview was intentionally suppressed until Mission Control has real provider context for this family.")
     if effective_params != params:
@@ -3168,9 +3254,12 @@ def preview_integration_action(
         "provider_support_mode": support_mode,
         "supported_providers": supported_providers,
         "supported_provider_count": len(supported_providers),
-        "provider_lane_resolved": bool(resolved_provider and (not supported_providers or resolved_provider in supported_providers)),
+        "provider_lane_resolved": provider_lane_resolved,
         "provider_context_verified": provider_context_verified,
         "provider_context_source": provider_context_source,
+        "provider_context_status": provider_context_status,
+        "provider_verification_required": provider_verification_required,
+        "provider_verification_reason": provider_verification_reason,
         "defaulted_params": {key: value for key, value in effective_params.items() if key not in params},
         "command_ready": executable_available,
         "execution_mode": execution_mode,
@@ -3271,6 +3360,15 @@ def execute_integration_action(
             "returncode": 0,
             "approval_required": False,
             "updated_registry": updated_registry,
+        }
+    if preview.get("provider_verification_required"):
+        return {
+            **preview,
+            "status": "blocked",
+            "stdout": "",
+            "stderr": "Mission Control must verify the live provider identity for this guided remote mutation before it can approve or execute the action.",
+            "returncode": None,
+            "approval_required": False,
         }
     if not preview.get("command"):
         guidance = _provider_guidance(str(preview.get("provider") or ""), action.action_id)
