@@ -160,6 +160,12 @@ def test_project_integrations_and_action_preview_flow(client, bridge_headers, mo
         family_ids = [item["family"] for item in family_list if token_hit in item["workspace_token_hits"]]
         expected_workspace_token_hit_counts[token_hit] = len(family_ids)
         expected_workspace_token_hit_family_ids[token_hit] = family_ids
+    def _sum_count_maps(field_name: str) -> dict[str, int]:
+        counts = {}
+        for item in family_list:
+            for key, value in item[field_name].items():
+                counts[key] = counts.get(key, 0) + value
+        return counts
     assert project_integrations_payload["status_counts"] == expected_status_counts
     assert project_integrations_payload["status_family_ids"] == expected_status_family_ids
     assert project_integrations_payload["statuses"] == sorted(expected_status_counts)
@@ -251,6 +257,25 @@ def test_project_integrations_and_action_preview_flow(client, bridge_headers, mo
     assert project_integrations_payload["context_blocked_family_count"] == sum(1 for item in family_list if item["context_blocked_action_count"] > 0)
     assert project_integrations_payload["context_blocked_family_ids"] == [item["family"] for item in family_list if item["context_blocked_action_count"] > 0]
     assert project_integrations_payload["context_blocked_action_count"] == sum(item["context_blocked_action_count"] for item in family_list)
+    assert project_integrations_payload["action_count"] == sum(item["action_count"] for item in family_list)
+    assert project_integrations_payload["action_status_counts"] == _sum_count_maps("action_status_counts")
+    assert project_integrations_payload["action_status_group_count"] == len(project_integrations_payload["action_status_counts"])
+    assert project_integrations_payload["execution_mode_counts"] == _sum_count_maps("execution_mode_counts")
+    assert project_integrations_payload["execution_mode_group_count"] == len(project_integrations_payload["execution_mode_counts"])
+    assert project_integrations_payload["provider_support_mode_counts"] == _sum_count_maps("provider_support_mode_counts")
+    assert project_integrations_payload["provider_support_mode_group_count"] == len(project_integrations_payload["provider_support_mode_counts"])
+    assert project_integrations_payload["action_provider_context_status_counts"] == _sum_count_maps("provider_context_status_counts")
+    assert project_integrations_payload["action_provider_context_status_group_count"] == len(project_integrations_payload["action_provider_context_status_counts"])
+    assert project_integrations_payload["verification_scope_counts"] == _sum_count_maps("verification_scope_counts")
+    assert project_integrations_payload["verification_scope_group_count"] == len(project_integrations_payload["verification_scope_counts"])
+    assert project_integrations_payload["safe_command_reason_counts"] == _sum_count_maps("safe_command_reason_counts")
+    assert project_integrations_payload["safe_command_reason_group_count"] == len(project_integrations_payload["safe_command_reason_counts"])
+    assert project_integrations_payload["context_requirement_reason_counts"] == _sum_count_maps("context_requirement_reason_counts")
+    assert project_integrations_payload["context_requirement_reason_group_count"] == len(project_integrations_payload["context_requirement_reason_counts"])
+    assert project_integrations_payload["execution_block_reason_counts"] == _sum_count_maps("execution_block_reason_counts")
+    assert project_integrations_payload["execution_block_reason_group_count"] == len(project_integrations_payload["execution_block_reason_counts"])
+    assert project_integrations_payload["blocking_reason_counts"] == _sum_count_maps("blocking_reason_counts")
+    assert project_integrations_payload["blocking_reason_group_count"] == len(project_integrations_payload["blocking_reason_counts"])
     assert families["source_control"]["status"] == "ready"
     assert families["containers"]["status"] == "ready"
     assert families["hosting_deploy"]["status"] == "ready"

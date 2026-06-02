@@ -14096,6 +14096,15 @@ class MissionControlService:
                     grouped.setdefault(group_key, []).append(family_id)
             return grouped
 
+        def _sum_count_maps(key: str) -> dict[str, int]:
+            summed: Counter[str] = Counter()
+            for item in families:
+                for group_key, count in (item.get(key) or {}).items():
+                    if not count:
+                        continue
+                    summed[str(group_key)] += int(count)
+            return dict(summed)
+
         family_ids = [str(item.get("family") or "") for item in families]
         family_ids_by_status = _group_scalar_family_ids("status", fallback="unknown")
         statuses = sorted(family_ids_by_status)
@@ -14195,6 +14204,25 @@ class MissionControlService:
         available_provider_lane_count = sum(int(item.get("available_provider_lane_count") or 0) for item in families)
         verification_blocked_action_count = sum(int(item.get("verification_blocked_action_count") or 0) for item in families)
         context_blocked_action_count = sum(int(item.get("context_blocked_action_count") or 0) for item in families)
+        action_count = sum(int(item.get("action_count") or 0) for item in families)
+        action_status_counts = _sum_count_maps("action_status_counts")
+        action_status_group_count = len(action_status_counts)
+        execution_mode_counts = _sum_count_maps("execution_mode_counts")
+        execution_mode_group_count = len(execution_mode_counts)
+        provider_support_mode_counts = _sum_count_maps("provider_support_mode_counts")
+        provider_support_mode_group_count = len(provider_support_mode_counts)
+        action_provider_context_status_counts = _sum_count_maps("provider_context_status_counts")
+        action_provider_context_status_group_count = len(action_provider_context_status_counts)
+        verification_scope_counts = _sum_count_maps("verification_scope_counts")
+        verification_scope_group_count = len(verification_scope_counts)
+        safe_command_reason_counts = _sum_count_maps("safe_command_reason_counts")
+        safe_command_reason_group_count = len(safe_command_reason_counts)
+        context_requirement_reason_counts = _sum_count_maps("context_requirement_reason_counts")
+        context_requirement_reason_group_count = len(context_requirement_reason_counts)
+        execution_block_reason_counts = _sum_count_maps("execution_block_reason_counts")
+        execution_block_reason_group_count = len(execution_block_reason_counts)
+        blocking_reason_counts = _sum_count_maps("blocking_reason_counts")
+        blocking_reason_group_count = len(blocking_reason_counts)
         return {
             "project_id": project.id,
             "project_name": project.name,
@@ -14296,6 +14324,25 @@ class MissionControlService:
             "context_blocked_family_count": context_blocked_family_count,
             "context_blocked_family_ids": context_blocked_family_ids,
             "context_blocked_action_count": context_blocked_action_count,
+            "action_count": action_count,
+            "action_status_counts": action_status_counts,
+            "action_status_group_count": action_status_group_count,
+            "execution_mode_counts": execution_mode_counts,
+            "execution_mode_group_count": execution_mode_group_count,
+            "provider_support_mode_counts": provider_support_mode_counts,
+            "provider_support_mode_group_count": provider_support_mode_group_count,
+            "action_provider_context_status_counts": action_provider_context_status_counts,
+            "action_provider_context_status_group_count": action_provider_context_status_group_count,
+            "verification_scope_counts": verification_scope_counts,
+            "verification_scope_group_count": verification_scope_group_count,
+            "safe_command_reason_counts": safe_command_reason_counts,
+            "safe_command_reason_group_count": safe_command_reason_group_count,
+            "context_requirement_reason_counts": context_requirement_reason_counts,
+            "context_requirement_reason_group_count": context_requirement_reason_group_count,
+            "execution_block_reason_counts": execution_block_reason_counts,
+            "execution_block_reason_group_count": execution_block_reason_group_count,
+            "blocking_reason_counts": blocking_reason_counts,
+            "blocking_reason_group_count": blocking_reason_group_count,
             "families": families,
         }
 

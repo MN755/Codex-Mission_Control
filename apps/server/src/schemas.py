@@ -3615,6 +3615,25 @@ class ProjectIntegrationsRead(BaseModel):
     context_blocked_family_count: int = 0
     context_blocked_family_ids: list[str] = Field(default_factory=list)
     context_blocked_action_count: int = 0
+    action_count: int = 0
+    action_status_counts: dict[str, int] = Field(default_factory=dict)
+    action_status_group_count: int = 0
+    execution_mode_counts: dict[str, int] = Field(default_factory=dict)
+    execution_mode_group_count: int = 0
+    provider_support_mode_counts: dict[str, int] = Field(default_factory=dict)
+    provider_support_mode_group_count: int = 0
+    action_provider_context_status_counts: dict[str, int] = Field(default_factory=dict)
+    action_provider_context_status_group_count: int = 0
+    verification_scope_counts: dict[str, int] = Field(default_factory=dict)
+    verification_scope_group_count: int = 0
+    safe_command_reason_counts: dict[str, int] = Field(default_factory=dict)
+    safe_command_reason_group_count: int = 0
+    context_requirement_reason_counts: dict[str, int] = Field(default_factory=dict)
+    context_requirement_reason_group_count: int = 0
+    execution_block_reason_counts: dict[str, int] = Field(default_factory=dict)
+    execution_block_reason_group_count: int = 0
+    blocking_reason_counts: dict[str, int] = Field(default_factory=dict)
+    blocking_reason_group_count: int = 0
     families: list[ProjectIntegrationFamilyRead] = Field(default_factory=list)
 
 
