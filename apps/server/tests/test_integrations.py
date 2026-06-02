@@ -3972,3 +3972,111 @@ def test_provider_specific_preview_surfaces_scanner_spec_search_and_vllm_guidanc
     assert any("live indexed search state" in note.lower() for note in sourcegraph_preview["notes"])
     assert any("live index state" in note.lower() for note in zoekt_preview["notes"])
     assert any("local model-server state" in note.lower() for note in vllm_preview["notes"])
+
+
+def test_workspace_config_detection_resolves_package_registry_providers_without_cli(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr("integration_registry.shutil.which", lambda _command: None)
+
+    docker_workspace = tmp_path / "dockerhub-config-repo"
+    docker_workspace.mkdir(parents=True, exist_ok=True)
+    (docker_workspace / "Dockerfile").write_text("FROM python:3.12\n", encoding="utf-8")
+
+    nuget_workspace = tmp_path / "nuget-config-repo"
+    nuget_workspace.mkdir(parents=True, exist_ok=True)
+    (nuget_workspace / "demo.nuspec").write_text("<package/>\n", encoding="utf-8")
+
+    rubygems_workspace = tmp_path / "rubygems-config-repo"
+    rubygems_workspace.mkdir(parents=True, exist_ok=True)
+    (rubygems_workspace / "Gemfile").write_text('source "https://rubygems.org"\n', encoding="utf-8")
+
+    docker_status = {
+        item["family"]: item
+        for item in build_project_integration_status(
+            workspace_path=str(docker_workspace),
+            project_name="Docker Hub Config Demo",
+            registry_payload=normalize_integration_registry({}, {}),
+        )
+    }["package_registries"]
+    nuget_status = {
+        item["family"]: item
+        for item in build_project_integration_status(
+            workspace_path=str(nuget_workspace),
+            project_name="NuGet Config Demo",
+            registry_payload=normalize_integration_registry({}, {}),
+        )
+    }["package_registries"]
+    rubygems_status = {
+        item["family"]: item
+        for item in build_project_integration_status(
+            workspace_path=str(rubygems_workspace),
+            project_name="RubyGems Config Demo",
+            registry_payload=normalize_integration_registry({}, {}),
+        )
+    }["package_registries"]
+
+    assert docker_status["resolved_provider"] == "docker_hub"
+    assert docker_status["status"] == "partial"
+    assert "Dockerfile" in docker_status["health"]["workspace_config_files"]
+    assert nuget_status["resolved_provider"] == "nuget"
+    assert nuget_status["status"] == "partial"
+    assert "demo.nuspec" in nuget_status["health"]["workspace_config_files"]
+    assert rubygems_status["resolved_provider"] == "rubygems"
+    assert rubygems_status["status"] == "partial"
+    assert "Gemfile" in rubygems_status["health"]["workspace_config_files"]
+
+
+def test_project_integrations_detect_package_registry_provider_specific_cli_from_workspace(monkeypatch, tmp_path) -> None:
+    docker_workspace = tmp_path / "dockerhub-ready-repo"
+    docker_workspace.mkdir(parents=True, exist_ok=True)
+    (docker_workspace / "Dockerfile").write_text("FROM python:3.12\n", encoding="utf-8")
+
+    nuget_workspace = tmp_path / "nuget-ready-repo"
+    nuget_workspace.mkdir(parents=True, exist_ok=True)
+    (nuget_workspace / "demo.nuspec").write_text("<package/>\n", encoding="utf-8")
+
+    rubygems_workspace = tmp_path / "rubygems-ready-repo"
+    rubygems_workspace.mkdir(parents=True, exist_ok=True)
+    (rubygems_workspace / "Gemfile").write_text('source "https://rubygems.org"\n', encoding="utf-8")
+
+    monkeypatch.setattr(
+        "integration_registry.shutil.which",
+        lambda command: f"C:/tools/{command}.exe" if command in {"docker", "dotnet", "gem"} else None,
+    )
+
+    docker_status = {
+        item["family"]: item
+        for item in build_project_integration_status(
+            workspace_path=str(docker_workspace),
+            project_name="Docker Hub Ready Demo",
+            registry_payload=normalize_integration_registry({}, {}),
+        )
+    }["package_registries"]
+    nuget_status = {
+        item["family"]: item
+        for item in build_project_integration_status(
+            workspace_path=str(nuget_workspace),
+            project_name="NuGet Ready Demo",
+            registry_payload=normalize_integration_registry({}, {}),
+        )
+    }["package_registries"]
+    rubygems_status = {
+        item["family"]: item
+        for item in build_project_integration_status(
+            workspace_path=str(rubygems_workspace),
+            project_name="RubyGems Ready Demo",
+            registry_payload=normalize_integration_registry({}, {}),
+        )
+    }["package_registries"]
+
+    assert docker_status["resolved_provider"] == "docker_hub"
+    assert docker_status["resolved_cli_candidates"] == ["docker"]
+    assert docker_status["health"]["resolved_cli_detected"] == ["docker"]
+    assert docker_status["status"] == "ready"
+    assert nuget_status["resolved_provider"] == "nuget"
+    assert nuget_status["resolved_cli_candidates"] == ["dotnet"]
+    assert nuget_status["health"]["resolved_cli_detected"] == ["dotnet"]
+    assert nuget_status["status"] == "ready"
+    assert rubygems_status["resolved_provider"] == "rubygems"
+    assert rubygems_status["resolved_cli_candidates"] == ["gem"]
+    assert rubygems_status["health"]["resolved_cli_detected"] == ["gem"]
+    assert rubygems_status["status"] == "ready"

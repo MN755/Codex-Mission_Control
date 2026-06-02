@@ -1777,6 +1777,22 @@ def _path_matches_marker(path: str, marker: str) -> bool:
     return False
 
 
+def _family_workspace_markers(family: IntegrationFamilyDefinition) -> tuple[str, ...]:
+    markers = list(family.config_files)
+    for provider in family.providers:
+        markers.extend(PROVIDER_WORKSPACE_MARKERS.get(provider, ()))
+    return tuple(_dedupe_strs([str(item) for item in markers if str(item).strip()]))
+
+
+def _family_workspace_evidence_files(*, family: IntegrationFamilyDefinition, relative_files: list[str]) -> list[str]:
+    markers = _family_workspace_markers(family)
+    return [
+        path
+        for path in relative_files
+        if any(_path_matches_marker(path, marker) for marker in markers)
+    ]
+
+
 def _host_import_entries_for_family(registry: dict[str, Any], family_id: str) -> list[dict[str, Any]]:
     entries: list[dict[str, Any]] = []
     for host_name, families in dict(registry.get("host_imports") or {}).items():
@@ -2208,11 +2224,7 @@ def build_project_integration_status(
     for family in FAMILIES:
         connection = _connection_status_for_family(registry, family)
         connection_status = _normalized_connection_status(connection.get("status"))
-        detected_files = [
-            path
-            for path in relative_files
-            if any(_path_matches_marker(path, item) for item in family.config_files)
-        ]
+        detected_files = _family_workspace_evidence_files(family=family, relative_files=relative_files)
         token_hits = [token for token in _family_token_candidates(family) if token and token.lower() in haystack]
         installed_clis = [cli for cli in family.cli_candidates if shutil.which(cli)]
         provider_candidates = _provider_candidates_for_family(
@@ -2462,11 +2474,7 @@ def preview_integration_action(
     git_remote_url = _read_git_remote_url(root)
     registry = normalize_integration_registry(registry_payload, {})
     connection = _connection_status_for_family(registry, family)
-    detected_files = [
-        path
-        for path in relative_files
-        if any(_path_matches_marker(path, item) for item in family.config_files)
-    ]
+    detected_files = _family_workspace_evidence_files(family=family, relative_files=relative_files)
     token_hits = [token for token in _family_token_candidates(family) if token and token.lower() in haystack]
     installed_clis = [cli for cli in family.cli_candidates if shutil.which(cli)]
     command_template, provider_candidates, resolved_provider = _resolve_provider_command(
