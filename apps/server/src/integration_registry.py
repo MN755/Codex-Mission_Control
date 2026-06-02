@@ -57,6 +57,13 @@ PROVIDER_CLIS: dict[str, tuple[str, ...]] = {
     "cloudflare_pages": ("wrangler",),
     "railway": ("railway",),
     "render": ("render",),
+    "bruno": ("bru",),
+    "snyk": ("snyk",),
+    "semgrep": ("semgrep",),
+    "trivy": ("trivy",),
+    "doppler": ("doppler",),
+    "vault": ("vault",),
+    "stripe": ("stripe",),
 }
 
 PROVIDER_WORKSPACE_MARKERS: dict[str, tuple[str, ...]] = {
@@ -144,6 +151,7 @@ PROVIDER_ACTION_REQUIRED_PARAMS: dict[tuple[str, str], tuple[str, ...]] = {
     ("render", "tail_logs"): ("resource_id",),
     ("docker_hub", "publish"): ("image",),
     ("github_releases", "create"): ("tag",),
+    ("stripe", "create"): ("name",),
 }
 
 
@@ -467,7 +475,7 @@ FAMILIES: tuple[IntegrationFamilyDefinition, ...] = (
         host_tokens=("postman", "insomnia", "bruno"),
         config_files=("postman", "insomnia", "bruno"),
         workspace_tokens=("postman", "insomnia", "bruno"),
-        cli_candidates=("bruno",),
+        cli_candidates=("bru",),
         legacy_account_keys=(),
         actions=COMMON_ACTIONS + (
             _action("inspect", "Inspect collections", "Inspect API collection assets and runtime support.", risk_level="low", permission_policy="ask_once_per_project"),
@@ -955,6 +963,10 @@ def _provider_command_template(provider: str, action_id: str) -> str | None:
             "inspect": "gcloud config list --format json",
             "open": "gcloud auth login",
         },
+        "bruno": {
+            "inspect": "bru --version",
+            "validate": "bru run",
+        },
         "cypress": {
             "validate": "cypress run",
         },
@@ -978,6 +990,21 @@ def _provider_command_template(provider: str, action_id: str) -> str | None:
             "inspect": "docker info --format {{json .}}",
             "publish": "docker push {image_q}",
         },
+        "snyk": {
+            "scan": "snyk test --json",
+        },
+        "semgrep": {
+            "scan": "semgrep scan --json",
+        },
+        "trivy": {
+            "scan": "trivy fs --format json .",
+        },
+        "doppler": {
+            "inspect": "doppler configs",
+        },
+        "vault": {
+            "inspect": "vault status -format=json",
+        },
         "changesets": {
             "draft": "changeset status",
             "create": "changeset version",
@@ -985,6 +1012,10 @@ def _provider_command_template(provider: str, action_id: str) -> str | None:
         "github_releases": {
             "draft": "gh release view --json name,tagName,isDraft",
             "create": "gh release create {tag_q}",
+        },
+        "stripe": {
+            "inspect": "stripe config --list",
+            "create": "stripe customers create --name {name_q}",
         },
     }
     return commands.get(provider, {}).get(action_id)

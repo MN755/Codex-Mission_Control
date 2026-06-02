@@ -1033,6 +1033,218 @@ def test_provider_specific_preview_supports_changesets_and_github_release_lanes(
     assert create_preview["command"] == "gh release create {tag_q}"
 
 
+def test_provider_specific_preview_supports_bruno_collection_lane(monkeypatch, tmp_path) -> None:
+    workspace = tmp_path / "bruno-repo"
+    workspace.mkdir(parents=True, exist_ok=True)
+    (workspace / "bruno.json").write_text('{"name":"demo"}\n', encoding="utf-8")
+
+    monkeypatch.setattr(
+        "integration_registry.shutil.which",
+        lambda command: f"C:/tools/{command}.exe" if command == "bru" else None,
+    )
+
+    inspect_preview = preview_integration_action(
+        family_id="api_clients",
+        action_id="inspect",
+        params={},
+        registry_payload=normalize_integration_registry({}, {}),
+        workspace_path=str(workspace),
+        project_name="Bruno Demo",
+    )
+    validate_preview = preview_integration_action(
+        family_id="api_clients",
+        action_id="validate",
+        params={},
+        registry_payload=normalize_integration_registry({}, {}),
+        workspace_path=str(workspace),
+        project_name="Bruno Demo",
+    )
+
+    assert inspect_preview["provider"] == "bruno"
+    assert inspect_preview["command"] == "bru --version"
+    assert validate_preview["provider"] == "bruno"
+    assert validate_preview["command"] == "bru run"
+
+
+def test_provider_specific_preview_supports_semgrep_scan_lane(monkeypatch, tmp_path) -> None:
+    workspace = tmp_path / "semgrep-repo"
+    (workspace / ".semgrep").mkdir(parents=True, exist_ok=True)
+    (workspace / ".semgrep" / "rules.yml").write_text("rules: []\n", encoding="utf-8")
+
+    monkeypatch.setattr(
+        "integration_registry.shutil.which",
+        lambda command: f"C:/tools/{command}.exe" if command == "semgrep" else None,
+    )
+
+    preview = preview_integration_action(
+        family_id="security_scanners",
+        action_id="scan",
+        params={},
+        registry_payload=normalize_integration_registry({}, {}),
+        workspace_path=str(workspace),
+        project_name="Semgrep Demo",
+    )
+
+    assert preview["provider"] == "semgrep"
+    assert preview["command"] == "semgrep scan --json"
+
+
+def test_provider_specific_preview_supports_trivy_scan_lane(monkeypatch, tmp_path) -> None:
+    workspace = tmp_path / "trivy-repo"
+    workspace.mkdir(parents=True, exist_ok=True)
+    (workspace / "trivy.yaml").write_text("scan:\n  skip-dirs: []\n", encoding="utf-8")
+
+    monkeypatch.setattr(
+        "integration_registry.shutil.which",
+        lambda command: f"C:/tools/{command}.exe" if command == "trivy" else None,
+    )
+
+    preview = preview_integration_action(
+        family_id="security_scanners",
+        action_id="scan",
+        params={},
+        registry_payload=normalize_integration_registry({}, {}),
+        workspace_path=str(workspace),
+        project_name="Trivy Demo",
+    )
+
+    assert preview["provider"] == "trivy"
+    assert preview["command"] == "trivy fs --format json ."
+
+
+def test_provider_specific_preview_supports_snyk_scan_lane(monkeypatch) -> None:
+    registry = normalize_integration_registry(
+        {
+            "connections": {
+                "security_scanners": {
+                    "family": "security_scanners",
+                    "status": "connected",
+                    "providers": ["snyk"],
+                    "connection_source": "mission_control",
+                    "host_imported": False,
+                }
+            }
+        },
+        {},
+    )
+
+    monkeypatch.setattr(
+        "integration_registry.shutil.which",
+        lambda command: f"C:/tools/{command}.exe" if command == "snyk" else None,
+    )
+
+    preview = preview_integration_action(
+        family_id="security_scanners",
+        action_id="scan",
+        params={},
+        registry_payload=registry,
+        workspace_path=None,
+        project_name="Snyk Demo",
+    )
+
+    assert preview["provider"] == "snyk"
+    assert preview["command"] == "snyk test --json"
+
+
+def test_provider_specific_preview_supports_vault_and_doppler_inspect_lanes(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "integration_registry.shutil.which",
+        lambda command: f"C:/tools/{command}.exe" if command in {"vault", "doppler"} else None,
+    )
+
+    vault_preview = preview_integration_action(
+        family_id="secrets",
+        action_id="inspect",
+        params={},
+        registry_payload=normalize_integration_registry(
+            {
+                "connections": {
+                    "secrets": {
+                        "family": "secrets",
+                        "status": "connected",
+                        "providers": ["vault"],
+                        "connection_source": "mission_control",
+                        "host_imported": False,
+                    }
+                }
+            },
+            {},
+        ),
+        workspace_path=None,
+        project_name="Vault Demo",
+    )
+    doppler_preview = preview_integration_action(
+        family_id="secrets",
+        action_id="inspect",
+        params={},
+        registry_payload=normalize_integration_registry(
+            {
+                "connections": {
+                    "secrets": {
+                        "family": "secrets",
+                        "status": "connected",
+                        "providers": ["doppler"],
+                        "connection_source": "mission_control",
+                        "host_imported": False,
+                    }
+                }
+            },
+            {},
+        ),
+        workspace_path=None,
+        project_name="Doppler Demo",
+    )
+
+    assert vault_preview["provider"] == "vault"
+    assert vault_preview["command"] == "vault status -format=json"
+    assert doppler_preview["provider"] == "doppler"
+    assert doppler_preview["command"] == "doppler configs"
+
+
+def test_provider_specific_preview_supports_stripe_create_lane(monkeypatch) -> None:
+    registry = normalize_integration_registry(
+        {
+            "connections": {
+                "payments": {
+                    "family": "payments",
+                    "status": "connected",
+                    "providers": ["stripe"],
+                    "connection_source": "mission_control",
+                    "host_imported": False,
+                }
+            }
+        },
+        {},
+    )
+
+    monkeypatch.setattr(
+        "integration_registry.shutil.which",
+        lambda command: f"C:/tools/{command}.exe" if command == "stripe" else None,
+    )
+
+    missing_preview = preview_integration_action(
+        family_id="payments",
+        action_id="create",
+        params={},
+        registry_payload=registry,
+        workspace_path=None,
+        project_name="Stripe Demo",
+    )
+    complete_preview = preview_integration_action(
+        family_id="payments",
+        action_id="create",
+        params={"name": "Mission Control Test Customer"},
+        registry_payload=registry,
+        workspace_path=None,
+        project_name="Stripe Demo",
+    )
+
+    assert missing_preview["provider"] == "stripe"
+    assert missing_preview["missing_params"] == ["name"]
+    assert missing_preview["command"] == "stripe customers create --name {name_q}"
+    assert complete_preview["command"] == 'stripe customers create --name "Mission Control Test Customer"'
+
+
 def test_project_integrations_surface_provider_specific_required_params_and_host_import_artifacts(monkeypatch, tmp_path) -> None:
     workspace = tmp_path / "integration-status-details"
     (workspace / ".jira").mkdir(parents=True, exist_ok=True)
