@@ -3650,6 +3650,10 @@ class ProjectIntegrationsRead(BaseModel):
     execution_action_family_ids: list[str] = Field(default_factory=list)
     execution_action_count: int = 0
     execution_action_refs: list[str] = Field(default_factory=list)
+    available_execution_action_count: int = 0
+    available_execution_action_refs: list[str] = Field(default_factory=list)
+    available_execution_family_count: int = 0
+    available_execution_family_ids: list[str] = Field(default_factory=list)
     local_execution_action_count: int = 0
     local_execution_action_refs: list[str] = Field(default_factory=list)
     local_execution_action_family_count: int = 0
@@ -3966,6 +3970,16 @@ class ProjectIntegrationsRead(BaseModel):
     blocked_executable_name_group_count: int = 0
     blocked_executable_name_action_refs: dict[str, list[str]] = Field(default_factory=dict)
     blocked_executable_name_family_ids: dict[str, list[str]] = Field(default_factory=dict)
+    available_provider_context_statuses: list[str] = Field(default_factory=list)
+    available_provider_context_status_counts: dict[str, int] = Field(default_factory=dict)
+    available_provider_context_status_group_count: int = 0
+    available_provider_context_status_action_refs: dict[str, list[str]] = Field(default_factory=dict)
+    available_provider_context_status_family_ids: dict[str, list[str]] = Field(default_factory=dict)
+    blocked_provider_context_statuses: list[str] = Field(default_factory=list)
+    blocked_provider_context_status_counts: dict[str, int] = Field(default_factory=dict)
+    blocked_provider_context_status_group_count: int = 0
+    blocked_provider_context_status_action_refs: dict[str, list[str]] = Field(default_factory=dict)
+    blocked_provider_context_status_family_ids: dict[str, list[str]] = Field(default_factory=dict)
     execution_block_reasons: list[str] = Field(default_factory=list)
     execution_block_reason_counts: dict[str, int] = Field(default_factory=dict)
     execution_block_reason_group_count: int = 0

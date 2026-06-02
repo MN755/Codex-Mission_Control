@@ -14305,6 +14305,7 @@ class MissionControlService:
         available_action_family_ids = [str(item.get("family") or "") for item in families if int(item.get("available_action_count") or 0) > 0]
         blocked_action_family_ids = [str(item.get("family") or "") for item in families if int(item.get("blocked_action_count") or 0) > 0]
         execution_action_family_ids = [str(item.get("family") or "") for item in families if int(item.get("execution_action_count") or 0) > 0]
+        available_execution_family_ids = [str(item.get("family") or "") for item in families if int(item.get("available_execution_action_count") or 0) > 0]
         blocked_execution_action_family_ids = [str(item.get("family") or "") for item in families if int(item.get("blocked_execution_action_count") or 0) > 0]
         safe_command_family_ids = [str(item.get("family") or "") for item in families if int(item.get("safe_command_action_count") or 0) > 0]
         available_provider_lane_family_ids = [str(item.get("family") or "") for item in families if int(item.get("available_provider_lane_count") or 0) > 0]
@@ -14357,6 +14358,7 @@ class MissionControlService:
         available_action_family_count = len(available_action_family_ids)
         blocked_action_family_count = len(blocked_action_family_ids)
         execution_action_family_count = len(execution_action_family_ids)
+        available_execution_family_count = len(available_execution_family_ids)
         blocked_execution_action_family_count = len(blocked_execution_action_family_ids)
         safe_command_family_count = len(safe_command_family_ids)
         available_provider_lane_family_count = len(available_provider_lane_family_ids)
@@ -14412,6 +14414,7 @@ class MissionControlService:
         available_action_count = sum(int(item.get("available_action_count") or 0) for item in families)
         blocked_action_count = sum(int(item.get("blocked_action_count") or 0) for item in families)
         execution_action_count = sum(int(item.get("execution_action_count") or 0) for item in families)
+        available_execution_action_count = sum(int(item.get("available_execution_action_count") or 0) for item in families)
         blocked_execution_action_count = sum(int(item.get("blocked_execution_action_count") or 0) for item in families)
         safe_command_count = sum(int(item.get("safe_command_action_count") or 0) for item in families)
         available_provider_lane_count = sum(int(item.get("available_provider_lane_count") or 0) for item in families)
@@ -14462,6 +14465,7 @@ class MissionControlService:
         available_non_mutating_action_refs = _collect_action_refs("available_non_mutating_action_ids")
         blocked_action_refs = _collect_action_refs("blocked_action_ids")
         execution_action_refs = _collect_action_refs("execution_action_ids")
+        available_execution_action_refs = _collect_action_refs("available_execution_action_ids")
         local_execution_action_refs = _collect_action_refs("local_execution_action_ids")
         guided_execution_action_refs = _collect_action_refs("guided_execution_action_ids")
         provider_specific_execution_action_refs = _collect_action_refs("provider_specific_execution_action_ids")
@@ -14594,6 +14598,16 @@ class MissionControlService:
         blocked_action_provider_context_status_group_count = len(blocked_action_provider_context_status_counts)
         blocked_action_provider_context_status_action_refs = _collect_grouped_action_refs("blocked_provider_context_status_action_ids")
         blocked_action_provider_context_status_family_ids = _group_count_map_family_ids("blocked_provider_context_status_counts")
+        available_provider_context_status_counts = available_action_provider_context_status_counts
+        available_provider_context_statuses = available_action_provider_context_statuses
+        available_provider_context_status_group_count = available_action_provider_context_status_group_count
+        available_provider_context_status_action_refs = available_action_provider_context_status_action_refs
+        available_provider_context_status_family_ids = available_action_provider_context_status_family_ids
+        blocked_provider_context_status_counts = blocked_action_provider_context_status_counts
+        blocked_provider_context_statuses = blocked_action_provider_context_statuses
+        blocked_provider_context_status_group_count = blocked_action_provider_context_status_group_count
+        blocked_provider_context_status_action_refs = blocked_action_provider_context_status_action_refs
+        blocked_provider_context_status_family_ids = blocked_action_provider_context_status_family_ids
         verification_scope_counts = _sum_count_maps("verification_scope_counts")
         verification_scopes = sorted(verification_scope_counts)
         verification_scope_group_count = len(verification_scope_counts)
@@ -14944,6 +14958,10 @@ class MissionControlService:
             "execution_action_family_ids": execution_action_family_ids,
             "execution_action_count": execution_action_count,
             "execution_action_refs": execution_action_refs,
+            "available_execution_action_count": available_execution_action_count,
+            "available_execution_action_refs": available_execution_action_refs,
+            "available_execution_family_count": available_execution_family_count,
+            "available_execution_family_ids": available_execution_family_ids,
             "local_execution_action_count": local_execution_action_count,
             "local_execution_action_refs": local_execution_action_refs,
             "local_execution_action_family_count": local_execution_action_family_count,
@@ -15185,6 +15203,16 @@ class MissionControlService:
             "blocked_action_provider_context_status_group_count": blocked_action_provider_context_status_group_count,
             "blocked_action_provider_context_status_action_refs": blocked_action_provider_context_status_action_refs,
             "blocked_action_provider_context_status_family_ids": blocked_action_provider_context_status_family_ids,
+            "available_provider_context_statuses": available_provider_context_statuses,
+            "available_provider_context_status_counts": available_provider_context_status_counts,
+            "available_provider_context_status_group_count": available_provider_context_status_group_count,
+            "available_provider_context_status_action_refs": available_provider_context_status_action_refs,
+            "available_provider_context_status_family_ids": available_provider_context_status_family_ids,
+            "blocked_provider_context_statuses": blocked_provider_context_statuses,
+            "blocked_provider_context_status_counts": blocked_provider_context_status_counts,
+            "blocked_provider_context_status_group_count": blocked_provider_context_status_group_count,
+            "blocked_provider_context_status_action_refs": blocked_provider_context_status_action_refs,
+            "blocked_provider_context_status_family_ids": blocked_provider_context_status_family_ids,
             "verification_scopes": verification_scopes,
             "verification_scope_counts": verification_scope_counts,
             "verification_scope_group_count": verification_scope_group_count,
