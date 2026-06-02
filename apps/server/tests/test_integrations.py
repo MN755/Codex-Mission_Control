@@ -244,16 +244,22 @@ def test_project_integrations_and_action_preview_flow(client, bridge_headers, mo
     assert project_integrations_payload["status_family_ids"] == expected_status_family_ids
     assert project_integrations_payload["statuses"] == sorted(expected_status_counts)
     assert project_integrations_payload["status_group_count"] == len(expected_status_counts)
+    assert project_integrations_payload["status_family_count"] == len(project_integrations_payload["status_families"])
+    assert project_integrations_payload["status_families"] == [item["family"] for item in family_list if item["status"] not in (None, "")]
     assert project_integrations_payload["connection_statuses"] == sorted(expected_connection_status_counts)
     assert project_integrations_payload["connection_status_counts"] == expected_connection_status_counts
     assert project_integrations_payload["connection_status_family_ids"] == expected_connection_status_family_ids
     assert project_integrations_payload["connection_status_group_count"] == len(expected_connection_status_counts)
+    assert project_integrations_payload["connection_status_family_count"] == len(project_integrations_payload["connection_status_families"])
+    assert project_integrations_payload["connection_status_families"] == [item["family"] for item in family_list if item["connection_status"] not in (None, "")]
     expected_connection_source_family_ids = _group_scalar_family_ids("connection_source")
     expected_connection_source_counts = {key: len(value) for key, value in expected_connection_source_family_ids.items()}
     assert project_integrations_payload["connection_sources"] == sorted(expected_connection_source_counts)
     assert project_integrations_payload["connection_source_counts"] == expected_connection_source_counts
     assert project_integrations_payload["connection_source_family_ids"] == expected_connection_source_family_ids
     assert project_integrations_payload["connection_source_group_count"] == len(expected_connection_source_counts)
+    assert project_integrations_payload["connection_source_family_count"] == len(project_integrations_payload["connection_source_families"])
+    assert project_integrations_payload["connection_source_families"] == [item["family"] for item in family_list if item["connection_source"] not in (None, "")]
     expected_resolved_provider_family_ids = {
         key: value
         for key, value in _group_scalar_family_ids("resolved_provider").items()
@@ -270,24 +276,34 @@ def test_project_integrations_and_action_preview_flow(client, bridge_headers, mo
     assert project_integrations_payload["provider_resolution_state_counts"] == expected_provider_resolution_state_counts
     assert project_integrations_payload["provider_resolution_state_family_ids"] == expected_provider_resolution_state_family_ids
     assert project_integrations_payload["provider_resolution_state_group_count"] == len(expected_provider_resolution_state_counts)
+    assert project_integrations_payload["provider_resolution_state_family_count"] == len(project_integrations_payload["provider_resolution_state_families"])
+    assert project_integrations_payload["provider_resolution_state_families"] == [item["family"] for item in family_list if item["provider_resolution_state"] not in (None, "")]
     expected_provider_context_source_family_ids = _group_scalar_family_ids("provider_context_source")
     expected_provider_context_source_counts = {key: len(value) for key, value in expected_provider_context_source_family_ids.items()}
     assert project_integrations_payload["provider_context_sources"] == sorted(expected_provider_context_source_counts)
     assert project_integrations_payload["provider_context_source_counts"] == expected_provider_context_source_counts
     assert project_integrations_payload["provider_context_source_family_ids"] == expected_provider_context_source_family_ids
     assert project_integrations_payload["provider_context_source_group_count"] == len(expected_provider_context_source_counts)
+    assert project_integrations_payload["provider_context_source_family_count"] == len(project_integrations_payload["provider_context_source_families"])
+    assert project_integrations_payload["provider_context_source_families"] == [item["family"] for item in family_list if item["provider_context_source"] not in (None, "")]
     assert project_integrations_payload["provider_context_statuses"] == sorted(expected_provider_context_status_counts)
     assert project_integrations_payload["provider_context_status_counts"] == expected_provider_context_status_counts
     assert project_integrations_payload["provider_context_status_family_ids"] == expected_provider_context_status_family_ids
     assert project_integrations_payload["provider_context_status_group_count"] == len(expected_provider_context_status_counts)
+    assert project_integrations_payload["provider_context_status_family_count"] == len(project_integrations_payload["provider_context_status_families"])
+    assert project_integrations_payload["provider_context_status_families"] == [item["family"] for item in family_list if item["provider_context_status"] not in (None, "")]
     assert project_integrations_payload["signal_sources"] == sorted(expected_signal_source_counts)
     assert project_integrations_payload["signal_source_counts"] == expected_signal_source_counts
     assert project_integrations_payload["signal_source_family_ids"] == expected_signal_source_family_ids
     assert project_integrations_payload["signal_source_group_count"] == len(expected_signal_source_counts)
+    assert project_integrations_payload["signal_source_family_count"] == len(project_integrations_payload["signal_source_families"])
+    assert project_integrations_payload["signal_source_families"] == [item["family"] for item in family_list if item["signal_sources"]]
     assert project_integrations_payload["providers"] == sorted(expected_provider_counts)
     assert project_integrations_payload["provider_counts"] == expected_provider_counts
     assert project_integrations_payload["provider_family_ids"] == expected_provider_family_ids
     assert project_integrations_payload["provider_group_count"] == len(expected_provider_counts)
+    assert project_integrations_payload["provider_family_count"] == len(project_integrations_payload["provider_families"])
+    assert project_integrations_payload["provider_families"] == [item["family"] for item in family_list if item["providers"]]
     assert project_integrations_payload["provider_candidates"] == sorted(expected_provider_candidate_counts)
     assert project_integrations_payload["provider_candidate_counts"] == expected_provider_candidate_counts
     assert project_integrations_payload["provider_candidate_family_ids"] == expected_provider_candidate_family_ids
@@ -856,10 +872,14 @@ def test_project_integrations_and_action_preview_flow(client, bridge_headers, mo
     assert project_integrations_payload["artifact_type_counts"] == {key: len(value) for key, value in _artifact_type_family_ids().items()}
     assert project_integrations_payload["artifact_type_family_ids"] == _artifact_type_family_ids()
     assert project_integrations_payload["artifact_type_group_count"] == len(project_integrations_payload["artifact_type_counts"])
+    assert project_integrations_payload["artifact_type_family_count"] == len(project_integrations_payload["artifact_type_families"])
+    assert project_integrations_payload["artifact_type_families"] == [item["family"] for item in family_list if item["artifacts"]]
     assert project_integrations_payload["safe_commands"] == _merge_unique_strings("safe_commands")
     assert project_integrations_payload["safe_command_value_counts"] == {key: len(value) for key, value in _group_list_family_ids("safe_commands").items()}
     assert project_integrations_payload["safe_command_value_family_ids"] == _group_list_family_ids("safe_commands")
     assert project_integrations_payload["safe_command_value_group_count"] == len(project_integrations_payload["safe_command_value_counts"])
+    assert project_integrations_payload["safe_command_value_family_count"] == len(project_integrations_payload["safe_command_value_families"])
+    assert project_integrations_payload["safe_command_value_families"] == [item["family"] for item in family_list if item["safe_commands"]]
     assert project_integrations_payload["blocker_count"] == len(project_integrations_payload["blockers"])
     assert project_integrations_payload["blocker_family_count"] == sum(1 for item in family_list if item["blockers"])
     assert project_integrations_payload["blocker_family_ids"] == [item["family"] for item in family_list if item["blockers"]]
@@ -867,6 +887,8 @@ def test_project_integrations_and_action_preview_flow(client, bridge_headers, mo
     assert project_integrations_payload["blocker_value_counts"] == {key: len(value) for key, value in _group_list_family_ids("blockers").items()}
     assert project_integrations_payload["blocker_value_family_ids"] == _group_list_family_ids("blockers")
     assert project_integrations_payload["blocker_value_group_count"] == len(project_integrations_payload["blocker_value_counts"])
+    assert project_integrations_payload["blocker_value_family_count"] == len(project_integrations_payload["blocker_value_families"])
+    assert project_integrations_payload["blocker_value_families"] == [item["family"] for item in family_list if item["blockers"]]
     assert project_integrations_payload["recommended_fix_count"] == len(project_integrations_payload["recommended_fixes"])
     assert project_integrations_payload["recommended_fix_family_count"] == sum(1 for item in family_list if item["recommended_fixes"])
     assert project_integrations_payload["recommended_fix_family_ids"] == [item["family"] for item in family_list if item["recommended_fixes"]]
@@ -874,6 +896,8 @@ def test_project_integrations_and_action_preview_flow(client, bridge_headers, mo
     assert project_integrations_payload["recommended_fix_value_counts"] == {key: len(value) for key, value in _group_list_family_ids("recommended_fixes").items()}
     assert project_integrations_payload["recommended_fix_value_family_ids"] == _group_list_family_ids("recommended_fixes")
     assert project_integrations_payload["recommended_fix_value_group_count"] == len(project_integrations_payload["recommended_fix_value_counts"])
+    assert project_integrations_payload["recommended_fix_value_family_count"] == len(project_integrations_payload["recommended_fix_value_families"])
+    assert project_integrations_payload["recommended_fix_value_families"] == [item["family"] for item in family_list if item["recommended_fixes"]]
     assert project_integrations_payload["note_count"] == len(project_integrations_payload["notes"])
     assert project_integrations_payload["note_family_count"] == sum(1 for item in family_list if item["notes"])
     assert project_integrations_payload["note_family_ids"] == [item["family"] for item in family_list if item["notes"]]
@@ -881,6 +905,8 @@ def test_project_integrations_and_action_preview_flow(client, bridge_headers, mo
     assert project_integrations_payload["note_value_counts"] == {key: len(value) for key, value in _group_list_family_ids("notes").items()}
     assert project_integrations_payload["note_value_family_ids"] == _group_list_family_ids("notes")
     assert project_integrations_payload["note_value_group_count"] == len(project_integrations_payload["note_value_counts"])
+    assert project_integrations_payload["note_value_family_count"] == len(project_integrations_payload["note_value_families"])
+    assert project_integrations_payload["note_value_families"] == [item["family"] for item in family_list if item["notes"]]
     assert families["source_control"]["status"] == "ready"
     assert families["containers"]["status"] == "ready"
     assert families["hosting_deploy"]["status"] == "ready"

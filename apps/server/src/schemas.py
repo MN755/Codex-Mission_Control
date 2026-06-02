@@ -3525,14 +3525,20 @@ class ProjectIntegrationsRead(BaseModel):
     status_counts: dict[str, int] = Field(default_factory=dict)
     status_family_ids: dict[str, list[str]] = Field(default_factory=dict)
     status_group_count: int = 0
+    status_family_count: int = 0
+    status_families: list[str] = Field(default_factory=list)
     connection_statuses: list[str] = Field(default_factory=list)
     connection_status_counts: dict[str, int] = Field(default_factory=dict)
     connection_status_family_ids: dict[str, list[str]] = Field(default_factory=dict)
     connection_status_group_count: int = 0
+    connection_status_family_count: int = 0
+    connection_status_families: list[str] = Field(default_factory=list)
     connection_sources: list[str] = Field(default_factory=list)
     connection_source_counts: dict[str, int] = Field(default_factory=dict)
     connection_source_family_ids: dict[str, list[str]] = Field(default_factory=dict)
     connection_source_group_count: int = 0
+    connection_source_family_count: int = 0
+    connection_source_families: list[str] = Field(default_factory=list)
     resolved_providers: list[str] = Field(default_factory=list)
     resolved_provider_counts: dict[str, int] = Field(default_factory=dict)
     resolved_provider_family_ids: dict[str, list[str]] = Field(default_factory=dict)
@@ -3543,22 +3549,32 @@ class ProjectIntegrationsRead(BaseModel):
     provider_resolution_state_counts: dict[str, int] = Field(default_factory=dict)
     provider_resolution_state_family_ids: dict[str, list[str]] = Field(default_factory=dict)
     provider_resolution_state_group_count: int = 0
+    provider_resolution_state_family_count: int = 0
+    provider_resolution_state_families: list[str] = Field(default_factory=list)
     provider_context_sources: list[str] = Field(default_factory=list)
     provider_context_source_counts: dict[str, int] = Field(default_factory=dict)
     provider_context_source_family_ids: dict[str, list[str]] = Field(default_factory=dict)
     provider_context_source_group_count: int = 0
+    provider_context_source_family_count: int = 0
+    provider_context_source_families: list[str] = Field(default_factory=list)
     provider_context_statuses: list[str] = Field(default_factory=list)
     provider_context_status_counts: dict[str, int] = Field(default_factory=dict)
     provider_context_status_family_ids: dict[str, list[str]] = Field(default_factory=dict)
     provider_context_status_group_count: int = 0
+    provider_context_status_family_count: int = 0
+    provider_context_status_families: list[str] = Field(default_factory=list)
     signal_sources: list[str] = Field(default_factory=list)
     signal_source_counts: dict[str, int] = Field(default_factory=dict)
     signal_source_family_ids: dict[str, list[str]] = Field(default_factory=dict)
     signal_source_group_count: int = 0
+    signal_source_family_count: int = 0
+    signal_source_families: list[str] = Field(default_factory=list)
     providers: list[str] = Field(default_factory=list)
     provider_counts: dict[str, int] = Field(default_factory=dict)
     provider_family_ids: dict[str, list[str]] = Field(default_factory=dict)
     provider_group_count: int = 0
+    provider_family_count: int = 0
+    provider_families: list[str] = Field(default_factory=list)
     provider_candidates: list[str] = Field(default_factory=list)
     provider_candidate_counts: dict[str, int] = Field(default_factory=dict)
     provider_candidate_family_ids: dict[str, list[str]] = Field(default_factory=dict)
@@ -4156,10 +4172,14 @@ class ProjectIntegrationsRead(BaseModel):
     artifact_type_counts: dict[str, int] = Field(default_factory=dict)
     artifact_type_family_ids: dict[str, list[str]] = Field(default_factory=dict)
     artifact_type_group_count: int = 0
+    artifact_type_family_count: int = 0
+    artifact_type_families: list[str] = Field(default_factory=list)
     safe_commands: list[str] = Field(default_factory=list)
     safe_command_value_counts: dict[str, int] = Field(default_factory=dict)
     safe_command_value_family_ids: dict[str, list[str]] = Field(default_factory=dict)
     safe_command_value_group_count: int = 0
+    safe_command_value_family_count: int = 0
+    safe_command_value_families: list[str] = Field(default_factory=list)
     blocker_count: int = 0
     blocker_family_count: int = 0
     blocker_family_ids: list[str] = Field(default_factory=list)
@@ -4167,6 +4187,8 @@ class ProjectIntegrationsRead(BaseModel):
     blocker_value_counts: dict[str, int] = Field(default_factory=dict)
     blocker_value_family_ids: dict[str, list[str]] = Field(default_factory=dict)
     blocker_value_group_count: int = 0
+    blocker_value_family_count: int = 0
+    blocker_value_families: list[str] = Field(default_factory=list)
     recommended_fix_count: int = 0
     recommended_fix_family_count: int = 0
     recommended_fix_family_ids: list[str] = Field(default_factory=list)
@@ -4174,6 +4196,8 @@ class ProjectIntegrationsRead(BaseModel):
     recommended_fix_value_counts: dict[str, int] = Field(default_factory=dict)
     recommended_fix_value_family_ids: dict[str, list[str]] = Field(default_factory=dict)
     recommended_fix_value_group_count: int = 0
+    recommended_fix_value_family_count: int = 0
+    recommended_fix_value_families: list[str] = Field(default_factory=list)
     note_count: int = 0
     note_family_count: int = 0
     note_family_ids: list[str] = Field(default_factory=list)
@@ -4181,6 +4205,8 @@ class ProjectIntegrationsRead(BaseModel):
     note_value_counts: dict[str, int] = Field(default_factory=dict)
     note_value_family_ids: dict[str, list[str]] = Field(default_factory=dict)
     note_value_group_count: int = 0
+    note_value_family_count: int = 0
+    note_value_families: list[str] = Field(default_factory=list)
     families: list[ProjectIntegrationFamilyRead] = Field(default_factory=list)
 
 

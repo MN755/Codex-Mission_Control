@@ -14117,6 +14117,9 @@ class MissionControlService:
         def _families_with_values(key: str) -> list[str]:
             return [str(item.get("family") or "") for item in families if item.get(key)]
 
+        def _families_with_scalar_value(key: str) -> list[str]:
+            return [str(item.get("family") or "") for item in families if item.get(key) not in (None, "")]
+
         def _group_count_map_family_ids(key: str) -> dict[str, list[str]]:
             grouped: dict[str, list[str]] = {}
             for item in families:
@@ -14235,14 +14238,20 @@ class MissionControlService:
             if count > 0
         }
         status_group_count = len(status_counts)
+        status_families = _families_with_scalar_value("status")
+        status_family_count = len(status_families)
         connection_status_family_ids = _group_scalar_family_ids("connection_status")
         connection_statuses = sorted(connection_status_family_ids)
         connection_status_counts = {name: len(ids) for name, ids in connection_status_family_ids.items()}
         connection_status_group_count = len(connection_status_counts)
+        connection_status_families = _families_with_scalar_value("connection_status")
+        connection_status_family_count = len(connection_status_families)
         connection_source_family_ids = _group_scalar_family_ids("connection_source")
         connection_sources = sorted(connection_source_family_ids)
         connection_source_counts = {name: len(ids) for name, ids in connection_source_family_ids.items()}
         connection_source_group_count = len(connection_source_counts)
+        connection_source_families = _families_with_scalar_value("connection_source")
+        connection_source_family_count = len(connection_source_families)
         resolved_provider_family_ids = _group_scalar_family_ids("resolved_provider")
         resolved_providers = sorted(resolved_provider_family_ids)
         resolved_provider_counts = {name: len(ids) for name, ids in resolved_provider_family_ids.items()}
@@ -14253,22 +14262,32 @@ class MissionControlService:
         provider_resolution_states = sorted(provider_resolution_state_family_ids)
         provider_resolution_state_counts = {name: len(ids) for name, ids in provider_resolution_state_family_ids.items()}
         provider_resolution_state_group_count = len(provider_resolution_state_counts)
+        provider_resolution_state_families = _families_with_scalar_value("provider_resolution_state")
+        provider_resolution_state_family_count = len(provider_resolution_state_families)
         provider_context_source_family_ids = _group_scalar_family_ids("provider_context_source")
         provider_context_sources = sorted(provider_context_source_family_ids)
         provider_context_source_counts = {name: len(ids) for name, ids in provider_context_source_family_ids.items()}
         provider_context_source_group_count = len(provider_context_source_counts)
+        provider_context_source_families = _families_with_scalar_value("provider_context_source")
+        provider_context_source_family_count = len(provider_context_source_families)
         provider_context_status_family_ids = _group_scalar_family_ids("provider_context_status")
         provider_context_statuses = sorted(provider_context_status_family_ids)
         provider_context_status_counts = {name: len(ids) for name, ids in provider_context_status_family_ids.items()}
         provider_context_status_group_count = len(provider_context_status_counts)
+        provider_context_status_families = _families_with_scalar_value("provider_context_status")
+        provider_context_status_family_count = len(provider_context_status_families)
         signal_source_family_ids = _group_list_family_ids("signal_sources")
         signal_sources = sorted(signal_source_family_ids)
         signal_source_counts = {name: len(ids) for name, ids in signal_source_family_ids.items()}
         signal_source_group_count = len(signal_source_counts)
+        signal_source_families = _families_with_values("signal_sources")
+        signal_source_family_count = len(signal_source_families)
         provider_family_ids = _group_list_family_ids("providers")
         providers = sorted(provider_family_ids)
         provider_counts = {name: len(ids) for name, ids in provider_family_ids.items()}
         provider_group_count = len(provider_counts)
+        provider_families = _families_with_values("providers")
+        provider_family_count = len(provider_families)
         provider_candidate_family_ids = _group_list_family_ids("provider_candidates")
         provider_candidates = sorted(provider_candidate_family_ids)
         provider_candidate_counts = {name: len(ids) for name, ids in provider_candidate_family_ids.items()}
@@ -14804,10 +14823,14 @@ class MissionControlService:
         artifact_types = sorted(artifact_type_family_ids)
         artifact_type_counts = _counts_from_grouped_family_ids(artifact_type_family_ids)
         artifact_type_group_count = len(artifact_type_counts)
+        artifact_type_families = artifact_family_ids
+        artifact_type_family_count = len(artifact_type_families)
         safe_commands = _merge_unique_strings("safe_commands")
         safe_command_value_family_ids = _group_list_family_ids("safe_commands")
         safe_command_value_counts = _counts_from_grouped_family_ids(safe_command_value_family_ids)
         safe_command_value_group_count = len(safe_command_value_counts)
+        safe_command_value_families = _families_with_values("safe_commands")
+        safe_command_value_family_count = len(safe_command_value_families)
         blocker_family_ids = _families_with_values("blockers")
         blocker_family_count = len(blocker_family_ids)
         blockers = _merge_unique_strings("blockers")
@@ -14815,6 +14838,8 @@ class MissionControlService:
         blocker_value_family_ids = _group_list_family_ids("blockers")
         blocker_value_counts = _counts_from_grouped_family_ids(blocker_value_family_ids)
         blocker_value_group_count = len(blocker_value_counts)
+        blocker_value_families = _families_with_values("blockers")
+        blocker_value_family_count = len(blocker_value_families)
         recommended_fix_family_ids = _families_with_values("recommended_fixes")
         recommended_fix_family_count = len(recommended_fix_family_ids)
         recommended_fixes = _merge_unique_strings("recommended_fixes")
@@ -14822,6 +14847,8 @@ class MissionControlService:
         recommended_fix_value_family_ids = _group_list_family_ids("recommended_fixes")
         recommended_fix_value_counts = _counts_from_grouped_family_ids(recommended_fix_value_family_ids)
         recommended_fix_value_group_count = len(recommended_fix_value_counts)
+        recommended_fix_value_families = _families_with_values("recommended_fixes")
+        recommended_fix_value_family_count = len(recommended_fix_value_families)
         note_family_ids = _families_with_values("notes")
         note_family_count = len(note_family_ids)
         notes = _merge_unique_strings("notes")
@@ -14829,6 +14856,8 @@ class MissionControlService:
         note_value_family_ids = _group_list_family_ids("notes")
         note_value_counts = _counts_from_grouped_family_ids(note_value_family_ids)
         note_value_group_count = len(note_value_counts)
+        note_value_families = _families_with_values("notes")
+        note_value_family_count = len(note_value_families)
         return {
             "project_id": project.id,
             "project_name": project.name,
@@ -14840,14 +14869,20 @@ class MissionControlService:
             "status_counts": status_counts,
             "status_family_ids": family_ids_by_status,
             "status_group_count": status_group_count,
+            "status_family_count": status_family_count,
+            "status_families": status_families,
             "connection_statuses": connection_statuses,
             "connection_status_counts": connection_status_counts,
             "connection_status_family_ids": connection_status_family_ids,
             "connection_status_group_count": connection_status_group_count,
+            "connection_status_family_count": connection_status_family_count,
+            "connection_status_families": connection_status_families,
             "connection_sources": connection_sources,
             "connection_source_counts": connection_source_counts,
             "connection_source_family_ids": connection_source_family_ids,
             "connection_source_group_count": connection_source_group_count,
+            "connection_source_family_count": connection_source_family_count,
+            "connection_source_families": connection_source_families,
             "resolved_providers": resolved_providers,
             "resolved_provider_counts": resolved_provider_counts,
             "resolved_provider_family_ids": resolved_provider_family_ids,
@@ -14858,22 +14893,32 @@ class MissionControlService:
             "provider_resolution_state_counts": provider_resolution_state_counts,
             "provider_resolution_state_family_ids": provider_resolution_state_family_ids,
             "provider_resolution_state_group_count": provider_resolution_state_group_count,
+            "provider_resolution_state_family_count": provider_resolution_state_family_count,
+            "provider_resolution_state_families": provider_resolution_state_families,
             "provider_context_sources": provider_context_sources,
             "provider_context_source_counts": provider_context_source_counts,
             "provider_context_source_family_ids": provider_context_source_family_ids,
             "provider_context_source_group_count": provider_context_source_group_count,
+            "provider_context_source_family_count": provider_context_source_family_count,
+            "provider_context_source_families": provider_context_source_families,
             "provider_context_statuses": provider_context_statuses,
             "provider_context_status_counts": provider_context_status_counts,
             "provider_context_status_family_ids": provider_context_status_family_ids,
             "provider_context_status_group_count": provider_context_status_group_count,
+            "provider_context_status_family_count": provider_context_status_family_count,
+            "provider_context_status_families": provider_context_status_families,
             "signal_sources": signal_sources,
             "signal_source_counts": signal_source_counts,
             "signal_source_family_ids": signal_source_family_ids,
             "signal_source_group_count": signal_source_group_count,
+            "signal_source_family_count": signal_source_family_count,
+            "signal_source_families": signal_source_families,
             "providers": providers,
             "provider_counts": provider_counts,
             "provider_family_ids": provider_family_ids,
             "provider_group_count": provider_group_count,
+            "provider_family_count": provider_family_count,
+            "provider_families": provider_families,
             "provider_candidates": provider_candidates,
             "provider_candidate_counts": provider_candidate_counts,
             "provider_candidate_family_ids": provider_candidate_family_ids,
@@ -15440,10 +15485,14 @@ class MissionControlService:
             "artifact_type_counts": artifact_type_counts,
             "artifact_type_family_ids": artifact_type_family_ids,
             "artifact_type_group_count": artifact_type_group_count,
+            "artifact_type_family_count": artifact_type_family_count,
+            "artifact_type_families": artifact_type_families,
             "safe_commands": safe_commands,
             "safe_command_value_counts": safe_command_value_counts,
             "safe_command_value_family_ids": safe_command_value_family_ids,
             "safe_command_value_group_count": safe_command_value_group_count,
+            "safe_command_value_family_count": safe_command_value_family_count,
+            "safe_command_value_families": safe_command_value_families,
             "blocker_count": blocker_count,
             "blocker_family_count": blocker_family_count,
             "blocker_family_ids": blocker_family_ids,
@@ -15451,6 +15500,8 @@ class MissionControlService:
             "blocker_value_counts": blocker_value_counts,
             "blocker_value_family_ids": blocker_value_family_ids,
             "blocker_value_group_count": blocker_value_group_count,
+            "blocker_value_family_count": blocker_value_family_count,
+            "blocker_value_families": blocker_value_families,
             "recommended_fix_count": recommended_fix_count,
             "recommended_fix_family_count": recommended_fix_family_count,
             "recommended_fix_family_ids": recommended_fix_family_ids,
@@ -15458,6 +15509,8 @@ class MissionControlService:
             "recommended_fix_value_counts": recommended_fix_value_counts,
             "recommended_fix_value_family_ids": recommended_fix_value_family_ids,
             "recommended_fix_value_group_count": recommended_fix_value_group_count,
+            "recommended_fix_value_family_count": recommended_fix_value_family_count,
+            "recommended_fix_value_families": recommended_fix_value_families,
             "note_count": note_count,
             "note_family_count": note_family_count,
             "note_family_ids": note_family_ids,
@@ -15465,6 +15518,8 @@ class MissionControlService:
             "note_value_counts": note_value_counts,
             "note_value_family_ids": note_value_family_ids,
             "note_value_group_count": note_value_group_count,
+            "note_value_family_count": note_value_family_count,
+            "note_value_families": note_value_families,
             "families": families,
         }
         return result
