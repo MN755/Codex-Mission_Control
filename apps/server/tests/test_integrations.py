@@ -188,22 +188,32 @@ def test_project_integrations_and_action_preview_flow(client, bridge_headers, mo
     assert project_integrations_payload["provider_candidate_counts"] == expected_provider_candidate_counts
     assert project_integrations_payload["provider_candidate_family_ids"] == expected_provider_candidate_family_ids
     assert project_integrations_payload["provider_candidate_group_count"] == len(expected_provider_candidate_counts)
+    assert project_integrations_payload["provider_candidate_family_count"] == sum(1 for item in family_list if item["provider_candidates"])
+    assert project_integrations_payload["provider_candidate_families"] == [item["family"] for item in family_list if item["provider_candidates"]]
     assert project_integrations_payload["cli_detected"] == sorted(expected_cli_detected_counts)
     assert project_integrations_payload["cli_detected_counts"] == expected_cli_detected_counts
     assert project_integrations_payload["cli_detected_family_ids"] == expected_cli_detected_family_ids
     assert project_integrations_payload["cli_detected_group_count"] == len(expected_cli_detected_counts)
+    assert project_integrations_payload["cli_detected_family_count"] == sum(1 for item in family_list if item["cli_detected"])
+    assert project_integrations_payload["cli_detected_families"] == [item["family"] for item in family_list if item["cli_detected"]]
     assert project_integrations_payload["resolved_cli_detected"] == sorted(expected_resolved_cli_detected_counts)
     assert project_integrations_payload["resolved_cli_detected_counts"] == expected_resolved_cli_detected_counts
     assert project_integrations_payload["resolved_cli_detected_family_ids"] == expected_resolved_cli_detected_family_ids
     assert project_integrations_payload["resolved_cli_detected_group_count"] == len(expected_resolved_cli_detected_counts)
+    assert project_integrations_payload["resolved_cli_detected_family_count"] == sum(1 for item in family_list if item["resolved_cli_detected"])
+    assert project_integrations_payload["resolved_cli_detected_families"] == [item["family"] for item in family_list if item["resolved_cli_detected"]]
     assert project_integrations_payload["workspace_config_files"] == sorted(expected_workspace_config_file_counts)
     assert project_integrations_payload["workspace_config_file_counts"] == expected_workspace_config_file_counts
     assert project_integrations_payload["workspace_config_file_family_ids"] == expected_workspace_config_file_family_ids
     assert project_integrations_payload["workspace_config_file_group_count"] == len(expected_workspace_config_file_counts)
+    assert project_integrations_payload["workspace_config_file_family_count"] == sum(1 for item in family_list if item["workspace_config_files"])
+    assert project_integrations_payload["workspace_config_file_families"] == [item["family"] for item in family_list if item["workspace_config_files"]]
     assert project_integrations_payload["workspace_token_hits"] == sorted(expected_workspace_token_hit_counts)
     assert project_integrations_payload["workspace_token_hit_counts"] == expected_workspace_token_hit_counts
     assert project_integrations_payload["workspace_token_hit_family_ids"] == expected_workspace_token_hit_family_ids
     assert project_integrations_payload["workspace_token_hit_group_count"] == len(expected_workspace_token_hit_counts)
+    assert project_integrations_payload["workspace_token_hit_family_count"] == sum(1 for item in family_list if item["workspace_token_hits"])
+    assert project_integrations_payload["workspace_token_hit_families"] == [item["family"] for item in family_list if item["workspace_token_hits"]]
     assert project_integrations_payload["ready_family_ids"] == [item["family"] for item in family_list if item["status"] == "ready"]
     assert project_integrations_payload["partial_family_ids"] == [item["family"] for item in family_list if item["status"] == "partial"]
     assert project_integrations_payload["needs_setup_family_ids"] == [item["family"] for item in family_list if item["status"] == "needs_setup"]

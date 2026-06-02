@@ -14129,22 +14129,32 @@ class MissionControlService:
         provider_candidates = sorted(provider_candidate_family_ids)
         provider_candidate_counts = {name: len(ids) for name, ids in provider_candidate_family_ids.items()}
         provider_candidate_group_count = len(provider_candidate_counts)
+        provider_candidate_families = [str(item.get("family") or "") for item in families if item.get("provider_candidates")]
+        provider_candidate_family_count = len(provider_candidate_families)
         cli_detected_family_ids = _group_list_family_ids("cli_detected")
         cli_detected = sorted(cli_detected_family_ids)
         cli_detected_counts = {name: len(ids) for name, ids in cli_detected_family_ids.items()}
         cli_detected_group_count = len(cli_detected_counts)
+        cli_detected_families = [str(item.get("family") or "") for item in families if item.get("cli_detected")]
+        cli_detected_family_count = len(cli_detected_families)
         resolved_cli_detected_family_ids = _group_list_family_ids("resolved_cli_detected")
         resolved_cli_detected = sorted(resolved_cli_detected_family_ids)
         resolved_cli_detected_counts = {name: len(ids) for name, ids in resolved_cli_detected_family_ids.items()}
         resolved_cli_detected_group_count = len(resolved_cli_detected_counts)
+        resolved_cli_detected_families = [str(item.get("family") or "") for item in families if item.get("resolved_cli_detected")]
+        resolved_cli_detected_family_count = len(resolved_cli_detected_families)
         workspace_config_file_family_ids = _group_list_family_ids("workspace_config_files")
         workspace_config_files = sorted(workspace_config_file_family_ids)
         workspace_config_file_counts = {name: len(ids) for name, ids in workspace_config_file_family_ids.items()}
         workspace_config_file_group_count = len(workspace_config_file_counts)
+        workspace_config_file_families = [str(item.get("family") or "") for item in families if item.get("workspace_config_files")]
+        workspace_config_file_family_count = len(workspace_config_file_families)
         workspace_token_hit_family_ids = _group_list_family_ids("workspace_token_hits")
         workspace_token_hits = sorted(workspace_token_hit_family_ids)
         workspace_token_hit_counts = {name: len(ids) for name, ids in workspace_token_hit_family_ids.items()}
         workspace_token_hit_group_count = len(workspace_token_hit_counts)
+        workspace_token_hit_families = [str(item.get("family") or "") for item in families if item.get("workspace_token_hits")]
+        workspace_token_hit_family_count = len(workspace_token_hit_families)
         ready_family_ids = [str(item.get("family") or "") for item in families if item.get("status") == "ready"]
         partial_family_ids = [str(item.get("family") or "") for item in families if item.get("status") == "partial"]
         needs_setup_family_ids = [str(item.get("family") or "") for item in families if item.get("status") == "needs_setup"]
@@ -14220,22 +14230,32 @@ class MissionControlService:
             "provider_candidate_counts": provider_candidate_counts,
             "provider_candidate_family_ids": provider_candidate_family_ids,
             "provider_candidate_group_count": provider_candidate_group_count,
+            "provider_candidate_family_count": provider_candidate_family_count,
+            "provider_candidate_families": provider_candidate_families,
             "cli_detected": cli_detected,
             "cli_detected_counts": cli_detected_counts,
             "cli_detected_family_ids": cli_detected_family_ids,
             "cli_detected_group_count": cli_detected_group_count,
+            "cli_detected_family_count": cli_detected_family_count,
+            "cli_detected_families": cli_detected_families,
             "resolved_cli_detected": resolved_cli_detected,
             "resolved_cli_detected_counts": resolved_cli_detected_counts,
             "resolved_cli_detected_family_ids": resolved_cli_detected_family_ids,
             "resolved_cli_detected_group_count": resolved_cli_detected_group_count,
+            "resolved_cli_detected_family_count": resolved_cli_detected_family_count,
+            "resolved_cli_detected_families": resolved_cli_detected_families,
             "workspace_config_files": workspace_config_files,
             "workspace_config_file_counts": workspace_config_file_counts,
             "workspace_config_file_family_ids": workspace_config_file_family_ids,
             "workspace_config_file_group_count": workspace_config_file_group_count,
+            "workspace_config_file_family_count": workspace_config_file_family_count,
+            "workspace_config_file_families": workspace_config_file_families,
             "workspace_token_hits": workspace_token_hits,
             "workspace_token_hit_counts": workspace_token_hit_counts,
             "workspace_token_hit_family_ids": workspace_token_hit_family_ids,
             "workspace_token_hit_group_count": workspace_token_hit_group_count,
+            "workspace_token_hit_family_count": workspace_token_hit_family_count,
+            "workspace_token_hit_families": workspace_token_hit_families,
             "ready_family_count": ready_count,
             "ready_family_ids": ready_family_ids,
             "partial_family_count": partial_count,
