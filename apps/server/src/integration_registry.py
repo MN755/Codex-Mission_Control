@@ -166,10 +166,29 @@ PROVIDER_TOKEN_MARKERS: dict[str, tuple[str, ...]] = {
     "cloudflare_pages": ("cloudflare pages", "wrangler",),
     "railway": ("railway",),
     "render": ("render",),
+    "figma": ("figma",),
+    "slack": ("slack",),
+    "discord": ("discord",),
+    "teams": ("teams", "microsoft teams"),
+    "notion": ("notion",),
+    "confluence": ("confluence",),
     "sentry": ("sentry", "sentry-cli"),
     "logrocket": ("logrocket",),
     "datadog": ("datadog", "datadog-ci"),
     "new_relic": ("new relic", "newrelic", "newrelic-cli"),
+    "launchdarkly": ("launchdarkly", "launch darkly"),
+    "statsig": ("statsig",),
+    "configcat": ("configcat", "config cat"),
+    "unleash": ("unleash",),
+    "posthog_feature_flags": ("posthog feature flags", "posthog flags", "posthog"),
+    "posthog": ("posthog",),
+    "amplitude": ("amplitude",),
+    "mixpanel": ("mixpanel",),
+    "plausible": ("plausible",),
+    "intercom": ("intercom",),
+    "zendesk": ("zendesk",),
+    "help_scout": ("help scout", "helpscout"),
+    "freshdesk": ("freshdesk",),
     "supabase": ("supabase",),
     "firebase": ("firebase",),
     "neon": ("neon",),
@@ -189,8 +208,16 @@ PROVIDER_TOKEN_MARKERS: dict[str, tuple[str, ...]] = {
     "codeql": ("codeql",),
     "chrome_devtools": ("chrome devtools", "devtools"),
     "cdp": ("chrome debug protocol", "chrome devtools protocol", "cdp"),
+    "lm_studio": ("lm studio", "lmstudio"),
+    "opengrok": ("opengrok",),
+    "paddle": ("paddle",),
+    "lemon_squeezy": ("lemon squeezy", "lemonsqueezy"),
+    "paypal_sandbox": ("paypal sandbox", "paypal"),
     "release_please": ("release please", "release-please"),
     "semantic_release": ("semantic-release", "semantic release"),
+    "clerk": ("clerk",),
+    "workos": ("workos", "work os"),
+    "okta": ("okta",),
     "postman": ("postman", "newman"),
     "insomnia": ("insomnia", "inso"),
     "bruno": ("bruno", "bru"),
@@ -200,6 +227,7 @@ PROVIDER_TOKEN_MARKERS: dict[str, tuple[str, ...]] = {
     "playwright": ("playwright",),
     "cypress": ("cypress",),
     "changesets": ("changesets", ".changeset",),
+    "launchnotes": ("launchnotes", "launch notes"),
 }
 
 PROVIDER_ACTION_GUIDANCE: dict[str, dict[str, str]] = {
@@ -227,9 +255,113 @@ PROVIDER_ACTION_GUIDANCE: dict[str, dict[str, str]] = {
     "render": {
         "deploy": "Render deploys support the official Render CLI, but you still need a concrete service identifier before Mission Control should attempt to trigger anything.",
     },
+    "figma": {
+        "inspect": "Figma is intentionally a guided remote lane here. Use the host-integrated Figma plugin or API-backed design lane instead of pretending there is a local CLI.",
+        "sync": "Figma sync should route through the host-integrated or API-backed design lane rather than a fake local command.",
+    },
+    "slack": {
+        "search": "Slack review should route through a host-integrated or API-backed chat lane instead of an invented local CLI.",
+        "create": "Slack message creation should use a verified host or API-backed lane, not a fake local executable.",
+    },
+    "discord": {
+        "search": "Discord review should route through a host-integrated or API-backed chat lane instead of an invented local CLI.",
+        "create": "Discord message creation should use a verified host or API-backed lane, not a fake local executable.",
+    },
+    "teams": {
+        "search": "Microsoft Teams review should route through a host-integrated or API-backed chat lane instead of an invented local CLI.",
+        "create": "Microsoft Teams message creation should use a verified host or API-backed lane, not a fake local executable.",
+    },
+    "notion": {
+        "inspect": "Notion is intentionally a guided remote lane here. Use the host-integrated or API-backed documentation lane instead of pretending a local CLI exists.",
+        "sync": "Notion sync should route through a verified host or API-backed lane.",
+    },
+    "confluence": {
+        "inspect": "Confluence is intentionally a guided remote lane here. Use the host-integrated or API-backed documentation lane instead of pretending a local CLI exists.",
+        "sync": "Confluence sync should route through a verified host or API-backed lane.",
+    },
     "logrocket": {
         "inspect": "LogRocket is intentionally treated as a guided remote lane here. Mission Control should not pretend a local LogRocket CLI exists when the honest path is browser/API-backed.",
         "tail": "LogRocket session and telemetry review should route through a host-integrated or API-backed lane instead of a fake local CLI.",
+    },
+    "launchdarkly": {
+        "inspect": "LaunchDarkly should route through a verified host or API-backed feature-flag lane instead of a fake local CLI here.",
+        "sync": "LaunchDarkly sync should use a verified host or API-backed lane.",
+    },
+    "statsig": {
+        "inspect": "Statsig should route through a verified host or API-backed feature-flag lane instead of a fake local CLI here.",
+        "sync": "Statsig sync should use a verified host or API-backed lane.",
+    },
+    "configcat": {
+        "inspect": "ConfigCat should route through a verified host or API-backed feature-flag lane instead of a fake local CLI here.",
+        "sync": "ConfigCat sync should use a verified host or API-backed lane.",
+    },
+    "unleash": {
+        "inspect": "Unleash should route through a verified host or API-backed feature-flag lane instead of a fake local CLI here.",
+        "sync": "Unleash sync should use a verified host or API-backed lane.",
+    },
+    "posthog_feature_flags": {
+        "inspect": "PostHog feature flags should route through a verified host or API-backed flag lane instead of a fake local CLI here.",
+        "sync": "PostHog feature flag sync should use a verified host or API-backed lane.",
+    },
+    "posthog": {
+        "inspect": "PostHog analytics should route through a verified host or API-backed analytics lane instead of a fake local CLI here.",
+    },
+    "amplitude": {
+        "inspect": "Amplitude analytics should route through a verified host or API-backed analytics lane instead of a fake local CLI here.",
+    },
+    "mixpanel": {
+        "inspect": "Mixpanel analytics should route through a verified host or API-backed analytics lane instead of a fake local CLI here.",
+    },
+    "plausible": {
+        "inspect": "Plausible analytics should route through a verified host or API-backed analytics lane instead of a fake local CLI here.",
+    },
+    "intercom": {
+        "search": "Intercom ticket and knowledge review should route through a verified host or API-backed support lane.",
+        "create": "Intercom ticket creation should use a verified host or API-backed lane instead of a fake local CLI.",
+    },
+    "zendesk": {
+        "search": "Zendesk ticket and knowledge review should route through a verified host or API-backed support lane.",
+        "create": "Zendesk ticket creation should use a verified host or API-backed lane instead of a fake local CLI.",
+    },
+    "help_scout": {
+        "search": "Help Scout review should route through a verified host or API-backed support lane.",
+        "create": "Help Scout ticket creation should use a verified host or API-backed lane instead of a fake local CLI.",
+    },
+    "freshdesk": {
+        "search": "Freshdesk review should route through a verified host or API-backed support lane.",
+        "create": "Freshdesk ticket creation should use a verified host or API-backed lane instead of a fake local CLI.",
+    },
+    "lm_studio": {
+        "inspect": "LM Studio is intentionally treated as a guided local-runtime lane here. Use the host/runtime bridge instead of pretending a stable CLI contract exists.",
+        "open": "LM Studio open/refresh flows should use the host/runtime bridge rather than a fake local CLI.",
+    },
+    "opengrok": {
+        "search": "OpenGrok search should route through a verified host or API-backed search lane instead of a fake local CLI here.",
+    },
+    "paddle": {
+        "inspect": "Paddle sandbox inspection should route through a verified host or API-backed payment lane instead of a fake local CLI.",
+        "create": "Paddle test artifact creation should use a verified host or API-backed lane.",
+    },
+    "lemon_squeezy": {
+        "inspect": "Lemon Squeezy sandbox inspection should route through a verified host or API-backed payment lane instead of a fake local CLI.",
+        "create": "Lemon Squeezy test artifact creation should use a verified host or API-backed lane.",
+    },
+    "paypal_sandbox": {
+        "inspect": "PayPal sandbox inspection should route through a verified host or API-backed payment lane instead of a fake local CLI.",
+        "create": "PayPal sandbox test artifact creation should use a verified host or API-backed lane.",
+    },
+    "clerk": {
+        "inspect": "Clerk auth inspection should route through a verified host or API-backed auth lane instead of a fake local CLI.",
+    },
+    "workos": {
+        "inspect": "WorkOS auth inspection should route through a verified host or API-backed auth lane instead of a fake local CLI.",
+    },
+    "okta": {
+        "inspect": "Okta auth inspection should route through a verified host or API-backed auth lane instead of a fake local CLI.",
+    },
+    "launchnotes": {
+        "draft": "LaunchNotes drafting should route through a verified host or API-backed release lane instead of a fake local CLI.",
+        "create": "LaunchNotes release publishing should use a verified host or API-backed lane.",
     },
 }
 
@@ -489,9 +621,9 @@ FAMILIES: tuple[IntegrationFamilyDefinition, ...] = (
         summary="Team-chat and ChatOps integration lane.",
         category="communication",
         providers=("slack", "discord", "teams"),
-        host_tokens=("slack", "discord", "teams"),
+        host_tokens=("slack", "discord", "teams", "microsoft teams"),
         config_files=(),
-        workspace_tokens=("slack", "discord", "teams"),
+        workspace_tokens=("slack", "discord", "teams", "microsoft teams"),
         cli_candidates=(),
         legacy_account_keys=(),
         actions=COMMON_ACTIONS + (
@@ -662,9 +794,9 @@ FAMILIES: tuple[IntegrationFamilyDefinition, ...] = (
         summary="Local AI runtime discovery and routing lane.",
         category="ai",
         providers=("ollama", "lm_studio", "vllm"),
-        host_tokens=("ollama", "lm studio", "vllm"),
+        host_tokens=("ollama", "lm studio", "lmstudio", "vllm"),
         config_files=(),
-        workspace_tokens=("ollama", "lm studio", "vllm"),
+        workspace_tokens=("ollama", "lm studio", "lmstudio", "vllm"),
         cli_candidates=("ollama", "vllm"),
         legacy_account_keys=(),
         actions=COMMON_ACTIONS + (
@@ -725,9 +857,9 @@ FAMILIES: tuple[IntegrationFamilyDefinition, ...] = (
         summary="Payments and checkout-sandbox integration lane.",
         category="product",
         providers=("stripe", "paddle", "lemon_squeezy", "paypal_sandbox"),
-        host_tokens=("stripe", "paddle", "lemon", "paypal"),
+        host_tokens=("stripe", "paddle", "lemon", "lemon squeezy", "lemonsqueezy", "paypal", "paypal sandbox"),
         config_files=(),
-        workspace_tokens=("stripe", "paddle", "lemon", "paypal"),
+        workspace_tokens=("stripe", "paddle", "lemon", "lemon squeezy", "lemonsqueezy", "paypal", "paypal sandbox"),
         cli_candidates=("stripe",),
         legacy_account_keys=(),
         actions=COMMON_ACTIONS + (
@@ -802,9 +934,9 @@ FAMILIES: tuple[IntegrationFamilyDefinition, ...] = (
         summary="Support-desk and knowledge-base integration lane.",
         category="support",
         providers=("intercom", "zendesk", "help_scout", "freshdesk"),
-        host_tokens=("intercom", "zendesk", "help scout", "freshdesk"),
+        host_tokens=("intercom", "zendesk", "help scout", "helpscout", "freshdesk"),
         config_files=(),
-        workspace_tokens=("intercom", "zendesk", "help scout", "freshdesk"),
+        workspace_tokens=("intercom", "zendesk", "help scout", "helpscout", "freshdesk"),
         cli_candidates=(),
         legacy_account_keys=(),
         actions=COMMON_ACTIONS + (
@@ -818,9 +950,9 @@ FAMILIES: tuple[IntegrationFamilyDefinition, ...] = (
         summary="Release and changelog automation lane.",
         category="release",
         providers=("release_please", "changesets", "semantic_release", "github_releases", "launchnotes"),
-        host_tokens=("release please", "changesets", "semantic-release", "github releases", "launchnotes"),
+        host_tokens=("release please", "changesets", "semantic-release", "github releases", "launchnotes", "launch notes"),
         config_files=(".release-please-manifest.json", ".changeset", ".releaserc", "release.config.js"),
-        workspace_tokens=("release please", "changesets", "semantic-release", "launchnotes"),
+        workspace_tokens=("release please", "changesets", "semantic-release", "launchnotes", "launch notes"),
         cli_candidates=("gh", "changeset", "release-please", "semantic-release"),
         legacy_account_keys=(),
         actions=COMMON_ACTIONS + (

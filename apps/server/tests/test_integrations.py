@@ -1313,6 +1313,229 @@ def test_project_integrations_detect_datadog_and_newrelic_from_workspace_and_cli
     assert newrelic_status["resolved_cli_candidates"] == ["newrelic"]
 
 
+def test_guided_preview_surfaces_figma_and_chatops_guidance(monkeypatch) -> None:
+    monkeypatch.setattr("integration_registry.shutil.which", lambda _command: None)
+
+    figma_preview = preview_integration_action(
+        family_id="figma",
+        action_id="inspect",
+        params={},
+        registry_payload=normalize_integration_registry(
+            {"connections": {"figma": {"family": "figma", "status": "connected", "providers": ["figma"], "connection_source": "mission_control", "host_imported": False}}},
+            {},
+        ),
+        workspace_path=None,
+        project_name="Figma Demo",
+    )
+    slack_preview = preview_integration_action(
+        family_id="chatops",
+        action_id="create",
+        params={},
+        registry_payload=normalize_integration_registry(
+            {"connections": {"chatops": {"family": "chatops", "status": "connected", "providers": ["slack"], "connection_source": "mission_control", "host_imported": False}}},
+            {},
+        ),
+        workspace_path=None,
+        project_name="Slack Demo",
+    )
+
+    assert figma_preview["provider"] == "figma"
+    assert figma_preview["command"] is None
+    assert figma_preview["execution_mode"] == "guided_remote"
+    assert any("api-backed design lane" in note.lower() for note in figma_preview["notes"])
+    assert slack_preview["provider"] == "slack"
+    assert slack_preview["command"] is None
+    assert slack_preview["execution_mode"] == "guided_remote"
+    assert any("api-backed lane" in note.lower() for note in slack_preview["notes"])
+
+
+def test_guided_preview_surfaces_feature_flag_and_analytics_guidance(monkeypatch) -> None:
+    monkeypatch.setattr("integration_registry.shutil.which", lambda _command: None)
+
+    launchdarkly_preview = preview_integration_action(
+        family_id="feature_flags",
+        action_id="inspect",
+        params={},
+        registry_payload=normalize_integration_registry(
+            {"connections": {"feature_flags": {"family": "feature_flags", "status": "connected", "providers": ["launchdarkly"], "connection_source": "mission_control", "host_imported": False}}},
+            {},
+        ),
+        workspace_path=None,
+        project_name="LaunchDarkly Demo",
+    )
+    analytics_preview = preview_integration_action(
+        family_id="analytics",
+        action_id="inspect",
+        params={},
+        registry_payload=normalize_integration_registry(
+            {"connections": {"analytics": {"family": "analytics", "status": "connected", "providers": ["posthog"], "connection_source": "mission_control", "host_imported": False}}},
+            {},
+        ),
+        workspace_path=None,
+        project_name="PostHog Demo",
+    )
+
+    assert launchdarkly_preview["provider"] == "launchdarkly"
+    assert launchdarkly_preview["command"] is None
+    assert any("feature-flag lane" in note.lower() for note in launchdarkly_preview["notes"])
+    assert analytics_preview["provider"] == "posthog"
+    assert analytics_preview["command"] is None
+    assert any("analytics lane" in note.lower() for note in analytics_preview["notes"])
+
+
+def test_guided_preview_surfaces_support_auth_payment_release_and_runtime_guidance(monkeypatch) -> None:
+    monkeypatch.setattr("integration_registry.shutil.which", lambda _command: None)
+
+    intercom_preview = preview_integration_action(
+        family_id="support_desk",
+        action_id="search",
+        params={},
+        registry_payload=normalize_integration_registry(
+            {"connections": {"support_desk": {"family": "support_desk", "status": "connected", "providers": ["intercom"], "connection_source": "mission_control", "host_imported": False}}},
+            {},
+        ),
+        workspace_path=None,
+        project_name="Intercom Demo",
+    )
+    okta_preview = preview_integration_action(
+        family_id="auth_providers",
+        action_id="inspect",
+        params={},
+        registry_payload=normalize_integration_registry(
+            {"connections": {"auth_providers": {"family": "auth_providers", "status": "connected", "providers": ["okta"], "connection_source": "mission_control", "host_imported": False}}},
+            {},
+        ),
+        workspace_path=None,
+        project_name="Okta Demo",
+    )
+    paddle_preview = preview_integration_action(
+        family_id="payments",
+        action_id="inspect",
+        params={},
+        registry_payload=normalize_integration_registry(
+            {"connections": {"payments": {"family": "payments", "status": "connected", "providers": ["paddle"], "connection_source": "mission_control", "host_imported": False}}},
+            {},
+        ),
+        workspace_path=None,
+        project_name="Paddle Demo",
+    )
+    lmstudio_preview = preview_integration_action(
+        family_id="local_model_runtimes",
+        action_id="inspect",
+        params={},
+        registry_payload=normalize_integration_registry(
+            {"connections": {"local_model_runtimes": {"family": "local_model_runtimes", "status": "connected", "providers": ["lm_studio"], "connection_source": "mission_control", "host_imported": False}}},
+            {},
+        ),
+        workspace_path=None,
+        project_name="LM Studio Demo",
+    )
+    launchnotes_preview = preview_integration_action(
+        family_id="release_management",
+        action_id="draft",
+        params={},
+        registry_payload=normalize_integration_registry(
+            {"connections": {"release_management": {"family": "release_management", "status": "connected", "providers": ["launchnotes"], "connection_source": "mission_control", "host_imported": False}}},
+            {},
+        ),
+        workspace_path=None,
+        project_name="LaunchNotes Demo",
+    )
+
+    assert intercom_preview["provider"] == "intercom"
+    assert any("support lane" in note.lower() for note in intercom_preview["notes"])
+    assert okta_preview["provider"] == "okta"
+    assert any("auth lane" in note.lower() for note in okta_preview["notes"])
+    assert paddle_preview["provider"] == "paddle"
+    assert any("payment lane" in note.lower() for note in paddle_preview["notes"])
+    assert lmstudio_preview["provider"] == "lm_studio"
+    assert any("runtime bridge" in note.lower() for note in lmstudio_preview["notes"])
+    assert launchnotes_preview["provider"] == "launchnotes"
+    assert any("release lane" in note.lower() for note in launchnotes_preview["notes"])
+
+
+def test_workspace_token_aliases_detect_help_scout_lmstudio_and_launch_notes(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr("integration_registry.shutil.which", lambda _command: None)
+
+    help_workspace = tmp_path / "helpscout-repo"
+    help_workspace.mkdir(parents=True, exist_ok=True)
+    (help_workspace / "README.md").write_text("HelpScout handles our support inbox.\n", encoding="utf-8")
+
+    lm_workspace = tmp_path / "lmstudio-repo"
+    lm_workspace.mkdir(parents=True, exist_ok=True)
+    (lm_workspace / "README.md").write_text("LMStudio runs local checkpoints for demos.\n", encoding="utf-8")
+
+    launch_workspace = tmp_path / "launchnotes-repo"
+    launch_workspace.mkdir(parents=True, exist_ok=True)
+    (launch_workspace / "README.md").write_text("Launch Notes keeps external release comms consistent.\n", encoding="utf-8")
+
+    help_status = {
+        item["family"]: item
+        for item in build_project_integration_status(
+            workspace_path=str(help_workspace),
+            project_name="HelpScout Workspace Demo",
+            registry_payload=normalize_integration_registry({}, {}),
+        )
+    }["support_desk"]
+    lm_status = {
+        item["family"]: item
+        for item in build_project_integration_status(
+            workspace_path=str(lm_workspace),
+            project_name="LMStudio Workspace Demo",
+            registry_payload=normalize_integration_registry({}, {}),
+        )
+    }["local_model_runtimes"]
+    launch_status = {
+        item["family"]: item
+        for item in build_project_integration_status(
+            workspace_path=str(launch_workspace),
+            project_name="Launch Notes Workspace Demo",
+            registry_payload=normalize_integration_registry({}, {}),
+        )
+    }["release_management"]
+
+    assert help_status["resolved_provider"] == "help_scout"
+    assert help_status["status"] == "partial"
+    assert lm_status["resolved_provider"] == "lm_studio"
+    assert lm_status["status"] == "partial"
+    assert launch_status["resolved_provider"] == "launchnotes"
+    assert launch_status["status"] == "partial"
+
+
+def test_workspace_token_aliases_detect_teams_and_lemon_squeezy(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr("integration_registry.shutil.which", lambda _command: None)
+
+    teams_workspace = tmp_path / "teams-repo"
+    teams_workspace.mkdir(parents=True, exist_ok=True)
+    (teams_workspace / "README.md").write_text("Microsoft Teams carries internal launch comms.\n", encoding="utf-8")
+
+    lemon_workspace = tmp_path / "lemon-repo"
+    lemon_workspace.mkdir(parents=True, exist_ok=True)
+    (lemon_workspace / "README.md").write_text("LemonSqueezy handles test purchases for this app.\n", encoding="utf-8")
+
+    teams_status = {
+        item["family"]: item
+        for item in build_project_integration_status(
+            workspace_path=str(teams_workspace),
+            project_name="Teams Workspace Demo",
+            registry_payload=normalize_integration_registry({}, {}),
+        )
+    }["chatops"]
+    lemon_status = {
+        item["family"]: item
+        for item in build_project_integration_status(
+            workspace_path=str(lemon_workspace),
+            project_name="Lemon Workspace Demo",
+            registry_payload=normalize_integration_registry({}, {}),
+        )
+    }["payments"]
+
+    assert teams_status["resolved_provider"] == "teams"
+    assert teams_status["status"] == "partial"
+    assert lemon_status["resolved_provider"] == "lemon_squeezy"
+    assert lemon_status["status"] == "partial"
+
+
 def test_provider_specific_preview_supports_chrome_devtools_and_cdp_lanes(monkeypatch) -> None:
     monkeypatch.setattr(
         "integration_registry.shutil.which",
