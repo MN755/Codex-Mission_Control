@@ -154,7 +154,9 @@ PROVIDER_WORKSPACE_MARKERS: dict[str, tuple[str, ...]] = {
     "playwright": ("playwright.config.ts", "playwright.config.js"),
     "cypress": ("cypress.config.ts", "cypress.config.js"),
     "gitleaks": (".gitleaks.toml",),
+    "snyk": (".snyk",),
     "semgrep": (".semgrep",),
+    "trivy": ("trivy.yaml", "trivy.yml"),
     "codeql": (".github/codeql",),
     "openapi": ("openapi.yaml", "openapi.yml", "openapi.json"),
     "swagger": ("swagger.yaml", "swagger.yml"),
@@ -254,6 +256,9 @@ PROVIDER_TOKEN_MARKERS: dict[str, tuple[str, ...]] = {
     "playwright": ("playwright",),
     "cypress": ("cypress",),
     "gitleaks": ("gitleaks",),
+    "snyk": ("snyk",),
+    "semgrep": ("semgrep",),
+    "trivy": ("trivy",),
     "ollama": ("ollama",),
     "vllm": ("vllm",),
     "openapi": ("openapi",),
@@ -343,6 +348,18 @@ PROVIDER_ACTION_GUIDANCE: dict[str, dict[str, str]] = {
         "inspect": "GCP inspection uses live CLI auth and reflects the active project context rather than repo-local proof.",
         "open": "GCP context refresh uses the local CLI when available and still depends on live cloud auth state.",
     },
+    "snyk": {
+        "scan": "Snyk scans use the local CLI when available and reflect the current dependency graph and live policy configuration rather than repo hints alone.",
+    },
+    "semgrep": {
+        "scan": "Semgrep scans use the local CLI when available and reflect the current ruleset and repository contents rather than repo hints alone.",
+    },
+    "trivy": {
+        "scan": "Trivy scans use the local CLI when available and reflect the current artifact or repository contents rather than repo hints alone.",
+    },
+    "codeql": {
+        "scan": "CodeQL inspection uses the local CLI when available and reflects the current query-pack and workspace configuration rather than repo hints alone.",
+    },
     "auth0": {
         "inspect": "Auth0 inspection uses the local CLI when available, but it still represents live remote auth state, not a repo-only guarantee.",
     },
@@ -405,6 +422,20 @@ PROVIDER_ACTION_GUIDANCE: dict[str, dict[str, str]] = {
     "opengrok": {
         "search": "OpenGrok search should route through a verified host or API-backed search lane instead of a fake local CLI here.",
     },
+    "sourcegraph": {
+        "search": "Sourcegraph queries use the local CLI when available, but they still reflect live indexed search state rather than repo-local proof.",
+    },
+    "zoekt": {
+        "search": "Zoekt queries use the local CLI when available, but they still reflect live index state rather than repo-local proof.",
+    },
+    "openapi": {
+        "inspect": "OpenAPI inspection uses the local CLI when available and reflects the current spec file rather than repo hints alone.",
+        "validate": "OpenAPI validation uses the local CLI when available and checks the current spec file rather than repo hints alone.",
+    },
+    "swagger": {
+        "inspect": "Swagger inspection uses the local CLI when available and reflects the current spec file rather than repo hints alone.",
+        "validate": "Swagger validation uses the local CLI when available and checks the current spec file rather than repo hints alone.",
+    },
     "playwright": {
         "validate": "Playwright validation uses the local CLI when available and reflects the current browser-test workspace rather than a static repo hint.",
     },
@@ -417,6 +448,10 @@ PROVIDER_ACTION_GUIDANCE: dict[str, dict[str, str]] = {
     "ollama": {
         "inspect": "Ollama inspection uses the local runtime CLI when available and reflects live local model state rather than repo-local proof.",
         "open": "Ollama runtime startup uses the local CLI when available and still depends on live local runtime state.",
+    },
+    "vllm": {
+        "inspect": "vLLM inspection uses the local runtime CLI when available and reflects live local model-server state rather than repo-local proof.",
+        "open": "vLLM runtime startup uses the local CLI when available and still depends on live local runtime state.",
     },
     "paddle": {
         "inspect": "Paddle sandbox inspection should route through a verified host or API-backed payment lane instead of a fake local CLI.",
@@ -927,7 +962,7 @@ FAMILIES: tuple[IntegrationFamilyDefinition, ...] = (
         category="security",
         providers=("snyk", "semgrep", "codeql", "trivy", "gitleaks", "dependabot"),
         host_tokens=("snyk", "semgrep", "codeql", "trivy", "gitleaks", "dependabot"),
-        config_files=(".semgrep", ".github/codeql", ".gitleaks.toml", "trivy.yaml"),
+        config_files=(".semgrep", ".github/codeql", ".gitleaks.toml", "trivy.yaml", "trivy.yml", ".snyk"),
         workspace_tokens=("snyk", "semgrep", "codeql", "trivy", "gitleaks", "dependabot"),
         cli_candidates=("snyk", "semgrep", "codeql", "trivy", "gitleaks"),
         legacy_account_keys=(),

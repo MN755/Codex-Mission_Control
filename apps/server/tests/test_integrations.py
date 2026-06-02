@@ -2011,7 +2011,7 @@ def test_default_provider_guidance_surfaces_for_validation_and_search_lanes(monk
     )
 
     assert any("evaluates the current repo or runtime state" in note.lower() for note in postman_preview["notes"])
-    assert any("live provider state" in note.lower() for note in sourcegraph_preview["notes"])
+    assert any("live indexed search state" in note.lower() for note in sourcegraph_preview["notes"])
 
 
 def test_host_token_aliases_detect_new_relic_launch_darkly_work_os_and_github_releases(monkeypatch, tmp_path) -> None:
@@ -3782,3 +3782,193 @@ def test_project_integrations_detect_vllm_cli_metadata(monkeypatch, tmp_path) ->
     assert status["resolved_provider"] == "vllm"
     assert status["resolved_cli_candidates"] == ["vllm"]
     assert status["health"]["resolved_cli_detected"] == ["vllm"]
+
+
+def test_workspace_token_detection_resolves_scanner_providers_without_cli(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr("integration_registry.shutil.which", lambda _command: None)
+
+    snyk_workspace = tmp_path / "snyk-token-repo"
+    snyk_workspace.mkdir(parents=True, exist_ok=True)
+    (snyk_workspace / "README.md").write_text("Snyk scans dependencies before release.\n", encoding="utf-8")
+
+    semgrep_workspace = tmp_path / "semgrep-token-repo"
+    semgrep_workspace.mkdir(parents=True, exist_ok=True)
+    (semgrep_workspace / "README.md").write_text("Semgrep rules protect this repo.\n", encoding="utf-8")
+
+    trivy_workspace = tmp_path / "trivy-token-repo"
+    trivy_workspace.mkdir(parents=True, exist_ok=True)
+    (trivy_workspace / "README.md").write_text("Trivy scans container images here.\n", encoding="utf-8")
+
+    snyk_status = {
+        item["family"]: item
+        for item in build_project_integration_status(
+            workspace_path=str(snyk_workspace),
+            project_name="Snyk Token Demo",
+            registry_payload=normalize_integration_registry({}, {}),
+        )
+    }["security_scanners"]
+    semgrep_status = {
+        item["family"]: item
+        for item in build_project_integration_status(
+            workspace_path=str(semgrep_workspace),
+            project_name="Semgrep Token Demo",
+            registry_payload=normalize_integration_registry({}, {}),
+        )
+    }["security_scanners"]
+    trivy_status = {
+        item["family"]: item
+        for item in build_project_integration_status(
+            workspace_path=str(trivy_workspace),
+            project_name="Trivy Token Demo",
+            registry_payload=normalize_integration_registry({}, {}),
+        )
+    }["security_scanners"]
+
+    assert snyk_status["resolved_provider"] == "snyk"
+    assert snyk_status["status"] == "partial"
+    assert semgrep_status["resolved_provider"] == "semgrep"
+    assert semgrep_status["status"] == "partial"
+    assert trivy_status["resolved_provider"] == "trivy"
+    assert trivy_status["status"] == "partial"
+
+
+def test_workspace_config_detection_resolves_snyk_provider_without_cli(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr("integration_registry.shutil.which", lambda _command: None)
+
+    workspace = tmp_path / "snyk-config-repo"
+    workspace.mkdir(parents=True, exist_ok=True)
+    (workspace / ".snyk").write_text("version: v1.25.0\n", encoding="utf-8")
+
+    status = {
+        item["family"]: item
+        for item in build_project_integration_status(
+            workspace_path=str(workspace),
+            project_name="Snyk Config Demo",
+            registry_payload=normalize_integration_registry({}, {}),
+        )
+    }["security_scanners"]
+
+    assert status["resolved_provider"] == "snyk"
+    assert status["status"] == "partial"
+    assert ".snyk" in status["health"]["workspace_config_files"]
+
+
+def test_provider_specific_preview_surfaces_scanner_spec_search_and_vllm_guidance(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(
+        "integration_registry.shutil.which",
+        lambda command: f"C:/tools/{command}.exe"
+        if command in {"snyk", "semgrep", "trivy", "codeql", "swagger-cli", "src", "zoekt-query", "vllm"}
+        else None,
+    )
+
+    snyk_preview = preview_integration_action(
+        family_id="security_scanners",
+        action_id="scan",
+        params={},
+        registry_payload=normalize_integration_registry(
+            {"connections": {"security_scanners": {"family": "security_scanners", "status": "connected", "providers": ["snyk"], "connection_source": "mission_control", "host_imported": False}}},
+            {},
+        ),
+        workspace_path=None,
+        project_name="Snyk Guidance Demo",
+    )
+    semgrep_preview = preview_integration_action(
+        family_id="security_scanners",
+        action_id="scan",
+        params={},
+        registry_payload=normalize_integration_registry(
+            {"connections": {"security_scanners": {"family": "security_scanners", "status": "connected", "providers": ["semgrep"], "connection_source": "mission_control", "host_imported": False}}},
+            {},
+        ),
+        workspace_path=None,
+        project_name="Semgrep Guidance Demo",
+    )
+    trivy_preview = preview_integration_action(
+        family_id="security_scanners",
+        action_id="scan",
+        params={},
+        registry_payload=normalize_integration_registry(
+            {"connections": {"security_scanners": {"family": "security_scanners", "status": "connected", "providers": ["trivy"], "connection_source": "mission_control", "host_imported": False}}},
+            {},
+        ),
+        workspace_path=None,
+        project_name="Trivy Guidance Demo",
+    )
+    codeql_preview = preview_integration_action(
+        family_id="security_scanners",
+        action_id="scan",
+        params={},
+        registry_payload=normalize_integration_registry(
+            {"connections": {"security_scanners": {"family": "security_scanners", "status": "connected", "providers": ["codeql"], "connection_source": "mission_control", "host_imported": False}}},
+            {},
+        ),
+        workspace_path=None,
+        project_name="CodeQL Guidance Demo",
+    )
+
+    openapi_workspace = tmp_path / "openapi-guidance-repo"
+    openapi_workspace.mkdir(parents=True, exist_ok=True)
+    (openapi_workspace / "openapi.yaml").write_text("openapi: 3.1.0\n", encoding="utf-8")
+    swagger_workspace = tmp_path / "swagger-guidance-repo"
+    swagger_workspace.mkdir(parents=True, exist_ok=True)
+    (swagger_workspace / "swagger.yaml").write_text('swagger: "2.0"\n', encoding="utf-8")
+
+    openapi_preview = preview_integration_action(
+        family_id="openapi",
+        action_id="validate",
+        params={},
+        registry_payload=normalize_integration_registry({}, {}),
+        workspace_path=str(openapi_workspace),
+        project_name="OpenAPI Guidance Demo",
+    )
+    swagger_preview = preview_integration_action(
+        family_id="openapi",
+        action_id="validate",
+        params={},
+        registry_payload=normalize_integration_registry({}, {}),
+        workspace_path=str(swagger_workspace),
+        project_name="Swagger Guidance Demo",
+    )
+    sourcegraph_preview = preview_integration_action(
+        family_id="code_search",
+        action_id="search",
+        params={"query": "ManagerService"},
+        registry_payload=normalize_integration_registry(
+            {"connections": {"code_search": {"family": "code_search", "status": "connected", "providers": ["sourcegraph"], "connection_source": "mission_control", "host_imported": False}}},
+            {},
+        ),
+        workspace_path=None,
+        project_name="Sourcegraph Guidance Demo",
+    )
+    zoekt_preview = preview_integration_action(
+        family_id="code_search",
+        action_id="search",
+        params={"query": "ManagerService"},
+        registry_payload=normalize_integration_registry(
+            {"connections": {"code_search": {"family": "code_search", "status": "connected", "providers": ["zoekt"], "connection_source": "mission_control", "host_imported": False}}},
+            {},
+        ),
+        workspace_path=None,
+        project_name="Zoekt Guidance Demo",
+    )
+    vllm_preview = preview_integration_action(
+        family_id="local_model_runtimes",
+        action_id="inspect",
+        params={},
+        registry_payload=normalize_integration_registry(
+            {"connections": {"local_model_runtimes": {"family": "local_model_runtimes", "status": "connected", "providers": ["vllm"], "connection_source": "mission_control", "host_imported": False}}},
+            {},
+        ),
+        workspace_path=None,
+        project_name="vLLM Guidance Demo",
+    )
+
+    assert any("dependency graph" in note.lower() for note in snyk_preview["notes"])
+    assert any("ruleset" in note.lower() for note in semgrep_preview["notes"])
+    assert any("artifact or repository contents" in note.lower() for note in trivy_preview["notes"])
+    assert any("query-pack" in note.lower() for note in codeql_preview["notes"])
+    assert any("current spec file" in note.lower() for note in openapi_preview["notes"])
+    assert any("current spec file" in note.lower() for note in swagger_preview["notes"])
+    assert any("live indexed search state" in note.lower() for note in sourcegraph_preview["notes"])
+    assert any("live index state" in note.lower() for note in zoekt_preview["notes"])
+    assert any("local model-server state" in note.lower() for note in vllm_preview["notes"])
