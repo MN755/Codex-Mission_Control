@@ -130,6 +130,36 @@ def test_project_integrations_and_action_preview_flow(client, bridge_headers, mo
         family_ids = [item["family"] for item in family_list if provider_name in item["providers"]]
         expected_provider_counts[provider_name] = len(family_ids)
         expected_provider_family_ids[provider_name] = family_ids
+    expected_provider_candidate_counts = {}
+    expected_provider_candidate_family_ids = {}
+    for provider_name in sorted({provider for item in family_list for provider in item["provider_candidates"]}):
+        family_ids = [item["family"] for item in family_list if provider_name in item["provider_candidates"]]
+        expected_provider_candidate_counts[provider_name] = len(family_ids)
+        expected_provider_candidate_family_ids[provider_name] = family_ids
+    expected_cli_detected_counts = {}
+    expected_cli_detected_family_ids = {}
+    for cli_name in sorted({cli_name for item in family_list for cli_name in item["cli_detected"]}):
+        family_ids = [item["family"] for item in family_list if cli_name in item["cli_detected"]]
+        expected_cli_detected_counts[cli_name] = len(family_ids)
+        expected_cli_detected_family_ids[cli_name] = family_ids
+    expected_resolved_cli_detected_counts = {}
+    expected_resolved_cli_detected_family_ids = {}
+    for cli_name in sorted({cli_name for item in family_list for cli_name in item["resolved_cli_detected"]}):
+        family_ids = [item["family"] for item in family_list if cli_name in item["resolved_cli_detected"]]
+        expected_resolved_cli_detected_counts[cli_name] = len(family_ids)
+        expected_resolved_cli_detected_family_ids[cli_name] = family_ids
+    expected_workspace_config_file_counts = {}
+    expected_workspace_config_file_family_ids = {}
+    for config_path in sorted({config_path for item in family_list for config_path in item["workspace_config_files"]}):
+        family_ids = [item["family"] for item in family_list if config_path in item["workspace_config_files"]]
+        expected_workspace_config_file_counts[config_path] = len(family_ids)
+        expected_workspace_config_file_family_ids[config_path] = family_ids
+    expected_workspace_token_hit_counts = {}
+    expected_workspace_token_hit_family_ids = {}
+    for token_hit in sorted({token_hit for item in family_list for token_hit in item["workspace_token_hits"]}):
+        family_ids = [item["family"] for item in family_list if token_hit in item["workspace_token_hits"]]
+        expected_workspace_token_hit_counts[token_hit] = len(family_ids)
+        expected_workspace_token_hit_family_ids[token_hit] = family_ids
     assert project_integrations_payload["status_counts"] == expected_status_counts
     assert project_integrations_payload["status_family_ids"] == expected_status_family_ids
     assert project_integrations_payload["status_group_count"] == len(expected_status_counts)
@@ -148,6 +178,21 @@ def test_project_integrations_and_action_preview_flow(client, bridge_headers, mo
     assert project_integrations_payload["provider_counts"] == expected_provider_counts
     assert project_integrations_payload["provider_family_ids"] == expected_provider_family_ids
     assert project_integrations_payload["provider_group_count"] == len(expected_provider_counts)
+    assert project_integrations_payload["provider_candidate_counts"] == expected_provider_candidate_counts
+    assert project_integrations_payload["provider_candidate_family_ids"] == expected_provider_candidate_family_ids
+    assert project_integrations_payload["provider_candidate_group_count"] == len(expected_provider_candidate_counts)
+    assert project_integrations_payload["cli_detected_counts"] == expected_cli_detected_counts
+    assert project_integrations_payload["cli_detected_family_ids"] == expected_cli_detected_family_ids
+    assert project_integrations_payload["cli_detected_group_count"] == len(expected_cli_detected_counts)
+    assert project_integrations_payload["resolved_cli_detected_counts"] == expected_resolved_cli_detected_counts
+    assert project_integrations_payload["resolved_cli_detected_family_ids"] == expected_resolved_cli_detected_family_ids
+    assert project_integrations_payload["resolved_cli_detected_group_count"] == len(expected_resolved_cli_detected_counts)
+    assert project_integrations_payload["workspace_config_file_counts"] == expected_workspace_config_file_counts
+    assert project_integrations_payload["workspace_config_file_family_ids"] == expected_workspace_config_file_family_ids
+    assert project_integrations_payload["workspace_config_file_group_count"] == len(expected_workspace_config_file_counts)
+    assert project_integrations_payload["workspace_token_hit_counts"] == expected_workspace_token_hit_counts
+    assert project_integrations_payload["workspace_token_hit_family_ids"] == expected_workspace_token_hit_family_ids
+    assert project_integrations_payload["workspace_token_hit_group_count"] == len(expected_workspace_token_hit_counts)
     assert project_integrations_payload["ready_family_ids"] == [item["family"] for item in family_list if item["status"] == "ready"]
     assert project_integrations_payload["partial_family_ids"] == [item["family"] for item in family_list if item["status"] == "partial"]
     assert project_integrations_payload["needs_setup_family_ids"] == [item["family"] for item in family_list if item["status"] == "needs_setup"]

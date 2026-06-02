@@ -3539,6 +3539,21 @@ class ProjectIntegrationsRead(BaseModel):
     provider_counts: dict[str, int] = Field(default_factory=dict)
     provider_family_ids: dict[str, list[str]] = Field(default_factory=dict)
     provider_group_count: int = 0
+    provider_candidate_counts: dict[str, int] = Field(default_factory=dict)
+    provider_candidate_family_ids: dict[str, list[str]] = Field(default_factory=dict)
+    provider_candidate_group_count: int = 0
+    cli_detected_counts: dict[str, int] = Field(default_factory=dict)
+    cli_detected_family_ids: dict[str, list[str]] = Field(default_factory=dict)
+    cli_detected_group_count: int = 0
+    resolved_cli_detected_counts: dict[str, int] = Field(default_factory=dict)
+    resolved_cli_detected_family_ids: dict[str, list[str]] = Field(default_factory=dict)
+    resolved_cli_detected_group_count: int = 0
+    workspace_config_file_counts: dict[str, int] = Field(default_factory=dict)
+    workspace_config_file_family_ids: dict[str, list[str]] = Field(default_factory=dict)
+    workspace_config_file_group_count: int = 0
+    workspace_token_hit_counts: dict[str, int] = Field(default_factory=dict)
+    workspace_token_hit_family_ids: dict[str, list[str]] = Field(default_factory=dict)
+    workspace_token_hit_group_count: int = 0
     ready_family_count: int = 0
     ready_family_ids: list[str] = Field(default_factory=list)
     partial_family_count: int = 0
