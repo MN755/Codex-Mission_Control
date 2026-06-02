@@ -74,6 +74,9 @@ PROVIDER_CLIS: dict[str, tuple[str, ...]] = {
     "doppler": ("doppler",),
     "vault": ("vault",),
     "stripe": ("stripe",),
+    "onepassword": ("op",),
+    "aws_secrets_manager": ("aws",),
+    "gcp_secret_manager": ("gcloud",),
     "postman": ("newman",),
     "insomnia": ("inso",),
     "openapi": ("swagger-cli",),
@@ -144,6 +147,9 @@ PROVIDER_TOKEN_MARKERS: dict[str, tuple[str, ...]] = {
     "cloudflare_pages": ("cloudflare pages", "wrangler",),
     "railway": ("railway",),
     "render": ("render",),
+    "onepassword": ("1password", "op"),
+    "aws_secrets_manager": ("aws secrets manager", "aws secretsmanager"),
+    "gcp_secret_manager": ("gcp secret manager", "gcloud secrets", "google secret manager"),
     "storybook": ("storybook",),
     "npm": ("npm", "package.json"),
     "pypi": ("pypi", "twine", "pyproject", "setup.py"),
@@ -715,10 +721,10 @@ FAMILIES: tuple[IntegrationFamilyDefinition, ...] = (
         summary="Secret-management integration lane.",
         category="security",
         providers=("onepassword", "doppler", "vault", "aws_secrets_manager", "gcp_secret_manager"),
-        host_tokens=("1password", "doppler", "vault", "secret manager"),
+        host_tokens=("1password", "doppler", "vault", "secret manager", "aws secrets manager", "gcp secret manager", "google secret manager"),
         config_files=(),
-        workspace_tokens=("doppler", "vault", "secret manager"),
-        cli_candidates=("doppler", "vault"),
+        workspace_tokens=("1password", "doppler", "vault", "secret manager", "aws secrets manager", "gcp secret manager", "google secret manager"),
+        cli_candidates=("op", "doppler", "vault", "aws", "gcloud"),
         legacy_account_keys=(),
         actions=COMMON_ACTIONS + (
             _action("inspect", "Inspect secret lanes", "Inspect available secret-manager configuration.", risk_level="low", permission_policy="ask_once_per_project"),
@@ -1102,11 +1108,20 @@ def _provider_command_template(provider: str, action_id: str) -> str | None:
         "trivy": {
             "scan": "trivy fs --format json .",
         },
+        "onepassword": {
+            "inspect": "op vault list --format json",
+        },
         "doppler": {
             "inspect": "doppler configs",
         },
         "vault": {
             "inspect": "vault status -format=json",
+        },
+        "aws_secrets_manager": {
+            "inspect": "aws secretsmanager list-secrets --max-results 20 --output json",
+        },
+        "gcp_secret_manager": {
+            "inspect": "gcloud secrets list --format json",
         },
         "changesets": {
             "draft": "changeset status",

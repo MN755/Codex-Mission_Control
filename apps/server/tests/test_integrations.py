@@ -1625,6 +1625,151 @@ def test_provider_specific_preview_supports_vault_and_doppler_inspect_lanes(monk
     assert doppler_preview["command"] == "doppler configs"
 
 
+def test_provider_specific_preview_supports_onepassword_aws_and_gcp_secret_lanes(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "integration_registry.shutil.which",
+        lambda command: f"C:/tools/{command}.exe" if command in {"op", "aws", "gcloud"} else None,
+    )
+
+    onepassword_preview = preview_integration_action(
+        family_id="secrets",
+        action_id="inspect",
+        params={},
+        registry_payload=normalize_integration_registry(
+            {
+                "connections": {
+                    "secrets": {
+                        "family": "secrets",
+                        "status": "connected",
+                        "providers": ["onepassword"],
+                        "connection_source": "mission_control",
+                        "host_imported": False,
+                    }
+                }
+            },
+            {},
+        ),
+        workspace_path=None,
+        project_name="1Password Demo",
+    )
+    aws_preview = preview_integration_action(
+        family_id="secrets",
+        action_id="inspect",
+        params={},
+        registry_payload=normalize_integration_registry(
+            {
+                "connections": {
+                    "secrets": {
+                        "family": "secrets",
+                        "status": "connected",
+                        "providers": ["aws_secrets_manager"],
+                        "connection_source": "mission_control",
+                        "host_imported": False,
+                    }
+                }
+            },
+            {},
+        ),
+        workspace_path=None,
+        project_name="AWS Secrets Demo",
+    )
+    gcp_preview = preview_integration_action(
+        family_id="secrets",
+        action_id="inspect",
+        params={},
+        registry_payload=normalize_integration_registry(
+            {
+                "connections": {
+                    "secrets": {
+                        "family": "secrets",
+                        "status": "connected",
+                        "providers": ["gcp_secret_manager"],
+                        "connection_source": "mission_control",
+                        "host_imported": False,
+                    }
+                }
+            },
+            {},
+        ),
+        workspace_path=None,
+        project_name="GCP Secrets Demo",
+    )
+
+    assert onepassword_preview["provider"] == "onepassword"
+    assert onepassword_preview["command"] == "op vault list --format json"
+    assert onepassword_preview["command_ready"] is True
+    assert aws_preview["provider"] == "aws_secrets_manager"
+    assert aws_preview["command"] == "aws secretsmanager list-secrets --max-results 20 --output json"
+    assert aws_preview["command_ready"] is True
+    assert gcp_preview["provider"] == "gcp_secret_manager"
+    assert gcp_preview["command"] == "gcloud secrets list --format json"
+    assert gcp_preview["command_ready"] is True
+
+
+def test_project_integrations_detect_onepassword_from_workspace_tokens_and_cli(monkeypatch, tmp_path) -> None:
+    workspace = tmp_path / "onepassword-repo"
+    workspace.mkdir(parents=True, exist_ok=True)
+    (workspace / "README.md").write_text("This service uses 1Password for secret delivery.\n", encoding="utf-8")
+
+    monkeypatch.setattr(
+        "integration_registry.shutil.which",
+        lambda command: f"C:/tools/{command}.exe" if command == "op" else None,
+    )
+
+    status = {
+        item["family"]: item
+        for item in build_project_integration_status(
+            workspace_path=str(workspace),
+            project_name="1Password Workspace Demo",
+            registry_payload=normalize_integration_registry({}, {}),
+        )
+    }["secrets"]
+
+    assert status["resolved_provider"] == "onepassword"
+    assert status["status"] == "ready"
+    assert status["resolved_cli_candidates"] == ["op"]
+    assert status["local_action_count"] >= 1
+
+
+def test_project_integrations_detect_aws_and_gcp_secret_manager_from_workspace_tokens(monkeypatch, tmp_path) -> None:
+    aws_workspace = tmp_path / "aws-secrets-repo"
+    aws_workspace.mkdir(parents=True, exist_ok=True)
+    (aws_workspace / "README.md").write_text("This app uses AWS Secrets Manager for runtime secrets.\n", encoding="utf-8")
+
+    gcp_workspace = tmp_path / "gcp-secrets-repo"
+    gcp_workspace.mkdir(parents=True, exist_ok=True)
+    (gcp_workspace / "README.md").write_text("This app syncs keys through GCP Secret Manager.\n", encoding="utf-8")
+
+    monkeypatch.setattr(
+        "integration_registry.shutil.which",
+        lambda command: f"C:/tools/{command}.exe" if command in {"aws", "gcloud"} else None,
+    )
+
+    aws_status = {
+        item["family"]: item
+        for item in build_project_integration_status(
+            workspace_path=str(aws_workspace),
+            project_name="AWS Secrets Workspace Demo",
+            registry_payload=normalize_integration_registry({}, {}),
+        )
+    }["secrets"]
+    gcp_status = {
+        item["family"]: item
+        for item in build_project_integration_status(
+            workspace_path=str(gcp_workspace),
+            project_name="GCP Secrets Workspace Demo",
+            registry_payload=normalize_integration_registry({}, {}),
+        )
+    }["secrets"]
+
+    assert aws_status["resolved_provider"] == "aws_secrets_manager"
+    assert aws_status["status"] == "ready"
+    assert aws_status["resolved_cli_candidates"] == ["aws"]
+    assert gcp_status["resolved_provider"] == "gcp_secret_manager"
+    assert gcp_status["status"] == "ready"
+    assert gcp_status["resolved_cli_candidates"] == ["gcloud"]
+
+
 def test_provider_specific_preview_supports_stripe_create_lane(monkeypatch) -> None:
     registry = normalize_integration_registry(
         {
