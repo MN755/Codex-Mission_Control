@@ -3596,24 +3596,31 @@ class ProjectIntegrationsRead(BaseModel):
     available_action_count: int = 0
     available_action_refs: list[str] = Field(default_factory=list)
     local_action_count: int = 0
+    local_action_refs: list[str] = Field(default_factory=list)
     local_action_family_count: int = 0
     local_action_family_ids: list[str] = Field(default_factory=list)
     guided_action_count: int = 0
+    guided_action_refs: list[str] = Field(default_factory=list)
     guided_action_family_count: int = 0
     guided_action_family_ids: list[str] = Field(default_factory=list)
     registry_action_count: int = 0
+    registry_action_refs: list[str] = Field(default_factory=list)
     registry_action_family_count: int = 0
     registry_action_family_ids: list[str] = Field(default_factory=list)
     provider_specific_action_count: int = 0
+    provider_specific_action_refs: list[str] = Field(default_factory=list)
     provider_specific_action_family_count: int = 0
     provider_specific_action_family_ids: list[str] = Field(default_factory=list)
     guided_only_action_count: int = 0
+    guided_only_action_refs: list[str] = Field(default_factory=list)
     guided_only_action_family_count: int = 0
     guided_only_action_family_ids: list[str] = Field(default_factory=list)
     available_mutating_action_count: int = 0
+    available_mutating_action_refs: list[str] = Field(default_factory=list)
     available_mutating_action_family_count: int = 0
     available_mutating_action_family_ids: list[str] = Field(default_factory=list)
     available_non_mutating_action_count: int = 0
+    available_non_mutating_action_refs: list[str] = Field(default_factory=list)
     available_non_mutating_action_family_count: int = 0
     available_non_mutating_action_family_ids: list[str] = Field(default_factory=list)
     blocked_action_family_count: int = 0
@@ -3625,36 +3632,47 @@ class ProjectIntegrationsRead(BaseModel):
     execution_action_count: int = 0
     execution_action_refs: list[str] = Field(default_factory=list)
     local_execution_action_count: int = 0
+    local_execution_action_refs: list[str] = Field(default_factory=list)
     local_execution_action_family_count: int = 0
     local_execution_action_family_ids: list[str] = Field(default_factory=list)
     guided_execution_action_count: int = 0
+    guided_execution_action_refs: list[str] = Field(default_factory=list)
     guided_execution_action_family_count: int = 0
     guided_execution_action_family_ids: list[str] = Field(default_factory=list)
     provider_specific_execution_action_count: int = 0
+    provider_specific_execution_action_refs: list[str] = Field(default_factory=list)
     provider_specific_execution_action_family_count: int = 0
     provider_specific_execution_action_family_ids: list[str] = Field(default_factory=list)
     guided_only_execution_action_count: int = 0
+    guided_only_execution_action_refs: list[str] = Field(default_factory=list)
     guided_only_execution_action_family_count: int = 0
     guided_only_execution_action_family_ids: list[str] = Field(default_factory=list)
     mutating_execution_action_count: int = 0
+    mutating_execution_action_refs: list[str] = Field(default_factory=list)
     mutating_execution_action_family_count: int = 0
     mutating_execution_action_family_ids: list[str] = Field(default_factory=list)
     non_mutating_execution_action_count: int = 0
+    non_mutating_execution_action_refs: list[str] = Field(default_factory=list)
     non_mutating_execution_action_family_count: int = 0
     non_mutating_execution_action_family_ids: list[str] = Field(default_factory=list)
     confirmation_required_execution_action_count: int = 0
+    confirmation_required_execution_action_refs: list[str] = Field(default_factory=list)
     confirmation_required_execution_action_family_count: int = 0
     confirmation_required_execution_action_family_ids: list[str] = Field(default_factory=list)
     preview_supported_execution_action_count: int = 0
+    preview_supported_execution_action_refs: list[str] = Field(default_factory=list)
     preview_supported_execution_action_family_count: int = 0
     preview_supported_execution_action_family_ids: list[str] = Field(default_factory=list)
     context_available_execution_action_count: int = 0
+    context_available_execution_action_refs: list[str] = Field(default_factory=list)
     context_available_execution_action_family_count: int = 0
     context_available_execution_action_family_ids: list[str] = Field(default_factory=list)
     provider_guidance_action_count: int = 0
+    provider_guidance_action_refs: list[str] = Field(default_factory=list)
     provider_guidance_action_family_count: int = 0
     provider_guidance_action_family_ids: list[str] = Field(default_factory=list)
     commandful_execution_action_count: int = 0
+    commandful_execution_action_refs: list[str] = Field(default_factory=list)
     commandful_execution_action_family_count: int = 0
     commandful_execution_action_family_ids: list[str] = Field(default_factory=list)
     blocked_execution_action_family_count: int = 0
@@ -3662,15 +3680,19 @@ class ProjectIntegrationsRead(BaseModel):
     blocked_execution_action_count: int = 0
     blocked_execution_action_refs: list[str] = Field(default_factory=list)
     blocked_local_execution_action_count: int = 0
+    blocked_local_execution_action_refs: list[str] = Field(default_factory=list)
     blocked_local_execution_action_family_count: int = 0
     blocked_local_execution_action_family_ids: list[str] = Field(default_factory=list)
     blocked_guided_execution_action_count: int = 0
+    blocked_guided_execution_action_refs: list[str] = Field(default_factory=list)
     blocked_guided_execution_action_family_count: int = 0
     blocked_guided_execution_action_family_ids: list[str] = Field(default_factory=list)
     blocked_provider_specific_execution_action_count: int = 0
+    blocked_provider_specific_execution_action_refs: list[str] = Field(default_factory=list)
     blocked_provider_specific_execution_action_family_count: int = 0
     blocked_provider_specific_execution_action_family_ids: list[str] = Field(default_factory=list)
     blocked_guided_only_execution_action_count: int = 0
+    blocked_guided_only_execution_action_refs: list[str] = Field(default_factory=list)
     blocked_guided_only_execution_action_family_count: int = 0
     blocked_guided_only_execution_action_family_ids: list[str] = Field(default_factory=list)
     safe_command_family_count: int = 0
@@ -3686,9 +3708,11 @@ class ProjectIntegrationsRead(BaseModel):
     verification_blocked_action_count: int = 0
     verification_blocked_action_refs: list[str] = Field(default_factory=list)
     verification_blocked_guided_action_count: int = 0
+    verification_blocked_guided_action_refs: list[str] = Field(default_factory=list)
     verification_blocked_guided_action_family_count: int = 0
     verification_blocked_guided_action_family_ids: list[str] = Field(default_factory=list)
     verification_blocked_local_action_count: int = 0
+    verification_blocked_local_action_refs: list[str] = Field(default_factory=list)
     verification_blocked_local_action_family_count: int = 0
     verification_blocked_local_action_family_ids: list[str] = Field(default_factory=list)
     context_blocked_family_count: int = 0
@@ -3696,33 +3720,43 @@ class ProjectIntegrationsRead(BaseModel):
     context_blocked_action_count: int = 0
     context_blocked_action_refs: list[str] = Field(default_factory=list)
     multi_blocked_action_count: int = 0
+    multi_blocked_action_refs: list[str] = Field(default_factory=list)
     multi_blocked_action_family_count: int = 0
     multi_blocked_action_family_ids: list[str] = Field(default_factory=list)
     defaulted_param_action_count: int = 0
+    defaulted_param_action_refs: list[str] = Field(default_factory=list)
     defaulted_param_action_family_count: int = 0
     defaulted_param_action_family_ids: list[str] = Field(default_factory=list)
     missing_params_action_count: int = 0
+    missing_params_action_refs: list[str] = Field(default_factory=list)
     missing_params_action_family_count: int = 0
     missing_params_action_family_ids: list[str] = Field(default_factory=list)
     missing_executable_action_count: int = 0
+    missing_executable_action_refs: list[str] = Field(default_factory=list)
     missing_executable_action_family_count: int = 0
     missing_executable_action_family_ids: list[str] = Field(default_factory=list)
     no_local_command_action_count: int = 0
+    no_local_command_action_refs: list[str] = Field(default_factory=list)
     no_local_command_action_family_count: int = 0
     no_local_command_action_family_ids: list[str] = Field(default_factory=list)
     provider_context_blocked_action_count: int = 0
+    provider_context_blocked_action_refs: list[str] = Field(default_factory=list)
     provider_context_blocked_action_family_count: int = 0
     provider_context_blocked_action_family_ids: list[str] = Field(default_factory=list)
     provider_context_verified_action_count: int = 0
+    provider_context_verified_action_refs: list[str] = Field(default_factory=list)
     provider_context_verified_action_family_count: int = 0
     provider_context_verified_action_family_ids: list[str] = Field(default_factory=list)
     provider_context_inferred_action_count: int = 0
+    provider_context_inferred_action_refs: list[str] = Field(default_factory=list)
     provider_context_inferred_action_family_count: int = 0
     provider_context_inferred_action_family_ids: list[str] = Field(default_factory=list)
     provider_context_missing_action_count: int = 0
+    provider_context_missing_action_refs: list[str] = Field(default_factory=list)
     provider_context_missing_action_family_count: int = 0
     provider_context_missing_action_family_ids: list[str] = Field(default_factory=list)
     commandless_execution_action_count: int = 0
+    commandless_execution_action_refs: list[str] = Field(default_factory=list)
     commandless_execution_action_family_count: int = 0
     commandless_execution_action_family_ids: list[str] = Field(default_factory=list)
     preflight_ready_action_count: int = 0

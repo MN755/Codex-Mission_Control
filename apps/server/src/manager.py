@@ -14383,13 +14383,47 @@ class MissionControlService:
         provider_context_missing_action_count = _sum_int_field("provider_context_missing_action_count")
         commandless_execution_action_count = _sum_int_field("commandless_execution_action_count")
         available_action_refs = _collect_action_refs("available_action_ids")
+        local_action_refs = _collect_action_refs("local_action_ids")
+        guided_action_refs = _collect_action_refs("guided_action_ids")
+        registry_action_refs = _collect_action_refs("registry_action_ids")
+        provider_specific_action_refs = _collect_action_refs("provider_specific_action_ids")
+        guided_only_action_refs = _collect_action_refs("guided_only_action_ids")
+        available_mutating_action_refs = _collect_action_refs("available_mutating_action_ids")
+        available_non_mutating_action_refs = _collect_action_refs("available_non_mutating_action_ids")
         blocked_action_refs = _collect_action_refs("blocked_action_ids")
         execution_action_refs = _collect_action_refs("execution_action_ids")
+        local_execution_action_refs = _collect_action_refs("local_execution_action_ids")
+        guided_execution_action_refs = _collect_action_refs("guided_execution_action_ids")
+        provider_specific_execution_action_refs = _collect_action_refs("provider_specific_execution_action_ids")
+        guided_only_execution_action_refs = _collect_action_refs("guided_only_execution_action_ids")
+        mutating_execution_action_refs = _collect_action_refs("mutating_execution_action_ids")
+        non_mutating_execution_action_refs = _collect_action_refs("non_mutating_execution_action_ids")
+        confirmation_required_execution_action_refs = _collect_action_refs("confirmation_required_execution_action_ids")
+        preview_supported_execution_action_refs = _collect_action_refs("preview_supported_execution_action_ids")
+        context_available_execution_action_refs = _collect_action_refs("context_available_execution_action_ids")
+        provider_guidance_action_refs = _collect_action_refs("provider_guidance_action_ids")
+        commandful_execution_action_refs = _collect_action_refs("commandful_execution_action_ids")
         blocked_execution_action_refs = _collect_action_refs("blocked_execution_action_ids")
+        blocked_local_execution_action_refs = _collect_action_refs("blocked_local_execution_action_ids")
+        blocked_guided_execution_action_refs = _collect_action_refs("blocked_guided_execution_action_ids")
+        blocked_provider_specific_execution_action_refs = _collect_action_refs("blocked_provider_specific_execution_action_ids")
+        blocked_guided_only_execution_action_refs = _collect_action_refs("blocked_guided_only_execution_action_ids")
         safe_command_action_refs = _collect_action_refs("safe_command_action_ids")
         available_provider_lane_action_refs = _collect_action_refs("available_provider_lane_action_ids")
         verification_blocked_action_refs = _collect_action_refs("verification_blocked_action_ids")
+        verification_blocked_guided_action_refs = _collect_action_refs("verification_blocked_guided_action_ids")
+        verification_blocked_local_action_refs = _collect_action_refs("verification_blocked_local_action_ids")
         context_blocked_action_refs = _collect_action_refs("context_blocked_action_ids")
+        multi_blocked_action_refs = _collect_action_refs("multi_blocked_action_ids")
+        defaulted_param_action_refs = _collect_action_refs("defaulted_param_action_ids")
+        missing_params_action_refs = _collect_action_refs("missing_params_action_ids")
+        missing_executable_action_refs = _collect_action_refs("missing_executable_action_ids")
+        no_local_command_action_refs = _collect_action_refs("no_local_command_action_ids")
+        provider_context_blocked_action_refs = _collect_action_refs("provider_context_blocked_action_ids")
+        provider_context_verified_action_refs = _collect_action_refs("provider_context_verified_action_ids")
+        provider_context_inferred_action_refs = _collect_action_refs("provider_context_inferred_action_ids")
+        provider_context_missing_action_refs = _collect_action_refs("provider_context_missing_action_ids")
+        commandless_execution_action_refs = _collect_action_refs("commandless_execution_action_ids")
         preflight_ready_action_refs = _collect_action_refs("preflight_ready_action_ids")
         preflight_ready_action_count = len(preflight_ready_action_refs)
         not_preflight_ready_action_refs = _collect_action_refs("not_preflight_ready_action_ids")
@@ -14753,24 +14787,31 @@ class MissionControlService:
             "available_action_count": available_action_count,
             "available_action_refs": available_action_refs,
             "local_action_count": local_action_count,
+            "local_action_refs": local_action_refs,
             "local_action_family_count": local_action_family_count,
             "local_action_family_ids": local_action_family_ids,
             "guided_action_count": guided_action_count,
+            "guided_action_refs": guided_action_refs,
             "guided_action_family_count": guided_action_family_count,
             "guided_action_family_ids": guided_action_family_ids,
             "registry_action_count": registry_action_count,
+            "registry_action_refs": registry_action_refs,
             "registry_action_family_count": registry_action_family_count,
             "registry_action_family_ids": registry_action_family_ids,
             "provider_specific_action_count": provider_specific_action_count,
+            "provider_specific_action_refs": provider_specific_action_refs,
             "provider_specific_action_family_count": provider_specific_action_family_count,
             "provider_specific_action_family_ids": provider_specific_action_family_ids,
             "guided_only_action_count": guided_only_action_count,
+            "guided_only_action_refs": guided_only_action_refs,
             "guided_only_action_family_count": guided_only_action_family_count,
             "guided_only_action_family_ids": guided_only_action_family_ids,
             "available_mutating_action_count": available_mutating_action_count,
+            "available_mutating_action_refs": available_mutating_action_refs,
             "available_mutating_action_family_count": available_mutating_action_family_count,
             "available_mutating_action_family_ids": available_mutating_action_family_ids,
             "available_non_mutating_action_count": available_non_mutating_action_count,
+            "available_non_mutating_action_refs": available_non_mutating_action_refs,
             "available_non_mutating_action_family_count": available_non_mutating_action_family_count,
             "available_non_mutating_action_family_ids": available_non_mutating_action_family_ids,
             "blocked_action_family_count": blocked_action_family_count,
@@ -14782,36 +14823,47 @@ class MissionControlService:
             "execution_action_count": execution_action_count,
             "execution_action_refs": execution_action_refs,
             "local_execution_action_count": local_execution_action_count,
+            "local_execution_action_refs": local_execution_action_refs,
             "local_execution_action_family_count": local_execution_action_family_count,
             "local_execution_action_family_ids": local_execution_action_family_ids,
             "guided_execution_action_count": guided_execution_action_count,
+            "guided_execution_action_refs": guided_execution_action_refs,
             "guided_execution_action_family_count": guided_execution_action_family_count,
             "guided_execution_action_family_ids": guided_execution_action_family_ids,
             "provider_specific_execution_action_count": provider_specific_execution_action_count,
+            "provider_specific_execution_action_refs": provider_specific_execution_action_refs,
             "provider_specific_execution_action_family_count": provider_specific_execution_action_family_count,
             "provider_specific_execution_action_family_ids": provider_specific_execution_action_family_ids,
             "guided_only_execution_action_count": guided_only_execution_action_count,
+            "guided_only_execution_action_refs": guided_only_execution_action_refs,
             "guided_only_execution_action_family_count": guided_only_execution_action_family_count,
             "guided_only_execution_action_family_ids": guided_only_execution_action_family_ids,
             "mutating_execution_action_count": mutating_execution_action_count,
+            "mutating_execution_action_refs": mutating_execution_action_refs,
             "mutating_execution_action_family_count": mutating_execution_action_family_count,
             "mutating_execution_action_family_ids": mutating_execution_action_family_ids,
             "non_mutating_execution_action_count": non_mutating_execution_action_count,
+            "non_mutating_execution_action_refs": non_mutating_execution_action_refs,
             "non_mutating_execution_action_family_count": non_mutating_execution_action_family_count,
             "non_mutating_execution_action_family_ids": non_mutating_execution_action_family_ids,
             "confirmation_required_execution_action_count": confirmation_required_execution_action_count,
+            "confirmation_required_execution_action_refs": confirmation_required_execution_action_refs,
             "confirmation_required_execution_action_family_count": confirmation_required_execution_action_family_count,
             "confirmation_required_execution_action_family_ids": confirmation_required_execution_action_family_ids,
             "preview_supported_execution_action_count": preview_supported_execution_action_count,
+            "preview_supported_execution_action_refs": preview_supported_execution_action_refs,
             "preview_supported_execution_action_family_count": preview_supported_execution_action_family_count,
             "preview_supported_execution_action_family_ids": preview_supported_execution_action_family_ids,
             "context_available_execution_action_count": context_available_execution_action_count,
+            "context_available_execution_action_refs": context_available_execution_action_refs,
             "context_available_execution_action_family_count": context_available_execution_action_family_count,
             "context_available_execution_action_family_ids": context_available_execution_action_family_ids,
             "provider_guidance_action_count": provider_guidance_action_count,
+            "provider_guidance_action_refs": provider_guidance_action_refs,
             "provider_guidance_action_family_count": provider_guidance_action_family_count,
             "provider_guidance_action_family_ids": provider_guidance_action_family_ids,
             "commandful_execution_action_count": commandful_execution_action_count,
+            "commandful_execution_action_refs": commandful_execution_action_refs,
             "commandful_execution_action_family_count": commandful_execution_action_family_count,
             "commandful_execution_action_family_ids": commandful_execution_action_family_ids,
             "blocked_execution_action_family_count": blocked_execution_action_family_count,
@@ -14819,15 +14871,19 @@ class MissionControlService:
             "blocked_execution_action_count": blocked_execution_action_count,
             "blocked_execution_action_refs": blocked_execution_action_refs,
             "blocked_local_execution_action_count": blocked_local_execution_action_count,
+            "blocked_local_execution_action_refs": blocked_local_execution_action_refs,
             "blocked_local_execution_action_family_count": blocked_local_execution_action_family_count,
             "blocked_local_execution_action_family_ids": blocked_local_execution_action_family_ids,
             "blocked_guided_execution_action_count": blocked_guided_execution_action_count,
+            "blocked_guided_execution_action_refs": blocked_guided_execution_action_refs,
             "blocked_guided_execution_action_family_count": blocked_guided_execution_action_family_count,
             "blocked_guided_execution_action_family_ids": blocked_guided_execution_action_family_ids,
             "blocked_provider_specific_execution_action_count": blocked_provider_specific_execution_action_count,
+            "blocked_provider_specific_execution_action_refs": blocked_provider_specific_execution_action_refs,
             "blocked_provider_specific_execution_action_family_count": blocked_provider_specific_execution_action_family_count,
             "blocked_provider_specific_execution_action_family_ids": blocked_provider_specific_execution_action_family_ids,
             "blocked_guided_only_execution_action_count": blocked_guided_only_execution_action_count,
+            "blocked_guided_only_execution_action_refs": blocked_guided_only_execution_action_refs,
             "blocked_guided_only_execution_action_family_count": blocked_guided_only_execution_action_family_count,
             "blocked_guided_only_execution_action_family_ids": blocked_guided_only_execution_action_family_ids,
             "safe_command_family_count": safe_command_family_count,
@@ -14843,9 +14899,11 @@ class MissionControlService:
             "verification_blocked_action_count": verification_blocked_action_count,
             "verification_blocked_action_refs": verification_blocked_action_refs,
             "verification_blocked_guided_action_count": verification_blocked_guided_action_count,
+            "verification_blocked_guided_action_refs": verification_blocked_guided_action_refs,
             "verification_blocked_guided_action_family_count": verification_blocked_guided_action_family_count,
             "verification_blocked_guided_action_family_ids": verification_blocked_guided_action_family_ids,
             "verification_blocked_local_action_count": verification_blocked_local_action_count,
+            "verification_blocked_local_action_refs": verification_blocked_local_action_refs,
             "verification_blocked_local_action_family_count": verification_blocked_local_action_family_count,
             "verification_blocked_local_action_family_ids": verification_blocked_local_action_family_ids,
             "context_blocked_family_count": context_blocked_family_count,
@@ -14853,33 +14911,43 @@ class MissionControlService:
             "context_blocked_action_count": context_blocked_action_count,
             "context_blocked_action_refs": context_blocked_action_refs,
             "multi_blocked_action_count": multi_blocked_action_count,
+            "multi_blocked_action_refs": multi_blocked_action_refs,
             "multi_blocked_action_family_count": multi_blocked_action_family_count,
             "multi_blocked_action_family_ids": multi_blocked_action_family_ids,
             "defaulted_param_action_count": defaulted_param_action_count,
+            "defaulted_param_action_refs": defaulted_param_action_refs,
             "defaulted_param_action_family_count": defaulted_param_action_family_count,
             "defaulted_param_action_family_ids": defaulted_param_action_family_ids,
             "missing_params_action_count": missing_params_action_count,
+            "missing_params_action_refs": missing_params_action_refs,
             "missing_params_action_family_count": missing_params_action_family_count,
             "missing_params_action_family_ids": missing_params_action_family_ids,
             "missing_executable_action_count": missing_executable_action_count,
+            "missing_executable_action_refs": missing_executable_action_refs,
             "missing_executable_action_family_count": missing_executable_action_family_count,
             "missing_executable_action_family_ids": missing_executable_action_family_ids,
             "no_local_command_action_count": no_local_command_action_count,
+            "no_local_command_action_refs": no_local_command_action_refs,
             "no_local_command_action_family_count": no_local_command_action_family_count,
             "no_local_command_action_family_ids": no_local_command_action_family_ids,
             "provider_context_blocked_action_count": provider_context_blocked_action_count,
+            "provider_context_blocked_action_refs": provider_context_blocked_action_refs,
             "provider_context_blocked_action_family_count": provider_context_blocked_action_family_count,
             "provider_context_blocked_action_family_ids": provider_context_blocked_action_family_ids,
             "provider_context_verified_action_count": provider_context_verified_action_count,
+            "provider_context_verified_action_refs": provider_context_verified_action_refs,
             "provider_context_verified_action_family_count": provider_context_verified_action_family_count,
             "provider_context_verified_action_family_ids": provider_context_verified_action_family_ids,
             "provider_context_inferred_action_count": provider_context_inferred_action_count,
+            "provider_context_inferred_action_refs": provider_context_inferred_action_refs,
             "provider_context_inferred_action_family_count": provider_context_inferred_action_family_count,
             "provider_context_inferred_action_family_ids": provider_context_inferred_action_family_ids,
             "provider_context_missing_action_count": provider_context_missing_action_count,
+            "provider_context_missing_action_refs": provider_context_missing_action_refs,
             "provider_context_missing_action_family_count": provider_context_missing_action_family_count,
             "provider_context_missing_action_family_ids": provider_context_missing_action_family_ids,
             "commandless_execution_action_count": commandless_execution_action_count,
+            "commandless_execution_action_refs": commandless_execution_action_refs,
             "commandless_execution_action_family_count": commandless_execution_action_family_count,
             "commandless_execution_action_family_ids": commandless_execution_action_family_ids,
             "preflight_ready_action_count": preflight_ready_action_count,
