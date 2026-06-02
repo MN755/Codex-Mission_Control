@@ -3618,18 +3618,46 @@ class ProjectIntegrationsRead(BaseModel):
     action_count: int = 0
     action_status_counts: dict[str, int] = Field(default_factory=dict)
     action_status_group_count: int = 0
+    available_action_status_counts: dict[str, int] = Field(default_factory=dict)
+    available_action_status_group_count: int = 0
+    blocked_action_status_counts: dict[str, int] = Field(default_factory=dict)
+    blocked_action_status_group_count: int = 0
     execution_mode_counts: dict[str, int] = Field(default_factory=dict)
     execution_mode_group_count: int = 0
+    available_execution_mode_counts: dict[str, int] = Field(default_factory=dict)
+    available_execution_mode_group_count: int = 0
+    blocked_execution_mode_counts: dict[str, int] = Field(default_factory=dict)
+    blocked_execution_mode_group_count: int = 0
     provider_support_mode_counts: dict[str, int] = Field(default_factory=dict)
     provider_support_mode_group_count: int = 0
+    available_provider_support_mode_counts: dict[str, int] = Field(default_factory=dict)
+    available_provider_support_mode_group_count: int = 0
+    blocked_provider_support_mode_counts: dict[str, int] = Field(default_factory=dict)
+    blocked_provider_support_mode_group_count: int = 0
     action_provider_context_status_counts: dict[str, int] = Field(default_factory=dict)
     action_provider_context_status_group_count: int = 0
+    available_action_provider_context_status_counts: dict[str, int] = Field(default_factory=dict)
+    available_action_provider_context_status_group_count: int = 0
+    blocked_action_provider_context_status_counts: dict[str, int] = Field(default_factory=dict)
+    blocked_action_provider_context_status_group_count: int = 0
     verification_scope_counts: dict[str, int] = Field(default_factory=dict)
     verification_scope_group_count: int = 0
+    available_verification_scope_counts: dict[str, int] = Field(default_factory=dict)
+    available_verification_scope_group_count: int = 0
+    blocked_verification_scope_counts: dict[str, int] = Field(default_factory=dict)
+    blocked_verification_scope_group_count: int = 0
     safe_command_reason_counts: dict[str, int] = Field(default_factory=dict)
     safe_command_reason_group_count: int = 0
+    available_safe_command_reason_counts: dict[str, int] = Field(default_factory=dict)
+    available_safe_command_reason_group_count: int = 0
+    blocked_safe_command_reason_counts: dict[str, int] = Field(default_factory=dict)
+    blocked_safe_command_reason_group_count: int = 0
     context_requirement_reason_counts: dict[str, int] = Field(default_factory=dict)
     context_requirement_reason_group_count: int = 0
+    available_context_requirement_reason_counts: dict[str, int] = Field(default_factory=dict)
+    available_context_requirement_reason_group_count: int = 0
+    blocked_context_requirement_reason_counts: dict[str, int] = Field(default_factory=dict)
+    blocked_context_requirement_reason_group_count: int = 0
     execution_block_reason_counts: dict[str, int] = Field(default_factory=dict)
     execution_block_reason_group_count: int = 0
     blocking_reason_counts: dict[str, int] = Field(default_factory=dict)
