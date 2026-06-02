@@ -1006,6 +1006,199 @@ def test_provider_specific_preview_supports_docusaurus_docs_lane(monkeypatch, tm
     assert inspect_preview["command"] == "npm exec docusaurus -- --help"
 
 
+def test_provider_specific_preview_supports_storybook_validate_lane(monkeypatch, tmp_path) -> None:
+    workspace = tmp_path / "storybook-repo"
+    (workspace / ".storybook").mkdir(parents=True, exist_ok=True)
+    (workspace / ".storybook" / "main.ts").write_text("export default {};\n", encoding="utf-8")
+
+    monkeypatch.setattr(
+        "integration_registry.shutil.which",
+        lambda command: f"C:/tools/{command}.exe" if command == "npm" else None,
+    )
+
+    preview = preview_integration_action(
+        family_id="storybook",
+        action_id="validate",
+        params={},
+        registry_payload=normalize_integration_registry({}, {}),
+        workspace_path=str(workspace),
+        project_name="Storybook Demo",
+    )
+
+    assert preview["provider"] == "storybook"
+    assert preview["command"] == "npm exec storybook -- build"
+    assert preview["command_ready"] is True
+
+
+def test_provider_specific_preview_supports_pypi_maven_nuget_and_rubygems_lanes(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "integration_registry.shutil.which",
+        lambda command: f"C:/tools/{command}.exe" if command in {"twine", "mvn", "dotnet", "gem"} else None,
+    )
+
+    pypi_preview = preview_integration_action(
+        family_id="package_registries",
+        action_id="publish",
+        params={},
+        registry_payload=normalize_integration_registry(
+            {
+                "connections": {
+                    "package_registries": {
+                        "family": "package_registries",
+                        "status": "connected",
+                        "providers": ["pypi"],
+                        "connection_source": "mission_control",
+                        "host_imported": False,
+                    }
+                }
+            },
+            {},
+        ),
+        workspace_path=None,
+        project_name="PyPI Demo",
+    )
+    maven_preview = preview_integration_action(
+        family_id="package_registries",
+        action_id="publish",
+        params={},
+        registry_payload=normalize_integration_registry(
+            {
+                "connections": {
+                    "package_registries": {
+                        "family": "package_registries",
+                        "status": "connected",
+                        "providers": ["maven"],
+                        "connection_source": "mission_control",
+                        "host_imported": False,
+                    }
+                }
+            },
+            {},
+        ),
+        workspace_path=None,
+        project_name="Maven Demo",
+    )
+    nuget_preview = preview_integration_action(
+        family_id="package_registries",
+        action_id="publish",
+        params={},
+        registry_payload=normalize_integration_registry(
+            {
+                "connections": {
+                    "package_registries": {
+                        "family": "package_registries",
+                        "status": "connected",
+                        "providers": ["nuget"],
+                        "connection_source": "mission_control",
+                        "host_imported": False,
+                    }
+                }
+            },
+            {},
+        ),
+        workspace_path=None,
+        project_name="NuGet Demo",
+    )
+    rubygems_preview = preview_integration_action(
+        family_id="package_registries",
+        action_id="publish",
+        params={},
+        registry_payload=normalize_integration_registry(
+            {
+                "connections": {
+                    "package_registries": {
+                        "family": "package_registries",
+                        "status": "connected",
+                        "providers": ["rubygems"],
+                        "connection_source": "mission_control",
+                        "host_imported": False,
+                    }
+                }
+            },
+            {},
+        ),
+        workspace_path=None,
+        project_name="RubyGems Demo",
+    )
+
+    assert pypi_preview["provider"] == "pypi"
+    assert pypi_preview["missing_params"] == ["artifact"]
+    assert pypi_preview["command"] == "twine upload {artifact_q}"
+    assert maven_preview["provider"] == "maven"
+    assert maven_preview["command"] == "mvn deploy -DskipTests"
+    assert maven_preview["command_ready"] is True
+    assert nuget_preview["provider"] == "nuget"
+    assert nuget_preview["missing_params"] == ["artifact"]
+    assert nuget_preview["command"] == "dotnet nuget push {artifact_q}"
+    assert rubygems_preview["provider"] == "rubygems"
+    assert rubygems_preview["missing_params"] == ["artifact"]
+    assert rubygems_preview["command"] == "gem push {artifact_q}"
+
+
+def test_project_integrations_detect_pypi_from_workspace_and_cli(monkeypatch, tmp_path) -> None:
+    workspace = tmp_path / "pypi-repo"
+    workspace.mkdir(parents=True, exist_ok=True)
+    (workspace / "pyproject.toml").write_text("[project]\nname='demo'\n", encoding="utf-8")
+
+    monkeypatch.setattr(
+        "integration_registry.shutil.which",
+        lambda command: f"C:/tools/{command}.exe" if command == "twine" else None,
+    )
+
+    status = {
+        item["family"]: item
+        for item in build_project_integration_status(
+            workspace_path=str(workspace),
+            project_name="PyPI Workspace Demo",
+            registry_payload=normalize_integration_registry({}, {}),
+        )
+    }["package_registries"]
+
+    assert status["resolved_provider"] == "pypi"
+    assert status["status"] == "ready"
+    assert status["resolved_cli_candidates"] == ["twine"]
+    assert status["local_action_count"] >= 1
+
+
+def test_provider_specific_preview_supports_release_please_and_semantic_release_lanes(monkeypatch, tmp_path) -> None:
+    release_please_workspace = tmp_path / "release-please-repo"
+    release_please_workspace.mkdir(parents=True, exist_ok=True)
+    (release_please_workspace / ".release-please-manifest.json").write_text('{"packages":{}}\n', encoding="utf-8")
+
+    semantic_workspace = tmp_path / "semantic-release-repo"
+    semantic_workspace.mkdir(parents=True, exist_ok=True)
+    (semantic_workspace / ".releaserc").write_text('{"branches":["main"]}\n', encoding="utf-8")
+
+    monkeypatch.setattr(
+        "integration_registry.shutil.which",
+        lambda command: f"C:/tools/{command}.exe" if command in {"release-please", "semantic-release"} else None,
+    )
+
+    release_please_preview = preview_integration_action(
+        family_id="release_management",
+        action_id="draft",
+        params={},
+        registry_payload=normalize_integration_registry({}, {}),
+        workspace_path=str(release_please_workspace),
+        project_name="Release Please Demo",
+    )
+    semantic_preview = preview_integration_action(
+        family_id="release_management",
+        action_id="draft",
+        params={},
+        registry_payload=normalize_integration_registry({}, {}),
+        workspace_path=str(semantic_workspace),
+        project_name="Semantic Release Demo",
+    )
+
+    assert release_please_preview["provider"] == "release_please"
+    assert release_please_preview["command"] == "release-please manifest-pr --dry-run"
+    assert release_please_preview["command_ready"] is True
+    assert semantic_preview["provider"] == "semantic_release"
+    assert semantic_preview["command"] == "semantic-release --dry-run"
+    assert semantic_preview["command_ready"] is True
+
+
 def test_provider_specific_preview_supports_vllm_runtime(monkeypatch) -> None:
     registry = normalize_integration_registry(
         {

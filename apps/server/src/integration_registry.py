@@ -57,6 +57,16 @@ PROVIDER_CLIS: dict[str, tuple[str, ...]] = {
     "cloudflare_pages": ("wrangler",),
     "railway": ("railway",),
     "render": ("render",),
+    "storybook": ("npm",),
+    "npm": ("npm",),
+    "pypi": ("twine",),
+    "maven": ("mvn",),
+    "crates": ("cargo",),
+    "nuget": ("dotnet",),
+    "rubygems": ("gem",),
+    "docker_hub": ("docker",),
+    "release_please": ("release-please",),
+    "semantic_release": ("semantic-release",),
     "bruno": ("bru",),
     "snyk": ("snyk",),
     "semgrep": ("semgrep",),
@@ -94,6 +104,14 @@ PROVIDER_WORKSPACE_MARKERS: dict[str, tuple[str, ...]] = {
     "cloudflare_pages": ("wrangler.toml",),
     "railway": ("railway.json",),
     "render": ("render.yaml",),
+    "storybook": (".storybook/main.js", ".storybook/main.ts"),
+    "npm": ("package.json", ".npmrc"),
+    "pypi": ("pyproject.toml", "setup.py", "requirements.txt"),
+    "maven": ("pom.xml",),
+    "crates": ("Cargo.toml",),
+    "nuget": (".nuspec", ".csproj"),
+    "rubygems": ("Gemfile", ".gemspec"),
+    "docker_hub": ("Dockerfile",),
     "postman": ("postman.json", ".postman.json", "postman_collection.json", ".postman_collection.json"),
     "insomnia": (".insomnia", "insomnia.json", ".insomnia.json"),
     "bruno": ("bruno.json",),
@@ -103,6 +121,8 @@ PROVIDER_WORKSPACE_MARKERS: dict[str, tuple[str, ...]] = {
     "playwright": ("playwright.config.ts", "playwright.config.js"),
     "cypress": ("cypress.config.ts", "cypress.config.js"),
     "changesets": (".changeset",),
+    "release_please": (".release-please-manifest.json", "release-please-config.json"),
+    "semantic_release": (".releaserc", ".releaserc.json", ".releaserc.yml", ".releaserc.yaml", "release.config.js", "release.config.cjs"),
 }
 
 PROVIDER_TOKEN_MARKERS: dict[str, tuple[str, ...]] = {
@@ -124,6 +144,16 @@ PROVIDER_TOKEN_MARKERS: dict[str, tuple[str, ...]] = {
     "cloudflare_pages": ("cloudflare pages", "wrangler",),
     "railway": ("railway",),
     "render": ("render",),
+    "storybook": ("storybook",),
+    "npm": ("npm", "package.json"),
+    "pypi": ("pypi", "twine", "pyproject", "setup.py"),
+    "maven": ("maven", "pom.xml", "mvn"),
+    "crates": ("cargo", "crates", "cargo.toml"),
+    "nuget": ("nuget", "dotnet", "nuspec"),
+    "rubygems": ("rubygems", "gemfile", "gemspec", "gem"),
+    "docker_hub": ("docker hub", "dockerfile", "docker"),
+    "release_please": ("release please", "release-please"),
+    "semantic_release": ("semantic-release", "semantic release"),
     "postman": ("postman", "newman"),
     "insomnia": ("insomnia", "inso"),
     "bruno": ("bruno", "bru"),
@@ -167,6 +197,9 @@ PROVIDER_ACTION_REQUIRED_PARAMS: dict[tuple[str, str], tuple[str, ...]] = {
     ("render", "deploy"): ("service_id",),
     ("render", "tail_logs"): ("resource_id",),
     ("docker_hub", "publish"): ("image",),
+    ("pypi", "publish"): ("artifact",),
+    ("nuget", "publish"): ("artifact",),
+    ("rubygems", "publish"): ("artifact",),
     ("github_releases", "create"): ("tag",),
     ("stripe", "create"): ("name",),
     ("postman", "validate"): ("collection",),
@@ -545,7 +578,7 @@ FAMILIES: tuple[IntegrationFamilyDefinition, ...] = (
         host_tokens=("storybook",),
         config_files=(".storybook/main.js", ".storybook/main.ts"),
         workspace_tokens=("storybook",),
-        cli_candidates=("storybook",),
+        cli_candidates=("npm", "storybook"),
         legacy_account_keys=(),
         actions=COMMON_ACTIONS + (
             _action("validate", "Run Storybook checks", "Run Storybook smoke or build validation.", mutates_remote_state=False, requires_confirmation=False),
@@ -560,7 +593,7 @@ FAMILIES: tuple[IntegrationFamilyDefinition, ...] = (
         host_tokens=("npm", "pypi", "maven", "crates", "nuget", "rubygems", "docker"),
         config_files=("package.json", "pyproject.toml", "Cargo.toml", "pom.xml", ".npmrc"),
         workspace_tokens=("npm", "pypi", "maven", "crates", "nuget", "rubygems"),
-        cli_candidates=("npm", "python", "cargo", "docker"),
+        cli_candidates=("npm", "twine", "mvn", "cargo", "dotnet", "gem", "docker"),
         legacy_account_keys=(),
         actions=COMMON_ACTIONS + (
             _action("inspect", "Inspect publish lane", "Inspect package publishing readiness.", risk_level="low", permission_policy="ask_once_per_project"),
@@ -747,7 +780,7 @@ FAMILIES: tuple[IntegrationFamilyDefinition, ...] = (
         host_tokens=("release please", "changesets", "semantic-release", "github releases", "launchnotes"),
         config_files=(".release-please-manifest.json", ".changeset", ".releaserc", "release.config.js"),
         workspace_tokens=("release please", "changesets", "semantic-release", "launchnotes"),
-        cli_candidates=("gh", "changeset"),
+        cli_candidates=("gh", "changeset", "release-please", "semantic-release"),
         legacy_account_keys=(),
         actions=COMMON_ACTIONS + (
             _action("draft", "Draft release", "Draft a release or changelog artifact.", risk_level="medium", permission_policy="ask_every_time"),
@@ -1005,6 +1038,9 @@ def _provider_command_template(provider: str, action_id: str) -> str | None:
             "inspect": "npm exec docusaurus -- --help",
             "sync": "npm exec docusaurus -- build",
         },
+        "storybook": {
+            "validate": "npm exec storybook -- build",
+        },
         "vllm": {
             "inspect": "vllm --help",
             "open": "vllm serve --help",
@@ -1013,9 +1049,25 @@ def _provider_command_template(provider: str, action_id: str) -> str | None:
             "inspect": "npm whoami",
             "publish": "npm publish",
         },
+        "pypi": {
+            "inspect": "twine --version",
+            "publish": "twine upload {artifact_q}",
+        },
+        "maven": {
+            "inspect": "mvn --version",
+            "publish": "mvn deploy -DskipTests",
+        },
         "crates": {
             "inspect": "cargo --version",
             "publish": "cargo publish --dry-run",
+        },
+        "nuget": {
+            "inspect": "dotnet nuget list source",
+            "publish": "dotnet nuget push {artifact_q}",
+        },
+        "rubygems": {
+            "inspect": "gem env",
+            "publish": "gem push {artifact_q}",
         },
         "docker_hub": {
             "inspect": "docker info --format {{json .}}",
@@ -1059,6 +1111,14 @@ def _provider_command_template(provider: str, action_id: str) -> str | None:
         "changesets": {
             "draft": "changeset status",
             "create": "changeset version",
+        },
+        "release_please": {
+            "draft": "release-please manifest-pr --dry-run",
+            "create": "release-please github-release",
+        },
+        "semantic_release": {
+            "draft": "semantic-release --dry-run",
+            "create": "semantic-release",
         },
         "github_releases": {
             "draft": "gh release view --json name,tagName,isDraft",
