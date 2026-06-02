@@ -3229,12 +3229,16 @@ class ProjectIntegrationFamilyRead(BaseModel):
     connection_source: str = "mission_control"
     host_imported: bool = False
     providers: list[str] = Field(default_factory=list)
+    provider_count: int = 0
     resolved_provider: str | None = None
     provider_candidates: list[str] = Field(default_factory=list)
+    provider_candidate_count: int = 0
     resolved_cli_candidates: list[str] = Field(default_factory=list)
+    resolved_cli_candidate_count: int = 0
     provider_signal_breakdown: dict[str, Any] = Field(default_factory=dict)
     resolved_provider_evidence: dict[str, Any] = Field(default_factory=dict)
     cli_only_candidates_suppressed: list[str] = Field(default_factory=list)
+    cli_only_candidates_suppressed_count: int = 0
     provider_resolution_state: IntegrationProviderResolutionState = "unresolved"
     provider_context_verified: bool = False
     provider_context_source: str = "none"
@@ -3244,14 +3248,20 @@ class ProjectIntegrationFamilyRead(BaseModel):
     connection_detected: bool = False
     standalone_cli_detected: bool = False
     signal_sources: list[str] = Field(default_factory=list)
+    signal_source_count: int = 0
     cli_detected: list[str] = Field(default_factory=list)
+    cli_detected_count: int = 0
     resolved_cli_detected: list[str] = Field(default_factory=list)
+    resolved_cli_detected_count: int = 0
     workspace_config_files: list[str] = Field(default_factory=list)
+    workspace_config_file_count: int = 0
     workspace_token_hits: list[str] = Field(default_factory=list)
+    workspace_token_hit_count: int = 0
     connection_provider_count: int = 0
     connection_without_provider_identity: bool = False
     git_remote_url: str | None = None
     required_permissions: list[str] = Field(default_factory=list)
+    required_permission_count: int = 0
     permission_policy_counts: dict[str, int] = Field(default_factory=dict)
     available_permission_policy_counts: dict[str, int] = Field(default_factory=dict)
     blocked_permission_policy_counts: dict[str, int] = Field(default_factory=dict)
@@ -3270,11 +3280,13 @@ class ProjectIntegrationFamilyRead(BaseModel):
     risk_level_action_ids: dict[str, list[str]] = Field(default_factory=dict)
     available_risk_level_action_ids: dict[str, list[str]] = Field(default_factory=dict)
     blocked_risk_level_action_ids: dict[str, list[str]] = Field(default_factory=dict)
+    action_count: int = 0
     available_action_count: int = 0
     blocked_action_count: int = 0
     available_execution_action_count: int = 0
     available_execution_action_ids: list[str] = Field(default_factory=list)
     execution_required_permissions: list[str] = Field(default_factory=list)
+    execution_required_permission_count: int = 0
     execution_permission_policy_counts: dict[str, int] = Field(default_factory=dict)
     execution_permission_policy_action_ids: dict[str, list[str]] = Field(default_factory=dict)
     execution_permission_policy_group_count: int = 0
@@ -3395,11 +3407,16 @@ class ProjectIntegrationFamilyRead(BaseModel):
     blocking_reason_group_count: int = 0
     health: dict[str, Any] = Field(default_factory=dict)
     artifacts: list[dict[str, Any]] = Field(default_factory=list)
+    artifact_count: int = 0
     safe_commands: list[str] = Field(default_factory=list)
+    safe_command_count: int = 0
     blockers: list[str] = Field(default_factory=list)
+    blocker_count: int = 0
     recommended_fixes: list[str] = Field(default_factory=list)
+    recommended_fix_count: int = 0
     available_actions: list[IntegrationActionRead] = Field(default_factory=list)
     notes: list[str] = Field(default_factory=list)
+    note_count: int = 0
 
 
 class ProjectIntegrationsRead(BaseModel):

@@ -6103,6 +6103,69 @@ def test_project_integrations_surface_permission_and_risk_inventories(monkeypatc
     assert package_status["health"]["blocked_execution_risk_level_counts"] == {"high": 1}
 
 
+def test_project_integrations_surface_summary_list_counts(monkeypatch, tmp_path) -> None:
+    workspace = tmp_path / "summary-counts-demo"
+    workspace.mkdir(parents=True, exist_ok=True)
+    (workspace / ".github" / "workflows").mkdir(parents=True, exist_ok=True)
+    (workspace / ".github" / "workflows" / "ci.yml").write_text("name: ci\n", encoding="utf-8")
+    (workspace / "package.json").write_text('{"name":"summary-counts-demo"}\n', encoding="utf-8")
+
+    monkeypatch.setattr(
+        "integration_registry.shutil.which",
+        lambda command: f"C:/tools/{command}.exe" if command in {"gh", "npm"} else None,
+    )
+
+    statuses = {
+        item["family"]: item
+        for item in build_project_integration_status(
+            registry_payload=normalize_integration_registry({}, {}),
+            workspace_path=str(workspace),
+            project_name="Summary Counts Demo",
+        )
+    }
+
+    ci_status = statuses["ci_cd"]
+    package_status = statuses["package_registries"]
+
+    assert ci_status["provider_count"] == len(ci_status["providers"]) == 1
+    assert ci_status["provider_candidate_count"] == len(ci_status["provider_candidates"]) == 1
+    assert ci_status["resolved_cli_candidate_count"] == len(ci_status["resolved_cli_candidates"]) == 1
+    assert ci_status["cli_only_candidates_suppressed_count"] == len(ci_status["cli_only_candidates_suppressed"]) == 0
+    assert ci_status["signal_source_count"] == len(ci_status["signal_sources"]) == 1
+    assert ci_status["cli_detected_count"] == len(ci_status["cli_detected"]) == 1
+    assert ci_status["resolved_cli_detected_count"] == len(ci_status["resolved_cli_detected"]) == 1
+    assert ci_status["workspace_config_file_count"] == len(ci_status["workspace_config_files"]) == 1
+    assert ci_status["workspace_token_hit_count"] == len(ci_status["workspace_token_hits"]) == 0
+    assert ci_status["required_permission_count"] == len(ci_status["required_permissions"]) == 2
+    assert ci_status["execution_required_permission_count"] == len(ci_status["execution_required_permissions"]) == 1
+    assert ci_status["action_count"] == len(ci_status["available_actions"]) == 8
+    assert ci_status["artifact_count"] == len(ci_status["artifacts"]) == 1
+    assert ci_status["safe_command_count"] == len(ci_status["safe_commands"]) == 1
+    assert ci_status["blocker_count"] == len(ci_status["blockers"]) == 1
+    assert ci_status["recommended_fix_count"] == len(ci_status["recommended_fixes"]) == 1
+    assert ci_status["note_count"] == len(ci_status["notes"]) == 0
+    assert ci_status["health"]["provider_count"] == 1
+    assert ci_status["health"]["signal_source_count"] == 1
+    assert ci_status["health"]["action_count"] == 8
+    assert ci_status["health"]["artifact_count"] == 1
+
+    assert package_status["provider_count"] == len(package_status["providers"]) == 1
+    assert package_status["provider_candidate_count"] == len(package_status["provider_candidates"]) == 1
+    assert package_status["resolved_cli_candidate_count"] == len(package_status["resolved_cli_candidates"]) == 1
+    assert package_status["required_permission_count"] == len(package_status["required_permissions"]) == 2
+    assert package_status["execution_required_permission_count"] == len(package_status["execution_required_permissions"]) == 1
+    assert package_status["action_count"] == len(package_status["available_actions"]) == 6
+    assert package_status["artifact_count"] == len(package_status["artifacts"]) == 1
+    assert package_status["safe_command_count"] == len(package_status["safe_commands"]) == 1
+    assert package_status["blocker_count"] == len(package_status["blockers"]) == 1
+    assert package_status["recommended_fix_count"] == len(package_status["recommended_fixes"]) == 1
+    assert package_status["note_count"] == len(package_status["notes"]) == 0
+    assert package_status["health"]["provider_candidate_count"] == 1
+    assert package_status["health"]["required_permission_count"] == 2
+    assert package_status["health"]["execution_required_permission_count"] == 1
+    assert package_status["health"]["safe_command_count"] == 1
+
+
 def test_project_integrations_surface_action_mode_and_support_ids(monkeypatch, tmp_path) -> None:
     package_workspace = tmp_path / "mode-support-package"
     package_workspace.mkdir(parents=True, exist_ok=True)
