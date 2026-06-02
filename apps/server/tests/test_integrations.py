@@ -6125,10 +6125,27 @@ def test_project_integrations_surface_context_and_preflight_inventory_ids(monkey
     inspect_action = next(item for item in package_status["available_actions"] if item["action_id"] == "inspect")
     publish_action = next(item for item in package_status["available_actions"] if item["action_id"] == "publish")
 
+    assert package_status["provider_candidates"] == ["npm"]
+    assert package_status["provider_resolution_state"] == "resolved"
+    assert package_status["provider_context_status"] == "inferred"
+    assert package_status["workspace_signal_detected"] is True
+    assert package_status["host_import_detected"] is False
+    assert package_status["connection_detected"] is False
+    assert package_status["standalone_cli_detected"] is False
+    assert package_status["signal_sources"] == ["workspace"]
+    assert package_status["cli_only_candidates_suppressed"] == []
     assert inspect_action["context_available"] is True
     assert inspect_action["provider_guidance"]
+    assert inspect_action["provider_candidates"] == ["npm"]
+    assert inspect_action["provider_resolution_state"] == "resolved"
+    assert inspect_action["provider_context_status"] == "inferred"
+    assert inspect_action["notes"]
     assert publish_action["context_available"] is True
     assert publish_action["provider_guidance"]
+    assert publish_action["provider_candidates"] == ["npm"]
+    assert publish_action["provider_resolution_state"] == "resolved"
+    assert publish_action["provider_context_status"] == "inferred"
+    assert publish_action["notes"]
     assert package_status["execution_action_ids"] == ["inspect", "publish"]
     assert package_status["mutating_execution_action_count"] == 1
     assert package_status["mutating_execution_action_ids"] == ["publish"]
@@ -6188,10 +6205,27 @@ def test_project_integrations_surface_context_and_preflight_inventory_ids(monkey
 
     docs_inspect = next(item for item in docs_status["available_actions"] if item["action_id"] == "inspect")
     docs_sync = next(item for item in docs_status["available_actions"] if item["action_id"] == "sync")
+    assert docs_status["provider_candidates"] == ["notion"]
+    assert docs_status["provider_resolution_state"] == "resolved"
+    assert docs_status["provider_context_status"] == "inferred"
+    assert docs_status["workspace_signal_detected"] is True
+    assert docs_status["host_import_detected"] is False
+    assert docs_status["connection_detected"] is True
+    assert docs_status["standalone_cli_detected"] is False
+    assert docs_status["signal_sources"] == ["connection", "workspace"]
+    assert docs_status["cli_only_candidates_suppressed"] == []
     assert docs_inspect["context_available"] is True
     assert docs_inspect["provider_guidance"]
+    assert docs_inspect["provider_candidates"] == ["notion"]
+    assert docs_inspect["provider_resolution_state"] == "resolved"
+    assert docs_inspect["provider_context_status"] == "inferred"
+    assert docs_inspect["notes"]
     assert docs_sync["context_available"] is True
     assert docs_sync["provider_guidance"]
+    assert docs_sync["provider_candidates"] == ["notion"]
+    assert docs_sync["provider_resolution_state"] == "resolved"
+    assert docs_sync["provider_context_status"] == "inferred"
+    assert docs_sync["notes"]
     assert docs_status["execution_action_ids"] == ["inspect", "sync"]
     assert docs_status["mutating_execution_action_count"] == 1
     assert docs_status["mutating_execution_action_ids"] == ["sync"]
@@ -6224,8 +6258,21 @@ def test_project_integrations_surface_context_and_preflight_inventory_ids(monkey
     )
 
     create_action = next(item for item in source_control_status["available_actions"] if item["action_id"] == "create")
+    assert source_control_status["provider_candidates"] == []
+    assert source_control_status["provider_resolution_state"] == "unresolved"
+    assert source_control_status["provider_context_status"] == "missing"
+    assert source_control_status["workspace_signal_detected"] is False
+    assert source_control_status["host_import_detected"] is False
+    assert source_control_status["connection_detected"] is False
+    assert source_control_status["standalone_cli_detected"] is False
+    assert source_control_status["signal_sources"] == []
+    assert source_control_status["cli_only_candidates_suppressed"] == []
     assert create_action["context_available"] is False
     assert create_action["provider_guidance"] is None
+    assert create_action["provider_candidates"] == []
+    assert create_action["provider_resolution_state"] == "unresolved"
+    assert create_action["provider_context_status"] == "missing"
+    assert create_action["notes"] == ["Mission Control still lacks enough provider context to surface a concrete executable lane for this action."]
     assert source_control_status["parameterized_execution_action_ids"] == ["create"]
     assert source_control_status["params_complete_action_ids"] == ["search"]
     assert source_control_status["provider_context_missing_action_ids"] == ["import_host_state", "inspect_status", "connect", "disconnect", "search", "create"]

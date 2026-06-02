@@ -3146,6 +3146,11 @@ class IntegrationActionRead(BaseModel):
     params_complete: bool = True
     status: ToolAvailability = "available"
     provider: str | None = None
+    provider_candidates: list[str] = Field(default_factory=list)
+    provider_signal_breakdown: dict[str, Any] = Field(default_factory=dict)
+    resolved_provider_evidence: dict[str, Any] = Field(default_factory=dict)
+    cli_only_candidates_suppressed: list[str] = Field(default_factory=list)
+    provider_resolution_state: IntegrationProviderResolutionState = "unresolved"
     command: str | None = None
     command_template: str | None = None
     command_ready: bool = False
@@ -3174,6 +3179,7 @@ class IntegrationActionRead(BaseModel):
     context_requirement_reason: str | None = None
     suppressed_command_reason: str | None = None
     provider_guidance: str | None = None
+    notes: list[str] = Field(default_factory=list)
 
 
 class IntegrationCatalogEntryRead(BaseModel):
@@ -3225,6 +3231,18 @@ class ProjectIntegrationFamilyRead(BaseModel):
     resolved_provider: str | None = None
     provider_candidates: list[str] = Field(default_factory=list)
     resolved_cli_candidates: list[str] = Field(default_factory=list)
+    provider_signal_breakdown: dict[str, Any] = Field(default_factory=dict)
+    resolved_provider_evidence: dict[str, Any] = Field(default_factory=dict)
+    cli_only_candidates_suppressed: list[str] = Field(default_factory=list)
+    provider_resolution_state: IntegrationProviderResolutionState = "unresolved"
+    provider_context_verified: bool = False
+    provider_context_source: str = "none"
+    provider_context_status: IntegrationProviderContextStatus = "missing"
+    workspace_signal_detected: bool = False
+    host_import_detected: bool = False
+    connection_detected: bool = False
+    standalone_cli_detected: bool = False
+    signal_sources: list[str] = Field(default_factory=list)
     required_permissions: list[str] = Field(default_factory=list)
     permission_policy_counts: dict[str, int] = Field(default_factory=dict)
     available_permission_policy_counts: dict[str, int] = Field(default_factory=dict)

@@ -2897,6 +2897,15 @@ def build_project_integration_status(
         provider_cli_candidates = list(_provider_cli_candidates(resolved_provider))
         installed_provider_clis = [cli for cli in provider_cli_candidates if shutil.which(cli)]
         has_any_cli_signal = bool(installed_clis)
+        cli_only_candidates_suppressed = [
+            provider
+            for provider, entry in provider_signal_breakdown.items()
+            if bool(entry.get("suppressed_cli_only"))
+        ]
+        provider_resolution_state = _provider_resolution_state(
+            provider=resolved_provider,
+            cli_only_candidates_suppressed=cli_only_candidates_suppressed,
+        )
         provider_context_verified = _provider_context_verified(
             family=family,
             resolved_provider=resolved_provider,
@@ -3003,6 +3012,25 @@ def build_project_integration_status(
                 and preflight["ready_to_execute"]
                 and safe_command_reason is None
             )
+            action_provider_guidance = _provider_guidance(action_provider, action.action_id) or _default_provider_guidance(
+                provider=action_provider,
+                action=action,
+                action_metadata=action_metadata,
+                command_template=action_template,
+            )
+            action_notes: list[str] = []
+            if provider_context_status == "inferred":
+                action_notes.append("Provider identity is inferred from workspace or host signals, but Mission Control has not verified a live provider session yet.")
+            if provider_verification_required:
+                action_notes.append("Mission Control still requires verified provider identity before this provider-specific lane can execute.")
+            if context_required:
+                action_notes.append("Mission Control still lacks enough provider context to surface a concrete executable lane for this action.")
+            if preflight["defaulted_params"]:
+                action_notes.append(
+                    f"Provider defaults were inferred for this action: {json.dumps(preflight['defaulted_params'], sort_keys=True)}"
+                )
+            if action_provider_guidance:
+                action_notes.append(action_provider_guidance)
             available_actions.append(
                 {
                     "action_id": action.action_id,
@@ -3019,6 +3047,11 @@ def build_project_integration_status(
                     "params_complete": preflight["params_complete"],
                     "status": "available" if action_ready else "needs_setup",
                     "provider": action_provider,
+                    "provider_candidates": provider_candidates,
+                    "provider_signal_breakdown": provider_signal_breakdown,
+                    "resolved_provider_evidence": dict(provider_signal_breakdown.get(resolved_provider) or {}),
+                    "cli_only_candidates_suppressed": cli_only_candidates_suppressed,
+                    "provider_resolution_state": provider_resolution_state,
                     "command": preflight["command"],
                     "command_template": action_template,
                     "command_ready": preflight["command_ready"],
@@ -3046,13 +3079,8 @@ def build_project_integration_status(
                     "context_required": context_required,
                     "context_requirement_reason": context_requirement_reason,
                     "suppressed_command_reason": suppressed_command_reason,
-                    "provider_guidance": _provider_guidance(action_provider, action.action_id)
-                    or _default_provider_guidance(
-                        provider=action_provider,
-                        action=action,
-                        action_metadata=action_metadata,
-                        command_template=action_template,
-                    ),
+                    "provider_guidance": action_provider_guidance,
+                    "notes": action_notes,
                 }
             )
         available_action_count = sum(1 for item in available_actions if item["status"] == "available")
@@ -3404,15 +3432,6 @@ def build_project_integration_status(
                 "standalone_cli" if has_any_cli_signal and not has_context_signal else "",
             ]
         )
-        cli_only_candidates_suppressed = [
-            provider
-            for provider, entry in provider_signal_breakdown.items()
-            if bool(entry.get("suppressed_cli_only"))
-        ]
-        provider_resolution_state = _provider_resolution_state(
-            provider=resolved_provider,
-            cli_only_candidates_suppressed=cli_only_candidates_suppressed,
-        )
         artifacts = [{"type": "config_file", "path": path} for path in detected_files]
         artifacts.extend(
             {
@@ -3437,6 +3456,22 @@ def build_project_integration_status(
                 "resolved_provider": resolved_provider,
                 "provider_candidates": provider_candidates,
                 "resolved_cli_candidates": provider_cli_candidates,
+                "provider_signal_breakdown": provider_signal_breakdown,
+                "resolved_provider_evidence": dict(provider_signal_breakdown.get(resolved_provider) or {}),
+                "cli_only_candidates_suppressed": cli_only_candidates_suppressed,
+                "provider_resolution_state": provider_resolution_state,
+                "provider_context_verified": provider_context_verified,
+                "provider_context_source": provider_context_source,
+                "provider_context_status": _provider_context_status(
+                    provider_lane_resolved=bool(resolved_provider),
+                    provider_context_verified=provider_context_verified,
+                    provider_context_source=provider_context_source,
+                ),
+                "workspace_signal_detected": has_workspace_signal,
+                "host_import_detected": has_host_import,
+                "connection_detected": has_connection,
+                "standalone_cli_detected": has_any_cli_signal and not has_context_signal,
+                "signal_sources": signal_sources,
                 "required_permissions": _dedupe_strs([str(item["permission_policy"]) for item in actionable_actions]),
                 "permission_policy_counts": permission_policy_counts,
                 "available_permission_policy_counts": available_permission_policy_counts,
