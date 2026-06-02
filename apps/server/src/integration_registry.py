@@ -1130,11 +1130,51 @@ def _provider_extra_required_params(provider: str | None, action_id: str) -> tup
     return PROVIDER_ACTION_REQUIRED_PARAMS.get((provider, action_id), ())
 
 
+def _provider_display_name(provider: str | None) -> str:
+    provider_id = str(provider or "").strip().lower()
+    if not provider_id:
+        return "This provider"
+    display_names = {
+        "github_actions": "GitHub Actions",
+        "gitlab_ci": "GitLab CI",
+        "bitbucket_pipelines": "Bitbucket Pipelines",
+        "cloudflare_pages": "Cloudflare Pages",
+        "github_issues": "GitHub Issues",
+        "github_releases": "GitHub Releases",
+        "docker_hub": "Docker Hub",
+        "new_relic": "New Relic",
+        "aws_secrets_manager": "AWS Secrets Manager",
+        "gcp_secret_manager": "GCP Secret Manager",
+        "posthog_feature_flags": "PostHog Feature Flags",
+        "lemon_squeezy": "Lemon Squeezy",
+        "lm_studio": "LM Studio",
+    }
+    return display_names.get(provider_id, provider_id.replace("_", " ").title())
+
+
 def _provider_guidance(provider: str | None, action_id: str) -> str | None:
     if not provider:
         return None
     guidance = PROVIDER_ACTION_GUIDANCE.get(provider, {})
     return guidance.get(action_id) or guidance.get("inspect")
+
+
+def _default_provider_guidance(
+    *,
+    provider: str | None,
+    action: IntegrationActionDefinition,
+    command_template: str | None,
+) -> str | None:
+    if not provider or not command_template:
+        return None
+    provider_name = _provider_display_name(provider)
+    if action.mutates_remote_state:
+        return f"{provider_name} uses the local CLI when available and still mutates remote state, so approvals remain mandatory."
+    if action.action_id in {"inspect", "inspect_run", "tail_logs", "tail", "search", "draft", "open"}:
+        return f"{provider_name} uses the local CLI when available, but the result still depends on live provider state rather than repo-local proof."
+    if action.action_id in {"validate", "scan"}:
+        return f"{provider_name} uses the local CLI when available and evaluates the current repo or runtime state rather than a static registry hint."
+    return f"{provider_name} uses the local CLI when available, but the action still depends on live provider or runtime state rather than repo-local proof."
 
 
 def _read_git_remote_url(root: Path | None) -> str:
@@ -2245,7 +2285,11 @@ def preview_integration_action(
             command = _format_command(command_template, effective_params)
     executable_available = bool(command and _command_is_available(command))
     execution_mode = _execution_mode(action_id=action.action_id, command_template=command_template, provider=resolved_provider)
-    provider_guidance = _provider_guidance(resolved_provider, action.action_id)
+    provider_guidance = _provider_guidance(resolved_provider, action.action_id) or _default_provider_guidance(
+        provider=resolved_provider,
+        action=action,
+        command_template=command_template,
+    )
     notes = [
         "Mission Control previews the action before execution so approvals are tied to a concrete command or host import step.",
         "Local execution stays shell-free and only runs when the previewed executable is actually present.",

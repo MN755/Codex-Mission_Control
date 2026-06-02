@@ -1616,6 +1616,105 @@ def test_cli_backed_preview_surfaces_auth_secret_payment_and_release_guidance(mo
     assert any("live remote release state" in note.lower() for note in github_releases_preview["notes"])
 
 
+def test_default_provider_guidance_surfaces_for_ci_deploy_database_and_cluster_lanes(monkeypatch, tmp_path) -> None:
+    ci_workspace = tmp_path / "gha-repo"
+    (ci_workspace / ".github" / "workflows").mkdir(parents=True, exist_ok=True)
+    (ci_workspace / ".github" / "workflows" / "ci.yml").write_text("name: ci\n", encoding="utf-8")
+
+    deploy_workspace = tmp_path / "vercel-repo"
+    deploy_workspace.mkdir(parents=True, exist_ok=True)
+    (deploy_workspace / "vercel.json").write_text("{}\n", encoding="utf-8")
+
+    supabase_workspace = tmp_path / "supabase-repo"
+    (supabase_workspace / "supabase").mkdir(parents=True, exist_ok=True)
+    (supabase_workspace / "supabase" / "config.toml").write_text("project_id='demo'\n", encoding="utf-8")
+
+    k8s_workspace = tmp_path / "k8s-repo"
+    (k8s_workspace / "k8s").mkdir(parents=True, exist_ok=True)
+    (k8s_workspace / "k8s" / "deployment.yaml").write_text("apiVersion: apps/v1\nkind: Deployment\n", encoding="utf-8")
+
+    monkeypatch.setattr(
+        "integration_registry.shutil.which",
+        lambda command: f"C:/tools/{command}.exe" if command in {"gh", "vercel", "supabase", "kubectl"} else None,
+    )
+
+    github_actions_preview = preview_integration_action(
+        family_id="ci_cd",
+        action_id="inspect",
+        params={},
+        registry_payload=normalize_integration_registry({}, {}),
+        workspace_path=str(ci_workspace),
+        project_name="GitHub Actions Guidance Demo",
+    )
+    vercel_preview = preview_integration_action(
+        family_id="hosting_deploy",
+        action_id="deploy",
+        params={},
+        registry_payload=normalize_integration_registry({}, {}),
+        workspace_path=str(deploy_workspace),
+        project_name="Vercel Guidance Demo",
+    )
+    supabase_preview = preview_integration_action(
+        family_id="database_platforms",
+        action_id="inspect",
+        params={},
+        registry_payload=normalize_integration_registry({}, {}),
+        workspace_path=str(supabase_workspace),
+        project_name="Supabase Guidance Demo",
+    )
+    kubernetes_preview = preview_integration_action(
+        family_id="kubernetes",
+        action_id="deploy",
+        params={"path": "k8s/deployment.yaml"},
+        registry_payload=normalize_integration_registry({}, {}),
+        workspace_path=str(k8s_workspace),
+        project_name="Kubernetes Guidance Demo",
+    )
+
+    assert any("live provider state" in note.lower() for note in github_actions_preview["notes"])
+    assert any("mutates remote state" in note.lower() for note in vercel_preview["notes"])
+    assert any("live provider state" in note.lower() for note in supabase_preview["notes"])
+    assert any("mutates remote state" in note.lower() for note in kubernetes_preview["notes"])
+
+
+def test_default_provider_guidance_surfaces_for_validation_and_search_lanes(monkeypatch, tmp_path) -> None:
+    api_workspace = tmp_path / "postman-repo"
+    api_workspace.mkdir(parents=True, exist_ok=True)
+    (api_workspace / "orders.postman_collection.json").write_text('{"info":{"name":"orders"}}\n', encoding="utf-8")
+
+    search_workspace = tmp_path / "sourcegraph-repo"
+    search_workspace.mkdir(parents=True, exist_ok=True)
+    (search_workspace / "README.md").write_text("Sourcegraph handles code search.\n", encoding="utf-8")
+
+    monkeypatch.setattr(
+        "integration_registry.shutil.which",
+        lambda command: f"C:/tools/{command}.exe" if command in {"newman", "src"} else None,
+    )
+
+    postman_preview = preview_integration_action(
+        family_id="api_clients",
+        action_id="validate",
+        params={},
+        registry_payload=normalize_integration_registry({}, {}),
+        workspace_path=str(api_workspace),
+        project_name="Postman Guidance Demo",
+    )
+    sourcegraph_preview = preview_integration_action(
+        family_id="code_search",
+        action_id="search",
+        params={"query": "TODO"},
+        registry_payload=normalize_integration_registry(
+            {"connections": {"code_search": {"family": "code_search", "status": "connected", "providers": ["sourcegraph"], "connection_source": "mission_control", "host_imported": False}}},
+            {},
+        ),
+        workspace_path=str(search_workspace),
+        project_name="Sourcegraph Guidance Demo",
+    )
+
+    assert any("evaluates the current repo or runtime state" in note.lower() for note in postman_preview["notes"])
+    assert any("live provider state" in note.lower() for note in sourcegraph_preview["notes"])
+
+
 def test_host_token_aliases_detect_new_relic_launch_darkly_work_os_and_github_releases(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr("integration_registry.shutil.which", lambda _command: None)
 
