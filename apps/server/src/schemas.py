@@ -3520,6 +3520,7 @@ class ProjectIntegrationsRead(BaseModel):
     workspace_path: str | None = None
     summary: str
     family_count: int = 0
+    family_ids: list[str] = Field(default_factory=list)
     status_counts: dict[str, int] = Field(default_factory=dict)
     status_family_ids: dict[str, list[str]] = Field(default_factory=dict)
     ready_family_count: int = 0
@@ -3538,13 +3539,29 @@ class ProjectIntegrationsRead(BaseModel):
     standalone_cli_detected_family_ids: list[str] = Field(default_factory=list)
     provider_context_verified_family_count: int = 0
     provider_context_verified_family_ids: list[str] = Field(default_factory=list)
+    available_action_family_count: int = 0
+    available_action_family_ids: list[str] = Field(default_factory=list)
     available_action_count: int = 0
+    blocked_action_family_count: int = 0
+    blocked_action_family_ids: list[str] = Field(default_factory=list)
     blocked_action_count: int = 0
+    execution_action_family_count: int = 0
+    execution_action_family_ids: list[str] = Field(default_factory=list)
     execution_action_count: int = 0
+    blocked_execution_action_family_count: int = 0
+    blocked_execution_action_family_ids: list[str] = Field(default_factory=list)
     blocked_execution_action_count: int = 0
+    safe_command_family_count: int = 0
+    safe_command_family_ids: list[str] = Field(default_factory=list)
     safe_command_count: int = 0
+    available_provider_lane_family_count: int = 0
+    available_provider_lane_family_ids: list[str] = Field(default_factory=list)
     available_provider_lane_count: int = 0
+    verification_blocked_family_count: int = 0
+    verification_blocked_family_ids: list[str] = Field(default_factory=list)
     verification_blocked_action_count: int = 0
+    context_blocked_family_count: int = 0
+    context_blocked_family_ids: list[str] = Field(default_factory=list)
     context_blocked_action_count: int = 0
     families: list[ProjectIntegrationFamilyRead] = Field(default_factory=list)
 

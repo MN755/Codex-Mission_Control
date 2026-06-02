@@ -88,6 +88,7 @@ def test_project_integrations_and_action_preview_flow(client, bridge_headers, mo
     family_list = project_integrations_payload["families"]
     families = {item["family"]: item for item in family_list}
     assert project_integrations_payload["family_count"] == len(family_list)
+    assert project_integrations_payload["family_ids"] == [item["family"] for item in family_list]
     assert project_integrations_payload["ready_family_count"] == sum(1 for item in family_list if item["status"] == "ready")
     assert project_integrations_payload["partial_family_count"] == sum(1 for item in family_list if item["status"] == "partial")
     assert project_integrations_payload["needs_setup_family_count"] == sum(1 for item in family_list if item["status"] == "needs_setup")
@@ -114,13 +115,29 @@ def test_project_integrations_and_action_preview_flow(client, bridge_headers, mo
     assert project_integrations_payload["standalone_cli_detected_family_ids"] == [item["family"] for item in family_list if item["standalone_cli_detected"]]
     assert project_integrations_payload["provider_context_verified_family_count"] == sum(1 for item in family_list if item["provider_context_verified"])
     assert project_integrations_payload["provider_context_verified_family_ids"] == [item["family"] for item in family_list if item["provider_context_verified"]]
+    assert project_integrations_payload["available_action_family_count"] == sum(1 for item in family_list if item["available_action_count"] > 0)
+    assert project_integrations_payload["available_action_family_ids"] == [item["family"] for item in family_list if item["available_action_count"] > 0]
     assert project_integrations_payload["available_action_count"] == sum(item["available_action_count"] for item in family_list)
+    assert project_integrations_payload["blocked_action_family_count"] == sum(1 for item in family_list if item["blocked_action_count"] > 0)
+    assert project_integrations_payload["blocked_action_family_ids"] == [item["family"] for item in family_list if item["blocked_action_count"] > 0]
     assert project_integrations_payload["blocked_action_count"] == sum(item["blocked_action_count"] for item in family_list)
+    assert project_integrations_payload["execution_action_family_count"] == sum(1 for item in family_list if item["execution_action_count"] > 0)
+    assert project_integrations_payload["execution_action_family_ids"] == [item["family"] for item in family_list if item["execution_action_count"] > 0]
     assert project_integrations_payload["execution_action_count"] == sum(item["execution_action_count"] for item in family_list)
+    assert project_integrations_payload["blocked_execution_action_family_count"] == sum(1 for item in family_list if item["blocked_execution_action_count"] > 0)
+    assert project_integrations_payload["blocked_execution_action_family_ids"] == [item["family"] for item in family_list if item["blocked_execution_action_count"] > 0]
     assert project_integrations_payload["blocked_execution_action_count"] == sum(item["blocked_execution_action_count"] for item in family_list)
+    assert project_integrations_payload["safe_command_family_count"] == sum(1 for item in family_list if item["safe_command_action_count"] > 0)
+    assert project_integrations_payload["safe_command_family_ids"] == [item["family"] for item in family_list if item["safe_command_action_count"] > 0]
     assert project_integrations_payload["safe_command_count"] == sum(item["safe_command_action_count"] for item in family_list)
+    assert project_integrations_payload["available_provider_lane_family_count"] == sum(1 for item in family_list if item["available_provider_lane_count"] > 0)
+    assert project_integrations_payload["available_provider_lane_family_ids"] == [item["family"] for item in family_list if item["available_provider_lane_count"] > 0]
     assert project_integrations_payload["available_provider_lane_count"] == sum(item["available_provider_lane_count"] for item in family_list)
+    assert project_integrations_payload["verification_blocked_family_count"] == sum(1 for item in family_list if item["verification_blocked_action_count"] > 0)
+    assert project_integrations_payload["verification_blocked_family_ids"] == [item["family"] for item in family_list if item["verification_blocked_action_count"] > 0]
     assert project_integrations_payload["verification_blocked_action_count"] == sum(item["verification_blocked_action_count"] for item in family_list)
+    assert project_integrations_payload["context_blocked_family_count"] == sum(1 for item in family_list if item["context_blocked_action_count"] > 0)
+    assert project_integrations_payload["context_blocked_family_ids"] == [item["family"] for item in family_list if item["context_blocked_action_count"] > 0]
     assert project_integrations_payload["context_blocked_action_count"] == sum(item["context_blocked_action_count"] for item in family_list)
     assert families["source_control"]["status"] == "ready"
     assert families["containers"]["status"] == "ready"

@@ -14066,6 +14066,7 @@ class MissionControlService:
             registry_payload=registry,
         )
         family_count = len(families)
+        family_ids = [str(item.get("family") or "") for item in families]
         family_ids_by_status = {
             status_name: [str(item.get("family") or "") for item in families if str(item.get("status") or "unknown") == status_name]
             for status_name in sorted({str(item.get("status") or "unknown") for item in families})
@@ -14083,6 +14084,14 @@ class MissionControlService:
         host_import_family_ids = [str(item.get("family") or "") for item in families if item.get("host_import_detected")]
         standalone_cli_detected_family_ids = [str(item.get("family") or "") for item in families if item.get("standalone_cli_detected")]
         provider_context_verified_family_ids = [str(item.get("family") or "") for item in families if item.get("provider_context_verified")]
+        available_action_family_ids = [str(item.get("family") or "") for item in families if int(item.get("available_action_count") or 0) > 0]
+        blocked_action_family_ids = [str(item.get("family") or "") for item in families if int(item.get("blocked_action_count") or 0) > 0]
+        execution_action_family_ids = [str(item.get("family") or "") for item in families if int(item.get("execution_action_count") or 0) > 0]
+        blocked_execution_action_family_ids = [str(item.get("family") or "") for item in families if int(item.get("blocked_execution_action_count") or 0) > 0]
+        safe_command_family_ids = [str(item.get("family") or "") for item in families if int(item.get("safe_command_action_count") or 0) > 0]
+        available_provider_lane_family_ids = [str(item.get("family") or "") for item in families if int(item.get("available_provider_lane_count") or 0) > 0]
+        verification_blocked_family_ids = [str(item.get("family") or "") for item in families if int(item.get("verification_blocked_action_count") or 0) > 0]
+        context_blocked_family_ids = [str(item.get("family") or "") for item in families if int(item.get("context_blocked_action_count") or 0) > 0]
         ready_count = len(ready_family_ids)
         partial_count = len(partial_family_ids)
         needs_setup_count = len(needs_setup_family_ids)
@@ -14091,6 +14100,14 @@ class MissionControlService:
         host_import_family_count = len(host_import_family_ids)
         standalone_cli_detected_family_count = len(standalone_cli_detected_family_ids)
         provider_context_verified_family_count = len(provider_context_verified_family_ids)
+        available_action_family_count = len(available_action_family_ids)
+        blocked_action_family_count = len(blocked_action_family_ids)
+        execution_action_family_count = len(execution_action_family_ids)
+        blocked_execution_action_family_count = len(blocked_execution_action_family_ids)
+        safe_command_family_count = len(safe_command_family_ids)
+        available_provider_lane_family_count = len(available_provider_lane_family_ids)
+        verification_blocked_family_count = len(verification_blocked_family_ids)
+        context_blocked_family_count = len(context_blocked_family_ids)
         available_action_count = sum(int(item.get("available_action_count") or 0) for item in families)
         blocked_action_count = sum(int(item.get("blocked_action_count") or 0) for item in families)
         execution_action_count = sum(int(item.get("execution_action_count") or 0) for item in families)
@@ -14105,6 +14122,7 @@ class MissionControlService:
             "workspace_path": project.workspace_path,
             "summary": f"{ready_count} integration families are ready and {family_count - ready_count} still need setup or host import.",
             "family_count": family_count,
+            "family_ids": family_ids,
             "status_counts": status_counts,
             "status_family_ids": family_ids_by_status,
             "ready_family_count": ready_count,
@@ -14123,13 +14141,29 @@ class MissionControlService:
             "standalone_cli_detected_family_ids": standalone_cli_detected_family_ids,
             "provider_context_verified_family_count": provider_context_verified_family_count,
             "provider_context_verified_family_ids": provider_context_verified_family_ids,
+            "available_action_family_count": available_action_family_count,
+            "available_action_family_ids": available_action_family_ids,
             "available_action_count": available_action_count,
+            "blocked_action_family_count": blocked_action_family_count,
+            "blocked_action_family_ids": blocked_action_family_ids,
             "blocked_action_count": blocked_action_count,
+            "execution_action_family_count": execution_action_family_count,
+            "execution_action_family_ids": execution_action_family_ids,
             "execution_action_count": execution_action_count,
+            "blocked_execution_action_family_count": blocked_execution_action_family_count,
+            "blocked_execution_action_family_ids": blocked_execution_action_family_ids,
             "blocked_execution_action_count": blocked_execution_action_count,
+            "safe_command_family_count": safe_command_family_count,
+            "safe_command_family_ids": safe_command_family_ids,
             "safe_command_count": safe_command_count,
+            "available_provider_lane_family_count": available_provider_lane_family_count,
+            "available_provider_lane_family_ids": available_provider_lane_family_ids,
             "available_provider_lane_count": available_provider_lane_count,
+            "verification_blocked_family_count": verification_blocked_family_count,
+            "verification_blocked_family_ids": verification_blocked_family_ids,
             "verification_blocked_action_count": verification_blocked_action_count,
+            "context_blocked_family_count": context_blocked_family_count,
+            "context_blocked_family_ids": context_blocked_family_ids,
             "context_blocked_action_count": context_blocked_action_count,
             "families": families,
         }
