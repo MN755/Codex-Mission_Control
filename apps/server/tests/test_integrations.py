@@ -6220,14 +6220,48 @@ def test_project_integrations_surface_generic_action_groupings(monkeypatch, tmp_
     assert ci_status["action_provider_counts"] == {"github_actions": 4}
     assert ci_status["action_provider_action_ids"] == {"github_actions": ["inspect", "inspect_run", "tail_logs", "rerun"]}
     assert ci_status["action_provider_group_count"] == 1
+    assert ci_status["available_action_provider_counts"] == {"github_actions": 1}
+    assert ci_status["available_action_provider_action_ids"] == {"github_actions": ["inspect"]}
+    assert ci_status["available_action_provider_group_count"] == 1
+    assert ci_status["blocked_action_provider_counts"] == {"github_actions": 3}
+    assert ci_status["blocked_action_provider_action_ids"] == {"github_actions": ["inspect_run", "tail_logs", "rerun"]}
+    assert ci_status["blocked_action_provider_group_count"] == 1
     assert ci_status["executable_name_counts"] == {"gh": 4}
     assert ci_status["executable_name_action_ids"] == {"gh": ["inspect", "inspect_run", "tail_logs", "rerun"]}
     assert ci_status["executable_name_group_count"] == 1
+    assert ci_status["available_executable_name_counts"] == {"gh": 1}
+    assert ci_status["available_executable_name_action_ids"] == {"gh": ["inspect"]}
+    assert ci_status["available_executable_name_group_count"] == 1
+    assert ci_status["blocked_executable_name_counts"] == {"gh": 3}
+    assert ci_status["blocked_executable_name_action_ids"] == {"gh": ["inspect_run", "tail_logs", "rerun"]}
+    assert ci_status["blocked_executable_name_group_count"] == 1
+    assert ci_status["available_execution_mode_counts"] == {"registry_state": 4, "local_cli": 1}
+    assert ci_status["available_execution_mode_action_ids"] == {
+        "registry_state": ["import_host_state", "inspect_status", "connect", "disconnect"],
+        "local_cli": ["inspect"],
+    }
+    assert ci_status["available_execution_mode_group_count"] == 2
+    assert ci_status["blocked_execution_mode_counts"] == {"local_cli": 3}
+    assert ci_status["blocked_execution_mode_action_ids"] == {"local_cli": ["inspect_run", "tail_logs", "rerun"]}
+    assert ci_status["blocked_execution_mode_group_count"] == 1
+    assert ci_status["available_provider_context_status_counts"] == {"missing": 4, "inferred": 1}
+    assert ci_status["available_provider_context_status_action_ids"] == {
+        "missing": ["import_host_state", "inspect_status", "connect", "disconnect"],
+        "inferred": ["inspect"],
+    }
+    assert ci_status["available_provider_context_status_group_count"] == 2
+    assert ci_status["blocked_provider_context_status_counts"] == {"inferred": 3}
+    assert ci_status["blocked_provider_context_status_action_ids"] == {"inferred": ["inspect_run", "tail_logs", "rerun"]}
+    assert ci_status["blocked_provider_context_status_group_count"] == 1
     assert ci_status["health"]["execution_mode_counts"] == ci_status["execution_mode_counts"]
     assert ci_status["health"]["provider_support_mode_action_ids"] == ci_status["provider_support_mode_action_ids"]
     assert ci_status["health"]["action_status_group_count"] == 2
     assert ci_status["health"]["action_provider_counts"] == {"github_actions": 4}
     assert ci_status["health"]["executable_name_counts"] == {"gh": 4}
+    assert ci_status["health"]["available_action_provider_counts"] == {"github_actions": 1}
+    assert ci_status["health"]["blocked_executable_name_counts"] == {"gh": 3}
+    assert ci_status["health"]["available_execution_mode_counts"] == {"registry_state": 4, "local_cli": 1}
+    assert ci_status["health"]["blocked_provider_context_status_counts"] == {"inferred": 3}
 
     assert package_status["action_status_counts"] == {"available": 5, "needs_setup": 1}
     assert package_status["action_status_group_count"] == 2
@@ -6248,14 +6282,47 @@ def test_project_integrations_surface_generic_action_groupings(monkeypatch, tmp_
     assert package_status["action_provider_counts"] == {"npm": 2}
     assert package_status["action_provider_action_ids"] == {"npm": ["inspect", "publish"]}
     assert package_status["action_provider_group_count"] == 1
+    assert package_status["available_action_provider_counts"] == {"npm": 1}
+    assert package_status["available_action_provider_action_ids"] == {"npm": ["inspect"]}
+    assert package_status["available_action_provider_group_count"] == 1
+    assert package_status["blocked_action_provider_counts"] == {"npm": 1}
+    assert package_status["blocked_action_provider_action_ids"] == {"npm": ["publish"]}
+    assert package_status["blocked_action_provider_group_count"] == 1
     assert package_status["executable_name_counts"] == {"npm": 2}
     assert package_status["executable_name_action_ids"] == {"npm": ["inspect", "publish"]}
     assert package_status["executable_name_group_count"] == 1
+    assert package_status["available_executable_name_counts"] == {"npm": 1}
+    assert package_status["available_executable_name_action_ids"] == {"npm": ["inspect"]}
+    assert package_status["available_executable_name_group_count"] == 1
+    assert package_status["blocked_executable_name_counts"] == {"npm": 1}
+    assert package_status["blocked_executable_name_action_ids"] == {"npm": ["publish"]}
+    assert package_status["blocked_executable_name_group_count"] == 1
+    assert package_status["available_execution_mode_counts"] == {"registry_state": 4, "local_cli": 1}
+    assert package_status["available_execution_mode_action_ids"] == {
+        "registry_state": ["import_host_state", "inspect_status", "connect", "disconnect"],
+        "local_cli": ["inspect"],
+    }
+    assert package_status["available_execution_mode_group_count"] == 2
+    assert package_status["blocked_execution_mode_counts"] == {"local_cli": 1}
+    assert package_status["blocked_execution_mode_action_ids"] == {"local_cli": ["publish"]}
+    assert package_status["blocked_execution_mode_group_count"] == 1
+    assert package_status["available_provider_context_status_counts"] == {"missing": 4, "inferred": 1}
+    assert package_status["available_provider_context_status_action_ids"] == {
+        "missing": ["import_host_state", "inspect_status", "connect", "disconnect"],
+        "inferred": ["inspect"],
+    }
+    assert package_status["available_provider_context_status_group_count"] == 2
+    assert package_status["blocked_provider_context_status_counts"] == {"inferred": 1}
+    assert package_status["blocked_provider_context_status_action_ids"] == {"inferred": ["publish"]}
+    assert package_status["blocked_provider_context_status_group_count"] == 1
     assert package_status["health"]["action_status_counts"] == package_status["action_status_counts"]
     assert package_status["health"]["safe_command_reason_action_ids"] == package_status["safe_command_reason_action_ids"]
     assert package_status["health"]["provider_context_status_group_count"] == 2
     assert package_status["health"]["action_provider_action_ids"] == {"npm": ["inspect", "publish"]}
     assert package_status["health"]["executable_name_group_count"] == 1
+    assert package_status["health"]["available_action_provider_counts"] == {"npm": 1}
+    assert package_status["health"]["blocked_execution_mode_counts"] == {"local_cli": 1}
+    assert package_status["health"]["available_provider_context_status_counts"] == {"missing": 4, "inferred": 1}
 
     assert source_control["action_status_counts"] == {"available": 4, "needs_setup": 2}
     assert source_control["action_status_group_count"] == 2
@@ -6274,11 +6341,33 @@ def test_project_integrations_surface_generic_action_groupings(monkeypatch, tmp_
     assert source_control["context_requirement_reason_group_count"] == 1
     assert source_control["action_provider_counts"] == {}
     assert source_control["action_provider_group_count"] == 0
+    assert source_control["available_action_provider_counts"] == {}
+    assert source_control["available_action_provider_group_count"] == 0
+    assert source_control["blocked_action_provider_counts"] == {}
+    assert source_control["blocked_action_provider_group_count"] == 0
     assert source_control["executable_name_counts"] == {}
     assert source_control["executable_name_group_count"] == 0
+    assert source_control["available_executable_name_counts"] == {}
+    assert source_control["available_executable_name_group_count"] == 0
+    assert source_control["blocked_executable_name_counts"] == {}
+    assert source_control["blocked_executable_name_group_count"] == 0
+    assert source_control["available_execution_mode_counts"] == {"registry_state": 4}
+    assert source_control["available_execution_mode_action_ids"] == {"registry_state": ["import_host_state", "inspect_status", "connect", "disconnect"]}
+    assert source_control["available_execution_mode_group_count"] == 1
+    assert source_control["blocked_execution_mode_counts"] == {"unavailable": 2}
+    assert source_control["blocked_execution_mode_action_ids"] == {"unavailable": ["search", "create"]}
+    assert source_control["blocked_execution_mode_group_count"] == 1
+    assert source_control["available_provider_context_status_counts"] == {"missing": 4}
+    assert source_control["available_provider_context_status_action_ids"] == {"missing": ["import_host_state", "inspect_status", "connect", "disconnect"]}
+    assert source_control["available_provider_context_status_group_count"] == 1
+    assert source_control["blocked_provider_context_status_counts"] == {"missing": 2}
+    assert source_control["blocked_provider_context_status_action_ids"] == {"missing": ["search", "create"]}
+    assert source_control["blocked_provider_context_status_group_count"] == 1
     assert source_control["health"]["context_requirement_reason_counts"] == source_control["context_requirement_reason_counts"]
     assert source_control["health"]["provider_context_status_action_ids"] == source_control["provider_context_status_action_ids"]
     assert source_control["health"]["safe_command_reason_group_count"] == 1
+    assert source_control["health"]["blocked_execution_mode_counts"] == {"unavailable": 2}
+    assert source_control["health"]["available_provider_context_status_counts"] == {"missing": 4}
 
 
 def test_project_integrations_surface_action_mode_and_support_ids(monkeypatch, tmp_path) -> None:

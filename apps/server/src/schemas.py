@@ -3304,9 +3304,33 @@ class ProjectIntegrationFamilyRead(BaseModel):
     action_provider_counts: dict[str, int] = Field(default_factory=dict)
     action_provider_action_ids: dict[str, list[str]] = Field(default_factory=dict)
     action_provider_group_count: int = 0
+    available_action_provider_counts: dict[str, int] = Field(default_factory=dict)
+    available_action_provider_action_ids: dict[str, list[str]] = Field(default_factory=dict)
+    available_action_provider_group_count: int = 0
+    blocked_action_provider_counts: dict[str, int] = Field(default_factory=dict)
+    blocked_action_provider_action_ids: dict[str, list[str]] = Field(default_factory=dict)
+    blocked_action_provider_group_count: int = 0
     executable_name_counts: dict[str, int] = Field(default_factory=dict)
     executable_name_action_ids: dict[str, list[str]] = Field(default_factory=dict)
     executable_name_group_count: int = 0
+    available_executable_name_counts: dict[str, int] = Field(default_factory=dict)
+    available_executable_name_action_ids: dict[str, list[str]] = Field(default_factory=dict)
+    available_executable_name_group_count: int = 0
+    blocked_executable_name_counts: dict[str, int] = Field(default_factory=dict)
+    blocked_executable_name_action_ids: dict[str, list[str]] = Field(default_factory=dict)
+    blocked_executable_name_group_count: int = 0
+    available_execution_mode_counts: dict[str, int] = Field(default_factory=dict)
+    available_execution_mode_action_ids: dict[str, list[str]] = Field(default_factory=dict)
+    available_execution_mode_group_count: int = 0
+    blocked_execution_mode_counts: dict[str, int] = Field(default_factory=dict)
+    blocked_execution_mode_action_ids: dict[str, list[str]] = Field(default_factory=dict)
+    blocked_execution_mode_group_count: int = 0
+    available_provider_context_status_counts: dict[str, int] = Field(default_factory=dict)
+    available_provider_context_status_action_ids: dict[str, list[str]] = Field(default_factory=dict)
+    available_provider_context_status_group_count: int = 0
+    blocked_provider_context_status_counts: dict[str, int] = Field(default_factory=dict)
+    blocked_provider_context_status_action_ids: dict[str, list[str]] = Field(default_factory=dict)
+    blocked_provider_context_status_group_count: int = 0
     action_count: int = 0
     available_action_count: int = 0
     blocked_action_count: int = 0

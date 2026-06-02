@@ -3260,6 +3260,30 @@ def build_project_integration_status(
         available_execution_permission_policy_counts = _count_by_key(available_execution_actions, "permission_policy")
         available_execution_permission_policy_action_ids = _action_ids_by_key(available_execution_actions, "permission_policy")
         blocked_execution_actions = [item for item in execution_actions if item["status"] != "available"]
+        available_action_provider_counts = _count_by_key(actionable_actions, "provider")
+        available_action_provider_action_ids = _action_ids_by_key(actionable_actions, "provider")
+        available_action_provider_group_count = _group_count(available_action_provider_counts)
+        blocked_action_provider_counts = _count_by_key(blocked_actions, "provider")
+        blocked_action_provider_action_ids = _action_ids_by_key(blocked_actions, "provider")
+        blocked_action_provider_group_count = _group_count(blocked_action_provider_counts)
+        available_executable_name_counts = _count_by_key(actionable_actions, "executable_name")
+        available_executable_name_action_ids = _action_ids_by_key(actionable_actions, "executable_name")
+        available_executable_name_group_count = _group_count(available_executable_name_counts)
+        blocked_executable_name_counts = _count_by_key(blocked_actions, "executable_name")
+        blocked_executable_name_action_ids = _action_ids_by_key(blocked_actions, "executable_name")
+        blocked_executable_name_group_count = _group_count(blocked_executable_name_counts)
+        available_execution_mode_counts = _count_by_key(actionable_actions, "execution_mode")
+        available_execution_mode_action_ids = _action_ids_by_key(actionable_actions, "execution_mode")
+        available_execution_mode_group_count = _group_count(available_execution_mode_counts)
+        blocked_execution_mode_counts = _count_by_key(blocked_actions, "execution_mode")
+        blocked_execution_mode_action_ids = _action_ids_by_key(blocked_actions, "execution_mode")
+        blocked_execution_mode_group_count = _group_count(blocked_execution_mode_counts)
+        available_provider_context_status_counts = _count_by_key(actionable_actions, "provider_context_status")
+        available_provider_context_status_action_ids = _action_ids_by_key(actionable_actions, "provider_context_status")
+        available_provider_context_status_group_count = _group_count(available_provider_context_status_counts)
+        blocked_provider_context_status_counts = _count_by_key(blocked_actions, "provider_context_status")
+        blocked_provider_context_status_action_ids = _action_ids_by_key(blocked_actions, "provider_context_status")
+        blocked_provider_context_status_group_count = _group_count(blocked_provider_context_status_counts)
         blocked_execution_permission_policy_counts = _count_by_key(blocked_execution_actions, "permission_policy")
         blocked_execution_permission_policy_action_ids = _action_ids_by_key(blocked_execution_actions, "permission_policy")
         execution_permission_policy_group_count = _group_count(execution_permission_policy_counts)
@@ -3659,9 +3683,33 @@ def build_project_integration_status(
                 "action_provider_counts": action_provider_counts,
                 "action_provider_action_ids": action_provider_action_ids,
                 "action_provider_group_count": action_provider_group_count,
+                "available_action_provider_counts": available_action_provider_counts,
+                "available_action_provider_action_ids": available_action_provider_action_ids,
+                "available_action_provider_group_count": available_action_provider_group_count,
+                "blocked_action_provider_counts": blocked_action_provider_counts,
+                "blocked_action_provider_action_ids": blocked_action_provider_action_ids,
+                "blocked_action_provider_group_count": blocked_action_provider_group_count,
                 "executable_name_counts": executable_name_counts,
                 "executable_name_action_ids": executable_name_action_ids,
                 "executable_name_group_count": executable_name_group_count,
+                "available_executable_name_counts": available_executable_name_counts,
+                "available_executable_name_action_ids": available_executable_name_action_ids,
+                "available_executable_name_group_count": available_executable_name_group_count,
+                "blocked_executable_name_counts": blocked_executable_name_counts,
+                "blocked_executable_name_action_ids": blocked_executable_name_action_ids,
+                "blocked_executable_name_group_count": blocked_executable_name_group_count,
+                "available_execution_mode_counts": available_execution_mode_counts,
+                "available_execution_mode_action_ids": available_execution_mode_action_ids,
+                "available_execution_mode_group_count": available_execution_mode_group_count,
+                "blocked_execution_mode_counts": blocked_execution_mode_counts,
+                "blocked_execution_mode_action_ids": blocked_execution_mode_action_ids,
+                "blocked_execution_mode_group_count": blocked_execution_mode_group_count,
+                "available_provider_context_status_counts": available_provider_context_status_counts,
+                "available_provider_context_status_action_ids": available_provider_context_status_action_ids,
+                "available_provider_context_status_group_count": available_provider_context_status_group_count,
+                "blocked_provider_context_status_counts": blocked_provider_context_status_counts,
+                "blocked_provider_context_status_action_ids": blocked_provider_context_status_action_ids,
+                "blocked_provider_context_status_group_count": blocked_provider_context_status_group_count,
                 "available_action_count": available_action_count,
                 "blocked_action_count": len(blocked_actions),
                 "available_execution_action_count": available_execution_action_count,
@@ -3866,9 +3914,33 @@ def build_project_integration_status(
                     "action_provider_counts": action_provider_counts,
                     "action_provider_action_ids": action_provider_action_ids,
                     "action_provider_group_count": action_provider_group_count,
+                    "available_action_provider_counts": available_action_provider_counts,
+                    "available_action_provider_action_ids": available_action_provider_action_ids,
+                    "available_action_provider_group_count": available_action_provider_group_count,
+                    "blocked_action_provider_counts": blocked_action_provider_counts,
+                    "blocked_action_provider_action_ids": blocked_action_provider_action_ids,
+                    "blocked_action_provider_group_count": blocked_action_provider_group_count,
                     "executable_name_counts": executable_name_counts,
                     "executable_name_action_ids": executable_name_action_ids,
                     "executable_name_group_count": executable_name_group_count,
+                    "available_executable_name_counts": available_executable_name_counts,
+                    "available_executable_name_action_ids": available_executable_name_action_ids,
+                    "available_executable_name_group_count": available_executable_name_group_count,
+                    "blocked_executable_name_counts": blocked_executable_name_counts,
+                    "blocked_executable_name_action_ids": blocked_executable_name_action_ids,
+                    "blocked_executable_name_group_count": blocked_executable_name_group_count,
+                    "available_execution_mode_counts": available_execution_mode_counts,
+                    "available_execution_mode_action_ids": available_execution_mode_action_ids,
+                    "available_execution_mode_group_count": available_execution_mode_group_count,
+                    "blocked_execution_mode_counts": blocked_execution_mode_counts,
+                    "blocked_execution_mode_action_ids": blocked_execution_mode_action_ids,
+                    "blocked_execution_mode_group_count": blocked_execution_mode_group_count,
+                    "available_provider_context_status_counts": available_provider_context_status_counts,
+                    "available_provider_context_status_action_ids": available_provider_context_status_action_ids,
+                    "available_provider_context_status_group_count": available_provider_context_status_group_count,
+                    "blocked_provider_context_status_counts": blocked_provider_context_status_counts,
+                    "blocked_provider_context_status_action_ids": blocked_provider_context_status_action_ids,
+                    "blocked_provider_context_status_group_count": blocked_provider_context_status_group_count,
                     "blocked_action_count": len(blocked_actions),
                     "available_execution_action_count": available_execution_action_count,
                     "available_execution_action_ids": available_execution_action_ids,
