@@ -3225,6 +3225,7 @@ class ProjectIntegrationFamilyRead(BaseModel):
     project_name: str
     workspace_path: str | None = None
     status: str
+    connection_status: str = "disconnected"
     connection_source: str = "mission_control"
     host_imported: bool = False
     providers: list[str] = Field(default_factory=list)
@@ -3254,31 +3255,44 @@ class ProjectIntegrationFamilyRead(BaseModel):
     permission_policy_counts: dict[str, int] = Field(default_factory=dict)
     available_permission_policy_counts: dict[str, int] = Field(default_factory=dict)
     blocked_permission_policy_counts: dict[str, int] = Field(default_factory=dict)
+    permission_policy_group_count: int = 0
+    available_permission_policy_group_count: int = 0
+    blocked_permission_policy_group_count: int = 0
     permission_policy_action_ids: dict[str, list[str]] = Field(default_factory=dict)
     available_permission_policy_action_ids: dict[str, list[str]] = Field(default_factory=dict)
     blocked_permission_policy_action_ids: dict[str, list[str]] = Field(default_factory=dict)
     risk_level_counts: dict[str, int] = Field(default_factory=dict)
     available_risk_level_counts: dict[str, int] = Field(default_factory=dict)
     blocked_risk_level_counts: dict[str, int] = Field(default_factory=dict)
+    risk_level_group_count: int = 0
+    available_risk_level_group_count: int = 0
+    blocked_risk_level_group_count: int = 0
     risk_level_action_ids: dict[str, list[str]] = Field(default_factory=dict)
     available_risk_level_action_ids: dict[str, list[str]] = Field(default_factory=dict)
     blocked_risk_level_action_ids: dict[str, list[str]] = Field(default_factory=dict)
     available_action_count: int = 0
+    blocked_action_count: int = 0
     available_execution_action_count: int = 0
     available_execution_action_ids: list[str] = Field(default_factory=list)
     execution_required_permissions: list[str] = Field(default_factory=list)
     execution_permission_policy_counts: dict[str, int] = Field(default_factory=dict)
     execution_permission_policy_action_ids: dict[str, list[str]] = Field(default_factory=dict)
+    execution_permission_policy_group_count: int = 0
     available_execution_permission_policy_counts: dict[str, int] = Field(default_factory=dict)
     available_execution_permission_policy_action_ids: dict[str, list[str]] = Field(default_factory=dict)
+    available_execution_permission_policy_group_count: int = 0
     blocked_execution_permission_policy_counts: dict[str, int] = Field(default_factory=dict)
     blocked_execution_permission_policy_action_ids: dict[str, list[str]] = Field(default_factory=dict)
+    blocked_execution_permission_policy_group_count: int = 0
     execution_risk_level_counts: dict[str, int] = Field(default_factory=dict)
     execution_risk_level_action_ids: dict[str, list[str]] = Field(default_factory=dict)
+    execution_risk_level_group_count: int = 0
     available_execution_risk_level_counts: dict[str, int] = Field(default_factory=dict)
     available_execution_risk_level_action_ids: dict[str, list[str]] = Field(default_factory=dict)
+    available_execution_risk_level_group_count: int = 0
     blocked_execution_risk_level_counts: dict[str, int] = Field(default_factory=dict)
     blocked_execution_risk_level_action_ids: dict[str, list[str]] = Field(default_factory=dict)
+    blocked_execution_risk_level_group_count: int = 0
     local_action_count: int = 0
     available_action_ids: list[str] = Field(default_factory=list)
     blocked_action_ids: list[str] = Field(default_factory=list)
@@ -3375,8 +3389,10 @@ class ProjectIntegrationFamilyRead(BaseModel):
     commandless_execution_action_ids: list[str] = Field(default_factory=list)
     execution_block_reason_counts: dict[str, int] = Field(default_factory=dict)
     execution_block_reason_action_ids: dict[str, list[str]] = Field(default_factory=dict)
+    execution_block_reason_group_count: int = 0
     blocking_reason_counts: dict[str, int] = Field(default_factory=dict)
     blocking_reason_action_ids: dict[str, list[str]] = Field(default_factory=dict)
+    blocking_reason_group_count: int = 0
     health: dict[str, Any] = Field(default_factory=dict)
     artifacts: list[dict[str, Any]] = Field(default_factory=list)
     safe_commands: list[str] = Field(default_factory=list)

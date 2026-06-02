@@ -2312,6 +2312,10 @@ def _action_ids_by_list_members(items: list[dict[str, Any]], key: str) -> dict[s
     return {name: ids for name, ids in grouped.items() if ids}
 
 
+def _group_count(mapping: dict[str, Any]) -> int:
+    return len([key for key, value in mapping.items() if value])
+
+
 def _provider_verification_reason(
     *,
     family: IntegrationFamilyDefinition,
@@ -3206,12 +3210,18 @@ def build_project_integration_status(
         permission_policy_action_ids = _action_ids_by_key(available_actions, "permission_policy")
         available_permission_policy_action_ids = _action_ids_by_key(actionable_actions, "permission_policy")
         blocked_permission_policy_action_ids = _action_ids_by_key(blocked_actions, "permission_policy")
+        permission_policy_group_count = _group_count(permission_policy_counts)
+        available_permission_policy_group_count = _group_count(available_permission_policy_counts)
+        blocked_permission_policy_group_count = _group_count(blocked_permission_policy_counts)
         risk_level_counts = _count_by_key(available_actions, "risk_level")
         available_risk_level_counts = _count_by_key(actionable_actions, "risk_level")
         blocked_risk_level_counts = _count_by_key(blocked_actions, "risk_level")
         risk_level_action_ids = _action_ids_by_key(available_actions, "risk_level")
         available_risk_level_action_ids = _action_ids_by_key(actionable_actions, "risk_level")
         blocked_risk_level_action_ids = _action_ids_by_key(blocked_actions, "risk_level")
+        risk_level_group_count = _group_count(risk_level_counts)
+        available_risk_level_group_count = _group_count(available_risk_level_counts)
+        blocked_risk_level_group_count = _group_count(blocked_risk_level_counts)
         execution_actions = [item for item in available_actions if item["execution_mode"] != "registry_state"]
         execution_action_ids = [str(item["action_id"]) for item in execution_actions]
         available_execution_actions = [item for item in execution_actions if item["status"] == "available"]
@@ -3225,12 +3235,18 @@ def build_project_integration_status(
         blocked_execution_actions = [item for item in execution_actions if item["status"] != "available"]
         blocked_execution_permission_policy_counts = _count_by_key(blocked_execution_actions, "permission_policy")
         blocked_execution_permission_policy_action_ids = _action_ids_by_key(blocked_execution_actions, "permission_policy")
+        execution_permission_policy_group_count = _group_count(execution_permission_policy_counts)
+        available_execution_permission_policy_group_count = _group_count(available_execution_permission_policy_counts)
+        blocked_execution_permission_policy_group_count = _group_count(blocked_execution_permission_policy_counts)
         execution_risk_level_counts = _count_by_key(execution_actions, "risk_level")
         execution_risk_level_action_ids = _action_ids_by_key(execution_actions, "risk_level")
         available_execution_risk_level_counts = _count_by_key(available_execution_actions, "risk_level")
         available_execution_risk_level_action_ids = _action_ids_by_key(available_execution_actions, "risk_level")
         blocked_execution_risk_level_counts = _count_by_key(blocked_execution_actions, "risk_level")
         blocked_execution_risk_level_action_ids = _action_ids_by_key(blocked_execution_actions, "risk_level")
+        execution_risk_level_group_count = _group_count(execution_risk_level_counts)
+        available_execution_risk_level_group_count = _group_count(available_execution_risk_level_counts)
+        blocked_execution_risk_level_group_count = _group_count(blocked_execution_risk_level_counts)
         local_execution_action_count = sum(1 for item in execution_actions if item["execution_mode"] == "local_cli")
         local_execution_action_ids = [
             str(item["action_id"])
@@ -3451,6 +3467,8 @@ def build_project_integration_status(
             if count > 0
         }
         blocking_reason_counts = _count_by_list_members(blocked_execution_actions, "blocking_reasons")
+        execution_block_reason_group_count = _group_count(execution_block_reason_counts)
+        blocking_reason_group_count = _group_count(blocking_reason_counts)
         has_actionable_lane = available_action_count > registry_action_count
         has_provider_cli = not provider_cli_candidates or len(installed_provider_clis) == len(provider_cli_candidates)
         if not has_context_signal:
@@ -3528,6 +3546,7 @@ def build_project_integration_status(
                 "project_name": project_name,
                 "workspace_path": workspace_path,
                 "status": status,
+                "connection_status": connection_status,
                 "connection_source": connection.get("connection_source") or "mission_control",
                 "host_imported": bool(connection.get("host_imported")),
                 "providers": displayed_providers,
@@ -3567,25 +3586,38 @@ def build_project_integration_status(
                 "risk_level_counts": risk_level_counts,
                 "available_risk_level_counts": available_risk_level_counts,
                 "blocked_risk_level_counts": blocked_risk_level_counts,
+                "permission_policy_group_count": permission_policy_group_count,
+                "available_permission_policy_group_count": available_permission_policy_group_count,
+                "blocked_permission_policy_group_count": blocked_permission_policy_group_count,
                 "risk_level_action_ids": risk_level_action_ids,
                 "available_risk_level_action_ids": available_risk_level_action_ids,
                 "blocked_risk_level_action_ids": blocked_risk_level_action_ids,
+                "risk_level_group_count": risk_level_group_count,
+                "available_risk_level_group_count": available_risk_level_group_count,
+                "blocked_risk_level_group_count": blocked_risk_level_group_count,
                 "available_action_count": available_action_count,
+                "blocked_action_count": len(blocked_actions),
                 "available_execution_action_count": available_execution_action_count,
                 "available_execution_action_ids": available_execution_action_ids,
                 "execution_required_permissions": execution_required_permissions,
                 "execution_permission_policy_counts": execution_permission_policy_counts,
                 "execution_permission_policy_action_ids": execution_permission_policy_action_ids,
+                "execution_permission_policy_group_count": execution_permission_policy_group_count,
                 "available_execution_permission_policy_counts": available_execution_permission_policy_counts,
                 "available_execution_permission_policy_action_ids": available_execution_permission_policy_action_ids,
+                "available_execution_permission_policy_group_count": available_execution_permission_policy_group_count,
                 "blocked_execution_permission_policy_counts": blocked_execution_permission_policy_counts,
                 "blocked_execution_permission_policy_action_ids": blocked_execution_permission_policy_action_ids,
+                "blocked_execution_permission_policy_group_count": blocked_execution_permission_policy_group_count,
                 "execution_risk_level_counts": execution_risk_level_counts,
                 "execution_risk_level_action_ids": execution_risk_level_action_ids,
+                "execution_risk_level_group_count": execution_risk_level_group_count,
                 "available_execution_risk_level_counts": available_execution_risk_level_counts,
                 "available_execution_risk_level_action_ids": available_execution_risk_level_action_ids,
+                "available_execution_risk_level_group_count": available_execution_risk_level_group_count,
                 "blocked_execution_risk_level_counts": blocked_execution_risk_level_counts,
                 "blocked_execution_risk_level_action_ids": blocked_execution_risk_level_action_ids,
+                "blocked_execution_risk_level_group_count": blocked_execution_risk_level_group_count,
                 "local_action_count": local_action_count,
                 "available_action_ids": available_action_ids,
                 "blocked_action_ids": blocked_action_ids,
@@ -3682,8 +3714,10 @@ def build_project_integration_status(
                 "commandless_execution_action_ids": commandless_execution_action_ids,
                 "execution_block_reason_counts": execution_block_reason_counts,
                 "execution_block_reason_action_ids": execution_block_reason_action_ids,
+                "execution_block_reason_group_count": execution_block_reason_group_count,
                 "blocking_reason_counts": blocking_reason_counts,
                 "blocking_reason_action_ids": blocking_reason_action_ids,
+                "blocking_reason_group_count": blocking_reason_group_count,
                 "health": {
                     "cli_detected": installed_clis,
                     "resolved_cli_detected": installed_provider_clis,
@@ -3714,30 +3748,43 @@ def build_project_integration_status(
                     "permission_policy_counts": permission_policy_counts,
                     "available_permission_policy_counts": available_permission_policy_counts,
                     "blocked_permission_policy_counts": blocked_permission_policy_counts,
+                    "permission_policy_group_count": permission_policy_group_count,
+                    "available_permission_policy_group_count": available_permission_policy_group_count,
+                    "blocked_permission_policy_group_count": blocked_permission_policy_group_count,
                     "permission_policy_action_ids": permission_policy_action_ids,
                     "available_permission_policy_action_ids": available_permission_policy_action_ids,
                     "blocked_permission_policy_action_ids": blocked_permission_policy_action_ids,
                     "risk_level_counts": risk_level_counts,
                     "available_risk_level_counts": available_risk_level_counts,
                     "blocked_risk_level_counts": blocked_risk_level_counts,
+                    "risk_level_group_count": risk_level_group_count,
+                    "available_risk_level_group_count": available_risk_level_group_count,
+                    "blocked_risk_level_group_count": blocked_risk_level_group_count,
                     "risk_level_action_ids": risk_level_action_ids,
                     "available_risk_level_action_ids": available_risk_level_action_ids,
                     "blocked_risk_level_action_ids": blocked_risk_level_action_ids,
+                    "blocked_action_count": len(blocked_actions),
                     "available_execution_action_count": available_execution_action_count,
                     "available_execution_action_ids": available_execution_action_ids,
                     "execution_required_permissions": execution_required_permissions,
                     "execution_permission_policy_counts": execution_permission_policy_counts,
                     "execution_permission_policy_action_ids": execution_permission_policy_action_ids,
+                    "execution_permission_policy_group_count": execution_permission_policy_group_count,
                     "available_execution_permission_policy_counts": available_execution_permission_policy_counts,
                     "available_execution_permission_policy_action_ids": available_execution_permission_policy_action_ids,
+                    "available_execution_permission_policy_group_count": available_execution_permission_policy_group_count,
                     "blocked_execution_permission_policy_counts": blocked_execution_permission_policy_counts,
                     "blocked_execution_permission_policy_action_ids": blocked_execution_permission_policy_action_ids,
+                    "blocked_execution_permission_policy_group_count": blocked_execution_permission_policy_group_count,
                     "execution_risk_level_counts": execution_risk_level_counts,
                     "execution_risk_level_action_ids": execution_risk_level_action_ids,
+                    "execution_risk_level_group_count": execution_risk_level_group_count,
                     "available_execution_risk_level_counts": available_execution_risk_level_counts,
                     "available_execution_risk_level_action_ids": available_execution_risk_level_action_ids,
+                    "available_execution_risk_level_group_count": available_execution_risk_level_group_count,
                     "blocked_execution_risk_level_counts": blocked_execution_risk_level_counts,
                     "blocked_execution_risk_level_action_ids": blocked_execution_risk_level_action_ids,
+                    "blocked_execution_risk_level_group_count": blocked_execution_risk_level_group_count,
                     "available_action_ids": available_action_ids,
                     "blocked_action_ids": blocked_action_ids,
                     "local_action_ids": local_action_ids,
@@ -3826,8 +3873,10 @@ def build_project_integration_status(
                     "commandless_execution_action_ids": commandless_execution_action_ids,
                     "execution_block_reason_counts": execution_block_reason_counts,
                     "execution_block_reason_action_ids": execution_block_reason_action_ids,
+                    "execution_block_reason_group_count": execution_block_reason_group_count,
                     "blocking_reason_counts": blocking_reason_counts,
                     "blocking_reason_action_ids": blocking_reason_action_ids,
+                    "blocking_reason_group_count": blocking_reason_group_count,
                     "git_remote_url": git_remote_url or None,
                 },
                 "artifacts": artifacts,
