@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -666,6 +667,78 @@ PROVIDER_ACTION_OVERRIDES: dict[tuple[str, str], dict[str, Any]] = {
         "permission_policy": "ask_once_per_project",
     },
     ("storybook", "validate"): {
+        "risk_level": "low",
+        "permission_policy": "ask_once_per_project",
+    },
+    ("sentry", "tail"): {
+        "risk_level": "low",
+        "permission_policy": "ask_once_per_project",
+    },
+    ("datadog", "tail"): {
+        "risk_level": "low",
+        "permission_policy": "ask_once_per_project",
+    },
+    ("aws", "open"): {
+        "risk_level": "low",
+        "permission_policy": "ask_once_per_project",
+    },
+    ("azure", "open"): {
+        "risk_level": "low",
+        "permission_policy": "ask_once_per_project",
+    },
+    ("gcp", "open"): {
+        "risk_level": "low",
+        "permission_policy": "ask_once_per_project",
+    },
+    ("playwright", "validate"): {
+        "risk_level": "low",
+        "permission_policy": "ask_once_per_project",
+    },
+    ("cypress", "validate"): {
+        "risk_level": "low",
+        "permission_policy": "ask_once_per_project",
+    },
+    ("snyk", "scan"): {
+        "risk_level": "low",
+        "permission_policy": "ask_once_per_project",
+    },
+    ("semgrep", "scan"): {
+        "risk_level": "low",
+        "permission_policy": "ask_once_per_project",
+    },
+    ("codeql", "scan"): {
+        "risk_level": "low",
+        "permission_policy": "ask_once_per_project",
+    },
+    ("trivy", "scan"): {
+        "risk_level": "low",
+        "permission_policy": "ask_once_per_project",
+    },
+    ("gitleaks", "scan"): {
+        "risk_level": "low",
+        "permission_policy": "ask_once_per_project",
+    },
+    ("ollama", "open"): {
+        "risk_level": "low",
+        "permission_policy": "ask_once_per_project",
+    },
+    ("vllm", "open"): {
+        "risk_level": "low",
+        "permission_policy": "ask_once_per_project",
+    },
+    ("release_please", "draft"): {
+        "risk_level": "low",
+        "permission_policy": "ask_once_per_project",
+    },
+    ("changesets", "draft"): {
+        "risk_level": "low",
+        "permission_policy": "ask_once_per_project",
+    },
+    ("semantic_release", "draft"): {
+        "risk_level": "low",
+        "permission_policy": "ask_once_per_project",
+    },
+    ("github_releases", "draft"): {
         "risk_level": "low",
         "permission_policy": "ask_once_per_project",
     },
@@ -1903,13 +1976,24 @@ def _provider_hints_for_paths(family: IntegrationFamilyDefinition, matched_paths
     hints: list[str] = []
     for provider in family.providers:
         provider_tokens = _provider_hint_tokens(provider)
-        if any(token and token in path for path in lowered_paths for token in provider_tokens):
+        if any(_contains_token(path, token) for path in lowered_paths for token in provider_tokens):
             hints.append(provider)
     return _dedupe_strs(hints or [provider for provider in family.providers if provider])
 
 
 def _family_token_candidates(family: IntegrationFamilyDefinition) -> list[str]:
     return _dedupe_strs([*family.workspace_tokens, *family.host_tokens])
+
+
+def _contains_token(text: str, token: str) -> bool:
+    lowered_text = str(text or "").lower()
+    lowered_token = str(token or "").strip().lower()
+    if not lowered_text or not lowered_token:
+        return False
+    if re.fullmatch(r"[a-z0-9][a-z0-9 ._:-]*", lowered_token):
+        pattern = rf"(?<![a-z0-9]){re.escape(lowered_token)}(?![a-z0-9])"
+        return re.search(pattern, lowered_text) is not None
+    return lowered_token in lowered_text
 
 
 def _path_matches_marker(path: str, marker: str) -> bool:
@@ -2173,7 +2257,7 @@ def _host_scan_roots() -> dict[str, list[Path]]:
 
 def _token_in_path(path: Path, tokens: tuple[str, ...]) -> bool:
     normalized = path.as_posix().lower()
-    return any(token.lower() in normalized for token in tokens)
+    return any(_contains_token(normalized, token) for token in tokens)
 
 
 def import_host_state(
@@ -2377,7 +2461,7 @@ def build_project_integration_status(
         connection = _connection_status_for_family(registry, family)
         connection_status = _normalized_connection_status(connection.get("status"))
         detected_files = _family_workspace_evidence_files(family=family, relative_files=relative_files)
-        token_hits = [token for token in _family_token_candidates(family) if token and token.lower() in haystack]
+        token_hits = [token for token in _family_token_candidates(family) if token and _contains_token(haystack, token)]
         installed_clis = [cli for cli in family.cli_candidates if shutil.which(cli)]
         provider_candidates = _provider_candidates_for_family(
             family=family,
@@ -2392,6 +2476,7 @@ def build_project_integration_status(
         has_host_import = bool(connection.get("host_imported"))
         has_workspace_signal = bool(detected_files or token_hits)
         has_connection = connection_status == "connected"
+        has_context_signal = has_connection or has_host_import or has_workspace_signal
         provider_cli_candidates = list(_provider_cli_candidates(resolved_provider))
         installed_provider_clis = [cli for cli in provider_cli_candidates if shutil.which(cli)]
         available_actions: list[dict[str, Any]] = []
@@ -2418,10 +2503,10 @@ def build_project_integration_status(
             execution_mode = _execution_mode(action_id=action.action_id, command_template=action_template, provider=action_provider)
             action_ready = bool(
                 action.action_id in {"import_host_state", "connect", "disconnect", "inspect_status"}
-                or action_command_ready
+                or (action_command_ready and has_context_signal)
                 or (
                     not action_template
-                    and (has_connection or has_host_import or has_workspace_signal)
+                    and has_context_signal
                 )
             )
             available_actions.append(
@@ -2461,9 +2546,13 @@ def build_project_integration_status(
         has_actionable_lane = available_action_count > registry_action_count
         has_provider_cli = not provider_cli_candidates or len(installed_provider_clis) == len(provider_cli_candidates)
         has_any_cli_signal = bool(installed_clis)
-        if not has_any_cli_signal and not has_host_import and not has_workspace_signal and not has_connection:
-            blockers.append("No host import, local CLI, or workspace signals were detected for this family.")
-            recommended_fixes.append("Connect the provider in Mission Control or install the relevant local CLI before expecting a serious integration lane.")
+        if not has_context_signal:
+            if has_any_cli_signal:
+                blockers.append("Only standalone local CLIs were detected. Mission Control still needs workspace, host, or connection evidence before claiming this family is active.")
+                recommended_fixes.append("Connect the provider or add workspace evidence before treating this lane as configured.")
+            else:
+                blockers.append("No host import, local CLI, or workspace signals were detected for this family.")
+                recommended_fixes.append("Connect the provider in Mission Control or install the relevant local CLI before expecting a serious integration lane.")
             status = "needs_setup"
         elif has_connection and (has_actionable_lane or not provider_cli_candidates or guided_action_count > 0):
             status = "ready"
@@ -2496,8 +2585,16 @@ def build_project_integration_status(
                     git_remote_url=git_remote_url,
                 )
             ]
-            if template and not _effective_action_metadata(action, _provider).get("mutates_remote_state") and _command_is_available(template)
+            if template and has_context_signal and not _effective_action_metadata(action, _provider).get("mutates_remote_state") and _command_is_available(template)
         ]
+        signal_sources = _dedupe_strs(
+            [
+                "connection" if has_connection else "",
+                "host_import" if has_host_import else "",
+                "workspace" if has_workspace_signal else "",
+                "standalone_cli" if has_any_cli_signal and not has_context_signal else "",
+            ]
+        )
         artifacts = [{"type": "config_file", "path": path} for path in detected_files]
         artifacts.extend(
             {
@@ -2532,8 +2629,13 @@ def build_project_integration_status(
                     "resolved_cli_detected": installed_provider_clis,
                     "workspace_config_files": detected_files,
                     "workspace_token_hits": token_hits,
+                    "workspace_signal_detected": has_workspace_signal,
                     "host_imported": has_host_import,
+                    "host_import_detected": has_host_import,
                     "connection_status": connection_status,
+                    "connection_detected": has_connection,
+                    "standalone_cli_detected": has_any_cli_signal and not has_context_signal,
+                    "signal_sources": signal_sources,
                     "resolved_provider": resolved_provider,
                     "provider_candidates": provider_candidates,
                     "git_remote_url": git_remote_url or None,
@@ -2628,7 +2730,7 @@ def preview_integration_action(
     registry = normalize_integration_registry(registry_payload, {})
     connection = _connection_status_for_family(registry, family)
     detected_files = _family_workspace_evidence_files(family=family, relative_files=relative_files)
-    token_hits = [token for token in _family_token_candidates(family) if token and token.lower() in haystack]
+    token_hits = [token for token in _family_token_candidates(family) if token and _contains_token(haystack, token)]
     installed_clis = [cli for cli in family.cli_candidates if shutil.which(cli)]
     command_template, provider_candidates, resolved_provider = _resolve_provider_command(
         family=family,

@@ -4487,3 +4487,192 @@ def test_provider_specific_preview_surfaces_ci_collection_and_tofu_guidance(monk
     )
     assert "OpenTofu" in tofu_preview["provider_guidance"]
     assert tofu_preview["provider_guidance"] == tofu_preview["notes"][-1]
+
+
+def test_project_integrations_no_longer_claim_partial_from_standalone_clis_without_context(monkeypatch, tmp_path) -> None:
+    workspace = tmp_path / "plain-repo"
+    workspace.mkdir(parents=True, exist_ok=True)
+    (workspace / "README.md").write_text("Plain project documentation only.\n", encoding="utf-8")
+
+    monkeypatch.setattr(
+        "integration_registry.shutil.which",
+        lambda command: f"C:/tools/{command}.exe"
+        if command in {"gh", "npm", "newman", "playwright", "snyk", "ollama", "changeset"}
+        else None,
+    )
+
+    statuses = {
+        item["family"]: item
+        for item in build_project_integration_status(
+            workspace_path=str(workspace),
+            project_name="Standalone CLI Demo",
+            registry_payload=None,
+        )
+    }
+
+    for family_id in (
+        "source_control",
+        "api_clients",
+        "browser_testing",
+        "package_registries",
+        "security_scanners",
+        "local_model_runtimes",
+        "release_management",
+    ):
+        status = statuses[family_id]
+        assert status["status"] == "needs_setup"
+        assert status["health"]["standalone_cli_detected"] is True
+        assert status["health"]["signal_sources"] == ["standalone_cli"]
+        assert status["local_action_count"] == 0
+        assert status["safe_commands"] == []
+        assert any("standalone local clis" in blocker.lower() for blocker in status["blockers"])
+
+    source_control_search = next(item for item in statuses["source_control"]["available_actions"] if item["action_id"] == "search")
+    api_validate = next(item for item in statuses["api_clients"]["available_actions"] if item["action_id"] == "validate")
+    release_draft = next(item for item in statuses["release_management"]["available_actions"] if item["action_id"] == "draft")
+    assert source_control_search["status"] == "needs_setup"
+    assert api_validate["status"] == "needs_setup"
+    assert release_draft["status"] == "needs_setup"
+
+
+def test_workspace_token_matching_uses_boundaries_for_short_family_tokens(monkeypatch, tmp_path) -> None:
+    workspace = tmp_path / "boundary-repo"
+    workspace.mkdir(parents=True, exist_ok=True)
+    (workspace / "README.md").write_text(
+        "Workshop notes about saws, decision records, snpmodule wrappers, and cdphelper internals.\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr("integration_registry.shutil.which", lambda _command: None)
+
+    statuses = {
+        item["family"]: item
+        for item in build_project_integration_status(
+            workspace_path=str(workspace),
+            project_name="Boundary Demo",
+            registry_payload=None,
+        )
+    }
+
+    assert statuses["cloud_platforms"]["health"]["workspace_token_hits"] == []
+    assert statuses["ci_cd"]["health"]["workspace_token_hits"] == []
+    assert statuses["package_registries"]["health"]["workspace_token_hits"] == []
+    assert statuses["browser_devtools"]["health"]["workspace_token_hits"] == []
+    assert statuses["cloud_platforms"]["status"] == "needs_setup"
+    assert statuses["browser_devtools"]["status"] == "needs_setup"
+
+
+def test_provider_specific_action_overrides_relax_local_scan_and_runtime_lanes(monkeypatch, tmp_path) -> None:
+    workspace = tmp_path / "local-safety"
+    workspace.mkdir(parents=True, exist_ok=True)
+    (workspace / "playwright.config.ts").write_text("export default {};\n", encoding="utf-8")
+    (workspace / "cypress.config.ts").write_text("export default {};\n", encoding="utf-8")
+    (workspace / ".snyk").write_text("version: v1.0.0\n", encoding="utf-8")
+    (workspace / ".semgrep").mkdir(parents=True, exist_ok=True)
+    (workspace / ".semgrep" / "rules.yml").write_text("rules: []\n", encoding="utf-8")
+    (workspace / ".github").mkdir(exist_ok=True)
+    (workspace / ".github" / "codeql").mkdir(exist_ok=True)
+    (workspace / ".github" / "codeql" / "config.yml").write_text("name: codeql\n", encoding="utf-8")
+    (workspace / "trivy.yaml").write_text("scan: true\n", encoding="utf-8")
+    (workspace / ".gitleaks.toml").write_text("[allowlist]\n", encoding="utf-8")
+    (workspace / "README.md").write_text("ollama and vllm live here\n", encoding="utf-8")
+
+    monkeypatch.setattr(
+        "integration_registry.shutil.which",
+        lambda command: f"C:/tools/{command}.exe"
+        if command in {"playwright", "cypress", "snyk", "semgrep", "codeql", "trivy", "gitleaks", "ollama", "vllm"}
+        else None,
+    )
+
+    previews = [
+        preview_integration_action(family_id="browser_testing", action_id="validate", params={}, registry_payload=None, workspace_path=str(workspace), project_name="Playwright Demo"),
+        preview_integration_action(family_id="browser_testing", action_id="validate", params={}, registry_payload=normalize_integration_registry({"connections": {"browser_testing": {"family": "browser_testing", "status": "connected", "providers": ["cypress"], "connection_source": "mission_control", "host_imported": False}}}, {}), workspace_path=str(workspace), project_name="Cypress Demo"),
+        preview_integration_action(family_id="security_scanners", action_id="scan", params={}, registry_payload=normalize_integration_registry({"connections": {"security_scanners": {"family": "security_scanners", "status": "connected", "providers": ["snyk"], "connection_source": "mission_control", "host_imported": False}}}, {}), workspace_path=str(workspace), project_name="Snyk Demo"),
+        preview_integration_action(family_id="security_scanners", action_id="scan", params={}, registry_payload=normalize_integration_registry({"connections": {"security_scanners": {"family": "security_scanners", "status": "connected", "providers": ["semgrep"], "connection_source": "mission_control", "host_imported": False}}}, {}), workspace_path=str(workspace), project_name="Semgrep Demo"),
+        preview_integration_action(family_id="security_scanners", action_id="scan", params={}, registry_payload=normalize_integration_registry({"connections": {"security_scanners": {"family": "security_scanners", "status": "connected", "providers": ["codeql"], "connection_source": "mission_control", "host_imported": False}}}, {}), workspace_path=str(workspace), project_name="CodeQL Demo"),
+        preview_integration_action(family_id="security_scanners", action_id="scan", params={}, registry_payload=normalize_integration_registry({"connections": {"security_scanners": {"family": "security_scanners", "status": "connected", "providers": ["trivy"], "connection_source": "mission_control", "host_imported": False}}}, {}), workspace_path=str(workspace), project_name="Trivy Demo"),
+        preview_integration_action(family_id="security_scanners", action_id="scan", params={}, registry_payload=normalize_integration_registry({"connections": {"security_scanners": {"family": "security_scanners", "status": "connected", "providers": ["gitleaks"], "connection_source": "mission_control", "host_imported": False}}}, {}), workspace_path=str(workspace), project_name="Gitleaks Demo"),
+        preview_integration_action(family_id="local_model_runtimes", action_id="open", params={}, registry_payload=normalize_integration_registry({"connections": {"local_model_runtimes": {"family": "local_model_runtimes", "status": "connected", "providers": ["ollama"], "connection_source": "mission_control", "host_imported": False}}}, {}), workspace_path=str(workspace), project_name="Ollama Demo"),
+        preview_integration_action(family_id="local_model_runtimes", action_id="open", params={}, registry_payload=normalize_integration_registry({"connections": {"local_model_runtimes": {"family": "local_model_runtimes", "status": "connected", "providers": ["vllm"], "connection_source": "mission_control", "host_imported": False}}}, {}), workspace_path=str(workspace), project_name="vLLM Demo"),
+    ]
+
+    for preview in previews:
+        assert preview["risk_level"] == "low"
+        assert preview["permission_policy"] == "ask_once_per_project"
+        assert preview["requires_confirmation"] is False
+        assert preview["mutates_remote_state"] is False
+
+
+def test_provider_specific_action_overrides_relax_local_cloud_release_and_observability_lanes(monkeypatch, tmp_path) -> None:
+    workspace = tmp_path / "cloud-release"
+    workspace.mkdir(parents=True, exist_ok=True)
+    (workspace / "sentry.properties").write_text("defaults.url=https://example.invalid\n", encoding="utf-8")
+    (workspace / "datadog.yaml").write_text("site: datadoghq.com\n", encoding="utf-8")
+    (workspace / ".release-please-manifest.json").write_text("{}\n", encoding="utf-8")
+    (workspace / ".changeset").mkdir(parents=True, exist_ok=True)
+    (workspace / ".changeset" / "config.json").write_text("{}\n", encoding="utf-8")
+    (workspace / ".releaserc").write_text("{}\n", encoding="utf-8")
+    (workspace / "README.md").write_text("github releases and cloud workflows\n", encoding="utf-8")
+
+    monkeypatch.setattr(
+        "integration_registry.shutil.which",
+        lambda command: f"C:/tools/{command}.exe"
+        if command in {"aws", "az", "gcloud", "sentry-cli", "datadog-ci", "release-please", "changeset", "semantic-release", "gh"}
+        else None,
+    )
+
+    previews = [
+        preview_integration_action(family_id="cloud_platforms", action_id="open", params={}, registry_payload=normalize_integration_registry({"connections": {"cloud_platforms": {"family": "cloud_platforms", "status": "connected", "providers": ["aws"], "connection_source": "mission_control", "host_imported": False}}}, {}), workspace_path=str(workspace), project_name="AWS Demo"),
+        preview_integration_action(family_id="cloud_platforms", action_id="open", params={}, registry_payload=normalize_integration_registry({"connections": {"cloud_platforms": {"family": "cloud_platforms", "status": "connected", "providers": ["azure"], "connection_source": "mission_control", "host_imported": False}}}, {}), workspace_path=str(workspace), project_name="Azure Demo"),
+        preview_integration_action(family_id="cloud_platforms", action_id="open", params={}, registry_payload=normalize_integration_registry({"connections": {"cloud_platforms": {"family": "cloud_platforms", "status": "connected", "providers": ["gcp"], "connection_source": "mission_control", "host_imported": False}}}, {}), workspace_path=str(workspace), project_name="GCP Demo"),
+        preview_integration_action(family_id="observability", action_id="tail", params={}, registry_payload=normalize_integration_registry({"connections": {"observability": {"family": "observability", "status": "connected", "providers": ["sentry"], "connection_source": "mission_control", "host_imported": False}}}, {}), workspace_path=str(workspace), project_name="Sentry Demo"),
+        preview_integration_action(family_id="observability", action_id="tail", params={}, registry_payload=normalize_integration_registry({"connections": {"observability": {"family": "observability", "status": "connected", "providers": ["datadog"], "connection_source": "mission_control", "host_imported": False}}}, {}), workspace_path=str(workspace), project_name="Datadog Demo"),
+        preview_integration_action(family_id="release_management", action_id="draft", params={}, registry_payload=normalize_integration_registry({"connections": {"release_management": {"family": "release_management", "status": "connected", "providers": ["release_please"], "connection_source": "mission_control", "host_imported": False}}}, {}), workspace_path=str(workspace), project_name="Release Please Demo"),
+        preview_integration_action(family_id="release_management", action_id="draft", params={}, registry_payload=normalize_integration_registry({"connections": {"release_management": {"family": "release_management", "status": "connected", "providers": ["changesets"], "connection_source": "mission_control", "host_imported": False}}}, {}), workspace_path=str(workspace), project_name="Changesets Demo"),
+        preview_integration_action(family_id="release_management", action_id="draft", params={}, registry_payload=normalize_integration_registry({"connections": {"release_management": {"family": "release_management", "status": "connected", "providers": ["semantic_release"], "connection_source": "mission_control", "host_imported": False}}}, {}), workspace_path=str(workspace), project_name="semantic-release Demo"),
+        preview_integration_action(family_id="release_management", action_id="draft", params={}, registry_payload=normalize_integration_registry({"connections": {"release_management": {"family": "release_management", "status": "connected", "providers": ["github_releases"], "connection_source": "mission_control", "host_imported": False}}}, {}), workspace_path=str(workspace), project_name="GitHub Releases Demo"),
+    ]
+
+    for preview in previews:
+        assert preview["risk_level"] == "low"
+        assert preview["permission_policy"] == "ask_once_per_project"
+        assert preview["requires_confirmation"] is False
+        assert preview["mutates_remote_state"] is False
+
+
+def test_project_integrations_surface_signal_source_metadata(monkeypatch, tmp_path) -> None:
+    workspace = tmp_path / "signal-sources"
+    workspace.mkdir(parents=True, exist_ok=True)
+    (workspace / ".github").mkdir(exist_ok=True)
+    (workspace / ".github" / "workflows").mkdir(exist_ok=True)
+    (workspace / ".github" / "workflows" / "ci.yml").write_text("name: ci\n", encoding="utf-8")
+
+    monkeypatch.setattr("integration_registry.shutil.which", lambda command: f"C:/tools/{command}.exe" if command == "gh" else None)
+
+    registry = normalize_integration_registry(
+        {
+            "connections": {
+                "source_control": {
+                    "family": "source_control",
+                    "status": "connected",
+                    "providers": ["github"],
+                    "connection_source": "mission_control",
+                    "host_imported": False,
+                }
+            }
+        },
+        {},
+    )
+
+    statuses = build_project_integration_status(
+        workspace_path=str(workspace),
+        project_name="Signal Sources Demo",
+        registry_payload=registry,
+    )
+    source_control = next(item for item in statuses if item["family"] == "source_control")
+
+    assert source_control["health"]["connection_detected"] is True
+    assert source_control["health"]["workspace_signal_detected"] is True
+    assert source_control["health"]["host_import_detected"] is False
+    assert source_control["health"]["standalone_cli_detected"] is False
+    assert source_control["health"]["signal_sources"] == ["connection", "workspace"]
