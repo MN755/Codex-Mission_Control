@@ -6,6 +6,7 @@ import re
 import shlex
 import shutil
 import subprocess
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -2912,14 +2913,23 @@ def build_project_integration_status(
                 provider_verification_reason=provider_verification_reason,
                 suppressed_command_reason=suppressed_command_reason,
             )
-            action_ready = bool(
-                action.action_id in {"import_host_state", "connect", "disconnect", "inspect_status"}
-                or (preflight["command_ready"] and has_context_signal)
-                or (
-                    execution_mode in {"guided_remote", "registry_state"}
-                    and has_context_signal
+            action_ready = False
+            if action.action_id in {"import_host_state", "connect", "disconnect", "inspect_status"}:
+                action_ready = True
+            elif execution_mode == "guided_remote":
+                action_ready = bool(
+                    has_context_signal
+                    and not preflight["missing_params"]
+                    and not provider_verification_required
+                    and not context_required
                 )
-            )
+            elif execution_mode == "registry_state":
+                action_ready = bool(
+                    has_context_signal
+                    and not preflight["missing_params"]
+                )
+            else:
+                action_ready = bool(preflight["preflight_ready"] and has_context_signal)
             if provider_verification_required:
                 action_ready = False
             available_actions.append(
@@ -3000,12 +3010,27 @@ def build_project_integration_status(
         verification_blocked_guided_action_count = sum(
             1 for item in available_actions if item.get("verification_scope") == "guided_remote_mutation"
         )
+        verification_blocked_guided_action_ids = [
+            str(item["action_id"])
+            for item in available_actions
+            if item.get("verification_scope") == "guided_remote_mutation"
+        ]
         verification_blocked_local_action_count = sum(
             1 for item in available_actions if item.get("verification_scope") == "local_cli_mutation"
         )
+        verification_blocked_local_action_ids = [
+            str(item["action_id"])
+            for item in available_actions
+            if item.get("verification_scope") == "local_cli_mutation"
+        ]
         execution_actions = [item for item in available_actions if item["execution_mode"] != "registry_state"]
         execution_action_count = len(execution_actions)
         blocked_execution_action_count = sum(1 for item in execution_actions if item["status"] != "available")
+        blocked_execution_action_ids = [
+            str(item["action_id"])
+            for item in execution_actions
+            if item["status"] != "available"
+        ]
         preflight_ready_action_count = sum(1 for item in execution_actions if item["preflight_ready"])
         confirmation_eligible_action_count = sum(1 for item in execution_actions if item["confirmation_eligible"])
         ready_to_execute_action_count = sum(1 for item in execution_actions if item["ready_to_execute"])
@@ -3016,16 +3041,45 @@ def build_project_integration_status(
         missing_executable_action_count = sum(1 for item in execution_actions if item.get("execution_block_reason") == "missing_executable")
         no_local_command_action_count = sum(1 for item in execution_actions if item.get("execution_block_reason") == "no_local_command")
         provider_context_blocked_action_count = sum(1 for item in execution_actions if item.get("execution_block_reason") == "provider_context_missing")
+        context_blocked_action_ids = [
+            str(item["action_id"])
+            for item in available_actions
+            if item["context_required"]
+        ]
         missing_params_action_ids = [
             str(item["action_id"])
             for item in execution_actions
             if item.get("execution_block_reason") == "missing_params"
+        ]
+        missing_executable_action_ids = [
+            str(item["action_id"])
+            for item in execution_actions
+            if item.get("execution_block_reason") == "missing_executable"
+        ]
+        no_local_command_action_ids = [
+            str(item["action_id"])
+            for item in execution_actions
+            if item.get("execution_block_reason") == "no_local_command"
+        ]
+        provider_context_blocked_action_ids = [
+            str(item["action_id"])
+            for item in execution_actions
+            if item.get("execution_block_reason") == "provider_context_missing"
         ]
         defaulted_param_action_ids = [
             str(item["action_id"])
             for item in execution_actions
             if item["defaulted_params"]
         ]
+        execution_block_reason_counts = {
+            reason: count
+            for reason, count in Counter(
+                str(item["execution_block_reason"])
+                for item in execution_actions
+                if item.get("execution_block_reason")
+            ).items()
+            if count > 0
+        }
         has_actionable_lane = available_action_count > registry_action_count
         has_provider_cli = not provider_cli_candidates or len(installed_provider_clis) == len(provider_cli_candidates)
         if not has_context_signal:
@@ -3136,11 +3190,16 @@ def build_project_integration_status(
                 "guided_only_action_count": guided_only_action_count,
                 "available_provider_lane_count": available_provider_lane_count,
                 "context_blocked_action_count": context_blocked_action_count,
+                "context_blocked_action_ids": context_blocked_action_ids,
                 "verification_blocked_action_count": verification_blocked_action_count,
+                "verification_blocked_action_ids": verification_blocked_action_ids,
                 "verification_blocked_guided_action_count": verification_blocked_guided_action_count,
+                "verification_blocked_guided_action_ids": verification_blocked_guided_action_ids,
                 "verification_blocked_local_action_count": verification_blocked_local_action_count,
+                "verification_blocked_local_action_ids": verification_blocked_local_action_ids,
                 "execution_action_count": execution_action_count,
                 "blocked_execution_action_count": blocked_execution_action_count,
+                "blocked_execution_action_ids": blocked_execution_action_ids,
                 "preflight_ready_action_count": preflight_ready_action_count,
                 "confirmation_eligible_action_count": confirmation_eligible_action_count,
                 "ready_to_execute_action_count": ready_to_execute_action_count,
@@ -3148,9 +3207,15 @@ def build_project_integration_status(
                 "params_complete_action_count": params_complete_action_count,
                 "defaulted_param_action_count": defaulted_param_action_count,
                 "missing_params_action_count": missing_params_action_count,
+                "missing_params_action_ids": missing_params_action_ids,
                 "missing_executable_action_count": missing_executable_action_count,
+                "missing_executable_action_ids": missing_executable_action_ids,
                 "no_local_command_action_count": no_local_command_action_count,
+                "no_local_command_action_ids": no_local_command_action_ids,
                 "provider_context_blocked_action_count": provider_context_blocked_action_count,
+                "provider_context_blocked_action_ids": provider_context_blocked_action_ids,
+                "defaulted_param_action_ids": defaulted_param_action_ids,
+                "execution_block_reason_counts": execution_block_reason_counts,
                 "health": {
                     "cli_detected": installed_clis,
                     "resolved_cli_detected": installed_provider_clis,
@@ -3180,9 +3245,12 @@ def build_project_integration_status(
                     "provider_candidates": provider_candidates,
                     "verification_blocked_action_ids": verification_blocked_action_ids,
                     "verification_blocked_guided_action_count": verification_blocked_guided_action_count,
+                    "verification_blocked_guided_action_ids": verification_blocked_guided_action_ids,
                     "verification_blocked_local_action_count": verification_blocked_local_action_count,
+                    "verification_blocked_local_action_ids": verification_blocked_local_action_ids,
                     "execution_action_count": execution_action_count,
                     "blocked_execution_action_count": blocked_execution_action_count,
+                    "blocked_execution_action_ids": blocked_execution_action_ids,
                     "preflight_ready_action_count": preflight_ready_action_count,
                     "confirmation_eligible_action_count": confirmation_eligible_action_count,
                     "ready_to_execute_action_count": ready_to_execute_action_count,
@@ -3190,11 +3258,16 @@ def build_project_integration_status(
                     "params_complete_action_count": params_complete_action_count,
                     "defaulted_param_action_count": defaulted_param_action_count,
                     "missing_params_action_count": missing_params_action_count,
-                    "missing_executable_action_count": missing_executable_action_count,
-                    "no_local_command_action_count": no_local_command_action_count,
-                    "provider_context_blocked_action_count": provider_context_blocked_action_count,
                     "missing_params_action_ids": missing_params_action_ids,
+                    "missing_executable_action_count": missing_executable_action_count,
+                    "missing_executable_action_ids": missing_executable_action_ids,
+                    "no_local_command_action_count": no_local_command_action_count,
+                    "no_local_command_action_ids": no_local_command_action_ids,
+                    "provider_context_blocked_action_count": provider_context_blocked_action_count,
+                    "provider_context_blocked_action_ids": provider_context_blocked_action_ids,
+                    "context_blocked_action_ids": context_blocked_action_ids,
                     "defaulted_param_action_ids": defaulted_param_action_ids,
+                    "execution_block_reason_counts": execution_block_reason_counts,
                     "git_remote_url": git_remote_url or None,
                 },
                 "artifacts": artifacts,
@@ -3437,7 +3510,14 @@ def preview_integration_action(
         "preview_supported": action.preview_supported,
         "mutates_remote_state": bool(action_metadata["mutates_remote_state"]),
         "requires_confirmation": bool(action_metadata["requires_confirmation"]),
+        "required_params": _dedupe_strs(
+            [
+                *[str(item) for item in action.required_params],
+                *[str(item) for item in _provider_extra_required_params(resolved_provider, action.action_id)],
+            ]
+        ),
         "missing_params": missing,
+        "params_complete": not missing,
         "provider": resolved_provider,
         "provider_candidates": provider_candidates,
         "provider_signal_breakdown": provider_signal_breakdown,

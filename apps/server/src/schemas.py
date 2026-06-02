@@ -3227,11 +3227,16 @@ class ProjectIntegrationFamilyRead(BaseModel):
     guided_only_action_count: int = 0
     available_provider_lane_count: int = 0
     context_blocked_action_count: int = 0
+    context_blocked_action_ids: list[str] = Field(default_factory=list)
     verification_blocked_action_count: int = 0
+    verification_blocked_action_ids: list[str] = Field(default_factory=list)
     verification_blocked_guided_action_count: int = 0
+    verification_blocked_guided_action_ids: list[str] = Field(default_factory=list)
     verification_blocked_local_action_count: int = 0
+    verification_blocked_local_action_ids: list[str] = Field(default_factory=list)
     execution_action_count: int = 0
     blocked_execution_action_count: int = 0
+    blocked_execution_action_ids: list[str] = Field(default_factory=list)
     preflight_ready_action_count: int = 0
     confirmation_eligible_action_count: int = 0
     ready_to_execute_action_count: int = 0
@@ -3239,9 +3244,15 @@ class ProjectIntegrationFamilyRead(BaseModel):
     params_complete_action_count: int = 0
     defaulted_param_action_count: int = 0
     missing_params_action_count: int = 0
+    missing_params_action_ids: list[str] = Field(default_factory=list)
     missing_executable_action_count: int = 0
+    missing_executable_action_ids: list[str] = Field(default_factory=list)
     no_local_command_action_count: int = 0
+    no_local_command_action_ids: list[str] = Field(default_factory=list)
     provider_context_blocked_action_count: int = 0
+    provider_context_blocked_action_ids: list[str] = Field(default_factory=list)
+    defaulted_param_action_ids: list[str] = Field(default_factory=list)
+    execution_block_reason_counts: dict[str, int] = Field(default_factory=dict)
     health: dict[str, Any] = Field(default_factory=dict)
     artifacts: list[dict[str, Any]] = Field(default_factory=list)
     safe_commands: list[str] = Field(default_factory=list)
@@ -3277,7 +3288,9 @@ class IntegrationActionPreviewRead(BaseModel):
     preview_supported: bool = True
     mutates_remote_state: bool = False
     requires_confirmation: bool = False
+    required_params: list[str] = Field(default_factory=list)
     missing_params: list[str] = Field(default_factory=list)
+    params_complete: bool = True
     provider: str | None = None
     provider_candidates: list[str] = Field(default_factory=list)
     provider_signal_breakdown: dict[str, Any] = Field(default_factory=dict)

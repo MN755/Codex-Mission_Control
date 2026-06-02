@@ -858,7 +858,9 @@ def test_provider_specific_preview_surfaces_jira_create_param_requirements(monke
     )
 
     assert preview["provider"] == "jira"
+    assert sorted(preview["required_params"]) == ["body", "issue_type", "project_key", "title"]
     assert sorted(preview["missing_params"]) == ["issue_type", "project_key"]
+    assert preview["params_complete"] is False
     assert 'acli jira workitem create' in str(preview["command"])
     assert preview["execution_mode"] == "local_cli"
 
@@ -5814,6 +5816,53 @@ def test_project_integrations_surface_missing_and_defaulted_params_in_action_sta
     assert "inspect" in statuses["openapi"]["health"]["defaulted_param_action_ids"]
 
 
+def test_project_integrations_surface_execution_block_reason_inventories(monkeypatch, tmp_path) -> None:
+    workspace = tmp_path / "inventory-demo"
+    (workspace / ".github" / "workflows").mkdir(parents=True, exist_ok=True)
+    (workspace / ".github" / "workflows" / "ci.yml").write_text("name: ci\n", encoding="utf-8")
+    (workspace / "package.json").write_text('{"name":"inventory-demo"}\n', encoding="utf-8")
+
+    monkeypatch.setattr(
+        "integration_registry.shutil.which",
+        lambda command: f"C:/tools/{command}.exe" if command in {"gh", "npm"} else None,
+    )
+
+    statuses = {
+        item["family"]: item
+        for item in build_project_integration_status(
+            registry_payload=normalize_integration_registry({}, {}),
+            workspace_path=str(workspace),
+            project_name="Inventory Demo",
+        )
+    }
+
+    ci_status = statuses["ci_cd"]
+    package_status = statuses["package_registries"]
+
+    assert ci_status["execution_block_reason_counts"]["missing_params"] >= 3
+    assert "inspect_run" in ci_status["missing_params_action_ids"]
+    assert "rerun" in ci_status["blocked_execution_action_ids"]
+    assert "inspect_run" in ci_status["health"]["blocked_execution_action_ids"]
+    assert "inspect_run" in ci_status["health"]["missing_params_action_ids"]
+    assert ci_status["health"]["execution_block_reason_counts"]["missing_params"] >= 3
+    assert ci_status["context_blocked_action_ids"] == []
+    assert ci_status["health"]["context_blocked_action_ids"] == []
+    assert ci_status["missing_executable_action_ids"] == []
+    assert ci_status["no_local_command_action_ids"] == []
+
+    assert package_status["verification_blocked_action_count"] >= 1
+    assert "publish" in package_status["verification_blocked_action_ids"]
+    assert "publish" in package_status["verification_blocked_local_action_ids"]
+    assert "publish" in package_status["blocked_execution_action_ids"]
+    assert package_status["execution_block_reason_counts"]["provider_verification_required"] >= 1
+    assert "publish" in package_status["health"]["verification_blocked_action_ids"]
+    assert "publish" in package_status["health"]["verification_blocked_local_action_ids"]
+    assert "publish" in package_status["health"]["blocked_execution_action_ids"]
+    assert package_status["health"]["execution_block_reason_counts"]["provider_verification_required"] >= 1
+    assert package_status["verification_blocked_guided_action_ids"] == []
+    assert package_status["health"]["verification_blocked_guided_action_ids"] == []
+
+
 def test_execute_integration_action_blocks_missing_executable_before_confirmation(monkeypatch) -> None:
     monkeypatch.setattr("integration_registry.shutil.which", lambda _command: None)
 
@@ -5873,7 +5922,9 @@ def test_execute_integration_action_reports_missing_params_with_reason(monkeypat
     )
 
     assert result["status"] == "blocked"
+    assert sorted(result["required_params"]) == ["body", "title"]
     assert result["missing_params"] == ["body"]
+    assert result["params_complete"] is False
     assert result["execution_block_reason"] == "missing_params"
     assert result["preflight_ready"] is False
     assert result["confirmation_eligible"] is False
