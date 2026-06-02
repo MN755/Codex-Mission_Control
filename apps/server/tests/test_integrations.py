@@ -3327,3 +3327,211 @@ def test_project_integrations_surface_provider_specific_required_params_and_host
     assert create_action["required_params"] == ["title", "body", "project_key", "issue_type"]
     assert create_action["command_ready"] is True
     assert create_action["execution_mode"] == "local_cli"
+
+
+def test_project_integrations_detect_terraform_provider_and_cli_from_workspace(monkeypatch, tmp_path) -> None:
+    workspace = tmp_path / "terraform-repo"
+    workspace.mkdir(parents=True, exist_ok=True)
+    (workspace / "main.tf").write_text("terraform {}\n", encoding="utf-8")
+
+    monkeypatch.setattr(
+        "integration_registry.shutil.which",
+        lambda command: f"C:/tools/{command}.exe" if command == "terraform" else None,
+    )
+
+    status = {
+        item["family"]: item
+        for item in build_project_integration_status(
+            workspace_path=str(workspace),
+            project_name="Terraform Workspace Demo",
+            registry_payload=normalize_integration_registry({}, {}),
+        )
+    }["terraform"]
+
+    assert status["resolved_provider"] == "terraform"
+    assert status["resolved_cli_candidates"] == ["terraform"]
+    assert status["status"] == "ready"
+    assert status["health"]["resolved_cli_detected"] == ["terraform"]
+
+
+def test_project_integrations_detect_mintlify_provider_and_cli_from_workspace(monkeypatch, tmp_path) -> None:
+    workspace = tmp_path / "mintlify-repo"
+    workspace.mkdir(parents=True, exist_ok=True)
+    (workspace / "mint.json").write_text('{"name":"Docs"}\n', encoding="utf-8")
+
+    monkeypatch.setattr(
+        "integration_registry.shutil.which",
+        lambda command: f"C:/tools/{command}.exe" if command == "mintlify" else None,
+    )
+
+    status = {
+        item["family"]: item
+        for item in build_project_integration_status(
+            workspace_path=str(workspace),
+            project_name="Mintlify Workspace Demo",
+            registry_payload=normalize_integration_registry({}, {}),
+        )
+    }["docs_systems"]
+
+    assert status["resolved_provider"] == "mintlify"
+    assert status["resolved_cli_candidates"] == ["mintlify"]
+    assert status["status"] == "ready"
+    assert status["health"]["resolved_cli_detected"] == ["mintlify"]
+
+
+def test_project_integrations_expose_cloud_provider_cli_candidates(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "integration_registry.shutil.which",
+        lambda command: f"C:/tools/{command}.exe" if command in {"aws", "az", "gcloud"} else None,
+    )
+
+    aws_status = {
+        item["family"]: item
+        for item in build_project_integration_status(
+            workspace_path=None,
+            project_name="AWS Ready Demo",
+            registry_payload=normalize_integration_registry(
+                {"connections": {"cloud_platforms": {"family": "cloud_platforms", "status": "connected", "providers": ["aws"], "connection_source": "mission_control", "host_imported": False}}},
+                {},
+            ),
+        )
+    }["cloud_platforms"]
+    azure_status = {
+        item["family"]: item
+        for item in build_project_integration_status(
+            workspace_path=None,
+            project_name="Azure Ready Demo",
+            registry_payload=normalize_integration_registry(
+                {"connections": {"cloud_platforms": {"family": "cloud_platforms", "status": "connected", "providers": ["azure"], "connection_source": "mission_control", "host_imported": False}}},
+                {},
+            ),
+        )
+    }["cloud_platforms"]
+    gcp_status = {
+        item["family"]: item
+        for item in build_project_integration_status(
+            workspace_path=None,
+            project_name="GCP Ready Demo",
+            registry_payload=normalize_integration_registry(
+                {"connections": {"cloud_platforms": {"family": "cloud_platforms", "status": "connected", "providers": ["gcp"], "connection_source": "mission_control", "host_imported": False}}},
+                {},
+            ),
+        )
+    }["cloud_platforms"]
+
+    assert aws_status["resolved_provider"] == "aws"
+    assert aws_status["resolved_cli_candidates"] == ["aws"]
+    assert azure_status["resolved_provider"] == "azure"
+    assert azure_status["resolved_cli_candidates"] == ["az"]
+    assert gcp_status["resolved_provider"] == "gcp"
+    assert gcp_status["resolved_cli_candidates"] == ["gcloud"]
+
+
+def test_project_integrations_expose_browser_runner_and_gitleaks_cli_candidates(monkeypatch, tmp_path) -> None:
+    playwright_workspace = tmp_path / "playwright-repo"
+    playwright_workspace.mkdir(parents=True, exist_ok=True)
+    (playwright_workspace / "playwright.config.ts").write_text("export default {};\n", encoding="utf-8")
+
+    cypress_workspace = tmp_path / "cypress-repo"
+    cypress_workspace.mkdir(parents=True, exist_ok=True)
+    (cypress_workspace / "cypress.config.ts").write_text("export default {};\n", encoding="utf-8")
+
+    gitleaks_workspace = tmp_path / "gitleaks-repo"
+    gitleaks_workspace.mkdir(parents=True, exist_ok=True)
+    (gitleaks_workspace / ".gitleaks.toml").write_text("title = \"demo\"\n", encoding="utf-8")
+
+    monkeypatch.setattr(
+        "integration_registry.shutil.which",
+        lambda command: f"C:/tools/{command}.exe" if command in {"playwright", "cypress", "gitleaks"} else None,
+    )
+
+    playwright_status = {
+        item["family"]: item
+        for item in build_project_integration_status(
+            workspace_path=str(playwright_workspace),
+            project_name="Playwright Ready Demo",
+            registry_payload=normalize_integration_registry({}, {}),
+        )
+    }["browser_testing"]
+    cypress_status = {
+        item["family"]: item
+        for item in build_project_integration_status(
+            workspace_path=str(cypress_workspace),
+            project_name="Cypress Ready Demo",
+            registry_payload=normalize_integration_registry({}, {}),
+        )
+    }["browser_testing"]
+    gitleaks_status = {
+        item["family"]: item
+        for item in build_project_integration_status(
+            workspace_path=str(gitleaks_workspace),
+            project_name="Gitleaks Ready Demo",
+            registry_payload=normalize_integration_registry({}, {}),
+        )
+    }["security_scanners"]
+
+    assert playwright_status["resolved_provider"] == "playwright"
+    assert playwright_status["resolved_cli_candidates"] == ["playwright"]
+    assert cypress_status["resolved_provider"] == "cypress"
+    assert cypress_status["resolved_cli_candidates"] == ["cypress"]
+    assert gitleaks_status["resolved_provider"] == "gitleaks"
+    assert gitleaks_status["resolved_cli_candidates"] == ["gitleaks"]
+
+
+def test_provider_token_matching_no_longer_confuses_doppler_with_onepassword(monkeypatch, tmp_path) -> None:
+    workspace = tmp_path / "doppler-repo"
+    workspace.mkdir(parents=True, exist_ok=True)
+    (workspace / "README.md").write_text("Doppler manages secrets for this service.\n", encoding="utf-8")
+
+    monkeypatch.setattr(
+        "integration_registry.shutil.which",
+        lambda command: f"C:/tools/{command}.exe" if command == "doppler" else None,
+    )
+
+    status = {
+        item["family"]: item
+        for item in build_project_integration_status(
+            workspace_path=str(workspace),
+            project_name="Doppler Workspace Demo",
+            registry_payload=normalize_integration_registry({}, {}),
+        )
+    }["secrets"]
+
+    assert status["resolved_provider"] == "doppler"
+    assert status["resolved_cli_candidates"] == ["doppler"]
+    assert status["health"]["resolved_cli_detected"] == ["doppler"]
+
+
+def test_project_integrations_detect_ollama_provider_and_preview_open_lane(monkeypatch, tmp_path) -> None:
+    workspace = tmp_path / "ollama-repo"
+    workspace.mkdir(parents=True, exist_ok=True)
+    (workspace / "README.md").write_text("Ollama serves local checkpoints for this project.\n", encoding="utf-8")
+
+    monkeypatch.setattr(
+        "integration_registry.shutil.which",
+        lambda command: f"C:/tools/{command}.exe" if command == "ollama" else None,
+    )
+
+    status = {
+        item["family"]: item
+        for item in build_project_integration_status(
+            workspace_path=str(workspace),
+            project_name="Ollama Workspace Demo",
+            registry_payload=normalize_integration_registry({}, {}),
+        )
+    }["local_model_runtimes"]
+    preview = preview_integration_action(
+        family_id="local_model_runtimes",
+        action_id="open",
+        params={},
+        registry_payload=normalize_integration_registry({}, {}),
+        workspace_path=str(workspace),
+        project_name="Ollama Workspace Demo",
+    )
+
+    assert status["resolved_provider"] == "ollama"
+    assert status["resolved_cli_candidates"] == ["ollama"]
+    assert status["health"]["resolved_cli_detected"] == ["ollama"]
+    assert preview["provider"] == "ollama"
+    assert preview["command"] == "ollama serve"
+    assert preview["command_ready"] is True

@@ -58,6 +58,11 @@ PROVIDER_CLIS: dict[str, tuple[str, ...]] = {
     "railway": ("railway",),
     "render": ("render",),
     "storybook": ("npm",),
+    "mintlify": ("mintlify",),
+    "terraform": ("terraform",),
+    "aws": ("aws",),
+    "azure": ("az",),
+    "gcp": ("gcloud",),
     "npm": ("npm",),
     "pypi": ("twine",),
     "maven": ("mvn",),
@@ -97,6 +102,10 @@ PROVIDER_CLIS: dict[str, tuple[str, ...]] = {
     "auth0": ("auth0",),
     "firebase_auth": ("firebase",),
     "supabase_auth": ("supabase",),
+    "playwright": ("playwright",),
+    "cypress": ("cypress",),
+    "gitleaks": ("gitleaks",),
+    "ollama": ("ollama",),
 }
 
 PROVIDER_WORKSPACE_MARKERS: dict[str, tuple[str, ...]] = {
@@ -137,10 +146,13 @@ PROVIDER_WORKSPACE_MARKERS: dict[str, tuple[str, ...]] = {
     "insomnia": (".insomnia", "insomnia.json", ".insomnia.json"),
     "bruno": ("bruno.json",),
     "auth0": (".auth0", "auth0.json", ".auth0.json"),
+    "terraform": ("main.tf", "versions.tf", "terraform.tfvars"),
     "opentofu": ("tofu.hcl",),
+    "mintlify": ("mint.json",),
     "docusaurus": ("docusaurus.config.js", "docusaurus.config.ts", "docusaurus.config.mjs"),
     "playwright": ("playwright.config.ts", "playwright.config.js"),
     "cypress": ("cypress.config.ts", "cypress.config.js"),
+    "gitleaks": (".gitleaks.toml",),
     "changesets": (".changeset",),
     "release_please": (".release-please-manifest.json", "release-please-config.json"),
     "semantic_release": (".releaserc", ".releaserc.json", ".releaserc.yml", ".releaserc.yaml", "release.config.js", "release.config.cjs"),
@@ -223,10 +235,17 @@ PROVIDER_TOKEN_MARKERS: dict[str, tuple[str, ...]] = {
     "insomnia": ("insomnia", "inso"),
     "bruno": ("bruno", "bru"),
     "auth0": ("auth0",),
+    "terraform": ("terraform",),
+    "aws": ("aws", "amazon web services"),
+    "azure": ("azure",),
+    "gcp": ("gcp", "google cloud", "gcloud"),
+    "mintlify": ("mintlify",),
     "opentofu": ("opentofu", "tofu",),
     "docusaurus": ("docusaurus",),
     "playwright": ("playwright",),
     "cypress": ("cypress",),
+    "gitleaks": ("gitleaks",),
+    "ollama": ("ollama",),
     "changesets": ("changesets", ".changeset",),
     "launchnotes": ("launchnotes", "launch notes"),
     "dependabot": ("dependabot", "dependabot alerts"),
@@ -286,6 +305,26 @@ PROVIDER_ACTION_GUIDANCE: dict[str, dict[str, str]] = {
     "confluence": {
         "inspect": "Confluence is intentionally a guided remote lane here. Use the host-integrated or API-backed documentation lane instead of pretending a local CLI exists.",
         "sync": "Confluence sync should route through a verified host or API-backed lane.",
+    },
+    "mintlify": {
+        "inspect": "Mintlify inspection uses the local CLI when available, but it still reflects the current docs workspace and CLI environment rather than a static repo promise.",
+        "sync": "Mintlify sync should use the verified local docs CLI or a host-backed publishing lane instead of pretending the repo alone proves a live docs session.",
+    },
+    "terraform": {
+        "validate": "Terraform validation uses the local CLI when available, but it still reflects the current workspace and provider configuration rather than repo hints alone.",
+        "deploy": "Terraform apply uses the local CLI when available and still mutates live infrastructure state, so approvals remain mandatory.",
+    },
+    "aws": {
+        "inspect": "AWS inspection uses live CLI auth and reflects the active cloud account context rather than repo-local proof.",
+        "open": "AWS context refresh uses the local CLI when available and still depends on live cloud auth state.",
+    },
+    "azure": {
+        "inspect": "Azure inspection uses live CLI auth and reflects the active subscription context rather than repo-local proof.",
+        "open": "Azure context refresh uses the local CLI when available and still depends on live cloud auth state.",
+    },
+    "gcp": {
+        "inspect": "GCP inspection uses live CLI auth and reflects the active project context rather than repo-local proof.",
+        "open": "GCP context refresh uses the local CLI when available and still depends on live cloud auth state.",
     },
     "auth0": {
         "inspect": "Auth0 inspection uses the local CLI when available, but it still represents live remote auth state, not a repo-only guarantee.",
@@ -348,6 +387,19 @@ PROVIDER_ACTION_GUIDANCE: dict[str, dict[str, str]] = {
     },
     "opengrok": {
         "search": "OpenGrok search should route through a verified host or API-backed search lane instead of a fake local CLI here.",
+    },
+    "playwright": {
+        "validate": "Playwright validation uses the local CLI when available and reflects the current browser-test workspace rather than a static repo hint.",
+    },
+    "cypress": {
+        "validate": "Cypress validation uses the local CLI when available and reflects the current browser-test workspace rather than a static repo hint.",
+    },
+    "gitleaks": {
+        "scan": "Gitleaks scans use the local CLI when available and reflect the current repository contents rather than a static repo hint.",
+    },
+    "ollama": {
+        "inspect": "Ollama inspection uses the local runtime CLI when available and reflects live local model state rather than repo-local proof.",
+        "open": "Ollama runtime startup uses the local CLI when available and still depends on live local runtime state.",
     },
     "paddle": {
         "inspect": "Paddle sandbox inspection should route through a verified host or API-backed payment lane instead of a fake local CLI.",
@@ -1493,6 +1545,7 @@ def _provider_command_template(provider: str, action_id: str) -> str | None:
         },
         "ollama": {
             "inspect": "ollama list",
+            "open": "ollama serve",
         },
         "snyk": {
             "scan": "snyk test --json",
@@ -1723,14 +1776,14 @@ def _provider_candidates_for_family(
         if _git_remote_host_matches_provider(git_remote_host, "bitbucket") and "bitbucket" in family.providers:
             scores["bitbucket"] = scores.get("bitbucket", 0) + 70
     lowered_files = [path.lower() for path in detected_files]
-    lowered_hits = [hit.lower() for hit in token_hits]
+    lowered_hits = {hit.lower() for hit in token_hits}
     installed_cli_set = {item.lower() for item in installed_clis}
     for provider in family.providers:
         markers = PROVIDER_WORKSPACE_MARKERS.get(provider, ())
         if any(_path_matches_marker(file_path, marker) for file_path in lowered_files for marker in markers):
             scores[provider] = scores.get(provider, 0) + 60
         tokens = PROVIDER_TOKEN_MARKERS.get(provider, ())
-        if any(token in hit for hit in lowered_hits for token in tokens):
+        if any(token.lower() in lowered_hits for token in tokens):
             scores[provider] = scores.get(provider, 0) + 30
         required_clis = PROVIDER_CLIS.get(provider, ())
         if required_clis and all(cli.lower() in installed_cli_set for cli in required_clis):
