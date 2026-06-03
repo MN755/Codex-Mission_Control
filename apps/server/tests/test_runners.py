@@ -324,6 +324,7 @@ def test_launcher_scripts_exist() -> None:
     assert (scripts / "start-mission-control.ps1").exists()
     assert (scripts / "start-mission-control.bat").exists()
     assert (scripts / "start-mission-control.sh").exists()
+    assert (scripts / "stop-mission-control.sh").exists()
     assert (scripts / "create-desktop-shortcut.ps1").exists()
     assert (scripts / "stop-mission-control.ps1").exists()
     assert (scripts / "mission-control-headless-health.sh").exists()

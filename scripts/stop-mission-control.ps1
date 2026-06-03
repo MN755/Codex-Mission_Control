@@ -4,7 +4,11 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
-$configPath = Join-Path $PSScriptRoot "mission-control.config.json"
+$configPath = if ($env:MISSION_CONTROL_LAUNCHER_CONFIG) {
+  $env:MISSION_CONTROL_LAUNCHER_CONFIG
+} else {
+  Join-Path $PSScriptRoot "mission-control.config.json"
+}
 $config = if (Test-Path $configPath) {
   Get-Content -Raw $configPath | ConvertFrom-Json
 } else {
@@ -12,7 +16,11 @@ $config = if (Test-Path $configPath) {
     launcherLogDir = ".runtime/launcher"
   }
 }
-$launcherDir = Join-Path $repoRoot ([string]$config.launcherLogDir)
+$launcherDir = if ($env:MISSION_CONTROL_LAUNCHER_DIR) {
+  $env:MISSION_CONTROL_LAUNCHER_DIR
+} else {
+  Join-Path $repoRoot ([string]$config.launcherLogDir)
+}
 $pidFile = Join-Path $launcherDir "pids.json"
 
 if (-not (Test-Path $pidFile)) {

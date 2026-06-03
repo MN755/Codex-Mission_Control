@@ -2,9 +2,13 @@ from __future__ import annotations
 
 import importlib.util
 import os
+import shutil
+import subprocess
 import sys
 from fastapi.testclient import TestClient
 from pathlib import Path
+
+import pytest
 
 
 def _load_packaging_module():
@@ -307,6 +311,7 @@ def test_launcher_scripts_use_configured_launcher_dir() -> None:
     start_script_ps1 = (root / "scripts" / "start-mission-control.ps1").read_text(encoding="utf-8")
     start_daemon_script_ps1 = (root / "scripts" / "start-mission-control-daemon.ps1").read_text(encoding="utf-8")
     start_daemon_script_sh = (root / "scripts" / "start-mission-control-daemon.sh").read_text(encoding="utf-8")
+    stop_script_sh = (root / "scripts" / "stop-mission-control.sh").read_text(encoding="utf-8")
     stop_daemon_script_sh = (root / "scripts" / "stop-mission-control-daemon.sh").read_text(encoding="utf-8")
     stop_script = (root / "scripts" / "stop-mission-control.ps1").read_text(encoding="utf-8")
     desktop_app = (root / "apps" / "desktop" / "src" / "mission_control_desktop" / "app.py").read_text(encoding="utf-8")
@@ -330,13 +335,74 @@ def test_launcher_scripts_use_configured_launcher_dir() -> None:
     assert 'MISSION_CONTROL_LAUNCHER_CONFIG' in start_daemon_script_sh
     assert 'MISSION_CONTROL_LAUNCHER_DIR' in start_daemon_script_sh
     assert 'launcherLogDir' in start_daemon_script_sh
+    assert 'MISSION_CONTROL_LAUNCHER_CONFIG' in stop_script_sh
+    assert 'MISSION_CONTROL_LAUNCHER_DIR' in stop_script_sh
+    assert 'pids.json' in stop_script_sh
     assert 'MISSION_CONTROL_LAUNCHER_CONFIG' in stop_daemon_script_sh
     assert "Frontend build not found. Run `" in desktop_app
     assert "in apps/dashboard first" in desktop_app
     assert "_frontend_build_command" in desktop_app
     assert "npm.cmd run build" not in desktop_app
     assert "launcherLogDir" in stop_script
+    assert "MISSION_CONTROL_LAUNCHER_CONFIG" in stop_script
+    assert "MISSION_CONTROL_LAUNCHER_DIR" in stop_script
     assert 'Join-Path $launcherDir "pids.json"' in stop_script
+
+
+@pytest.mark.parametrize(
+    ("env_name", "configure"),
+    [
+        (
+            "MISSION_CONTROL_LAUNCHER_DIR",
+            lambda root, custom_launcher: {"env": {"MISSION_CONTROL_LAUNCHER_DIR": str(custom_launcher)}},
+        ),
+        (
+            "MISSION_CONTROL_LAUNCHER_CONFIG",
+            lambda root, custom_launcher: {
+                "config_path": root / "custom-launcher.config.json",
+                "config_text": '{"launcherLogDir": "custom-launcher"}',
+                "env": {"MISSION_CONTROL_LAUNCHER_CONFIG": str(root / "custom-launcher.config.json")},
+            },
+        ),
+    ],
+)
+def test_windows_stop_launcher_script_honors_launcher_overrides(tmp_path, env_name: str, configure) -> None:
+    powershell = shutil.which("powershell.exe") or shutil.which("pwsh")
+    if not powershell:
+        pytest.skip("PowerShell is required for launcher stop-script behavior coverage.")
+
+    repo_root = tmp_path / "repo"
+    scripts_dir = repo_root / "scripts"
+    scripts_dir.mkdir(parents=True, exist_ok=True)
+    source_root = Path(__file__).resolve().parents[3]
+    shutil.copy2(source_root / "scripts" / "stop-mission-control.ps1", scripts_dir / "stop-mission-control.ps1")
+    (scripts_dir / "mission-control.config.json").write_text('{"launcherLogDir": ".runtime/launcher"}', encoding="utf-8")
+    custom_launcher = repo_root / "custom-launcher"
+    custom_launcher.mkdir(parents=True, exist_ok=True)
+    pid_file = custom_launcher / "pids.json"
+    pid_file.write_text('{"desktop":{"pid":999999}}', encoding="utf-8")
+
+    config = configure(repo_root, custom_launcher)
+    config_path = config.get("config_path")
+    if config_path is not None:
+        Path(config_path).write_text(str(config["config_text"]), encoding="utf-8")
+
+    env = os.environ.copy()
+    env.pop("MISSION_CONTROL_LAUNCHER_DIR", None)
+    env.pop("MISSION_CONTROL_LAUNCHER_CONFIG", None)
+    env.update(config["env"])
+    completed = subprocess.run(
+        [powershell, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(scripts_dir / "stop-mission-control.ps1")],
+        cwd=str(repo_root),
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert not pid_file.exists(), f"{env_name} override was ignored:\nSTDOUT:\n{completed.stdout}\nSTDERR:\n{completed.stderr}"
+    assert "Mission Control processes stopped." in completed.stdout
 
 
 def test_desktop_app_ignores_fake_site_packages_repo_roots(monkeypatch, tmp_path) -> None:
