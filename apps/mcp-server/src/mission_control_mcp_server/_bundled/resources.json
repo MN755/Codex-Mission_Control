@@ -363,6 +363,58 @@
       }
     },
     {
+      "uri_template": "mission-control://projects/{project_id}/runbook",
+      "title": "Project runbook",
+      "summary": "Current project runbook with generated operational guidance, commands, and validation notes.",
+      "support_status": "implemented",
+      "source_hint": {
+        "rest_endpoints": [
+          "/api/projects/{project_id}/runbook"
+        ]
+      },
+      "default_fields": [
+        "project_id",
+        "title",
+        "summary",
+        "sections",
+        "updated_at"
+      ],
+      "redaction": {
+        "omit_fields": [
+          "raw_log",
+          "secret_env",
+          "private_paths_outside_workspace"
+        ],
+        "notes": "Expose the runbook content and structure without leaking secrets or unrelated local paths."
+      }
+    },
+    {
+      "uri_template": "mission-control://projects/{project_id}/runbook/summary",
+      "title": "Project runbook summary",
+      "summary": "Compact runbook summary with section counts, command coverage, and current preview text.",
+      "support_status": "implemented",
+      "source_hint": {
+        "rest_endpoints": [
+          "/api/projects/{project_id}/runbook/summary"
+        ]
+      },
+      "default_fields": [
+        "project_id",
+        "has_runbook",
+        "section_count",
+        "command_count",
+        "summary"
+      ],
+      "redaction": {
+        "omit_fields": [
+          "raw_log",
+          "secret_env",
+          "private_paths_outside_workspace"
+        ],
+        "notes": "Expose a compact runbook readiness view only."
+      }
+    },
+    {
       "uri_template": "mission-control://projects/{project_id}/workspace-tooling",
       "title": "Workspace tooling",
       "summary": "Project-scoped repo-native tooling summary covering intake, validation, and security helper lanes.",
@@ -391,6 +443,60 @@
           "private_files_outside_workspace"
         ],
         "notes": "Expose installed/configured tooling posture and safe suggested commands only."
+      }
+    },
+    {
+      "uri_template": "mission-control://projects/{project_id}/execution-policy/summary",
+      "title": "Execution policy summary",
+      "summary": "Compact effective execution-policy view covering provider, runner, sandbox, tool-routing, and validation posture.",
+      "support_status": "implemented",
+      "source_hint": {
+        "rest_endpoints": [
+          "/api/projects/{project_id}/execution-policy/summary"
+        ]
+      },
+      "default_fields": [
+        "project_id",
+        "provider_mode",
+        "runner_type",
+        "sandbox_profile",
+        "tool_routing",
+        "validation_recipe"
+      ],
+      "redaction": {
+        "omit_fields": [
+          "raw_log",
+          "secret_env",
+          "private_paths_outside_workspace"
+        ],
+        "notes": "Expose effective execution posture only, not raw provider secrets or internal prompt payloads."
+      }
+    },
+    {
+      "uri_template": "mission-control://projects/{project_id}/coordination/summary",
+      "title": "Coordination summary",
+      "summary": "Compact coordination state covering contracts, locks, review gates, confidence, and recent decisions.",
+      "support_status": "implemented",
+      "source_hint": {
+        "rest_endpoints": [
+          "/api/projects/{project_id}/coordination/summary"
+        ]
+      },
+      "default_fields": [
+        "project_id",
+        "agent_contract_count",
+        "path_lock_count",
+        "review_gate_status",
+        "confidence_status",
+        "recent_decisions"
+      ],
+      "redaction": {
+        "omit_fields": [
+          "raw_log",
+          "secret_paths_outside_workspace",
+          "internal_reasoning"
+        ],
+        "notes": "Expose coordination posture and safety constraints without raw prompts or sensitive path details."
       }
     },
     {

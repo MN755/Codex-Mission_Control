@@ -7,8 +7,11 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[3]
 PLUGIN_MANIFEST = ROOT / "plugins" / "mission-control" / "plugin.json"
 MIRROR_PLUGIN_MANIFEST = ROOT / ".codex" / "plugins" / "mission-control" / "plugin.json"
+BUNDLED_PLUGIN_MANIFEST = ROOT / "apps" / "mcp-server" / "src" / "mission_control_mcp_server" / "_bundled" / "plugin.json"
 RESOURCES_CATALOG = ROOT / "plugins" / "mission-control" / "mcp" / "resources.json"
 MIRROR_RESOURCES_CATALOG = ROOT / ".codex" / "plugins" / "mission-control" / "mcp" / "resources.json"
+BUNDLED_RESOURCES_CATALOG = ROOT / "apps" / "mcp-server" / "src" / "mission_control_mcp_server" / "_bundled" / "resources.json"
+BUNDLED_MCP_RESOURCES_CATALOG = ROOT / "apps" / "mcp-server" / "src" / "mission_control_mcp_server" / "_bundled" / "mcp" / "resources.json"
 PROMPTS_CATALOG = ROOT / "plugins" / "mission-control" / "mcp" / "prompts.json"
 PROMPTS_DIR = ROOT / "plugins" / "mission-control" / "prompts"
 RUNTIME_DOC = ROOT / "docs" / "MCP_RUNTIME.md"
@@ -137,6 +140,20 @@ def test_repo_local_mirror_plugin_catalog_matches_canonical_resources() -> None:
     assert mirror_manifest["resources"] == manifest["resources"] == EXPECTED_RESOURCES
     assert [item["uri_template"] for item in mirror_resources["resources"]] == EXPECTED_RESOURCES
     assert mirror_resources["safety_defaults"] == resources["safety_defaults"]
+
+
+def test_bundled_plugin_catalog_matches_canonical_resources() -> None:
+    manifest = _load_json(PLUGIN_MANIFEST)
+    resources = _load_json(RESOURCES_CATALOG)
+    bundled_manifest = _load_json(BUNDLED_PLUGIN_MANIFEST)
+    bundled_resources = _load_json(BUNDLED_RESOURCES_CATALOG)
+    bundled_mcp_resources = _load_json(BUNDLED_MCP_RESOURCES_CATALOG)
+
+    assert bundled_manifest["resources"] == manifest["resources"] == EXPECTED_RESOURCES
+    assert [item["uri_template"] for item in bundled_resources["resources"]] == EXPECTED_RESOURCES
+    assert [item["uri_template"] for item in bundled_mcp_resources["resources"]] == EXPECTED_RESOURCES
+    assert bundled_resources["safety_defaults"] == resources["safety_defaults"]
+    assert bundled_mcp_resources["safety_defaults"] == resources["safety_defaults"]
 
 
 def test_prompt_catalog_and_prompt_files_exist() -> None:
