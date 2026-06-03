@@ -502,11 +502,26 @@ class MissionControlDaemonClient:
     def get_workspace_tooling(self, project_id: int) -> dict[str, Any]:
         return self._request("GET", f"/api/projects/{project_id}/workspace-tooling")
 
+    def get_profile_summary(self) -> dict[str, Any]:
+        return self._request("GET", "/api/profile/summary")
+
+    def get_subagent_policy_summary(self) -> dict[str, Any]:
+        return self._request("GET", "/api/subagent-policy/summary")
+
     def get_runbook(self, project_id: int) -> dict[str, Any] | None:
         return self._request("GET", f"/api/projects/{project_id}/runbook")
 
     def get_runbook_summary(self, project_id: int) -> dict[str, Any]:
         return self._request("GET", f"/api/projects/{project_id}/runbook/summary")
+
+    def get_playbook(self, project_id: int) -> dict[str, Any]:
+        return self._request("GET", f"/api/projects/{project_id}/playbook")
+
+    def get_playbook_recommendations(self, project_id: int) -> list[dict[str, Any]]:
+        return self._request("GET", f"/api/projects/{project_id}/playbook/recommendations")
+
+    def get_latest_swarm_simulation(self, project_id: int) -> dict[str, Any]:
+        return self._request("GET", f"/api/projects/{project_id}/swarm/simulations/latest")
 
     def get_execution_policy_summary(self, project_id: int) -> dict[str, Any]:
         return self._request("GET", f"/api/projects/{project_id}/execution-policy/summary")
@@ -1550,6 +1565,10 @@ class MissionControlDaemonClient:
                 return {"connections": self.get_integration_connections()}
             if kind == "health":
                 return self.get_integration_health()
+        if len(parts) >= 2 and parts[0] == "profile" and parts[1] == "summary":
+            return self.get_profile_summary()
+        if len(parts) >= 2 and parts[0] == "subagent-policy" and parts[1] == "summary":
+            return self.get_subagent_policy_summary()
         if len(parts) >= 5 and parts[0] == "projects" and parts[2] == "orchestrations":
             project_id = int(parts[1])
             orchestration_id = int(parts[3])
@@ -1596,6 +1615,8 @@ class MissionControlDaemonClient:
                 prefs = self.get_swarm_preferences(project_id)
                 plan = self.get_swarm_plan(project_id)
                 return self._summarize_swarm_plan(project_id, plan, prefs)
+            if kind == "swarm" and len(parts) == 5 and parts[3] == "simulations" and parts[4] == "latest":
+                return self.get_latest_swarm_simulation(project_id)
             if kind == "risk-register":
                 return self._summarize_risks(project_id, self.get_risks(project_id))
             if kind == "agent-contracts":
@@ -1627,6 +1648,10 @@ class MissionControlDaemonClient:
                 if len(parts) == 4 and parts[3] == "summary":
                     return self.get_runbook_summary(project_id)
                 return self._summarize_runbook(project_id, self.get_runbook(project_id))
+            if kind == "playbook":
+                if len(parts) == 4 and parts[3] == "recommendations":
+                    return {"project_id": project_id, "recommendations": self.get_playbook_recommendations(project_id)}
+                return self.get_playbook(project_id)
             if kind == "execution-policy" and len(parts) == 4 and parts[3] == "summary":
                 return self.get_execution_policy_summary(project_id)
             if kind == "coordination" and len(parts) == 4 and parts[3] == "summary":

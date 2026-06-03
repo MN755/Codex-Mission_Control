@@ -27,10 +27,14 @@ EXPECTED_RESOURCES = {
     "mission-control://integrations/catalog",
     "mission-control://integrations/connections",
     "mission-control://integrations/health",
+    "mission-control://profile/summary",
+    "mission-control://subagent-policy/summary",
     "mission-control://projects/{project_id}/integrations",
     "mission-control://projects/{project_id}/integrations/{family}",
     "mission-control://projects/{project_id}/runbook",
     "mission-control://projects/{project_id}/runbook/summary",
+    "mission-control://projects/{project_id}/playbook",
+    "mission-control://projects/{project_id}/playbook/recommendations",
     "mission-control://projects/{project_id}/workspace-tooling",
     "mission-control://projects/{project_id}/execution-policy/summary",
     "mission-control://projects/{project_id}/coordination/summary",
@@ -49,6 +53,7 @@ EXPECTED_RESOURCES = {
     "mission-control://projects/{project_id}/nvidia-local-runtime",
     "mission-control://projects/{project_id}/nvidia-validation-plan",
     "mission-control://projects/{project_id}/swarm-plan",
+    "mission-control://projects/{project_id}/swarm/simulations/latest",
     "mission-control://projects/{project_id}/risk-register",
     "mission-control://projects/{project_id}/agent-contracts",
     "mission-control://projects/{project_id}/validation-summary",
@@ -931,6 +936,48 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
     )
     monkeypatch.setattr(
         client,
+        "get_profile_summary",
+        lambda: {
+            "id": 1,
+            "exists": True,
+            "display_name": "Mike",
+            "selected_provider": "codex",
+            "first_run_completed": True,
+            "onboarding_completed": True,
+            "startup_behavior": "dashboard",
+            "default_runner_mode": "auto",
+            "sandbox_mode": "workspace-write",
+            "approval_policy": "on-request",
+            "connected_account_count": 2,
+            "dashboard_widget_count": 4,
+            "enabled_notification_count": 3,
+            "has_provider_endpoint": False,
+            "has_adapter": True,
+            "updated_at": "2026-06-03T12:40:00Z",
+            "last_opened_at": "2026-06-03T12:45:00Z",
+        },
+    )
+    monkeypatch.setattr(
+        client,
+        "get_subagent_policy_summary",
+        lambda: {
+            "enabled": True,
+            "default_mode": "limited_write",
+            "sandbox_mode": "workspace-write",
+            "max_subagents_per_burst": 4,
+            "max_runtime_seconds": 1800,
+            "allow_file_edits": True,
+            "allow_commands": True,
+            "require_user_approval_above_count": 2,
+            "allowed_task_types_json": ["review", "planning", "failure_diagnosis"],
+            "default_spawn_method": "codex_chat_bridge",
+            "writes_allowed": True,
+            "read_only_default": False,
+            "command_capable": True,
+        },
+    )
+    monkeypatch.setattr(
+        client,
         "get_runbook",
         lambda project_id: {
             "id": 12,
@@ -956,6 +1003,59 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
             "generated_at": "2026-06-03T12:00:00Z",
             "updated_at": "2026-06-03T12:30:00Z",
         },
+    )
+    monkeypatch.setattr(
+        client,
+        "get_playbook",
+        lambda project_id: {
+            "project_id": project_id,
+            "playbook_key": "existing_repo_fix",
+            "status": "active",
+            "why": "The repo already has structure and failing tests.",
+            "playbook": {
+                "id": 9,
+                "key": "existing_repo_fix",
+                "name": "Existing Repo Fix",
+                "description": "Repair an existing codebase with targeted validation.",
+                "suggested_interview_categories_json": ["product goal", "testing/validation"],
+                "suggested_swarm_mode": "balanced",
+                "suggested_agent_archetypes_json": ["code-reviewer", "test-engineer"],
+                "suggested_validation_recipe_json": [{"type": "pytest", "command": "python -m pytest"}],
+                "common_risks_json": ["regression drift"],
+                "suggested_docs_json": ["runbook"],
+                "typical_structure_json": ["apps/server", "tests"],
+                "created_at": "2026-06-03T11:00:00Z",
+                "updated_at": "2026-06-03T11:30:00Z",
+            },
+        },
+    )
+    monkeypatch.setattr(
+        client,
+        "get_playbook_recommendations",
+        lambda project_id: [
+            {
+                "playbook_key": "existing_repo_fix",
+                "score": 95,
+                "why": "Matches a repo with existing tests and repair work.",
+                "is_current": True,
+                "status": "active",
+                "playbook": {
+                    "id": 9,
+                    "key": "existing_repo_fix",
+                    "name": "Existing Repo Fix",
+                    "description": "Repair an existing codebase with targeted validation.",
+                    "suggested_interview_categories_json": ["product goal", "testing/validation"],
+                    "suggested_swarm_mode": "balanced",
+                    "suggested_agent_archetypes_json": ["code-reviewer", "test-engineer"],
+                    "suggested_validation_recipe_json": [{"type": "pytest", "command": "python -m pytest"}],
+                    "common_risks_json": ["regression drift"],
+                    "suggested_docs_json": ["runbook"],
+                    "typical_structure_json": ["apps/server", "tests"],
+                    "created_at": "2026-06-03T11:00:00Z",
+                    "updated_at": "2026-06-03T11:30:00Z",
+                },
+            }
+        ],
     )
     monkeypatch.setattr(
         client,
@@ -1003,6 +1103,24 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
             "failed_gate_count": 0,
             "pending_gate_count": 1,
             "review_gate_count": 2,
+        },
+    )
+    monkeypatch.setattr(
+        client,
+        "get_latest_swarm_simulation",
+        lambda project_id: {
+            "simulation_id": 17,
+            "project_id": project_id,
+            "swarm_plan_id": 5,
+            "safe_to_launch_count": 2,
+            "should_wait_count": 1,
+            "needs_user_approval_count": 1,
+            "conflict_warnings_json": ["tests/ and apps/server overlap"],
+            "bottlenecks_json": ["validation gate pending"],
+            "recommended_launch_order_json": [{"agent_name": "reviewer", "order": 1}],
+            "created_at": "2026-06-03T12:55:00Z",
+            "persisted": False,
+            "stale": False,
         },
     )
     monkeypatch.setattr(
@@ -1239,6 +1357,8 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
         },
     )
 
+    profile_summary = client.read_resource("mission-control://profile/summary")
+    subagent_policy_summary = client.read_resource("mission-control://subagent-policy/summary")
     snapshot = client.read_resource("mission-control://projects/7/operator-snapshot")
     instincts = client.read_resource("mission-control://projects/7/instincts")
     verification = client.read_resource("mission-control://projects/7/verification-brief")
@@ -1247,6 +1367,8 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
     tooling = client.read_resource("mission-control://projects/7/workspace-tooling")
     runbook = client.read_resource("mission-control://projects/7/runbook")
     runbook_summary = client.read_resource("mission-control://projects/7/runbook/summary")
+    playbook = client.read_resource("mission-control://projects/7/playbook")
+    playbook_recommendations = client.read_resource("mission-control://projects/7/playbook/recommendations")
     execution_policy = client.read_resource("mission-control://projects/7/execution-policy/summary")
     coordination = client.read_resource("mission-control://projects/7/coordination/summary")
     tensorflow_catalog = client.read_resource("mission-control://projects/7/tensorflow/features")
@@ -1262,7 +1384,10 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
     gpu = client.read_resource("mission-control://projects/7/nvidia-gpu-diagnostics")
     local_runtime = client.read_resource("mission-control://projects/7/nvidia-local-runtime")
     validation_plan = client.read_resource("mission-control://projects/7/nvidia-validation-plan")
+    latest_simulation = client.read_resource("mission-control://projects/7/swarm/simulations/latest")
 
+    assert profile_summary["display_name"] == "Mike"
+    assert subagent_policy_summary["default_mode"] == "limited_write"
     assert snapshot["project_name"] == "Demo"
     assert snapshot["recommended_next_action"] == "Run the named pytest lane."
     assert instincts["instincts"][0]["key"] == "ship-with-evidence"
@@ -1277,6 +1402,10 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
     assert runbook["generated_from_handoff_id"] == 3
     assert runbook_summary["section_count"] == 2
     assert runbook_summary["run_commands"] == ["python -m pytest"]
+    assert playbook["playbook_key"] == "existing_repo_fix"
+    assert playbook["playbook"]["name"] == "Existing Repo Fix"
+    assert playbook_recommendations["project_id"] == 7
+    assert playbook_recommendations["recommendations"][0]["score"] == 95
     assert execution_policy["model_policy_name"] == "default"
     assert execution_policy["approval_required_tools"] == ["git push"]
     assert coordination["decision_count"] == 4
@@ -1296,6 +1425,8 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
     assert gpu["status"] == "ready"
     assert local_runtime["repo_mode"] == "cuda_cpp"
     assert validation_plan["status"] == "needs_review"
+    assert latest_simulation["simulation_id"] == 17
+    assert latest_simulation["persisted"] is False
 
 
 def test_daemon_client_auto_start_launches_when_health_fails(monkeypatch, tmp_path: Path) -> None:

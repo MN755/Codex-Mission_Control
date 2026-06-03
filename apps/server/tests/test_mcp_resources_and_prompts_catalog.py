@@ -32,10 +32,14 @@ EXPECTED_RESOURCES = [
     "mission-control://integrations/catalog",
     "mission-control://integrations/connections",
     "mission-control://integrations/health",
+    "mission-control://profile/summary",
+    "mission-control://subagent-policy/summary",
     "mission-control://projects/{project_id}/integrations",
     "mission-control://projects/{project_id}/integrations/{family}",
     "mission-control://projects/{project_id}/runbook",
     "mission-control://projects/{project_id}/runbook/summary",
+    "mission-control://projects/{project_id}/playbook",
+    "mission-control://projects/{project_id}/playbook/recommendations",
     "mission-control://projects/{project_id}/workspace-tooling",
     "mission-control://projects/{project_id}/execution-policy/summary",
     "mission-control://projects/{project_id}/coordination/summary",
@@ -54,6 +58,7 @@ EXPECTED_RESOURCES = [
     "mission-control://projects/{project_id}/nvidia-local-runtime",
     "mission-control://projects/{project_id}/nvidia-validation-plan",
     "mission-control://projects/{project_id}/swarm-plan",
+    "mission-control://projects/{project_id}/swarm/simulations/latest",
     "mission-control://projects/{project_id}/risk-register",
     "mission-control://projects/{project_id}/agent-contracts",
     "mission-control://projects/{project_id}/validation-summary",
@@ -187,6 +192,10 @@ def test_docs_explain_resources_prompts_and_headless_boundary() -> None:
     assert "mission-control://projects/{project_id}/capability-report/{section_key}" in resources_content
     assert "mission-control://projects/{project_id}/runbook" in resources_content
     assert "mission-control://projects/{project_id}/runbook/summary" in resources_content
+    assert "mission-control://profile/summary" in resources_content
+    assert "mission-control://subagent-policy/summary" in resources_content
+    assert "mission-control://projects/{project_id}/playbook" in resources_content
+    assert "mission-control://projects/{project_id}/playbook/recommendations" in resources_content
     assert "mission-control://projects/{project_id}/webwright" in resources_content
     assert "mission-control://projects/{project_id}/nvidia-nim" in resources_content
     assert "mission-control://projects/{project_id}/nvidia-aiq" in resources_content
@@ -194,6 +203,7 @@ def test_docs_explain_resources_prompts_and_headless_boundary() -> None:
     assert "mission-control://projects/{project_id}/workspace-tooling" in resources_content
     assert "mission-control://projects/{project_id}/execution-policy/summary" in resources_content
     assert "mission-control://projects/{project_id}/coordination/summary" in resources_content
+    assert "mission-control://projects/{project_id}/swarm/simulations/latest" in resources_content
     assert "mission-control://projects/{project_id}/tensorflow/features" in resources_content
     assert "mission-control://projects/{project_id}/tensorflow/features/{feature_id}" in resources_content
     assert "mission-control://projects/{project_id}/pytorch/features" in resources_content

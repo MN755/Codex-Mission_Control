@@ -21,10 +21,14 @@ Mission Control resources are read-only context surfaces for Codex chat.
 - `mission-control://integrations/catalog`
 - `mission-control://integrations/connections`
 - `mission-control://integrations/health`
+- `mission-control://profile/summary`
+- `mission-control://subagent-policy/summary`
 - `mission-control://projects/{project_id}/integrations`
 - `mission-control://projects/{project_id}/integrations/{family}`
 - `mission-control://projects/{project_id}/runbook`
 - `mission-control://projects/{project_id}/runbook/summary`
+- `mission-control://projects/{project_id}/playbook`
+- `mission-control://projects/{project_id}/playbook/recommendations`
 - `mission-control://projects/{project_id}/workspace-tooling`
 - `mission-control://projects/{project_id}/execution-policy/summary`
 - `mission-control://projects/{project_id}/coordination/summary`
@@ -43,6 +47,7 @@ Mission Control resources are read-only context surfaces for Codex chat.
 - `mission-control://projects/{project_id}/nvidia-local-runtime`
 - `mission-control://projects/{project_id}/nvidia-validation-plan`
 - `mission-control://projects/{project_id}/swarm-plan`
+- `mission-control://projects/{project_id}/swarm/simulations/latest`
 - `mission-control://projects/{project_id}/risk-register`
 - `mission-control://projects/{project_id}/agent-contracts`
 - `mission-control://projects/{project_id}/validation-summary`
@@ -61,9 +66,12 @@ Mission Control resources are read-only context surfaces for Codex chat.
 - handoff supports final bridge summaries
 - codebase map supports imported repo understanding
 - workspace tooling tells the bridge which repo-native helper lanes actually exist for intake, validation, and security before it recommends commands like a clown
+- profile summary and subagent policy summary expose the operator defaults that shape provider choice, approvals, and whether subagent bursts are even allowed before the bridge starts making heroic assumptions
 - runbook and runbook summary expose the current operational guide without forcing chat to scrape widget markdown like an animal
+- playbook and playbook recommendations expose the current execution template and nearby alternatives so chat can discuss project posture without re-deriving the same pattern match from scratch every time
 - execution policy summary tells the bridge which runner, sandbox, approval, tool-routing, and validation posture is actually in effect before it suggests work that contradicts local policy
 - coordination summary exposes contract, lock, gate, conflict, and decision posture in one compact lane so chat can spot coordination drift before the swarm faceplants
+- latest swarm simulation exposes launch readiness, conflicts, bottlenecks, and approval pressure without requiring a write path or a persisted simulation row first
 - diagnostics, risk register, decision ledger, and path locks support stuck-run debugging without exposing raw internals
 - the Webwright resource tells the bridge whether the local browser-agent runtime is actually ready or whether the user still has setup work to do
 - the NVIDIA resources tell the bridge whether GPU-backed inference, deep research, local CUDA tooling, and Prometheus/DCGM telemetry are actually available before Mission Control leans on them
@@ -79,4 +87,4 @@ Mission Control resources are read-only context surfaces for Codex chat.
 
 ## Deliberate Non-Resources
 
-Some project-scoped backend routes are still real code without MCP exposure, but TensorFlow, PyTorch, and spatial starter catalogs are no longer among them.
+Some backend routes are still real code without MCP exposure, but profile summary, subagent policy summary, playbook, latest swarm simulation, and the TensorFlow, PyTorch, and spatial starter catalogs are no longer among them.

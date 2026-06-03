@@ -305,6 +305,73 @@
       }
     },
     {
+      "uri_template": "mission-control://profile/summary",
+      "title": "Profile summary",
+      "summary": "Compact Mission Control app-profile summary covering provider choice, runner defaults, startup posture, and account readiness.",
+      "support_status": "implemented",
+      "source_hint": {
+        "rest_endpoints": [
+          "/api/profile/summary"
+        ]
+      },
+      "default_fields": [
+        "id",
+        "exists",
+        "display_name",
+        "selected_provider",
+        "first_run_completed",
+        "onboarding_completed",
+        "startup_behavior",
+        "default_runner_mode",
+        "sandbox_mode",
+        "approval_policy",
+        "connected_account_count",
+        "has_provider_endpoint",
+        "has_adapter"
+      ],
+      "redaction": {
+        "omit_fields": [
+          "raw_tokens",
+          "secret_values",
+          "private_paths_outside_workspace"
+        ],
+        "notes": "Expose high-level operator profile posture only, not credentials or raw config secrets."
+      }
+    },
+    {
+      "uri_template": "mission-control://subagent-policy/summary",
+      "title": "Subagent policy summary",
+      "summary": "Compact summary of subagent defaults, approval thresholds, task-type allowances, and write/command posture.",
+      "support_status": "implemented",
+      "source_hint": {
+        "rest_endpoints": [
+          "/api/subagent-policy/summary"
+        ]
+      },
+      "default_fields": [
+        "enabled",
+        "default_mode",
+        "sandbox_mode",
+        "max_subagents_per_burst",
+        "max_runtime_seconds",
+        "allow_file_edits",
+        "allow_commands",
+        "require_user_approval_above_count",
+        "allowed_task_types_json",
+        "default_spawn_method",
+        "writes_allowed",
+        "command_capable"
+      ],
+      "redaction": {
+        "omit_fields": [
+          "raw_logs",
+          "secret_values",
+          "private_paths_outside_workspace"
+        ],
+        "notes": "Expose policy posture and limits only, not raw runner state or sensitive workspace details."
+      }
+    },
+    {
       "uri_template": "mission-control://projects/{project_id}/integrations",
       "title": "Project integrations",
       "summary": "Project-scoped integration readiness view across supported provider families.",
@@ -412,6 +479,55 @@
           "private_paths_outside_workspace"
         ],
         "notes": "Expose a compact runbook readiness view only."
+      }
+    },
+    {
+      "uri_template": "mission-control://projects/{project_id}/playbook",
+      "title": "Project playbook",
+      "summary": "Current project playbook selection or suggestion with rationale and the matched playbook payload.",
+      "support_status": "implemented",
+      "source_hint": {
+        "rest_endpoints": [
+          "/api/projects/{project_id}/playbook"
+        ]
+      },
+      "default_fields": [
+        "project_id",
+        "playbook_key",
+        "status",
+        "why",
+        "playbook"
+      ],
+      "redaction": {
+        "omit_fields": [
+          "raw_logs",
+          "secret_values",
+          "private_paths_outside_workspace"
+        ],
+        "notes": "Expose recommendation rationale and playbook metadata only."
+      }
+    },
+    {
+      "uri_template": "mission-control://projects/{project_id}/playbook/recommendations",
+      "title": "Project playbook recommendations",
+      "summary": "Ranked project playbook recommendations so chat can compare likely execution templates before applying one.",
+      "support_status": "implemented",
+      "source_hint": {
+        "rest_endpoints": [
+          "/api/projects/{project_id}/playbook/recommendations"
+        ]
+      },
+      "default_fields": [
+        "project_id",
+        "recommendations"
+      ],
+      "redaction": {
+        "omit_fields": [
+          "raw_logs",
+          "secret_values",
+          "private_paths_outside_workspace"
+        ],
+        "notes": "Expose ranked playbook options and rationale only."
       }
     },
     {
@@ -931,6 +1047,38 @@
           "raw_log"
         ],
         "notes": "Expose plan shape and safety posture without chain-of-thought or raw path dumps."
+      }
+    },
+    {
+      "uri_template": "mission-control://projects/{project_id}/swarm/simulations/latest",
+      "title": "Latest swarm simulation",
+      "summary": "Latest swarm launch simulation snapshot with safe-launch counts, wait conditions, conflicts, and approval needs.",
+      "support_status": "implemented",
+      "source_hint": {
+        "rest_endpoints": [
+          "/api/projects/{project_id}/swarm/simulations/latest"
+        ]
+      },
+      "default_fields": [
+        "simulation_id",
+        "project_id",
+        "swarm_plan_id",
+        "safe_to_launch_count",
+        "should_wait_count",
+        "needs_user_approval_count",
+        "conflict_warnings_json",
+        "bottlenecks_json",
+        "recommended_launch_order_json",
+        "persisted",
+        "stale"
+      ],
+      "redaction": {
+        "omit_fields": [
+          "raw_logs",
+          "secret_paths",
+          "private_paths_outside_workspace"
+        ],
+        "notes": "Expose compact launch readiness and coordination warnings only."
       }
     },
     {
