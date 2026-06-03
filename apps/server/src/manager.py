@@ -599,6 +599,7 @@ class MissionControlService:
             "needs_review": "needs_review",
             "error": "failed",
         }.get(str(status or "").strip().lower(), "failed")
+        return result
 
     @staticmethod
     def _report_status_from_runner_status(status: str) -> str:
@@ -608,6 +609,7 @@ class MissionControlService:
             "needs_review": "needs_review",
             "failed": "error",
         }.get(str(status or "").strip().lower(), "error")
+        return result
 
     def _classify_runner_lane(self, task: Task | None, report: WorkerReport | None = None, commands_attempted: list[str] | None = None) -> str:
         commands = " ".join(str(item or "") for item in list(commands_attempted or []))
@@ -3135,6 +3137,7 @@ class MissionControlService:
             "derived_candidate_count": len(derived_candidates),
             "generated_at": utc_now(),
         }
+        return result
 
     def generate_evidence_handoff(self, db: Session, project: Project) -> EvidenceBasedHandoff:
         tasks = list(db.scalars(select(Task).where(Task.project_id == project.id).order_by(Task.priority.asc(), Task.id.asc())))
