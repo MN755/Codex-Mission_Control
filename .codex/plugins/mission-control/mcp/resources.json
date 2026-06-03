@@ -363,6 +363,62 @@
       }
     },
     {
+      "uri_template": "mission-control://projects/{project_id}/runbook",
+      "title": "Project runbook",
+      "summary": "Current project runbook markdown for startup, test, build, debug, and recovery guidance.",
+      "support_status": "implemented",
+      "source_hint": {
+        "rest_endpoints": [
+          "/api/projects/{project_id}/runbook"
+        ]
+      },
+      "default_fields": [
+        "project_id",
+        "content_markdown",
+        "generated_from_handoff_id",
+        "generated_at",
+        "updated_at"
+      ],
+      "redaction": {
+        "omit_fields": [
+          "raw_logs",
+          "secret_values",
+          "private_paths_outside_workspace"
+        ],
+        "notes": "Expose runbook guidance and timestamps only. Do not attach unrelated raw logs or secret-bearing payloads."
+      }
+    },
+    {
+      "uri_template": "mission-control://projects/{project_id}/runbook/summary",
+      "title": "Project runbook summary",
+      "summary": "Compact runbook snapshot with section titles, runnable command hints, and preview content.",
+      "support_status": "implemented",
+      "source_hint": {
+        "rest_endpoints": [
+          "/api/projects/{project_id}/runbook/summary"
+        ]
+      },
+      "default_fields": [
+        "project_id",
+        "exists",
+        "section_count",
+        "sections",
+        "run_command_count",
+        "run_commands",
+        "generated_from_handoff_id",
+        "generated_at",
+        "updated_at"
+      ],
+      "redaction": {
+        "omit_fields": [
+          "full_markdown",
+          "secret_values",
+          "private_paths_outside_workspace"
+        ],
+        "notes": "Return a summary view so chat can reason about operator guidance without dragging full markdown by default."
+      }
+    },
+    {
       "uri_template": "mission-control://projects/{project_id}/workspace-tooling",
       "title": "Workspace tooling",
       "summary": "Project-scoped repo-native tooling summary covering intake, validation, and security helper lanes.",
@@ -391,6 +447,75 @@
           "private_files_outside_workspace"
         ],
         "notes": "Expose installed/configured tooling posture and safe suggested commands only."
+      }
+    },
+    {
+      "uri_template": "mission-control://projects/{project_id}/execution-policy/summary",
+      "title": "Execution policy summary",
+      "summary": "Compact summary of effective provider, runner, sandbox, approval, tool-routing, and validation posture for a project.",
+      "support_status": "implemented",
+      "source_hint": {
+        "rest_endpoints": [
+          "/api/projects/{project_id}/execution-policy/summary"
+        ]
+      },
+      "default_fields": [
+        "project_id",
+        "project_name",
+        "provider",
+        "runner_mode",
+        "sandbox_mode",
+        "approval_policy",
+        "model_policy_name",
+        "approval_required_tool_count",
+        "blocked_tool_count",
+        "default_sandbox_profile",
+        "current_sandbox_profile",
+        "validation_step_count",
+        "validation_command_count"
+      ],
+      "redaction": {
+        "omit_fields": [
+          "raw_command_output",
+          "raw_tokens",
+          "private_paths_outside_workspace"
+        ],
+        "notes": "Expose effective execution posture and safe command hints without leaking secrets or raw execution output."
+      }
+    },
+    {
+      "uri_template": "mission-control://projects/{project_id}/coordination/summary",
+      "title": "Coordination summary",
+      "summary": "Compact coordination posture across contracts, locks, conflicts, low-confidence areas, review gates, and decisions.",
+      "support_status": "implemented",
+      "source_hint": {
+        "rest_endpoints": [
+          "/api/projects/{project_id}/coordination/summary"
+        ]
+      },
+      "default_fields": [
+        "project_id",
+        "project_name",
+        "current_action_type",
+        "contract_count",
+        "active_contract_count",
+        "waiting_lock_count",
+        "active_lock_count",
+        "unresolved_conflict_count",
+        "decision_count",
+        "decision_types",
+        "low_confidence_count",
+        "failed_gate_count",
+        "pending_gate_count",
+        "review_gate_count"
+      ],
+      "redaction": {
+        "omit_fields": [
+          "full_conflict_payloads",
+          "raw_logs",
+          "secret_values"
+        ],
+        "notes": "Return counts and compact coordination posture only, not raw transcripts or sensitive execution details."
       }
     },
     {

@@ -6,7 +6,9 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[3]
 PLUGIN_MANIFEST = ROOT / "plugins" / "mission-control" / "plugin.json"
+MIRROR_PLUGIN_MANIFEST = ROOT / ".codex" / "plugins" / "mission-control" / "plugin.json"
 RESOURCES_CATALOG = ROOT / "plugins" / "mission-control" / "mcp" / "resources.json"
+MIRROR_RESOURCES_CATALOG = ROOT / ".codex" / "plugins" / "mission-control" / "mcp" / "resources.json"
 PROMPTS_CATALOG = ROOT / "plugins" / "mission-control" / "mcp" / "prompts.json"
 PROMPTS_DIR = ROOT / "plugins" / "mission-control" / "prompts"
 RUNTIME_DOC = ROOT / "docs" / "MCP_RUNTIME.md"
@@ -124,6 +126,17 @@ def test_resources_catalog_has_safety_defaults_and_redaction_notes() -> None:
         assert item["redaction"]["omit_fields"]
         assert item["redaction"]["notes"]
         assert item["support_status"]
+
+
+def test_repo_local_mirror_plugin_catalog_matches_canonical_resources() -> None:
+    manifest = _load_json(PLUGIN_MANIFEST)
+    mirror_manifest = _load_json(MIRROR_PLUGIN_MANIFEST)
+    resources = _load_json(RESOURCES_CATALOG)
+    mirror_resources = _load_json(MIRROR_RESOURCES_CATALOG)
+
+    assert mirror_manifest["resources"] == manifest["resources"] == EXPECTED_RESOURCES
+    assert [item["uri_template"] for item in mirror_resources["resources"]] == EXPECTED_RESOURCES
+    assert mirror_resources["safety_defaults"] == resources["safety_defaults"]
 
 
 def test_prompt_catalog_and_prompt_files_exist() -> None:
