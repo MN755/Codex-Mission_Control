@@ -15541,6 +15541,20 @@ class MissionControlService:
             **{
                 f"{prefix}_family_counts": _counts_from_grouped_family_ids(grouped_family_ids)
                 for prefix, grouped_family_ids in (
+                    ("status", family_ids_by_status),
+                    ("connection_status", connection_status_family_ids),
+                    ("connection_source", connection_source_family_ids),
+                    ("resolved_provider", resolved_provider_family_ids),
+                    ("provider_resolution_state", provider_resolution_state_family_ids),
+                    ("provider_context_source", provider_context_source_family_ids),
+                    ("provider_context_status", provider_context_status_family_ids),
+                    ("signal_source", signal_source_family_ids),
+                    ("provider", provider_family_ids),
+                    ("provider_candidate", provider_candidate_family_ids),
+                    ("cli_detected", cli_detected_family_ids),
+                    ("resolved_cli_detected", resolved_cli_detected_family_ids),
+                    ("workspace_config_file", workspace_config_file_family_ids),
+                    ("workspace_token_hit", workspace_token_hit_family_ids),
                     ("action_status", action_status_family_ids),
                     ("available_action_status", available_action_status_family_ids),
                     ("blocked_action_status", blocked_action_status_family_ids),

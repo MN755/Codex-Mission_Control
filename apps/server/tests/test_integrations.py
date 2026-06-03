@@ -334,6 +334,23 @@ def test_project_integrations_and_action_preview_flow(client, bridge_headers, mo
     assert project_integrations_payload["workspace_token_hit_group_count"] == len(expected_workspace_token_hit_counts)
     assert project_integrations_payload["workspace_token_hit_family_count"] == sum(1 for item in family_list if item["workspace_token_hits"])
     assert project_integrations_payload["workspace_token_hit_families"] == [item["family"] for item in family_list if item["workspace_token_hits"]]
+    for prefix, expected_family_ids in (
+        ("status", expected_status_family_ids),
+        ("connection_status", expected_connection_status_family_ids),
+        ("connection_source", expected_connection_source_family_ids),
+        ("resolved_provider", expected_resolved_provider_family_ids),
+        ("provider_resolution_state", expected_provider_resolution_state_family_ids),
+        ("provider_context_source", expected_provider_context_source_family_ids),
+        ("provider_context_status", expected_provider_context_status_family_ids),
+        ("signal_source", expected_signal_source_family_ids),
+        ("provider", expected_provider_family_ids),
+        ("provider_candidate", expected_provider_candidate_family_ids),
+        ("cli_detected", expected_cli_detected_family_ids),
+        ("resolved_cli_detected", expected_resolved_cli_detected_family_ids),
+        ("workspace_config_file", expected_workspace_config_file_family_ids),
+        ("workspace_token_hit", expected_workspace_token_hit_family_ids),
+    ):
+        assert project_integrations_payload[f"{prefix}_family_counts"] == {key: len(value) for key, value in expected_family_ids.items()}
     assert project_integrations_payload["ready_family_ids"] == [item["family"] for item in family_list if item["status"] == "ready"]
     assert project_integrations_payload["partial_family_ids"] == [item["family"] for item in family_list if item["status"] == "partial"]
     assert project_integrations_payload["needs_setup_family_ids"] == [item["family"] for item in family_list if item["status"] == "needs_setup"]
