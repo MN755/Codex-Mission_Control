@@ -27,6 +27,7 @@ atexit.register(_cleanup_test_root)
 
 _DB_STATE: tuple[Path, Any, Any, Any] | None = None
 _APP: Any | None = None
+_DB_TEMPLATE: Path | None = None
 
 
 def _db_state() -> tuple[Path, Any, Any, Any]:
@@ -49,6 +50,20 @@ def _app() -> Any:
     return _APP
 
 
+def _blank_db_template() -> Path:
+    global _DB_TEMPLATE
+    if _DB_TEMPLATE is None:
+        db_path, engine, init_db, _startup_service = _db_state()
+        engine.dispose()
+        if db_path.exists():
+            db_path.unlink()
+        init_db()
+        engine.dispose()
+        _DB_TEMPLATE = TEST_ROOT / "blank-test-db.sqlite3"
+        shutil.copy2(db_path, _DB_TEMPLATE)
+    return _DB_TEMPLATE
+
+
 def _daemon_token() -> str:
     from daemon_state import ensure_daemon_token
 
@@ -60,6 +75,7 @@ def reset_db(request: pytest.FixtureRequest) -> None:
     if request.node.get_closest_marker("no_db_reset") is not None:
         return None
     db_path, engine, init_db, startup_service = _db_state()
+    template_path = _blank_db_template()
     engine.dispose()
     if db_path.exists():
         last_error: Exception | None = None
@@ -78,7 +94,7 @@ def reset_db(request: pytest.FixtureRequest) -> None:
                 time.sleep(0.1)
         if last_error is not None:
             raise last_error
-    init_db()
+    shutil.copy2(template_path, db_path)
     startup_service.last_status = None
     engine.dispose()
 

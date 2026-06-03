@@ -10,9 +10,51 @@ from integration_registry import (
     preview_integration_action,
 )
 from tool_catalog import catalog_with_permissions
+import tool_catalog
 
 
-def test_tool_catalog_uses_integration_registry_for_github_and_vercel() -> None:
+def _stub_expensive_tool_catalog_probes(monkeypatch) -> None:
+    monkeypatch.setattr(tool_catalog, "_PROCESS_PROBE_CACHE", {})
+    monkeypatch.setattr(tool_catalog, "detect_tensorflow_repo_mode", lambda _root: {"enabled": False, "mode": None, "frameworks": [], "product_workflows": []})
+    monkeypatch.setattr(tool_catalog, "build_tensorflow_validation_plan", lambda _root: {"summary": "TensorFlow validation planning is not applicable."})
+    monkeypatch.setattr(
+        tool_catalog,
+        "detect_pytorch_repo_mode",
+        lambda _root: {
+            "enabled": False,
+            "mode": None,
+            "frameworks": [],
+            "product_workflows": [],
+            "distributed_stack": [],
+            "checkpoint_paths": [],
+            "training_commands": [],
+            "export_commands": [],
+            "observability_commands": [],
+        },
+    )
+    monkeypatch.setattr(tool_catalog, "build_pytorch_validation_plan", lambda _root: {"summary": "PyTorch validation planning is not applicable."})
+    monkeypatch.setattr(
+        tool_catalog,
+        "detect_pytorch_runtime_status",
+        lambda _root: {"status": "not_applicable", "summary": "This workspace does not currently look like a PyTorch repo."},
+    )
+    monkeypatch.setattr(tool_catalog, "detect_spatial3d_repo_mode", lambda _root: {"enabled": False, "mode": None, "frameworks": [], "product_workflows": [], "asset_paths": []})
+    monkeypatch.setattr(tool_catalog, "build_spatial3d_validation_plan", lambda _root: {"summary": "Spatial validation planning is not applicable."})
+    monkeypatch.setattr(tool_catalog, "detect_webwright_status", lambda: {"available": False, "install_status": "missing", "workspace_signals": [], "summary": "Webwright is not installed."})
+    monkeypatch.setattr(tool_catalog, "detect_nvidia_dynamo_status", lambda: {"reachable": False, "summary": "NVIDIA Dynamo is not configured."})
+    monkeypatch.setattr(tool_catalog, "detect_nvidia_nim_status", lambda: {"reachable": False, "summary": "NVIDIA NIM is not configured."})
+    monkeypatch.setattr(tool_catalog, "detect_nvidia_aiq_status", lambda: {"available": False, "summary": "NVIDIA AI-Q is not configured."})
+    monkeypatch.setattr(tool_catalog, "detect_project_nvidia_gpu_diagnostics", lambda _root: {"available": False, "status": "missing", "summary": "NVIDIA GPU diagnostics are not configured."})
+    monkeypatch.setattr(tool_catalog, "detect_nvidia_local_runtime_status", lambda _root: {"available": False, "summary": "NVIDIA local runtime is not configured."})
+    monkeypatch.setattr(
+        tool_catalog,
+        "build_nvidia_validation_plan",
+        lambda _root: {"available": False, "status": "not_applicable", "summary": "NVIDIA validation planning is not applicable."},
+    )
+
+
+def test_tool_catalog_uses_integration_registry_for_github_and_vercel(monkeypatch) -> None:
+    _stub_expensive_tool_catalog_probes(monkeypatch)
     registry = normalize_integration_registry(
         {
             "connections": {
