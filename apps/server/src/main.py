@@ -97,6 +97,7 @@ from schemas import (
     DocGenerationResponse,
     EvidenceBasedHandoffRead,
     EffectiveUserPreferenceRead,
+    ExecutionPolicySummaryRead,
     EventDigestWindow,
     EventRead,
     HandoffEvidenceCreate,
@@ -2575,6 +2576,16 @@ def get_project_workspace_tooling_status(
 ) -> WorkspaceToolingStatusRead:
     project = _get_project_or_404(db, project_id)
     return WorkspaceToolingStatusRead(**service.build_workspace_tooling_status(project))
+
+
+@app.get("/api/projects/{project_id}/execution-policy/summary", response_model=ExecutionPolicySummaryRead)
+def get_project_execution_policy_summary(
+    project_id: int,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> ExecutionPolicySummaryRead:
+    project = _get_project_or_404(db, project_id)
+    return ExecutionPolicySummaryRead(**service.build_execution_policy_summary(db, project))
 
 
 @app.get("/api/projects/{project_id}/tensorflow/features", response_model=list[TensorFlowFeatureCatalogEntryRead])

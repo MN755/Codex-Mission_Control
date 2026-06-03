@@ -1734,6 +1734,30 @@ class WorkspaceToolingStatusRead(BaseModel):
     spatial3d_validation_plan: dict[str, Any] = Field(default_factory=dict)
 
 
+class ExecutionPolicySummaryRead(BaseModel):
+    project_id: int
+    project_name: str
+    provider: ProviderId = "codex"
+    runner_mode: RunnerMode = "auto"
+    sandbox_mode: SandboxMode = "workspace-write"
+    approval_policy: ApprovalPolicy = "on-request"
+    model_policy_name: str
+    manager_model: str | None = None
+    worker_model_count: int = 0
+    tool_routing_count: int = 0
+    approval_required_tool_count: int = 0
+    approval_required_tools: list[str] = Field(default_factory=list)
+    blocked_tool_count: int = 0
+    blocked_tools: list[str] = Field(default_factory=list)
+    sandbox_profile_count: int = 0
+    default_sandbox_profile: str | None = None
+    current_sandbox_profile: str | None = None
+    validation_step_count: int = 0
+    validation_command_count: int = 0
+    validation_commands: list[str] = Field(default_factory=list)
+    validation_status: str
+
+
 class TensorFlowFeatureCatalogEntryRead(BaseModel):
     feature_id: str
     title: str

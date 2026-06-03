@@ -1246,6 +1246,104 @@ def test_project_playbook_state_get_does_not_persist_selection_rows(client, brid
         db.close()
 
 
+def test_execution_policy_summary_get_is_read_only(client, bridge_headers) -> None:
+    project_id = _create_legacy_project("Execution Policy Summary Read Safety", "execution-policy-summary-read-safety")
+
+    db = SessionLocal()
+    try:
+        baseline = {
+            "model_policy": db.scalar(select(func.count(ModelPolicy.id)).where(ModelPolicy.project_id == project_id)),
+            "tool_routing": db.scalar(select(func.count(ToolRoutingPolicy.id)).where(ToolRoutingPolicy.project_id == project_id)),
+            "sandbox_profiles": db.scalar(select(func.count(SandboxProfile.id)).where(SandboxProfile.project_id.is_(None))),
+            "validation_recipe": db.scalar(select(func.count(ValidationRecipe.id)).where(ValidationRecipe.project_id == project_id)),
+        }
+        assert baseline == {
+            "model_policy": 0,
+            "tool_routing": 0,
+            "sandbox_profiles": 0,
+            "validation_recipe": 0,
+        }
+    finally:
+        db.close()
+
+    response = client.get(f"/api/projects/{project_id}/execution-policy/summary", headers=bridge_headers)
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["project_id"] == project_id
+    assert payload["tool_routing_count"] > 0
+    assert payload["validation_step_count"] > 0
+
+    db = SessionLocal()
+    try:
+        after = {
+            "model_policy": db.scalar(select(func.count(ModelPolicy.id)).where(ModelPolicy.project_id == project_id)),
+            "tool_routing": db.scalar(select(func.count(ToolRoutingPolicy.id)).where(ToolRoutingPolicy.project_id == project_id)),
+            "sandbox_profiles": db.scalar(select(func.count(SandboxProfile.id)).where(SandboxProfile.project_id.is_(None))),
+            "validation_recipe": db.scalar(select(func.count(ValidationRecipe.id)).where(ValidationRecipe.project_id == project_id)),
+        }
+        assert after == baseline
+    finally:
+        db.close()
+
+
+def test_execution_policy_summary_get_dedupes_duplicate_policy_rows(client, bridge_headers) -> None:
+    project = _create_project(client, "Execution Policy Dedupe", "execution-policy-dedupe")
+    project_id = project["id"]
+
+    db = SessionLocal()
+    try:
+        db.add_all(
+            [
+                ModelPolicy(project_id=project_id, policy_name="balanced"),
+                ModelPolicy(project_id=project_id, policy_name="balanced"),
+                ToolRoutingPolicy(project_id=project_id, agent_archetype="frontend", allowed_tools_json=["edit"]),
+                ToolRoutingPolicy(project_id=project_id, agent_archetype="frontend", allowed_tools_json=["browser"]),
+                SandboxProfile(
+                    name="balanced",
+                    description="old",
+                    network_policy="blocked",
+                    file_write_policy="read_only",
+                    command_approval_policy="ask_every_time",
+                    external_tool_policy="blocked",
+                    deployment_policy="blocked",
+                    is_default=False,
+                ),
+                SandboxProfile(
+                    name="balanced",
+                    description="new",
+                    network_policy="limited",
+                    file_write_policy="workspace_write",
+                    command_approval_policy="on_request",
+                    external_tool_policy="limited",
+                    deployment_policy="blocked",
+                    is_default=True,
+                ),
+                ValidationRecipe(project_id=project_id, name="Old recipe", status="draft", steps_json=[]),
+                ValidationRecipe(project_id=project_id, name="New recipe", status="active", steps_json=[{"title": "Run tests"}]),
+            ]
+        )
+        db.commit()
+    finally:
+        db.close()
+
+    response = client.get(f"/api/projects/{project_id}/execution-policy/summary", headers=bridge_headers)
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["project_id"] == project_id
+    assert payload["sandbox_profile_count"] >= 1
+    assert payload["default_sandbox_profile"] == "balanced"
+    assert payload["validation_step_count"] > 0
+
+    db = SessionLocal()
+    try:
+        assert db.scalar(select(func.count(ModelPolicy.id)).where(ModelPolicy.project_id == project_id)) == 1
+        assert db.scalar(select(func.count(ToolRoutingPolicy.id)).where(ToolRoutingPolicy.project_id == project_id, ToolRoutingPolicy.agent_archetype == "frontend")) == 1
+        assert db.scalar(select(func.count(SandboxProfile.id)).where(SandboxProfile.project_id.is_(None), SandboxProfile.name == "balanced")) == 1
+        assert db.scalar(select(func.count(ValidationRecipe.id)).where(ValidationRecipe.project_id == project_id)) == 1
+    finally:
+        db.close()
+
+
 def test_preference_summary_reads_do_not_seed_rows(client, bridge_headers) -> None:
     project_id = _create_legacy_project("Preference Summary Read Safety", "preference-summary-read-safety")
 

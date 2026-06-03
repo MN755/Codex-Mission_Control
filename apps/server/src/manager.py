@@ -5080,9 +5080,20 @@ class MissionControlService:
             "notes": "Mirrors current Project Settings so widgets can summarize role-to-model routing honestly.",
         }
 
+    def _latest_model_policy_row(self, db: Session, project: Project) -> ModelPolicy | None:
+        matches = list(db.scalars(select(ModelPolicy).where(ModelPolicy.project_id == project.id).order_by(ModelPolicy.id.desc())))
+        if not matches:
+            return None
+        keep = matches[0]
+        for duplicate in matches[1:]:
+            db.delete(duplicate)
+        if len(matches) > 1:
+            db.flush()
+        return keep
+
     def _ensure_model_policy(self, db: Session, project: Project) -> ModelPolicy:
         settings = self._project_settings(db, project)
-        policy = db.scalar(select(ModelPolicy).where(ModelPolicy.project_id == project.id).order_by(ModelPolicy.id.asc()))
+        policy = self._latest_model_policy_row(db, project)
         if policy is None:
             policy = ModelPolicy(project_id=project.id, policy_name="balanced")
             db.add(policy)
@@ -5094,10 +5105,35 @@ class MissionControlService:
 
     def _preview_model_policy(self, db: Session, project: Project) -> ModelPolicy:
         settings = project.settings or self._project_settings_preview(db, project)
-        policy = next(iter(project.model_policies or []), None) or ModelPolicy(project_id=project.id, policy_name="balanced")
+        persisted = self._latest_model_policy_row(db, project)
+        policy = ModelPolicy(
+            project_id=project.id,
+            policy_name=persisted.policy_name if persisted is not None else "balanced",
+        )
         for field, value in self._model_policy_values(project, settings).items():
             setattr(policy, field, value)
         return policy
+
+    def _latest_tool_routing_rows(self, db: Session, project: Project) -> dict[str, ToolRoutingPolicy]:
+        matches = list(
+            db.scalars(
+                select(ToolRoutingPolicy)
+                .where(ToolRoutingPolicy.project_id == project.id)
+                .order_by(ToolRoutingPolicy.agent_archetype.asc(), ToolRoutingPolicy.id.desc())
+            )
+        )
+        kept: dict[str, ToolRoutingPolicy] = {}
+        duplicates: list[ToolRoutingPolicy] = []
+        for entry in matches:
+            if entry.agent_archetype not in kept:
+                kept[entry.agent_archetype] = entry
+                continue
+            duplicates.append(entry)
+        for duplicate in duplicates:
+            db.delete(duplicate)
+        if duplicates:
+            db.flush()
+        return kept
 
     def _tool_routing_entries(
         self,
@@ -5146,10 +5182,7 @@ class MissionControlService:
 
     def _ensure_tool_routing_policies(self, db: Session, project: Project) -> list[ToolRoutingPolicy]:
         settings = self._project_settings(db, project)
-        existing = {
-            entry.agent_archetype: entry
-            for entry in db.scalars(select(ToolRoutingPolicy).where(ToolRoutingPolicy.project_id == project.id))
-        }
+        existing = self._latest_tool_routing_rows(db, project)
         entries = self._tool_routing_entries(db, project, settings=settings, existing=existing)
         for entry in entries:
             if entry.id is None:
@@ -5165,7 +5198,17 @@ class MissionControlService:
 
     def _preview_tool_routing_policies(self, db: Session, project: Project) -> list[ToolRoutingPolicy]:
         settings = project.settings or self._project_settings_preview(db, project)
-        existing = {entry.agent_archetype: entry for entry in list(project.tool_routing_policies or [])}
+        existing = {
+            archetype: ToolRoutingPolicy(
+                project_id=project.id,
+                agent_archetype=entry.agent_archetype,
+                allowed_tools_json=list(entry.allowed_tools_json or []),
+                requires_approval_tools_json=list(entry.requires_approval_tools_json or []),
+                blocked_tools_json=list(entry.blocked_tools_json or []),
+                notes=entry.notes,
+            )
+            for archetype, entry in self._latest_tool_routing_rows(db, project).items()
+        }
         return self._tool_routing_entries(db, project, settings=settings, existing=existing, use_preview_archetypes=True)
 
     def _default_sandbox_profiles(self) -> list[tuple[str, str, str, str, str, str, str, bool]]:
@@ -5201,8 +5244,25 @@ class MissionControlService:
             key=lambda item: (item.id is None, item.id if item.id is not None else item.name.lower()),
         )
 
+    def _latest_sandbox_profile_rows(self, db: Session) -> dict[str, SandboxProfile]:
+        matches = list(
+            db.scalars(select(SandboxProfile).where(SandboxProfile.project_id.is_(None)).order_by(SandboxProfile.name.asc(), SandboxProfile.id.desc()))
+        )
+        kept: dict[str, SandboxProfile] = {}
+        duplicates: list[SandboxProfile] = []
+        for entry in matches:
+            if entry.name not in kept:
+                kept[entry.name] = entry
+                continue
+            duplicates.append(entry)
+        for duplicate in duplicates:
+            db.delete(duplicate)
+        if duplicates:
+            db.flush()
+        return kept
+
     def _ensure_sandbox_profiles(self, db: Session, project: Project) -> list[SandboxProfile]:
-        existing = {entry.name: entry for entry in db.scalars(select(SandboxProfile).where(SandboxProfile.project_id.is_(None)))}
+        existing = self._latest_sandbox_profile_rows(db)
         entries = self._sandbox_profile_entries(existing=existing)
         for entry in entries:
             if entry.id is None:
@@ -5212,8 +5272,18 @@ class MissionControlService:
 
     def _preview_sandbox_profiles(self, db: Session, project: Project) -> list[SandboxProfile]:
         existing = {
-            entry.name: entry
-            for entry in db.scalars(select(SandboxProfile).where(SandboxProfile.project_id.is_(None)).order_by(SandboxProfile.id.asc()))
+            name: SandboxProfile(
+                project_id=None,
+                name=entry.name,
+                description=entry.description,
+                network_policy=entry.network_policy,
+                file_write_policy=entry.file_write_policy,
+                command_approval_policy=entry.command_approval_policy,
+                external_tool_policy=entry.external_tool_policy,
+                deployment_policy=entry.deployment_policy,
+                is_default=entry.is_default,
+            )
+            for name, entry in self._latest_sandbox_profile_rows(db).items()
         }
         return self._sandbox_profile_entries(existing=existing)
 
@@ -5286,8 +5356,19 @@ class MissionControlService:
         db.flush()
         return summary
 
+    def _latest_validation_recipe_row(self, db: Session, project: Project) -> ValidationRecipe | None:
+        matches = list(db.scalars(select(ValidationRecipe).where(ValidationRecipe.project_id == project.id).order_by(ValidationRecipe.id.desc())))
+        if not matches:
+            return None
+        keep = matches[0]
+        for duplicate in matches[1:]:
+            db.delete(duplicate)
+        if len(matches) > 1:
+            db.flush()
+        return keep
+
     def _ensure_validation_recipe(self, db: Session, project: Project) -> ValidationRecipe:
-        recipe = db.scalar(select(ValidationRecipe).where(ValidationRecipe.project_id == project.id).order_by(ValidationRecipe.id.asc()))
+        recipe = self._latest_validation_recipe_row(db, project)
         if recipe is None:
             recipe = ValidationRecipe(project_id=project.id, name="Default validation recipe", status="draft")
             db.add(recipe)
@@ -5435,7 +5516,14 @@ class MissionControlService:
         return steps
 
     def _preview_validation_recipe(self, db: Session, project: Project) -> ValidationRecipe:
-        recipe = next(iter(project.validation_recipes or []), None) or ValidationRecipe(project_id=project.id, name="Default validation recipe", status="draft")
+        persisted = self._latest_validation_recipe_row(db, project)
+        recipe = ValidationRecipe(
+            project_id=project.id,
+            name=persisted.name if persisted is not None else "Default validation recipe",
+            status=persisted.status if persisted is not None else "draft",
+            last_run_at=persisted.last_run_at if persisted is not None else None,
+            last_result=persisted.last_result if persisted is not None else None,
+        )
         repo = project.repo_intelligence
         repo_payload = (
             {
@@ -5750,8 +5838,8 @@ class MissionControlService:
             testing_depth=preferences.testing_depth,
             conflicts=conflicts,
         )
-        model_policy = next(iter(project.model_policies or []), None) or self._preview_model_policy(db, project)
-        tool_routing = list(project.tool_routing_policies or []) or self._preview_tool_routing_policies(db, project)
+        model_policy = self._preview_model_policy(db, project)
+        tool_routing = self._preview_tool_routing_policies(db, project)
         sandbox_profiles = self._preview_sandbox_profiles(db, project)
         assumptions = [
             {
@@ -5800,7 +5888,7 @@ class MissionControlService:
             if persisted_has_signal
             else {**self._preview_repo_intelligence(project), "source": "computed"}
         )
-        validation_recipe = next(iter(project.validation_recipes or []), None) or self._preview_validation_recipe(db, project)
+        validation_recipe = self._preview_validation_recipe(db, project)
         handoff_quality = project.handoff_quality_preference or HandoffQualityPreference(project_id=project.id)
         traces = [
             {
@@ -7050,7 +7138,7 @@ class MissionControlService:
             support = get_support()
             return self._serialize_widget_data(instance, status="warning" if support["health"]["state"] in {"blocked", "unstable", "needs_review"} else "ready", data_json=support["health"])
         if instance.widget_type == "Model Assignment Policy":
-            policy = next(iter(project.model_policies or []), None) or self._preview_model_policy(db, project)
+            policy = self._preview_model_policy(db, project)
             return self._serialize_widget_data(
                 instance,
                 status="ready",
@@ -7068,7 +7156,7 @@ class MissionControlService:
                 },
             )
         if instance.widget_type == "Tool Routing Policy":
-            policies = list(project.tool_routing_policies or []) or self._preview_tool_routing_policies(db, project)
+            policies = self._preview_tool_routing_policies(db, project)
             return self._serialize_widget_data(
                 instance,
                 status="ready",
@@ -7313,7 +7401,7 @@ class MissionControlService:
                 },
             )
         if instance.widget_type == "Validation Recipe":
-            recipe = next(iter(project.validation_recipes or []), None) or self._preview_validation_recipe(db, project)
+            recipe = self._preview_validation_recipe(db, project)
             return self._serialize_widget_data(
                 instance,
                 status="ready",
@@ -11397,7 +11485,7 @@ class MissionControlService:
             testing_depth=preferences.testing_depth,
             conflicts=conflicts,
         )
-        recipe = next(iter(project.validation_recipes or []), None) or self._preview_validation_recipe(db, project)
+        recipe = self._preview_validation_recipe(db, project)
         coverage = validation_coverage_service.coverage_summary(db, project)
         handoff = self.get_project_handoff_summary(db, project)
         pending_approvals = self.list_pending_approvals(db, project)
@@ -11419,6 +11507,60 @@ class MissionControlService:
                 ],
             ]
         )
+
+    def build_execution_policy_summary(self, db: Session, project: Project) -> dict[str, Any]:
+        settings = project.settings or self._project_settings_preview(db, project)
+        model_policy = self._preview_model_policy(db, project)
+        tool_routing = self._preview_tool_routing_policies(db, project)
+        sandbox_profiles = self._preview_sandbox_profiles(db, project)
+        validation_recipe = self._preview_validation_recipe(db, project)
+        current_profile_name = "balanced" if settings.sandbox_mode == "workspace-write" else "strict"
+        current_profile = next((entry for entry in sandbox_profiles if entry.name == current_profile_name), sandbox_profiles[0] if sandbox_profiles else None)
+        approval_required_tools = self._dedupe_strings(
+            [tool for entry in tool_routing for tool in list(entry.requires_approval_tools_json or [])]
+        )
+        blocked_tools = self._dedupe_strings(
+            [tool for entry in tool_routing for tool in list(entry.blocked_tools_json or [])]
+        )
+        validation_commands = self._dedupe_strings(
+            [str(step.get("command") or "").strip() for step in list(validation_recipe.steps_json or []) if str(step.get("command") or "").strip()]
+        )
+        return {
+            "project_id": project.id,
+            "project_name": project.name,
+            "provider": normalize_provider(settings.provider),
+            "runner_mode": project.runner_mode or settings.runner_mode or DEFAULT_RUNNER_MODE,
+            "sandbox_mode": settings.sandbox_mode,
+            "approval_policy": settings.approval_policy,
+            "model_policy_name": model_policy.policy_name,
+            "manager_model": model_policy.manager_model,
+            "worker_model_count": len(
+                {
+                    value
+                    for value in [
+                        model_policy.coding_model,
+                        model_policy.docs_model,
+                        model_policy.review_model,
+                        model_policy.test_model,
+                        model_policy.research_model,
+                        model_policy.security_model,
+                    ]
+                    if value
+                }
+            ),
+            "tool_routing_count": len(tool_routing),
+            "approval_required_tool_count": len(approval_required_tools),
+            "approval_required_tools": approval_required_tools,
+            "blocked_tool_count": len(blocked_tools),
+            "blocked_tools": blocked_tools,
+            "sandbox_profile_count": len(sandbox_profiles),
+            "default_sandbox_profile": next((entry.name for entry in sandbox_profiles if entry.is_default), None),
+            "current_sandbox_profile": current_profile.name if current_profile is not None else None,
+            "validation_step_count": len(list(validation_recipe.steps_json or [])),
+            "validation_command_count": len(validation_commands),
+            "validation_commands": validation_commands,
+            "validation_status": validation_recipe.status,
+        }
         recommended_checks = self._dedupe_strings(
             [
                 *list(tooling.get("intake_commands") or [])[:1],
