@@ -13826,6 +13826,15 @@ class MissionControlService:
             self._build_browser_evidence_pipeline(project, tooling, webwright=webwright),
             self._build_repo_contract_audit(project, tooling, workspace_root=workspace_root),
         ]
+        section_status_counts: dict[str, int] = {}
+        for section in sections:
+            status = str(section.get("status") or "unknown")
+            section_status_counts[status] = section_status_counts.get(status, 0) + 1
+        section_keys = [str(section.get("key") or "") for section in sections if str(section.get("key") or "").strip()]
+        commands = self._dedupe_strings([str(command) for section in sections for command in list(section.get("commands") or [])])
+        artifacts = self._dedupe_strings([str(artifact) for section in sections for artifact in list(section.get("artifacts") or [])])
+        detail_count = sum(len(list(section.get("details") or [])) for section in sections)
+        metadata_section_count = sum(1 for section in sections if dict(section.get("metadata_json") or {}))
         report_markdown = "\n".join(
             [
                 "## Mission Control Capability Report",
@@ -13843,6 +13852,21 @@ class MissionControlService:
             "project_id": project.id,
             "project_name": project.name,
             "section_count": len(sections),
+            "section_keys": section_keys,
+            "section_statuses": sorted(section_status_counts),
+            "section_status_counts": section_status_counts,
+            "section_status_group_count": len(section_status_counts),
+            "ready_section_count": section_status_counts.get("ready", 0),
+            "needs_setup_section_count": section_status_counts.get("needs_setup", 0),
+            "warning_section_count": section_status_counts.get("warning", 0),
+            "gathering_section_count": section_status_counts.get("gathering", 0),
+            "awaiting_second_pack_section_count": section_status_counts.get("awaiting_second_pack", 0),
+            "command_count": len(commands),
+            "commands": commands,
+            "artifact_count": len(artifacts),
+            "artifacts": artifacts,
+            "detail_count": detail_count,
+            "metadata_section_count": metadata_section_count,
             "sections": sections,
             "report_markdown": report_markdown,
             "generated_at": utc_now(),

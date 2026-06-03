@@ -327,6 +327,7 @@ def test_capability_report_endpoint_returns_all_fifteen_sections(client, bridge_
     payload = response.json()
     assert payload["project_id"] == project_id
     assert payload["section_count"] == 15
+    assert payload["section_count"] == len(payload["sections"])
     keys = {item["key"] for item in payload["sections"]}
     assert keys == {
         "issue_to_execution_profiles",
@@ -345,6 +346,43 @@ def test_capability_report_endpoint_returns_all_fifteen_sections(client, bridge_
         "browser_evidence_pipeline",
         "repo_drift_and_contract_audit",
     }
+    assert payload["section_keys"] == [item["key"] for item in payload["sections"]]
+    expected_status_counts = {}
+    expected_commands = []
+    expected_artifacts = []
+    expected_detail_count = 0
+    expected_metadata_section_count = 0
+    seen_commands = set()
+    seen_artifacts = set()
+    for item in payload["sections"]:
+        expected_status_counts[item["status"]] = expected_status_counts.get(item["status"], 0) + 1
+        expected_detail_count += len(item["details"])
+        if item["metadata_json"]:
+            expected_metadata_section_count += 1
+        for command in item["commands"]:
+            if command in seen_commands:
+                continue
+            seen_commands.add(command)
+            expected_commands.append(command)
+        for artifact in item["artifacts"]:
+            if artifact in seen_artifacts:
+                continue
+            seen_artifacts.add(artifact)
+            expected_artifacts.append(artifact)
+    assert payload["section_statuses"] == sorted(expected_status_counts)
+    assert payload["section_status_counts"] == expected_status_counts
+    assert payload["section_status_group_count"] == len(expected_status_counts)
+    assert payload["ready_section_count"] == expected_status_counts.get("ready", 0)
+    assert payload["needs_setup_section_count"] == expected_status_counts.get("needs_setup", 0)
+    assert payload["warning_section_count"] == expected_status_counts.get("warning", 0)
+    assert payload["gathering_section_count"] == expected_status_counts.get("gathering", 0)
+    assert payload["awaiting_second_pack_section_count"] == expected_status_counts.get("awaiting_second_pack", 0)
+    assert payload["command_count"] == len(expected_commands)
+    assert payload["commands"] == expected_commands
+    assert payload["artifact_count"] == len(expected_artifacts)
+    assert payload["artifacts"] == expected_artifacts
+    assert payload["detail_count"] == expected_detail_count
+    assert payload["metadata_section_count"] == expected_metadata_section_count
     sections = {item["key"]: item for item in payload["sections"]}
     assert sections["semantic_code_impact_mapping"]["metadata_json"]["semantic_backend"] == "cross-language-workspace-graph"
     assert sections["semantic_code_impact_mapping"]["metadata_json"]["dependent_files"]["src/worker.py"] == ["tests/test_worker.py"]

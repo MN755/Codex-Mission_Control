@@ -1604,6 +1604,21 @@ class ProjectCapabilityReportRead(BaseModel):
     project_id: int
     project_name: str
     section_count: int = 0
+    section_keys: list[str] = Field(default_factory=list)
+    section_statuses: list[str] = Field(default_factory=list)
+    section_status_counts: dict[str, int] = Field(default_factory=dict)
+    section_status_group_count: int = 0
+    ready_section_count: int = 0
+    needs_setup_section_count: int = 0
+    warning_section_count: int = 0
+    gathering_section_count: int = 0
+    awaiting_second_pack_section_count: int = 0
+    command_count: int = 0
+    commands: list[str] = Field(default_factory=list)
+    artifact_count: int = 0
+    artifacts: list[str] = Field(default_factory=list)
+    detail_count: int = 0
+    metadata_section_count: int = 0
     sections: list[CapabilitySectionRead] = Field(default_factory=list)
     report_markdown: str
     generated_at: datetime
