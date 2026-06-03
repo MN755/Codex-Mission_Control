@@ -6,7 +6,8 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from models import Project, SwarmAgentSpec, SwarmLaunchSimulation, SwarmPlan, Task
+from models import Project, SwarmAgentSpec, SwarmLaunchSimulation, SwarmPlan, Task, utc_now
+from task_board import paths_conflict
 
 
 SPAWN_PHASE_ORDER = {
@@ -22,6 +23,15 @@ SPAWN_PHASE_ORDER = {
 
 
 class SimulationService:
+    @staticmethod
+    def _normalize_paths(paths: list[str] | None) -> list[str]:
+        normalized: list[str] = []
+        for path in paths or []:
+            cleaned = str(path).replace("\\", "/").strip().rstrip("/").lower()
+            if cleaned:
+                normalized.append(cleaned)
+        return normalized
+
     def _build_simulation_fields(self, db: Session, project: Project, swarm_plan: SwarmPlan | None = None) -> dict[str, Any]:
         plan = swarm_plan or db.scalar(
             select(SwarmPlan).where(SwarmPlan.project_id == project.id).order_by(SwarmPlan.id.desc())
@@ -52,16 +62,27 @@ class SimulationService:
                 "recommended_launch_order_json": [],
             }
 
+        normalized_paths = {spec.id: self._normalize_paths(spec.allowed_paths_json) for spec in specs}
         path_usage = Counter()
+        overlapping_agents: set[int] = set()
+        overlap_messages: list[str] = []
         for spec in specs:
-            for path in spec.allowed_paths_json or []:
+            for path in normalized_paths[spec.id]:
                 path_usage[path] += 1
+        for index, spec in enumerate(specs):
+            for other in specs[index + 1 :]:
+                if not paths_conflict(normalized_paths[spec.id], normalized_paths[other.id]):
+                    continue
+                overlapping_agents.add(spec.id)
+                overlapping_agents.add(other.id)
+                left_paths = set(normalized_paths[spec.id])
+                right_paths = set(normalized_paths[other.id])
+                shared = sorted((left_paths & right_paths) or (left_paths | right_paths))
+                overlap_messages.append(f"{spec.name} overlaps {other.name} on {', '.join(shared[:3])}.")
+        if overlap_messages:
+            warnings.extend(overlap_messages[:5])
 
-        overlapping_paths = [path for path, count in path_usage.items() if count > 1]
-        if overlapping_paths:
-            warnings.append(f"Path overlap detected in {', '.join(overlapping_paths[:5])}.")
-
-        if len(overlapping_paths) >= 2:
+        if len(overlapping_agents) >= 2:
             bottlenecks.append("Too many agents touch the same area. Revise ownership before broad launch.")
 
         if not any(spec.archetype in {"test", "reviewer", "release_handoff"} for spec in specs):
@@ -73,7 +94,7 @@ class SimulationService:
         task_paths = {task.id: set(task.allowed_paths_json or []) for task in tasks}
         for spec in specs:
             blocked_by_dependency = "after_" in (spec.spawn_phase or "")
-            overlapping = any(path_usage[path] > 1 for path in (spec.allowed_paths_json or []))
+            overlapping = spec.id in overlapping_agents
             launch_order.append(
                 {
                     "name": spec.name,
@@ -87,12 +108,11 @@ class SimulationService:
                 wait_count += 1
             else:
                 safe_count += 1
-            if spec.archetype in {"security", "ops"} or any(path for path in (spec.allowed_paths_json or []) if path.lower() in {".github", "scripts", "ops"}):
+            if spec.archetype in {"security", "ops"} or any(path for path in normalized_paths[spec.id] if path in {".github", "scripts", "ops"}):
                 approval_count += 1
 
         if any(task.status in {"blocked", "waiting_on_paths"} for task in tasks):
             warnings.append("Open blocked tasks exist. Launching more workers may amplify churn instead of reducing it.")
-            wait_count += 1
 
         if not any(task.status == "done" for task in tasks) and any("after_" in (spec.spawn_phase or "") for spec in specs):
             bottlenecks.append("Deferred phases depend on work that has not started yet.")
@@ -134,6 +154,40 @@ class SimulationService:
         db.add(simulation)
         db.flush()
         return simulation
+
+    def latest_simulation_snapshot(self, db: Session, project: Project) -> dict[str, Any]:
+        latest = self.latest_simulation(db, project)
+        current_plan = db.scalar(select(SwarmPlan).where(SwarmPlan.project_id == project.id).order_by(SwarmPlan.id.desc()))
+        if latest is None:
+            preview = self.preview_launch(db, project, current_plan)
+            return {
+                "simulation_id": None,
+                "project_id": preview.project_id,
+                "swarm_plan_id": preview.swarm_plan_id,
+                "safe_to_launch_count": preview.safe_to_launch_count,
+                "should_wait_count": preview.should_wait_count,
+                "needs_user_approval_count": preview.needs_user_approval_count,
+                "conflict_warnings_json": list(preview.conflict_warnings_json or []),
+                "bottlenecks_json": list(preview.bottlenecks_json or []),
+                "recommended_launch_order_json": list(preview.recommended_launch_order_json or []),
+                "created_at": preview.created_at or utc_now(),
+                "persisted": False,
+                "stale": False,
+            }
+        return {
+            "simulation_id": latest.id,
+            "project_id": latest.project_id,
+            "swarm_plan_id": latest.swarm_plan_id,
+            "safe_to_launch_count": latest.safe_to_launch_count,
+            "should_wait_count": latest.should_wait_count,
+            "needs_user_approval_count": latest.needs_user_approval_count,
+            "conflict_warnings_json": list(latest.conflict_warnings_json or []),
+            "bottlenecks_json": list(latest.bottlenecks_json or []),
+            "recommended_launch_order_json": list(latest.recommended_launch_order_json or []),
+            "created_at": latest.created_at,
+            "persisted": True,
+            "stale": current_plan is not None and latest.swarm_plan_id != current_plan.id,
+        }
 
 
 simulation_service = SimulationService()

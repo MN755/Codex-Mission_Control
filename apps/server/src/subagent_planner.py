@@ -159,13 +159,17 @@ class SubagentPlannerService:
         )
 
     def ensure_policy(self, db: Session, *, create_if_missing: bool = True) -> SubagentPolicy:
-        policy = db.get(SubagentPolicy, 1)
+        matches = list(db.scalars(select(SubagentPolicy).order_by(SubagentPolicy.updated_at.desc(), SubagentPolicy.id.desc())))
+        policy = matches[0] if matches else None
         if policy is None:
             if not create_if_missing:
                 return self._default_policy()
             policy = self._default_policy()
             db.add(policy)
             db.flush()
+            return policy
+        for duplicate in matches[1:]:
+            db.delete(duplicate)
         return policy
 
     def update_policy(self, db: Session, updates: dict[str, Any]) -> SubagentPolicy:
@@ -176,6 +180,25 @@ class SubagentPlannerService:
             setattr(policy, key, value)
         db.flush()
         return policy
+
+    def policy_summary(self, db: Session) -> dict[str, Any]:
+        policy = self.ensure_policy(db, create_if_missing=False)
+        sandbox_mode = self._sandbox_mode_for_policy(policy)
+        return {
+            "enabled": bool(policy.enabled),
+            "default_mode": str(policy.default_mode),
+            "sandbox_mode": sandbox_mode,
+            "max_subagents_per_burst": int(policy.max_subagents_per_burst),
+            "max_runtime_seconds": int(policy.max_runtime_seconds),
+            "allow_file_edits": bool(policy.allow_file_edits),
+            "allow_commands": bool(policy.allow_commands),
+            "require_user_approval_above_count": int(policy.require_user_approval_above_count),
+            "allowed_task_types_json": list(policy.allowed_task_types_json or []),
+            "default_spawn_method": str(policy.default_spawn_method),
+            "writes_allowed": sandbox_mode == "workspace-write",
+            "read_only_default": sandbox_mode == "read-only",
+            "command_capable": bool(policy.allow_commands),
+        }
 
     def template_catalog(self) -> dict[str, dict[str, Any]]:
         return BURST_TEMPLATES

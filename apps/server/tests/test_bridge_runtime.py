@@ -4,6 +4,8 @@ import os
 from datetime import timedelta
 from pathlib import Path
 
+from sqlalchemy import select
+
 from bridge_formatter import (
     format_diagnostic_message,
     format_handoff_message,
@@ -12,7 +14,7 @@ from bridge_formatter import (
 )
 from conftest import sample_workspace, wait_for
 from db import SessionLocal
-from models import DecisionRecord, EvidenceBasedHandoff, ManagerQuestion, Project, ProjectEvent, utc_now
+from models import DecisionRecord, EvidenceBasedHandoff, ManagerQuestion, PendingDecision, Project, ProjectEvent, utc_now
 
 
 def _bridge_headers() -> dict[str, str]:
@@ -270,6 +272,71 @@ def test_pending_decision_rejects_invalid_option(client) -> None:
     )
     assert response.status_code == 400
     assert response.json()["code"] == "MC-DECISION-INVALID-OPTION-001"
+
+
+def test_pending_decisions_get_dedupes_duplicate_rows_for_same_question(client) -> None:
+    project = _create_project(client, "Duplicate Pending Decisions", "duplicate-pending-decisions")
+    db = SessionLocal()
+    try:
+        record = db.get(Project, project["id"])
+        assert record is not None
+        question = ManagerQuestion(
+            project_id=record.id,
+            question="Should Mission Control keep the current rollout plan?",
+            options_json=[{"id": "keep", "label": "Keep it"}],
+            impact="medium",
+            status="pending",
+        )
+        db.add(question)
+        db.flush()
+        db.add_all(
+            [
+                PendingDecision(
+                    project_id=record.id,
+                    decision_type="manager_question",
+                    title="Old duplicate",
+                    message="Outdated pending row.",
+                    risk_level="medium",
+                    options_json=[{"id": "keep", "label": "Keep it"}],
+                    source_kind="manager_question",
+                    source_id=question.id,
+                    status="pending",
+                ),
+                PendingDecision(
+                    project_id=record.id,
+                    decision_type="manager_question",
+                    title="New duplicate",
+                    message="Newer pending row.",
+                    risk_level="medium",
+                    options_json=[{"id": "keep", "label": "Keep it"}],
+                    source_kind="manager_question",
+                    source_id=question.id,
+                    status="pending",
+                ),
+            ]
+        )
+        db.commit()
+    finally:
+        db.close()
+
+    response = client.get(f"/api/projects/{project['id']}/pending-decisions", headers=_bridge_headers())
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert len(payload) == 1
+    assert payload[0]["decision_type"] == "manager_question"
+
+    db = SessionLocal()
+    try:
+        rows = list(
+            db.scalars(
+                select(PendingDecision)
+                .where(PendingDecision.project_id == project["id"], PendingDecision.source_kind == "manager_question")
+                .order_by(PendingDecision.id.asc())
+            )
+        )
+        assert len(rows) == 1
+    finally:
+        db.close()
 
 
 def test_event_digest_endpoints_are_compact_and_redacted(client) -> None:

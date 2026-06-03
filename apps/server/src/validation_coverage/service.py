@@ -24,25 +24,34 @@ VALIDATION_AREAS = [
 
 class ValidationCoverageService:
     def list_coverage(self, db: Session, project: Project) -> list[ValidationCoverageArea]:
-        return list(
+        rows = list(
             db.scalars(
                 select(ValidationCoverageArea)
                 .where(ValidationCoverageArea.project_id == project.id)
-                .order_by(ValidationCoverageArea.area.asc(), ValidationCoverageArea.id.asc())
+                .order_by(ValidationCoverageArea.area.asc(), ValidationCoverageArea.last_updated.desc(), ValidationCoverageArea.id.desc())
             )
         )
+        deduped: dict[str, ValidationCoverageArea] = {}
+        for row in rows:
+            deduped.setdefault(row.area, row)
+        return [row for _, row in sorted(deduped.items())]
 
     def _upsert_area(self, db: Session, project_id: int, area: str) -> ValidationCoverageArea:
-        record = db.scalar(
+        statement = (
             select(ValidationCoverageArea)
             .where(ValidationCoverageArea.project_id == project_id, ValidationCoverageArea.area == area)
-            .order_by(ValidationCoverageArea.id.asc())
+            .order_by(ValidationCoverageArea.last_updated.desc(), ValidationCoverageArea.id.desc())
         )
-        if record is None:
-            record = ValidationCoverageArea(project_id=project_id, area=area)
-            db.add(record)
+        records = list(db.scalars(statement))
+        current = records[0] if records else None
+        if current is None:
+            current = ValidationCoverageArea(project_id=project_id, area=area)
+            db.add(current)
             db.flush()
-        return record
+            return current
+        for duplicate in records[1:]:
+            db.delete(duplicate)
+        return current
 
     def _compute_area_payloads(self, db: Session, project: Project) -> list[dict[str, Any]]:
         existing = {

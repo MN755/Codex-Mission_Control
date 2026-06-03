@@ -246,6 +246,25 @@ class BridgeRuntimeService:
             )
         return options
 
+    def _dedupe_pending_decision_matches(
+        self,
+        db: Session,
+        *,
+        source_kind: str,
+        source_id: int,
+    ) -> PendingDecision | None:
+        matches = list(
+            db.scalars(
+                select(PendingDecision)
+                .where(PendingDecision.source_kind == source_kind, PendingDecision.source_id == source_id)
+                .order_by(PendingDecision.answered_at.desc(), PendingDecision.created_at.desc(), PendingDecision.id.desc())
+            )
+        )
+        current = matches[0] if matches else None
+        for duplicate in matches[1:]:
+            db.delete(duplicate)
+        return current
+
     def _sync_question_decision(
         self,
         db: Session,
@@ -253,10 +272,10 @@ class BridgeRuntimeService:
         question: ManagerQuestion,
         orchestration: OrchestrationSession | None,
     ) -> PendingDecision:
-        record = db.scalar(
-            select(PendingDecision)
-            .where(PendingDecision.source_kind == "manager_question", PendingDecision.source_id == question.id)
-            .order_by(PendingDecision.id.desc())
+        record = self._dedupe_pending_decision_matches(
+            db,
+            source_kind="manager_question",
+            source_id=question.id,
         )
         if record is None:
             record = PendingDecision(
@@ -315,10 +334,10 @@ class BridgeRuntimeService:
         approval: ApprovalRequest,
         orchestration: OrchestrationSession | None,
     ) -> PendingDecision:
-        record = db.scalar(
-            select(PendingDecision)
-            .where(PendingDecision.source_kind == "approval_request", PendingDecision.source_id == approval.id)
-            .order_by(PendingDecision.id.desc())
+        record = self._dedupe_pending_decision_matches(
+            db,
+            source_kind="approval_request",
+            source_id=approval.id,
         )
         options = self._approval_options(approval)
         request_payload = dict(approval.request_payload_json or {})

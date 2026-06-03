@@ -40,6 +40,7 @@ from models import (
     Project,
     ProjectConfidence,
     ProjectPlaybook,
+    ProjectPlaybookSelection,
     ProjectEvent,
     ProjectTimelineEvent,
     ProjectUnderstanding,
@@ -56,6 +57,7 @@ from models import (
     SwarmPreferences,
     Task,
     ToolRoutingPolicy,
+    UserPreference,
     ValidationCoverageArea,
     ValidationRecipe,
     WidgetDefinition,
@@ -570,6 +572,28 @@ def test_swarm_strategy_widget_data_get_does_not_persist_launch_simulations(clie
         db.close()
 
 
+def test_latest_swarm_simulation_get_does_not_persist_preview_rows(client, bridge_headers) -> None:
+    project = _create_project(client, "Swarm Latest Read Safety", "swarm-latest-read-safety")
+    project_id = project["id"]
+    _seed_swarm_plan_without_simulation(project_id)
+
+    db = SessionLocal()
+    try:
+        assert _swarm_simulation_count(db, project_id) == 0
+    finally:
+        db.close()
+
+    response = client.get(f"/api/projects/{project_id}/swarm/simulations/latest", headers=bridge_headers)
+    assert response.status_code == 200, response.text
+    assert response.json()["persisted"] is False
+
+    db = SessionLocal()
+    try:
+        assert _swarm_simulation_count(db, project_id) == 0
+    finally:
+        db.close()
+
+
 def test_project_widget_summary_get_does_not_persist_launch_simulations(client, bridge_headers) -> None:
     project = _create_project(client, "Swarm Summary Read Safety", "swarm-summary-read-safety")
     project_id = project["id"]
@@ -790,6 +814,27 @@ def test_subagent_policy_get_is_read_only(client, bridge_headers) -> None:
     assert payload["default_mode"] == "read_only"
     assert payload["allow_file_edits"] is False
     assert payload["allow_commands"] is False
+
+    db = SessionLocal()
+    try:
+        assert db.scalar(select(func.count(SubagentPolicy.id))) == 0
+    finally:
+        db.close()
+
+
+def test_subagent_policy_summary_get_is_read_only(client, bridge_headers) -> None:
+    init_db()
+    db = SessionLocal()
+    try:
+        assert db.scalar(select(func.count(SubagentPolicy.id))) == 0
+    finally:
+        db.close()
+
+    response = client.get("/api/subagent-policy/summary", headers=bridge_headers)
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["sandbox_mode"] == "read-only"
+    assert payload["writes_allowed"] is False
 
     db = SessionLocal()
     try:
@@ -1157,6 +1202,85 @@ def test_validation_coverage_get_is_read_only(client, bridge_headers) -> None:
         assert db.scalar(select(func.count(ValidationCoverageArea.id)).where(ValidationCoverageArea.project_id == project_id)) == 0
     finally:
         db.close()
+
+
+def test_validation_coverage_summary_get_is_read_only(client, bridge_headers) -> None:
+    project_id = _create_legacy_project("Validation Coverage Summary Read Safety", "validation-coverage-summary-read-safety")
+
+    db = SessionLocal()
+    try:
+        assert db.scalar(select(func.count(ValidationCoverageArea.id)).where(ValidationCoverageArea.project_id == project_id)) == 0
+    finally:
+        db.close()
+
+    response = client.get(f"/api/projects/{project_id}/validation-coverage/summary", headers=bridge_headers)
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["project_id"] == project_id
+    assert payload["gap_count"] >= 0
+
+    db = SessionLocal()
+    try:
+        assert db.scalar(select(func.count(ValidationCoverageArea.id)).where(ValidationCoverageArea.project_id == project_id)) == 0
+    finally:
+        db.close()
+
+
+def test_project_playbook_state_get_does_not_persist_selection_rows(client, bridge_headers) -> None:
+    project_id = _create_legacy_project("Playbook State Read Safety", "playbook-state-read-safety")
+
+    db = SessionLocal()
+    try:
+        assert db.scalar(select(func.count(ProjectPlaybookSelection.project_id)).where(ProjectPlaybookSelection.project_id == project_id)) == 0
+    finally:
+        db.close()
+
+    response = client.get(f"/api/projects/{project_id}/playbook", headers=bridge_headers)
+    assert response.status_code == 200, response.text
+    assert response.json()["project_id"] == project_id
+
+    db = SessionLocal()
+    try:
+        assert db.scalar(select(func.count(ProjectPlaybookSelection.project_id)).where(ProjectPlaybookSelection.project_id == project_id)) == 0
+    finally:
+        db.close()
+
+
+def test_preference_summary_reads_do_not_seed_rows(client, bridge_headers) -> None:
+    project_id = _create_legacy_project("Preference Summary Read Safety", "preference-summary-read-safety")
+
+    db = SessionLocal()
+    try:
+        assert db.scalar(select(func.count(UserPreference.id))) == 0
+    finally:
+        db.close()
+
+    global_response = client.get("/api/preferences/summary", headers=bridge_headers)
+    assert global_response.status_code == 200, global_response.text
+    assert global_response.json()["item_count"] == 0
+
+    project_response = client.get(f"/api/projects/{project_id}/preferences/summary", headers=bridge_headers)
+    assert project_response.status_code == 200, project_response.text
+    assert project_response.json()["project_id"] == project_id
+
+    db = SessionLocal()
+    try:
+        assert db.scalar(select(func.count(UserPreference.id))) == 0
+    finally:
+        db.close()
+
+
+def test_risk_summary_reads_do_not_seed_rows(client, bridge_headers) -> None:
+    project_id = _create_legacy_project("Risk Summary Read Safety", "risk-summary-read-safety")
+
+    global_response = client.get("/api/risks/summary", headers=bridge_headers)
+    assert global_response.status_code == 200, global_response.text
+    assert global_response.json()["total_count"] == 0
+
+    project_response = client.get(f"/api/projects/{project_id}/risks/summary", headers=bridge_headers)
+    assert project_response.status_code == 200, project_response.text
+    assert project_response.json()["project_id"] == project_id
+    assert project_response.json()["total_count"] == 0
 
 
 def test_agent_archetype_catalog_get_is_read_only_and_preserves_edits(client, bridge_headers) -> None:

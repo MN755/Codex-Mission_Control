@@ -3,10 +3,12 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+from sqlalchemy import select
+
 from bridge_formatter import format_pending_decision_message
 from conftest import sample_workspace, wait_for
 from db import SessionLocal
-from models import Project
+from models import Project, SubagentPolicy
 from models import utc_now
 from subagent_planner import BURST_TEMPLATES
 
@@ -43,6 +45,16 @@ def test_default_subagent_policy_is_read_only_and_no_command(client) -> None:
     assert payload["allow_file_edits"] is False
     assert payload["allow_commands"] is False
     assert payload["require_user_approval_above_count"] == 3
+
+
+def test_subagent_policy_summary_reflects_effective_mode(client) -> None:
+    response = client.get("/api/subagent-policy/summary", headers=_bridge_headers())
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["sandbox_mode"] == "read-only"
+    assert payload["writes_allowed"] is False
+    assert payload["read_only_default"] is True
+    assert payload["command_capable"] is False
 
 
 def test_burst_templates_exist() -> None:
@@ -402,6 +414,57 @@ def test_custom_agent_generation_reflects_current_subagent_policy(client) -> Non
     assert 'sandbox_mode = "workspace-write"' in content
     assert "allow_file_edits = true" in content
     assert "allow_commands = true" in content
+
+
+def test_subagent_policy_get_prefers_latest_row_and_cleans_duplicates(client) -> None:
+    db = SessionLocal()
+    try:
+        db.add_all(
+            [
+                SubagentPolicy(
+                    id=11,
+                    enabled=True,
+                    default_mode="read_only",
+                    max_subagents_per_burst=4,
+                    max_runtime_seconds=300,
+                    allow_file_edits=False,
+                    allow_commands=False,
+                    require_user_approval_above_count=2,
+                    allowed_task_types_json=["review"],
+                    default_spawn_method="codex_chat_bridge",
+                ),
+                SubagentPolicy(
+                    id=12,
+                    enabled=True,
+                    default_mode="limited_write",
+                    max_subagents_per_burst=7,
+                    max_runtime_seconds=900,
+                    allow_file_edits=True,
+                    allow_commands=True,
+                    require_user_approval_above_count=5,
+                    allowed_task_types_json=["planning", "review"],
+                    default_spawn_method="codex_chat_bridge",
+                ),
+            ]
+        )
+        db.commit()
+    finally:
+        db.close()
+
+    response = client.get("/api/subagent-policy", headers=_bridge_headers())
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["default_mode"] == "limited_write"
+    assert payload["allow_file_edits"] is True
+    assert payload["allow_commands"] is True
+
+    db = SessionLocal()
+    try:
+        rows = list(db.scalars(select(SubagentPolicy).order_by(SubagentPolicy.id.asc())))
+        assert len(rows) == 1
+        assert rows[0].id == 12
+    finally:
+        db.close()
 
 
 def test_direct_bridge_formatter_for_subagent_burst() -> None:

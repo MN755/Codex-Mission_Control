@@ -222,6 +222,9 @@ class PlaybookService:
         if playbook.key == "ai_local_tool" and any(token in text for token in ("agent", "codex", "model", "runner", "llm", "local tool")):
             score += 5
             reasons.append("Project signals center on local AI/tooling behavior.")
+        if playbook.key == "ai_local_tool" and any(token in text for token in ("mcp", "plugin", "bridge", "daemon", "headless")):
+            score += 4
+            reasons.append("Project signals emphasize headless orchestration and plugin-driven tooling.")
         if playbook.key == "existing_repo_cleanup" and any(token in text for token in ("cleanup", "refactor", "existing repo", "legacy")):
             score += 4
             reasons.append("Project looks like a cleanup/refactor pass instead of a greenfield build.")
@@ -233,14 +236,34 @@ class PlaybookService:
             reasons.append("Fallback when the repo is real but not neatly classified yet.")
         return score, " ".join(reasons)
 
-    def suggest_playbook(self, db: Session, project: Project, *, persist: bool = True) -> dict[str, Any]:
-        playbooks = self.list_playbooks(db)
-        scored = sorted(
-            ((self._score_playbook(project, playbook), playbook) for playbook in playbooks),
-            key=lambda item: (item[0][0], item[1].name),
+    def ranked_playbooks(self, db: Session, project: Project, *, limit: int | None = None) -> list[dict[str, Any]]:
+        selection = self._selection(db, project.id)
+        ranked = sorted(
+            (
+                {
+                    "playbook": playbook,
+                    "playbook_key": playbook.key,
+                    "score": score,
+                    "why": reason or "No strong signals matched this playbook yet.",
+                    "is_current": selection is not None and selection.playbook_key == playbook.key,
+                    "status": selection.status if selection is not None and selection.playbook_key == playbook.key else None,
+                }
+                for playbook in self.list_playbooks(db)
+                for (score, reason) in [self._score_playbook(project, playbook)]
+            ),
+            key=lambda item: (int(item["score"]), str(item["playbook"].name).lower()),
+            reverse=True,
         )
-        (score, reason), chosen = scored[-1]
+        return ranked[:limit] if limit is not None else ranked
+
+    def suggest_playbook(self, db: Session, project: Project, *, persist: bool = True) -> dict[str, Any]:
+        ranked = self.ranked_playbooks(db, project)
+        top = ranked[0]
+        score = int(top["score"])
+        reason = str(top["why"])
+        chosen = top["playbook"]
         if score <= 0:
+            playbooks = self.list_playbooks(db)
             chosen = next((item for item in playbooks if item.key == "generic_custom"), playbooks[0])
             reason = "No stronger pattern matched the current project signals."
 
@@ -328,13 +351,13 @@ class PlaybookService:
             "playbook": playbook,
         }
 
-    def project_playbook_state(self, db: Session, project: Project) -> dict[str, Any]:
+    def project_playbook_state(self, db: Session, project: Project, *, persist: bool = True) -> dict[str, Any]:
         selection = self._selection(db, project.id)
         if selection is None:
-            return self.suggest_playbook(db, project, persist=True)
+            return self.suggest_playbook(db, project, persist=persist)
         playbook = self.get_playbook(db, selection.playbook_key) if selection.playbook_key else None
         if playbook is None:
-            return self.suggest_playbook(db, project, persist=True)
+            return self.suggest_playbook(db, project, persist=persist)
         return {
             "project_id": project.id,
             "playbook_key": selection.playbook_key,

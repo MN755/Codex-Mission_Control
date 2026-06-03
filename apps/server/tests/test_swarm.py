@@ -5,7 +5,7 @@ from pathlib import Path
 from conftest import sample_workspace
 from db import SessionLocal
 from manager import service
-from models import Plan
+from models import Plan, SwarmAgentSpec, SwarmLaunchSimulation, SwarmPlan, Task
 
 
 def create_project(client, name: str, workspace_name: str) -> dict:
@@ -441,3 +441,186 @@ def test_gpu_programming_mode_emits_specialized_cuda_roles(client) -> None:
     assert any(spec["name"] == "CUDA Kernel Generator" for spec in payload["specs"])
     assert any(spec["archetype"] == "performance" for spec in payload["specs"])
     assert any(spec["iteration_budget"] > 1 for spec in payload["specs"])
+
+
+def test_latest_swarm_simulation_route_previews_without_persisting_when_missing(client) -> None:
+    project = create_project(client, "Swarm Latest Preview", "swarm-latest-preview")
+    db = SessionLocal()
+    try:
+        plan = SwarmPlan(
+            project_id=project["id"],
+            mode="balanced",
+            goal="Plan safely first.",
+            recommended_agent_count=1,
+            max_agent_count=4,
+            coordination_risk="low",
+            path_conflict_risk="low",
+            expected_bottlenecks_json=[],
+            validation_strategy_json=[],
+            strategy_summary="Preview only.",
+            approved_by_user=False,
+            status="pending_approval",
+        )
+        db.add(plan)
+        db.flush()
+        db.add(
+            SwarmAgentSpec(
+                swarm_plan_id=plan.id,
+                project_id=project["id"],
+                name="Planner",
+                archetype="planner",
+                mission="Plan the next slice.",
+                model_policy="default",
+                toolset_json=["task_planning"],
+                allowed_paths_json=["docs"],
+                forbidden_paths_json=[],
+                spawn_phase="build_start",
+                retire_when="Plan is ready.",
+                priority=10,
+            )
+        )
+        db.commit()
+    finally:
+        db.close()
+
+    response = client.get(f"/api/projects/{project['id']}/swarm/simulations/latest")
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["persisted"] is False
+    assert payload["simulation_id"] is None
+    assert payload["recommended_launch_order_json"]
+
+    db = SessionLocal()
+    try:
+        assert db.query(SwarmLaunchSimulation).filter(SwarmLaunchSimulation.project_id == project["id"]).count() == 0
+    finally:
+        db.close()
+
+
+def test_simulation_detects_case_and_nested_path_overlaps(client) -> None:
+    project = create_project(client, "Simulation Overlap", "simulation-overlap")
+    db = SessionLocal()
+    try:
+        plan = SwarmPlan(
+            project_id=project["id"],
+            mode="balanced",
+            goal="Test overlaps.",
+            recommended_agent_count=2,
+            max_agent_count=4,
+            coordination_risk="medium",
+            path_conflict_risk="medium",
+            expected_bottlenecks_json=[],
+            validation_strategy_json=[],
+            strategy_summary="Overlap validation.",
+            approved_by_user=False,
+            status="pending_approval",
+        )
+        db.add(plan)
+        db.flush()
+        db.add_all(
+            [
+                SwarmAgentSpec(
+                    swarm_plan_id=plan.id,
+                    project_id=project["id"],
+                    name="Backend A",
+                    archetype="backend",
+                    mission="Own API paths.",
+                    model_policy="default",
+                    toolset_json=["edit"],
+                    allowed_paths_json=["SRC/API"],
+                    forbidden_paths_json=[],
+                    spawn_phase="build_start",
+                    retire_when="API work is done.",
+                    priority=10,
+                ),
+                SwarmAgentSpec(
+                    swarm_plan_id=plan.id,
+                    project_id=project["id"],
+                    name="Backend B",
+                    archetype="backend",
+                    mission="Own source tree.",
+                    model_policy="default",
+                    toolset_json=["edit"],
+                    allowed_paths_json=["src"],
+                    forbidden_paths_json=[],
+                    spawn_phase="build_start",
+                    retire_when="Source tree updates are done.",
+                    priority=20,
+                ),
+            ]
+        )
+        db.commit()
+    finally:
+        db.close()
+
+    response = client.get(f"/api/projects/{project['id']}/swarm/simulations/latest")
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    warnings = "\n".join(payload["conflict_warnings_json"]).lower()
+    assert "backend a overlaps backend b" in warnings
+    assert payload["should_wait_count"] == 2
+
+
+def test_simulation_wait_count_tracks_agents_not_blocked_task_duplicates(client) -> None:
+    project = create_project(client, "Simulation Wait Count", "simulation-wait-count")
+    db = SessionLocal()
+    try:
+        plan = SwarmPlan(
+            project_id=project["id"],
+            mode="balanced",
+            goal="Test wait counts.",
+            recommended_agent_count=1,
+            max_agent_count=2,
+            coordination_risk="medium",
+            path_conflict_risk="low",
+            expected_bottlenecks_json=[],
+            validation_strategy_json=[],
+            strategy_summary="Wait-count validation.",
+            approved_by_user=False,
+            status="pending_approval",
+        )
+        db.add(plan)
+        db.flush()
+        db.add(
+            SwarmAgentSpec(
+                swarm_plan_id=plan.id,
+                project_id=project["id"],
+                name="Planner",
+                archetype="planner",
+                mission="Wait for architecture completion.",
+                model_policy="default",
+                toolset_json=["task_planning"],
+                allowed_paths_json=["docs"],
+                forbidden_paths_json=[],
+                spawn_phase="after_architecture",
+                retire_when="Architecture is settled.",
+                priority=10,
+            )
+        )
+        db.add(
+            Task(
+                project_id=project["id"],
+                title="Blocked Task",
+                goal="",
+                scope="",
+                agent_role="planner",
+                milestone="M1",
+                allowed_paths_json=["docs"],
+                forbidden_paths_json=[],
+                validation_steps_json=[],
+                success_criteria_json=[],
+                estimated_complexity="small",
+                dependencies_json=[],
+                status="blocked",
+                priority=10,
+            )
+        )
+        db.commit()
+    finally:
+        db.close()
+
+    response = client.get(f"/api/projects/{project['id']}/swarm/simulations/latest")
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["should_wait_count"] == 1
+    assert any("blocked tasks" in warning.lower() for warning in payload["conflict_warnings_json"])

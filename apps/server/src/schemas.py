@@ -1127,6 +1127,22 @@ class SubagentPolicyUpdate(BaseModel):
     default_spawn_method: SubagentSpawnMethod | None = None
 
 
+class SubagentPolicySummaryRead(BaseModel):
+    enabled: bool
+    default_mode: SubagentDefaultMode
+    sandbox_mode: Literal["workspace-write", "read-only"]
+    max_subagents_per_burst: int
+    max_runtime_seconds: int
+    allow_file_edits: bool
+    allow_commands: bool
+    require_user_approval_above_count: int
+    allowed_task_types_json: list[SubagentTaskType | str] = Field(default_factory=list)
+    default_spawn_method: SubagentSpawnMethod
+    writes_allowed: bool
+    read_only_default: bool
+    command_capable: bool
+
+
 class SubagentSpecRead(BaseModel):
     id: int
     batch_id: int
@@ -3039,6 +3055,15 @@ class ProjectPlaybookSuggestionRead(BaseModel):
     playbook: ProjectPlaybookRead | None = None
 
 
+class ProjectPlaybookRecommendationRead(BaseModel):
+    playbook_key: str
+    score: int
+    why: str
+    is_current: bool = False
+    status: str | None = None
+    playbook: ProjectPlaybookRead
+
+
 class ProjectPlaybookApplyRequest(BaseModel):
     playbook_key: str = Field(min_length=1)
 
@@ -3183,6 +3208,37 @@ class SwarmLaunchSimulationRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class CommonRiskRead(BaseModel):
+    title: str
+    detail: str
+    project_id: int
+    status: Literal["open", "monitoring", "mitigated", "accepted", "closed"]
+
+
+class RiskSummaryRead(BaseModel):
+    project_id: int | None = None
+    total_count: int
+    open_count: int
+    status_counts: dict[str, int] = Field(default_factory=dict)
+    severity_counts: dict[str, int] = Field(default_factory=dict)
+    top_risks: list[CommonRiskRead] = Field(default_factory=list)
+
+
+class SwarmLaunchSimulationSnapshotRead(BaseModel):
+    simulation_id: int | None = None
+    project_id: int
+    swarm_plan_id: int | None = None
+    safe_to_launch_count: int
+    should_wait_count: int
+    needs_user_approval_count: int
+    conflict_warnings_json: list[str] = Field(default_factory=list)
+    bottlenecks_json: list[str] = Field(default_factory=list)
+    recommended_launch_order_json: list[dict[str, Any]] = Field(default_factory=list)
+    created_at: datetime
+    persisted: bool
+    stale: bool = False
+
+
 class ValidationCoverageAreaRead(BaseModel):
     id: int
     project_id: int
@@ -3193,6 +3249,13 @@ class ValidationCoverageAreaRead(BaseModel):
     last_updated: datetime
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class ValidationCoverageSummaryRead(BaseModel):
+    project_id: int
+    items: list[ValidationCoverageAreaRead] = Field(default_factory=list)
+    gaps: list[str] = Field(default_factory=list)
+    gap_count: int = 0
 
 
 class UserPreferenceUpsert(BaseModel):
@@ -3213,6 +3276,31 @@ class UserPreferenceRead(BaseModel):
     updated_at: datetime
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class EffectiveUserPreferenceRead(BaseModel):
+    id: int
+    key: str
+    value_json: Any
+    source: Literal["setup", "user", "manager_observed", "imported"]
+    scope: Literal["global", "project"]
+    project_id: int | None = None
+    editable: bool
+    created_at: datetime
+    updated_at: datetime
+    inherited: bool = False
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class PreferenceSummaryRead(BaseModel):
+    scope: Literal["global", "project"]
+    project_id: int | None = None
+    items: list[EffectiveUserPreferenceRead] = Field(default_factory=list)
+    item_count: int = 0
+    editable_count: int = 0
+    inherited_count: int = 0
+    project_override_count: int = 0
 
 
 class ProjectWorkflowStepRead(BaseModel):

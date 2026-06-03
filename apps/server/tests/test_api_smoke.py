@@ -413,8 +413,15 @@ def test_runtime_and_project_control_routes_require_token(client) -> None:
         assert raw_client.post(f"/api/projects/{project_id}/swarm/plan").status_code == 401
         assert raw_client.post(f"/api/projects/{project_id}/swarm/spawn").status_code == 401
         assert raw_client.get("/api/playbooks").status_code == 401
+        assert raw_client.get(f"/api/projects/{project_id}/playbook").status_code == 401
+        assert raw_client.get(f"/api/projects/{project_id}/playbook/recommendations").status_code == 401
         assert raw_client.post(f"/api/projects/{project_id}/playbook/suggest").status_code == 401
         assert raw_client.get("/api/preferences").status_code == 401
+        assert raw_client.get("/api/preferences/summary").status_code == 401
+        assert raw_client.delete("/api/preferences/example").status_code == 401
+        assert raw_client.get(f"/api/projects/{project_id}/preferences/summary").status_code == 401
+        assert raw_client.get(f"/api/projects/{project_id}/preferences/effective").status_code == 401
+        assert raw_client.delete(f"/api/projects/{project_id}/preferences/example").status_code == 401
         assert raw_client.get("/api/security/policy").status_code == 401
         assert raw_client.get("/api/tools").status_code == 401
         assert raw_client.get("/api/integrations/catalog").status_code == 401
@@ -443,10 +450,15 @@ def test_runtime_and_project_control_routes_require_token(client) -> None:
         assert raw_client.post(f"/api/projects/{project_id}/codebase/search", json={"pattern": "TODO"}).status_code == 401
         assert raw_client.get("/api/context-packs/1", params={"project_id": project_id}).status_code == 401
         assert raw_client.get(f"/api/projects/{project_id}/risks").status_code == 401
+        assert raw_client.get("/api/risks/common").status_code == 401
+        assert raw_client.get("/api/risks/summary").status_code == 401
+        assert raw_client.get(f"/api/projects/{project_id}/risks/summary").status_code == 401
         assert raw_client.get(f"/api/projects/{project_id}/scope-creep").status_code == 401
         assert raw_client.post("/api/scope-creep/1/resolve", params={"project_id": project_id}, json={"status": "accepted"}).status_code == 401
         assert raw_client.post(f"/api/projects/{project_id}/swarm/simulate-launch").status_code == 401
         assert raw_client.get(f"/api/projects/{project_id}/swarm/simulations").status_code == 401
+        assert raw_client.get(f"/api/projects/{project_id}/swarm/simulations/latest").status_code == 401
+        assert raw_client.get(f"/api/projects/{project_id}/validation-coverage/summary").status_code == 401
         assert raw_client.get(f"/api/projects/{project_id}/workspace").status_code == 401
         assert raw_client.get(f"/api/projects/{project_id}/actions").status_code == 401
         assert raw_client.post(f"/api/projects/{project_id}/widgets", json={"widgets": ["Repo Intelligence"]}).status_code == 401
@@ -461,6 +473,7 @@ def test_runtime_and_project_control_routes_require_token(client) -> None:
         assert raw_client.post(f"/api/projects/{project_id}/docs/generate").status_code == 401
         assert raw_client.post(f"/api/projects/{project_id}/interview/start", json={"question_budget": 4}).status_code == 401
         assert raw_client.post(f"/api/projects/{project_id}/plan/generate", json={"force_rebuild": True}).status_code == 401
+        assert raw_client.get("/api/subagent-policy/summary").status_code == 401
         assert raw_client.get(f"/api/projects/{project_id}/tasks").status_code == 401
         assert raw_client.get(f"/api/projects/{project_id}/agents").status_code == 401
         assert raw_client.post(f"/api/projects/{project_id}/manager/message", json={"message": "What next?"}).status_code == 401

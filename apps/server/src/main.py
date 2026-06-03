@@ -81,6 +81,7 @@ from schemas import (
     ChangeRequestRead,
     ChangeRequestTriageRead,
     ChangeRequestUpdate,
+    CommonRiskRead,
     CodebaseMapRead,
     CodebaseSearchRead,
     CodebaseSearchRequest,
@@ -94,6 +95,7 @@ from schemas import (
     DecisionRecordRead,
     DocGenerationResponse,
     EvidenceBasedHandoffRead,
+    EffectiveUserPreferenceRead,
     EventDigestWindow,
     EventRead,
     HandoffEvidenceCreate,
@@ -157,10 +159,12 @@ from schemas import (
     PendingDecisionAnswerRequest,
     PendingDecisionAnswerResultRead,
     PendingDecisionRead,
+    PreferenceSummaryRead,
     PyTorchFeatureBundleRead,
     PyTorchFeatureCatalogEntryRead,
     ProjectCapabilityReportRead,
     ProjectPlaybookApplyRequest,
+    ProjectPlaybookRecommendationRead,
     ProjectPlaybookRead,
     ProjectPlaybookSuggestionRead,
     ProjectActionRead,
@@ -189,6 +193,7 @@ from schemas import (
     ReviewGateUpdate,
     RiskAssessRequest,
     RiskAssessmentRead,
+    RiskSummaryRead,
     RunReportRequest,
     RunbookRead,
     RunbookUpdate,
@@ -206,6 +211,7 @@ from schemas import (
     SubagentBurstRecommendationRead,
     SubagentBurstRecommendRequest,
     SubagentPolicyRead,
+    SubagentPolicySummaryRead,
     SubagentPolicyUpdate,
     CustomCodexAgentsGenerateRead,
     CustomCodexAgentsGenerateRequest,
@@ -217,6 +223,7 @@ from schemas import (
     ScopeChangeSignalRead,
     SwarmEventRead,
     SwarmLaunchSimulationRead,
+    SwarmLaunchSimulationSnapshotRead,
     SwarmPlanRead,
     SwarmPlanRequest,
     SwarmPlanReviseRequest,
@@ -243,6 +250,7 @@ from schemas import (
     UserPreferenceRead,
     UserPreferenceUpsert,
     ValidationCoverageAreaRead,
+    ValidationCoverageSummaryRead,
     VerificationBriefRead,
     WebwrightStatusRead,
     WorkspaceToolingStatusRead,
@@ -1285,6 +1293,45 @@ def suggest_project_playbook(
     )
 
 
+@app.get("/api/projects/{project_id}/playbook", response_model=ProjectPlaybookSuggestionRead)
+def get_project_playbook_state(
+    project_id: int,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> ProjectPlaybookSuggestionRead:
+    project = _get_project_or_404(db, project_id)
+    payload = playbook_service.project_playbook_state(db, project, persist=False)
+    return ProjectPlaybookSuggestionRead(
+        project_id=payload["project_id"],
+        playbook_key=payload["playbook_key"],
+        status=payload["status"],
+        why=payload["why"],
+        playbook=ProjectPlaybookRead.model_validate(payload["playbook"]) if payload.get("playbook") else None,
+    )
+
+
+@app.get("/api/projects/{project_id}/playbook/recommendations", response_model=list[ProjectPlaybookRecommendationRead])
+def get_project_playbook_recommendations(
+    project_id: int,
+    limit: int = Query(default=3, ge=1, le=10),
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> list[ProjectPlaybookRecommendationRead]:
+    project = _get_project_or_404(db, project_id)
+    ranked = playbook_service.ranked_playbooks(db, project, limit=limit)
+    return [
+        ProjectPlaybookRecommendationRead(
+            playbook_key=item["playbook_key"],
+            score=item["score"],
+            why=item["why"],
+            is_current=item["is_current"],
+            status=item["status"],
+            playbook=ProjectPlaybookRead.model_validate(item["playbook"]),
+        )
+        for item in ranked
+    ]
+
+
 @app.post("/api/projects/{project_id}/playbook/apply", response_model=ProjectPlaybookSuggestionRead)
 def apply_project_playbook(
     project_id: int,
@@ -1365,6 +1412,23 @@ def get_project_risks(
     return [RiskRecordRead.model_validate(item) for item in risk_service.list_risks(db, project)]
 
 
+@app.get("/api/risks/common", response_model=list[CommonRiskRead])
+def get_common_risks(
+    limit: int = Query(default=8, ge=1, le=25),
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> list[CommonRiskRead]:
+    return [CommonRiskRead.model_validate(item) for item in risk_service.common_risks(db, limit=limit)]
+
+
+@app.get("/api/risks/summary", response_model=RiskSummaryRead)
+def get_risk_summary(
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> RiskSummaryRead:
+    return RiskSummaryRead.model_validate(risk_service.risk_summary(db))
+
+
 @app.post("/api/projects/{project_id}/risks", response_model=RiskRecordRead)
 def create_project_risk(
     project_id: int,
@@ -1393,6 +1457,16 @@ def update_project_risk(
         return RiskRecordRead.model_validate(risk_service.update_risk(db, project, risk_id, payload.model_dump(exclude_none=True)))
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.get("/api/projects/{project_id}/risks/summary", response_model=RiskSummaryRead)
+def get_project_risk_summary(
+    project_id: int,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> RiskSummaryRead:
+    project = _get_project_or_404(db, project_id)
+    return RiskSummaryRead.model_validate(risk_service.risk_summary(db, project=project))
 
 
 @app.get("/api/projects/{project_id}/scope-creep", response_model=list[ScopeChangeSignalRead])
@@ -1459,6 +1533,16 @@ def list_swarm_simulations(
     return [SwarmLaunchSimulationRead.model_validate(item) for item in simulation_service.list_simulations(db, project)]
 
 
+@app.get("/api/projects/{project_id}/swarm/simulations/latest", response_model=SwarmLaunchSimulationSnapshotRead)
+def get_latest_swarm_simulation(
+    project_id: int,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> SwarmLaunchSimulationSnapshotRead:
+    project = _get_project_or_404(db, project_id)
+    return SwarmLaunchSimulationSnapshotRead.model_validate(simulation_service.latest_simulation_snapshot(db, project))
+
+
 @app.get("/api/projects/{project_id}/validation-coverage", response_model=list[ValidationCoverageAreaRead])
 def get_validation_coverage(
     project_id: int,
@@ -1470,6 +1554,22 @@ def get_validation_coverage(
     if coverage:
         return [ValidationCoverageAreaRead.model_validate(item) for item in coverage]
     return [ValidationCoverageAreaRead.model_validate(item) for item in validation_coverage_service.preview_coverage(db, project)]
+
+
+@app.get("/api/projects/{project_id}/validation-coverage/summary", response_model=ValidationCoverageSummaryRead)
+def get_validation_coverage_summary(
+    project_id: int,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> ValidationCoverageSummaryRead:
+    project = _get_project_or_404(db, project_id)
+    summary = validation_coverage_service.coverage_summary(db, project)
+    return ValidationCoverageSummaryRead(
+        project_id=project.id,
+        items=[ValidationCoverageAreaRead.model_validate(item) for item in summary["items"]],
+        gaps=list(summary["gaps"]),
+        gap_count=len(summary["gaps"]),
+    )
 
 
 @app.post("/api/projects/{project_id}/validation-coverage/recompute", response_model=list[ValidationCoverageAreaRead])
@@ -1490,6 +1590,15 @@ def get_preferences(
     return [UserPreferenceRead.model_validate(item) for item in preference_service.list_preferences(db, project_id=None)]
 
 
+@app.get("/api/preferences/summary", response_model=PreferenceSummaryRead)
+def get_preference_summary(
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> PreferenceSummaryRead:
+    summary = preference_service.preference_summary(db, project=None)
+    return PreferenceSummaryRead.model_validate(summary)
+
+
 @app.put("/api/preferences/{key}", response_model=UserPreferenceRead)
 def put_preference(
     key: str,
@@ -1497,15 +1606,33 @@ def put_preference(
     db: Session = Depends(get_db),
     _: None = Depends(_require_bridge_token),
 ) -> UserPreferenceRead:
-    record = preference_service.upsert_preference(
-        db,
-        key=key,
-        value_json=payload.value_json,
-        source=payload.source,
-        editable=payload.editable,
-        project_id=None,
-    )
+    try:
+        record = preference_service.upsert_preference(
+            db,
+            key=key,
+            value_json=payload.value_json,
+            source=payload.source,
+            editable=payload.editable,
+            project_id=None,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     return UserPreferenceRead.model_validate(record)
+
+
+@app.delete("/api/preferences/{key}", status_code=204, response_class=Response)
+def delete_preference(
+    key: str,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> Response:
+    try:
+        removed = preference_service.delete_preference(db, key=key, project_id=None)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if not removed:
+        raise HTTPException(status_code=404, detail="Preference not found")
+    return Response(status_code=204)
 
 
 @app.get("/api/projects/{project_id}/preferences", response_model=list[UserPreferenceRead])
@@ -1518,6 +1645,34 @@ def get_project_preferences(
     return [UserPreferenceRead.model_validate(item) for item in preference_service.get_effective_preferences(db, project)]
 
 
+@app.get("/api/projects/{project_id}/preferences/summary", response_model=PreferenceSummaryRead)
+def get_project_preference_summary(
+    project_id: int,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> PreferenceSummaryRead:
+    project = _get_project_or_404(db, project_id)
+    summary = preference_service.preference_summary(db, project)
+    return PreferenceSummaryRead.model_validate(summary)
+
+
+@app.get("/api/projects/{project_id}/preferences/effective", response_model=list[EffectiveUserPreferenceRead])
+def get_project_preferences_effective(
+    project_id: int,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> list[EffectiveUserPreferenceRead]:
+    project = _get_project_or_404(db, project_id)
+    records = preference_service.get_effective_preferences(db, project)
+    return [
+        EffectiveUserPreferenceRead(
+            **UserPreferenceRead.model_validate(item).model_dump(),
+            inherited=item.scope == "global",
+        )
+        for item in records
+    ]
+
+
 @app.put("/api/projects/{project_id}/preferences/{key}", response_model=UserPreferenceRead)
 def put_project_preference(
     project_id: int,
@@ -1527,15 +1682,35 @@ def put_project_preference(
     _: None = Depends(_require_bridge_token),
 ) -> UserPreferenceRead:
     _get_project_or_404(db, project_id)
-    record = preference_service.upsert_preference(
-        db,
-        key=key,
-        value_json=payload.value_json,
-        source=payload.source,
-        editable=payload.editable,
-        project_id=project_id,
-    )
+    try:
+        record = preference_service.upsert_preference(
+            db,
+            key=key,
+            value_json=payload.value_json,
+            source=payload.source,
+            editable=payload.editable,
+            project_id=project_id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     return UserPreferenceRead.model_validate(record)
+
+
+@app.delete("/api/projects/{project_id}/preferences/{key}", status_code=204, response_class=Response)
+def delete_project_preference(
+    project_id: int,
+    key: str,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> Response:
+    _get_project_or_404(db, project_id)
+    try:
+        removed = preference_service.delete_preference(db, key=key, project_id=project_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if not removed:
+        raise HTTPException(status_code=404, detail="Preference not found")
+    return Response(status_code=204)
 
 
 @app.get("/api/security/policy", response_model=SecurityPolicyRead)
@@ -2132,6 +2307,15 @@ def get_subagent_policy(
     _: None = Depends(_require_bridge_token),
 ) -> SubagentPolicyRead:
     return SubagentPolicyRead(**subagent_planner_service._serialize_policy(subagent_planner_service.ensure_policy(db, create_if_missing=False)))
+
+
+@app.get("/api/subagent-policy/summary", response_model=SubagentPolicySummaryRead)
+def get_subagent_policy_summary(
+    request: Request,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> SubagentPolicySummaryRead:
+    return SubagentPolicySummaryRead.model_validate(subagent_planner_service.policy_summary(db))
 
 
 @app.put("/api/subagent-policy", response_model=SubagentPolicyRead)

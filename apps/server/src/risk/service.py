@@ -9,6 +9,13 @@ from models import Agent, Project, RiskRecord, Task, utc_now
 
 
 class RiskService:
+    @staticmethod
+    def _normalize_title(title: Any) -> str:
+        normalized = " ".join(str(title).split())
+        if not normalized:
+            raise ValueError("Risk title cannot be blank")
+        return normalized
+
     def _validate_related_refs(self, db: Session, project: Project, payload: dict[str, Any]) -> None:
         owner_agent_id = payload.get("owner_agent_id")
         if owner_agent_id is not None:
@@ -32,14 +39,19 @@ class RiskService:
         )
 
     def create_risk(self, db: Session, project: Project, payload: dict[str, Any]) -> RiskRecord:
-        normalized_title = " ".join(str(payload["title"]).split())
+        normalized_title = self._normalize_title(payload["title"])
         self._validate_related_refs(db, project, payload)
-        existing = db.scalar(
-            select(RiskRecord)
-            .where(RiskRecord.project_id == project.id, RiskRecord.title == normalized_title, RiskRecord.status != "closed")
-            .order_by(RiskRecord.updated_at.desc(), RiskRecord.id.desc())
+        matches = list(
+            db.scalars(
+                select(RiskRecord)
+                .where(RiskRecord.project_id == project.id, RiskRecord.title == normalized_title, RiskRecord.status != "closed")
+                .order_by(RiskRecord.updated_at.desc(), RiskRecord.id.desc())
+            )
         )
+        existing = matches[0] if matches else None
         if existing is not None:
+            for duplicate in matches[1:]:
+                db.delete(duplicate)
             existing.description = str(payload.get("description") or existing.description)
             existing.severity = str(payload.get("severity") or existing.severity)
             existing.likelihood = str(payload.get("likelihood") or existing.likelihood)
@@ -73,6 +85,8 @@ class RiskService:
         if record.project_id != project.id:
             raise ValueError("Risk not found in this project")
         self._validate_related_refs(db, project, payload)
+        if "title" in payload and payload["title"] is not None:
+            payload["title"] = self._normalize_title(payload["title"])
         for field in [
             "title",
             "description",
@@ -119,16 +133,44 @@ class RiskService:
                 .order_by(RiskRecord.updated_at.desc(), RiskRecord.id.desc())
             )
         )
-        rows = [
+        return [
             {
                 "title": item.title,
-                "detail": f"{item.severity}/{item.likelihood} • {item.status}",
+                "detail": f"{item.severity}/{item.likelihood} | {item.status}",
                 "project_id": item.project_id,
                 "status": item.status,
             }
             for item in items[:limit]
         ]
-        return rows
+
+    def risk_summary(self, db: Session, *, project: Project | None = None) -> dict[str, Any]:
+        items = self.list_risks(db, project) if project is not None else list(
+            db.scalars(select(RiskRecord).order_by(RiskRecord.updated_at.desc(), RiskRecord.id.desc()))
+        )
+        by_status: dict[str, int] = {}
+        by_severity: dict[str, int] = {}
+        open_count = 0
+        for item in items:
+            by_status[item.status] = by_status.get(item.status, 0) + 1
+            by_severity[item.severity] = by_severity.get(item.severity, 0) + 1
+            if item.status in {"open", "monitoring", "accepted"}:
+                open_count += 1
+        return {
+            "project_id": project.id if project is not None else None,
+            "total_count": len(items),
+            "open_count": open_count,
+            "status_counts": by_status,
+            "severity_counts": by_severity,
+            "top_risks": self.common_risks(db, limit=5) if project is None else [
+                {
+                    "title": item.title,
+                    "detail": f"{item.severity}/{item.likelihood} | {item.status}",
+                    "project_id": item.project_id,
+                    "status": item.status,
+                }
+                for item in items[:5]
+            ],
+        }
 
 
 risk_service = RiskService()

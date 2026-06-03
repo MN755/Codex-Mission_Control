@@ -46,13 +46,17 @@ class SecurityService:
             query = query.where(SecurityPolicy.project_id.is_(None))
         else:
             query = query.where(SecurityPolicy.project_id == project.id)
-        record = db.scalar(query.order_by(SecurityPolicy.id.asc()))
+        matches = list(db.scalars(query.order_by(SecurityPolicy.updated_at.desc(), SecurityPolicy.id.desc())))
+        record = matches[0] if matches else None
         if record is None:
             if not create_if_missing:
                 return self._preview_policy(project=project)
             record = SecurityPolicy(scope=scope, project_id=project.id if project is not None else None, **DEFAULT_SECURITY_POLICY)
             db.add(record)
             db.flush()
+            return record
+        for duplicate in matches[1:]:
+            db.delete(duplicate)
         return record
 
     def update_policy(self, db: Session, payload: dict[str, Any], *, project: Project | None = None) -> SecurityPolicy:
