@@ -2381,8 +2381,24 @@ def test_project_widget_data_route_stays_read_only_for_preview_widgets(client, b
     assert payload["stored_count"] == 0
     assert payload["blocked_task_count"] == 1
     assert payload["stuck_signal_count"] == 1
+    assert payload["persisted_statuses"] == []
+    assert payload["persisted_status_counts"] == {}
+    assert payload["persisted_status_group_count"] == 0
     assert payload["persisted"] == []
     assert payload["derived_candidate_count"] >= 2
+    expected_trigger_counts = {}
+    expected_action_counts = {}
+    for item in payload["derived_candidates"]:
+        expected_trigger_counts[item["trigger_type"]] = expected_trigger_counts.get(item["trigger_type"], 0) + 1
+        for action in set(item["suggested_actions_json"]):
+            expected_action_counts[action] = expected_action_counts.get(action, 0) + 1
+    assert payload["derived_trigger_types"] == sorted(expected_trigger_counts)
+    assert payload["derived_trigger_type_counts"] == expected_trigger_counts
+    assert payload["derived_trigger_type_group_count"] == len(expected_trigger_counts)
+    assert payload["suggested_action_count"] == len(expected_action_counts)
+    assert payload["suggested_action_values"] == sorted(expected_action_counts)
+    assert payload["suggested_action_counts"] == expected_action_counts
+    assert payload["suggested_action_group_count"] == len(expected_action_counts)
     assert {item["trigger_type"] for item in payload["derived_candidates"]} >= {"blocker", "blocked_task", "stuck_agents"}
 
     db = SessionLocal()

@@ -359,6 +359,19 @@ def test_handoff_summary_uses_recorded_evidence(client) -> None:
     assert "bridge runtime tests: passed" in payload["fallback_markdown"]
     assert payload["machine_payload_json"]["dry_run"] is False
 
+    direct = client.get(f"/api/projects/{project['id']}/handoff", headers=_bridge_headers())
+    assert direct.status_code == 200, direct.text
+    direct_payload = direct.json()
+    assert direct_payload["project_id"] == project["id"]
+    assert direct_payload["status"] == "ready"
+    assert direct_payload["has_artifacts_path"] is True
+    assert direct_payload["tests_count"] == 1
+    assert direct_payload["run_instruction_count"] == len(direct_payload["run_instructions"]) == 1
+    assert direct_payload["known_limitation_count"] == len(direct_payload["known_limitations"]) == 1
+    assert direct_payload["evidence_backed"] is False
+    assert direct_payload["missing_evidence_count"] == len(direct_payload["missing_evidence"]) == 0
+    assert direct_payload["ready_for_release"] is False
+
 
 def test_safe_mode_endpoints_return_bridge_message(client) -> None:
     project = _create_project(client, "Safe Mode Demo", "safe-mode-demo")

@@ -2732,6 +2732,8 @@ class MissionControlService:
 
     def _serialize_handoff_record(self, db: Session, project: Project, handoff: EvidenceBasedHandoff | None) -> dict[str, Any]:
         if handoff is None:
+            artifacts_path = project.docs_path or str(self._project_docs_dir(project))
+            missing_evidence = ["No evidence-backed handoff has been generated yet."]
             return {
                 "project_id": project.id,
                 "project_name": project.name,
@@ -2739,15 +2741,26 @@ class MissionControlService:
                 "created_at": project.updated_at,
                 "status": "not_ready",
                 "summary": "No handoff is recorded yet.",
-                "artifacts_path": project.docs_path or str(self._project_docs_dir(project)),
+                "artifacts_path": artifacts_path,
+                "has_artifacts_path": bool(artifacts_path),
                 "tests_count": 0,
                 "run_instructions": [],
+                "run_instruction_count": 0,
                 "known_limitations": [],
+                "known_limitation_count": 0,
                 "confidence_level": "low",
                 "evidence_status": "missing",
-                "missing_evidence": ["No evidence-backed handoff has been generated yet."],
+                "evidence_backed": False,
+                "missing_evidence": missing_evidence,
+                "missing_evidence_count": len(missing_evidence),
+                "ready_for_release": False,
                 "dry_run": project.runner_mode == "dry_run",
             }
+        artifacts_path = project.docs_path or str(self._project_docs_dir(project))
+        run_instructions = [line.strip("- ").strip() for line in handoff.how_to_run.splitlines() if line.strip()]
+        known_limitations = [redact_text(str(item)) for item in list(handoff.known_limitations_json or [])]
+        missing_evidence = list((project.final_report_json or {}).get("missing_evidence") or [])
+        ready_for_release = handoff.confidence_level == "high" and bool(handoff.evidence_ids_json) and not missing_evidence and not handoff.dry_run
         return {
             "project_id": project.id,
             "project_name": project.name,
@@ -2755,13 +2768,19 @@ class MissionControlService:
             "created_at": handoff.created_at,
             "status": "ready" if handoff.confidence_level != "low" else "needs_review",
             "summary": redact_text(handoff.summary),
-            "artifacts_path": project.docs_path or str(self._project_docs_dir(project)),
+            "artifacts_path": artifacts_path,
+            "has_artifacts_path": bool(artifacts_path),
             "tests_count": len(handoff.tests_run_json or []),
-            "run_instructions": [line.strip("- ").strip() for line in handoff.how_to_run.splitlines() if line.strip()],
-            "known_limitations": [redact_text(str(item)) for item in list(handoff.known_limitations_json or [])],
+            "run_instructions": run_instructions,
+            "run_instruction_count": len(run_instructions),
+            "known_limitations": known_limitations,
+            "known_limitation_count": len(known_limitations),
             "confidence_level": handoff.confidence_level,
             "evidence_status": "backed" if handoff.evidence_ids_json else "missing",
-            "missing_evidence": list((project.final_report_json or {}).get("missing_evidence") or []),
+            "evidence_backed": bool(handoff.evidence_ids_json),
+            "missing_evidence": missing_evidence,
+            "missing_evidence_count": len(missing_evidence),
+            "ready_for_release": ready_for_release,
             "dry_run": handoff.dry_run,
         }
 
@@ -4120,12 +4139,38 @@ class MissionControlService:
         derived_candidates = [
             item for item in candidates if (str(item["trigger_type"]), str(item["trigger_summary"])) not in active_keys
         ]
+        persisted_status_counts: dict[str, int] = {}
+        for plan in persisted:
+            status = str(plan.status or "unknown")
+            persisted_status_counts[status] = persisted_status_counts.get(status, 0) + 1
+        derived_trigger_type_counts: dict[str, int] = {}
+        suggested_action_counts: dict[str, int] = {}
+        for item in derived_candidates:
+            trigger_type = str(item.get("trigger_type") or "unknown")
+            derived_trigger_type_counts[trigger_type] = derived_trigger_type_counts.get(trigger_type, 0) + 1
+            seen_actions: set[str] = set()
+            for action in list(item.get("suggested_actions_json") or []):
+                normalized_action = str(action or "").strip()
+                if not normalized_action or normalized_action in seen_actions:
+                    continue
+                seen_actions.add(normalized_action)
+                suggested_action_counts[normalized_action] = suggested_action_counts.get(normalized_action, 0) + 1
         return {
             "project_id": project.id,
             "current_action": current_action,
             "blocked_task_count": sum(1 for task in tasks if task.status == "blocked"),
             "stuck_signal_count": len(stuck_signals),
+            "persisted_statuses": sorted(persisted_status_counts),
+            "persisted_status_counts": persisted_status_counts,
+            "persisted_status_group_count": len(persisted_status_counts),
             "persisted": persisted,
+            "derived_trigger_types": sorted(derived_trigger_type_counts),
+            "derived_trigger_type_counts": derived_trigger_type_counts,
+            "derived_trigger_type_group_count": len(derived_trigger_type_counts),
+            "suggested_action_count": len(suggested_action_counts),
+            "suggested_action_values": sorted(suggested_action_counts),
+            "suggested_action_counts": suggested_action_counts,
+            "suggested_action_group_count": len(suggested_action_counts),
             "derived_candidates": derived_candidates,
             "stored_count": len(persisted),
             "derived_candidate_count": len(derived_candidates),

@@ -2065,7 +2065,17 @@ class RecoveryPlanPreviewSummaryRead(BaseModel):
     current_action: dict[str, Any] = Field(default_factory=dict)
     blocked_task_count: int = 0
     stuck_signal_count: int = 0
+    persisted_statuses: list[str] = Field(default_factory=list)
+    persisted_status_counts: dict[str, int] = Field(default_factory=dict)
+    persisted_status_group_count: int = 0
     persisted: list[RecoveryPlanRead] = Field(default_factory=list)
+    derived_trigger_types: list[str] = Field(default_factory=list)
+    derived_trigger_type_counts: dict[str, int] = Field(default_factory=dict)
+    derived_trigger_type_group_count: int = 0
+    suggested_action_count: int = 0
+    suggested_action_values: list[str] = Field(default_factory=list)
+    suggested_action_counts: dict[str, int] = Field(default_factory=dict)
+    suggested_action_group_count: int = 0
     derived_candidates: list[RecoveryPlanPreviewItemRead] = Field(default_factory=list)
     stored_count: int = 0
     derived_candidate_count: int = 0
@@ -3170,12 +3180,18 @@ class HandoffListItemRead(BaseModel):
     status: str
     summary: str
     artifacts_path: str | None = None
+    has_artifacts_path: bool = False
     tests_count: int = 0
     run_instructions: list[str] = Field(default_factory=list)
+    run_instruction_count: int = 0
     known_limitations: list[str] = Field(default_factory=list)
+    known_limitation_count: int = 0
     confidence_level: str | None = None
     evidence_status: str | None = None
+    evidence_backed: bool = False
     missing_evidence: list[str] = Field(default_factory=list)
+    missing_evidence_count: int = 0
+    ready_for_release: bool = False
     dry_run: bool = False
 
 
