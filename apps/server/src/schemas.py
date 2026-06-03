@@ -2771,6 +2771,7 @@ class ContextPackSectionRead(BaseModel):
     title: str
     content_markdown: str
     source_refs_json: list[str] = Field(default_factory=list)
+    source_ref_count: int = 0
     created_at: datetime
 
     model_config = ConfigDict(from_attributes=True)
@@ -2784,13 +2785,27 @@ class ContextPackRead(BaseModel):
     title: str
     goal: str
     included_docs_json: list[str] = Field(default_factory=list)
+    included_doc_count: int = 0
     included_files_json: list[str] = Field(default_factory=list)
+    included_file_count: int = 0
     excluded_files_json: list[str] = Field(default_factory=list)
+    excluded_file_count: int = 0
     known_decisions_json: list[str] = Field(default_factory=list)
+    known_decision_count: int = 0
     relevant_assumptions_json: list[str] = Field(default_factory=list)
+    relevant_assumption_count: int = 0
     validation_steps_json: list[str] = Field(default_factory=list)
+    validation_step_count: int = 0
     token_budget_hint: int | None = None
     warnings_json: list[str] = Field(default_factory=list)
+    warning_count: int = 0
+    section_count: int = 0
+    section_types: list[str] = Field(default_factory=list)
+    section_type_counts: dict[str, int] = Field(default_factory=dict)
+    section_type_group_count: int = 0
+    section_titles: list[str] = Field(default_factory=list)
+    source_refs: list[str] = Field(default_factory=list)
+    source_ref_count: int = 0
     sections: list[ContextPackSectionRead] = Field(default_factory=list)
     created_at: datetime
     updated_at: datetime

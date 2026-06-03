@@ -656,3 +656,69 @@ def test_workspace_tooling_and_codebase_search_routes_return_project_scoped_payl
     assert payload["project_id"] == project_id
     assert payload["search_backend"] == "ripgrep"
     assert payload["matches"][0]["path"] == "app.py"
+
+
+def test_context_pack_routes_return_summary_rollups(client) -> None:
+    workspace = sample_workspace("context-pack-rollups")
+    Path(workspace).mkdir(parents=True, exist_ok=True)
+    Path(workspace, "README.md").write_text("# Existing codebase\n", encoding="utf-8")
+
+    project = client.post(
+        "/api/projects",
+        json={
+            "name": "Context Pack Rollup Demo",
+            "idea": "Check context pack summary rollups",
+            "workspace_path": workspace,
+            "provider": "codex",
+            "runner_mode": "dry_run",
+            "manager_mode": "auto",
+        },
+    ).json()
+    project_id = project["id"]
+
+    pack_response = client.post(
+        f"/api/projects/{project_id}/context-packs/build",
+        json={"title": "Scoped Pack", "goal": "Summarize the repo for workers."},
+    )
+    assert pack_response.status_code == 200, pack_response.text
+    payload = pack_response.json()
+
+    assert payload["project_id"] == project_id
+    assert payload["included_doc_count"] == len(payload["included_docs_json"])
+    assert payload["included_file_count"] == len(payload["included_files_json"])
+    assert payload["excluded_file_count"] == len(payload["excluded_files_json"])
+    assert payload["known_decision_count"] == len(payload["known_decisions_json"])
+    assert payload["relevant_assumption_count"] == len(payload["relevant_assumptions_json"])
+    assert payload["validation_step_count"] == len(payload["validation_steps_json"])
+    assert payload["warning_count"] == len(payload["warnings_json"])
+    assert payload["section_count"] == len(payload["sections"]) == 6
+    expected_section_type_counts = {}
+    expected_source_refs = []
+    seen_source_refs = set()
+    for section in payload["sections"]:
+        expected_section_type_counts[section["section_type"]] = expected_section_type_counts.get(section["section_type"], 0) + 1
+        assert section["source_ref_count"] == len(section["source_refs_json"])
+        for ref in section["source_refs_json"]:
+            if ref in seen_source_refs:
+                continue
+            seen_source_refs.add(ref)
+            expected_source_refs.append(ref)
+    assert payload["section_types"] == sorted(expected_section_type_counts)
+    assert payload["section_type_counts"] == expected_section_type_counts
+    assert payload["section_type_group_count"] == len(expected_section_type_counts)
+    assert payload["section_titles"] == [section["title"] for section in payload["sections"]]
+    assert payload["source_refs"] == expected_source_refs
+    assert payload["source_ref_count"] == len(expected_source_refs)
+
+    listed = client.get(f"/api/projects/{project_id}/context-packs")
+    assert listed.status_code == 200, listed.text
+    listed_payload = listed.json()
+    assert len(listed_payload) == 1
+    assert listed_payload[0]["id"] == payload["id"]
+    assert listed_payload[0]["section_type_counts"] == payload["section_type_counts"]
+
+    fetched = client.get(f"/api/context-packs/{payload['id']}", params={"project_id": project_id})
+    assert fetched.status_code == 200, fetched.text
+    fetched_payload = fetched.json()
+    assert fetched_payload["id"] == payload["id"]
+    assert fetched_payload["source_refs"] == payload["source_refs"]

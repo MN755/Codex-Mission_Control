@@ -74,6 +74,34 @@ class ContextPackService:
         return warnings
 
     def _serialize_pack(self, pack: ContextPack, sections: list[ContextPackSection]) -> dict[str, Any]:
+        warnings = self._context_pack_warnings(pack)
+        section_type_counts: dict[str, int] = {}
+        source_refs: list[str] = []
+        seen_source_refs: set[str] = set()
+        serialized_sections = []
+        for section in sections:
+            section_type = str(section.section_type or "").strip()
+            if section_type:
+                section_type_counts[section_type] = section_type_counts.get(section_type, 0) + 1
+            source_refs_json = list(section.source_refs_json or [])
+            for ref in source_refs_json:
+                normalized_ref = str(ref or "").strip()
+                if not normalized_ref or normalized_ref in seen_source_refs:
+                    continue
+                seen_source_refs.add(normalized_ref)
+                source_refs.append(normalized_ref)
+            serialized_sections.append(
+                {
+                    "id": section.id,
+                    "context_pack_id": section.context_pack_id,
+                    "section_type": section.section_type,
+                    "title": section.title,
+                    "content_markdown": section.content_markdown,
+                    "source_refs_json": source_refs_json,
+                    "source_ref_count": len(source_refs_json),
+                    "created_at": section.created_at,
+                }
+            )
         return {
             "id": pack.id,
             "project_id": pack.project_id,
@@ -82,25 +110,28 @@ class ContextPackService:
             "title": pack.title,
             "goal": pack.goal,
             "included_docs_json": list(pack.included_docs_json or []),
+            "included_doc_count": len(list(pack.included_docs_json or [])),
             "included_files_json": list(pack.included_files_json or []),
+            "included_file_count": len(list(pack.included_files_json or [])),
             "excluded_files_json": list(pack.excluded_files_json or []),
+            "excluded_file_count": len(list(pack.excluded_files_json or [])),
             "known_decisions_json": list(pack.known_decisions_json or []),
+            "known_decision_count": len(list(pack.known_decisions_json or [])),
             "relevant_assumptions_json": list(pack.relevant_assumptions_json or []),
+            "relevant_assumption_count": len(list(pack.relevant_assumptions_json or [])),
             "validation_steps_json": list(pack.validation_steps_json or []),
+            "validation_step_count": len(list(pack.validation_steps_json or [])),
             "token_budget_hint": pack.token_budget_hint,
-            "warnings_json": self._context_pack_warnings(pack),
-            "sections": [
-                {
-                    "id": section.id,
-                    "context_pack_id": section.context_pack_id,
-                    "section_type": section.section_type,
-                    "title": section.title,
-                    "content_markdown": section.content_markdown,
-                    "source_refs_json": list(section.source_refs_json or []),
-                    "created_at": section.created_at,
-                }
-                for section in sections
-            ],
+            "warnings_json": warnings,
+            "warning_count": len(warnings),
+            "section_count": len(sections),
+            "section_types": sorted(section_type_counts),
+            "section_type_counts": section_type_counts,
+            "section_type_group_count": len(section_type_counts),
+            "section_titles": [str(section.title) for section in sections if str(section.title or "").strip()],
+            "source_refs": source_refs,
+            "source_ref_count": len(source_refs),
+            "sections": serialized_sections,
             "created_at": pack.created_at,
             "updated_at": pack.updated_at,
         }
