@@ -262,8 +262,38 @@ def test_operator_snapshot_endpoint_returns_compact_project_state(client, bridge
     assert payload["pending_approvals_count"] >= 0
     assert payload["trace_spans"]
     assert payload["evidence_items"]
+    expected_trace_outcome_counts = {}
+    expected_trace_span_kind_counts = {}
+    expected_trace_failure_classification_counts = {}
+    for trace in payload["trace_spans"]:
+        expected_trace_outcome_counts[trace["outcome"]] = expected_trace_outcome_counts.get(trace["outcome"], 0) + 1
+        expected_trace_span_kind_counts[trace["span_kind"]] = expected_trace_span_kind_counts.get(trace["span_kind"], 0) + 1
+        if trace["failure_classification"]:
+            expected_trace_failure_classification_counts[trace["failure_classification"]] = (
+                expected_trace_failure_classification_counts.get(trace["failure_classification"], 0) + 1
+            )
+    expected_evidence_status_counts = {}
+    for entry in payload["evidence_items"]:
+        expected_evidence_status_counts[entry["status"]] = expected_evidence_status_counts.get(entry["status"], 0) + 1
+    assert payload["trace_span_count"] == len(payload["trace_spans"])
+    assert payload["trace_outcome_counts"] == expected_trace_outcome_counts
+    assert payload["trace_outcome_group_count"] == len(expected_trace_outcome_counts)
+    assert payload["trace_span_kind_counts"] == expected_trace_span_kind_counts
+    assert payload["trace_span_kind_group_count"] == len(expected_trace_span_kind_counts)
+    assert payload["trace_failure_classifications"] == sorted(expected_trace_failure_classification_counts)
+    assert payload["trace_failure_classification_counts"] == expected_trace_failure_classification_counts
+    assert payload["trace_failure_classification_group_count"] == len(expected_trace_failure_classification_counts)
+    assert payload["evidence_item_count"] == len(payload["evidence_items"])
+    assert payload["evidence_status_counts"] == expected_evidence_status_counts
+    assert payload["evidence_status_group_count"] == len(expected_evidence_status_counts)
+    assert payload["current_focus_count"] == len(payload["current_focus"])
+    assert payload["top_risk_count"] == len(payload["top_risks"])
+    assert payload["recent_event_count"] == len(payload["recent_events"])
     assert "## Mission Control Operator Snapshot" in payload["snapshot_markdown"]
     assert any("browser_automation" in item or "Fix backend validation" in item for item in payload["current_focus"])
+    assert payload["trace_outcome_counts"].get("blocked", 0) >= 1
+    assert payload["trace_failure_classification_counts"].get("transient", 0) >= 1
+    assert payload["evidence_status_counts"].get("pending", 0) >= 1
 
 
 def test_instincts_preview_endpoint_derives_reusable_rules(client, bridge_headers) -> None:

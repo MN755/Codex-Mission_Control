@@ -1514,10 +1514,24 @@ class OperatorSnapshotRead(BaseModel):
     pending_questions_count: int = 0
     active_agent_count: int = 0
     active_agents: list[OperatorSnapshotAgentRead] = Field(default_factory=list)
+    trace_span_count: int = 0
     trace_spans: list[OperatorSnapshotTraceRead] = Field(default_factory=list)
+    trace_outcome_counts: dict[str, int] = Field(default_factory=dict)
+    trace_outcome_group_count: int = 0
+    trace_span_kind_counts: dict[str, int] = Field(default_factory=dict)
+    trace_span_kind_group_count: int = 0
+    trace_failure_classifications: list[str] = Field(default_factory=list)
+    trace_failure_classification_counts: dict[str, int] = Field(default_factory=dict)
+    trace_failure_classification_group_count: int = 0
+    evidence_item_count: int = 0
     evidence_items: list[OperatorSnapshotEvidenceRead] = Field(default_factory=list)
+    evidence_status_counts: dict[str, int] = Field(default_factory=dict)
+    evidence_status_group_count: int = 0
+    current_focus_count: int = 0
     current_focus: list[str] = Field(default_factory=list)
+    top_risk_count: int = 0
     top_risks: list[str] = Field(default_factory=list)
+    recent_event_count: int = 0
     recent_events: list[str] = Field(default_factory=list)
     validation_gap_count: int = 0
     swarm_mode: str | None = None

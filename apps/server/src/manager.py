@@ -730,6 +730,7 @@ class MissionControlService:
             "blocked": "blocked",
             "error": "failed",
         }.get(str(status or "").strip().lower(), "unknown")
+        return result
 
     def _trace_evidence_ids_for_run(self, db: Session, project: Project, run: AgentRun) -> list[int]:
         evidence_ids: list[int] = []
@@ -11048,6 +11049,17 @@ class MissionControlService:
             }
             for trace in traces[:8]
         ]
+        trace_outcome_counts: dict[str, int] = {}
+        trace_span_kind_counts: dict[str, int] = {}
+        trace_failure_classification_counts: dict[str, int] = {}
+        for trace in typed_traces:
+            outcome = str(trace["outcome"] or "unknown")
+            trace_outcome_counts[outcome] = trace_outcome_counts.get(outcome, 0) + 1
+            span_kind = str(trace["span_kind"] or "run")
+            trace_span_kind_counts[span_kind] = trace_span_kind_counts.get(span_kind, 0) + 1
+            failure_classification = str(trace.get("failure_classification") or "").strip()
+            if failure_classification:
+                trace_failure_classification_counts[failure_classification] = trace_failure_classification_counts.get(failure_classification, 0) + 1
         evidence_items = [
             {
                 "id": entry.id,
@@ -11059,6 +11071,10 @@ class MissionControlService:
             }
             for entry in evidence_rows[:6]
         ]
+        evidence_status_counts: dict[str, int] = {}
+        for entry in evidence_items:
+            status = str(entry["status"] or "unknown")
+            evidence_status_counts[status] = evidence_status_counts.get(status, 0) + 1
         active_task_titles = [
             task.title
             for task in tasks
@@ -11168,10 +11184,24 @@ class MissionControlService:
             "pending_questions_count": len(pending_questions),
             "active_agent_count": len(active_agents),
             "active_agents": active_agents[:6],
+            "trace_span_count": len(typed_traces),
             "trace_spans": typed_traces,
+            "trace_outcome_counts": trace_outcome_counts,
+            "trace_outcome_group_count": len(trace_outcome_counts),
+            "trace_span_kind_counts": trace_span_kind_counts,
+            "trace_span_kind_group_count": len(trace_span_kind_counts),
+            "trace_failure_classifications": sorted(trace_failure_classification_counts),
+            "trace_failure_classification_counts": trace_failure_classification_counts,
+            "trace_failure_classification_group_count": len(trace_failure_classification_counts),
+            "evidence_item_count": len(evidence_items),
             "evidence_items": evidence_items,
+            "evidence_status_counts": evidence_status_counts,
+            "evidence_status_group_count": len(evidence_status_counts),
+            "current_focus_count": len(current_focus),
             "current_focus": current_focus,
+            "top_risk_count": len(top_risks),
             "top_risks": top_risks,
+            "recent_event_count": len(recent_events),
             "recent_events": recent_events,
             "validation_gap_count": len(list(coverage.get("gaps") or [])),
             "swarm_mode": str(swarm_plan.get("mode") or "") if isinstance(swarm_plan, dict) and swarm_plan.get("mode") else None,
