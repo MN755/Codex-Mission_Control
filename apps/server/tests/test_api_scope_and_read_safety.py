@@ -818,11 +818,21 @@ def test_imported_codebase_read_routes_are_read_only(client, bridge_headers) -> 
     assert map_response.status_code == 200, map_response.text
     assert map_response.json()["project_id"] == project_id
     assert map_response.json()["languages_json"] == []
+    assert map_response.json()["language_count"] == 0
+    assert map_response.json()["doc_count"] == 0
+    assert map_response.json()["has_docs"] is False
+    assert map_response.json()["is_git_repo"] is False
+    assert map_response.json()["dirty_working_tree_status"] == "not_git"
+    assert map_response.json()["is_fully_indexed"] is True
 
     understanding_response = client.get(f"/api/projects/{project_id}/codebase-understanding", headers=bridge_headers)
     assert understanding_response.status_code == 200, understanding_response.text
     assert understanding_response.json()["project_id"] == project_id
     assert understanding_response.json()["summary"] == ""
+    assert understanding_response.json()["detected_stack_count"] == 0
+    assert understanding_response.json()["missing_context_count"] == 0
+    assert understanding_response.json()["average_confidence"] == 0.0
+    assert understanding_response.json()["has_missing_context"] is False
 
     agents_response = client.get(f"/api/projects/{project_id}/agents-md/status", headers=bridge_headers)
     assert agents_response.status_code == 200, agents_response.text

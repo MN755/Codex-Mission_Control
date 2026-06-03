@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, computed_field, field_validator
 
 from capabilities import CAPABILITY_CATEGORIES
 
@@ -2172,6 +2172,81 @@ class RepoIntelligenceSummaryRead(BaseModel):
     deployment_config_json: list[str] = Field(default_factory=list)
     last_indexed_at: datetime
 
+    @computed_field(return_type=int)
+    @property
+    def language_count(self) -> int:
+        return len(self.languages_json)
+
+    @computed_field(return_type=int)
+    @property
+    def framework_count(self) -> int:
+        return len(self.frameworks_json)
+
+    @computed_field(return_type=int)
+    @property
+    def package_manager_count(self) -> int:
+        return len(self.package_managers_json)
+
+    @computed_field(return_type=int)
+    @property
+    def entry_point_count(self) -> int:
+        return len(self.entry_points_json)
+
+    @computed_field(return_type=int)
+    @property
+    def build_command_count(self) -> int:
+        return len(self.build_commands_json)
+
+    @computed_field(return_type=int)
+    @property
+    def test_command_count(self) -> int:
+        return len(self.test_commands_json)
+
+    @computed_field(return_type=int)
+    @property
+    def important_folder_count(self) -> int:
+        return len(self.important_folders_json)
+
+    @computed_field(return_type=int)
+    @property
+    def risky_file_count(self) -> int:
+        return len(self.risky_files_json)
+
+    @computed_field(return_type=int)
+    @property
+    def doc_count(self) -> int:
+        return len(self.docs_found_json)
+
+    @computed_field(return_type=int)
+    @property
+    def ci_config_count(self) -> int:
+        return len(self.ci_config_json)
+
+    @computed_field(return_type=int)
+    @property
+    def deployment_config_count(self) -> int:
+        return len(self.deployment_config_json)
+
+    @computed_field(return_type=bool)
+    @property
+    def has_docs(self) -> bool:
+        return bool(self.docs_found_json)
+
+    @computed_field(return_type=bool)
+    @property
+    def has_ci_config(self) -> bool:
+        return bool(self.ci_config_json)
+
+    @computed_field(return_type=bool)
+    @property
+    def has_deployment_config(self) -> bool:
+        return bool(self.deployment_config_json)
+
+    @computed_field(return_type=bool)
+    @property
+    def has_risky_files(self) -> bool:
+        return bool(self.risky_files_json)
+
     model_config = ConfigDict(from_attributes=True)
 
 
@@ -2216,6 +2291,139 @@ class CodebaseMapRead(BaseModel):
     created_at: datetime
     updated_at: datetime
 
+    @computed_field(return_type=int)
+    @property
+    def language_count(self) -> int:
+        return len(self.languages_json)
+
+    @computed_field(return_type=int)
+    @property
+    def framework_count(self) -> int:
+        return len(self.frameworks_json)
+
+    @computed_field(return_type=int)
+    @property
+    def package_manager_count(self) -> int:
+        return len(self.package_managers_json)
+
+    @computed_field(return_type=int)
+    @property
+    def build_tool_count(self) -> int:
+        return len(self.build_tools_json)
+
+    @computed_field(return_type=int)
+    @property
+    def test_framework_count(self) -> int:
+        return len(self.test_frameworks_json)
+
+    @computed_field(return_type=int)
+    @property
+    def entry_point_count(self) -> int:
+        return len(self.entry_points_json)
+
+    @computed_field(return_type=int)
+    @property
+    def build_command_count(self) -> int:
+        return len(self.build_commands_json)
+
+    @computed_field(return_type=int)
+    @property
+    def test_command_count(self) -> int:
+        return len(self.test_commands_json)
+
+    @computed_field(return_type=int)
+    @property
+    def important_folder_count(self) -> int:
+        return len(self.important_folders_json)
+
+    @computed_field(return_type=int)
+    @property
+    def doc_count(self) -> int:
+        return len(self.docs_json)
+
+    @computed_field(return_type=int)
+    @property
+    def agent_instruction_count(self) -> int:
+        return len(self.agent_instructions_json)
+
+    @computed_field(return_type=int)
+    @property
+    def config_file_count(self) -> int:
+        return len(self.config_files_json)
+
+    @computed_field(return_type=int)
+    @property
+    def ci_config_count(self) -> int:
+        return len(self.ci_config_json)
+
+    @computed_field(return_type=int)
+    @property
+    def deployment_config_count(self) -> int:
+        return len(self.deployment_config_json)
+
+    @computed_field(return_type=int)
+    @property
+    def risk_flag_count(self) -> int:
+        return len(self.risk_flags_json)
+
+    @computed_field(return_type=int)
+    @property
+    def indexed_area_count(self) -> int:
+        return len(self.indexed_areas_json)
+
+    @computed_field(return_type=int)
+    @property
+    def unindexed_area_count(self) -> int:
+        return len(self.unindexed_areas_json)
+
+    @computed_field(return_type=bool)
+    @property
+    def has_docs(self) -> bool:
+        return bool(self.docs_json)
+
+    @computed_field(return_type=bool)
+    @property
+    def has_agent_instructions(self) -> bool:
+        return bool(self.agent_instructions_json)
+
+    @computed_field(return_type=bool)
+    @property
+    def has_risk_flags(self) -> bool:
+        return bool(self.risk_flags_json)
+
+    @computed_field(return_type=bool)
+    @property
+    def is_git_repo(self) -> bool:
+        return bool(self.git_status_json.get("is_git_repo"))
+
+    @computed_field(return_type=str)
+    @property
+    def dirty_working_tree_status(self) -> str:
+        status = self.git_status_json.get("dirty_working_tree")
+        if isinstance(status, str) and status.strip():
+            return status
+        return "not_git"
+
+    @computed_field(return_type=bool)
+    @property
+    def dirty_working_tree_known(self) -> bool:
+        return self.dirty_working_tree_status not in {"unknown_without_command", "unknown"}
+
+    @computed_field(return_type=bool)
+    @property
+    def command_required_for_dirty_check(self) -> bool:
+        return bool(self.git_status_json.get("command_required_for_dirty_check"))
+
+    @computed_field(return_type=bool)
+    @property
+    def is_fully_indexed(self) -> bool:
+        return not self.unindexed_areas_json
+
+    @computed_field(return_type=bool)
+    @property
+    def is_targeted_scan(self) -> bool:
+        return self.scan_depth == "targeted"
+
     model_config = ConfigDict(from_attributes=True)
 
 
@@ -2234,6 +2442,75 @@ class CodebaseUnderstandingRead(BaseModel):
     generation_mode: str
     created_at: datetime
     updated_at: datetime
+
+    @computed_field(return_type=int)
+    @property
+    def detected_stack_count(self) -> int:
+        return len(self.detected_stack_json)
+
+    @computed_field(return_type=int)
+    @property
+    def likely_run_instruction_count(self) -> int:
+        return len(self.likely_run_instructions_json)
+
+    @computed_field(return_type=int)
+    @property
+    def likely_test_instruction_count(self) -> int:
+        return len(self.likely_test_instructions_json)
+
+    @computed_field(return_type=int)
+    @property
+    def missing_context_count(self) -> int:
+        return len(self.missing_context_json)
+
+    @computed_field(return_type=int)
+    @property
+    def suggested_next_step_count(self) -> int:
+        return len(self.suggested_next_steps_json)
+
+    @computed_field(return_type=int)
+    @property
+    def confidence_area_count(self) -> int:
+        return len(self.confidence_by_area_json)
+
+    @computed_field(return_type=float)
+    @property
+    def average_confidence(self) -> float:
+        if not self.confidence_by_area_json:
+            return 0.0
+        return round(sum(float(value) for value in self.confidence_by_area_json.values()) / len(self.confidence_by_area_json), 3)
+
+    @computed_field(return_type=list[str])
+    @property
+    def lowest_confidence_areas(self) -> list[str]:
+        return [
+            str(area)
+            for area, _score in sorted(
+                self.confidence_by_area_json.items(),
+                key=lambda item: (float(item[1]), str(item[0])),
+            )[:3]
+        ]
+
+    @computed_field(return_type=list[str])
+    @property
+    def highest_confidence_areas(self) -> list[str]:
+        return [
+            str(area)
+            for area, _score in sorted(
+                self.confidence_by_area_json.items(),
+                key=lambda item: (-float(item[1]), str(item[0])),
+            )[:3]
+        ]
+
+    @computed_field(return_type=bool)
+    @property
+    def has_missing_context(self) -> bool:
+        return bool(self.missing_context_json)
+
+    @computed_field(return_type=bool)
+    @property
+    def has_suggested_next_steps(self) -> bool:
+        return bool(self.suggested_next_steps_json)
 
     model_config = ConfigDict(from_attributes=True)
 
