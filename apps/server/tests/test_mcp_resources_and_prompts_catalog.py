@@ -29,7 +29,11 @@ EXPECTED_RESOURCES = [
     "mission-control://integrations/health",
     "mission-control://projects/{project_id}/integrations",
     "mission-control://projects/{project_id}/integrations/{family}",
+    "mission-control://projects/{project_id}/runbook",
+    "mission-control://projects/{project_id}/runbook/summary",
     "mission-control://projects/{project_id}/workspace-tooling",
+    "mission-control://projects/{project_id}/execution-policy/summary",
+    "mission-control://projects/{project_id}/coordination/summary",
     "mission-control://projects/{project_id}/tensorflow/features",
     "mission-control://projects/{project_id}/tensorflow/features/{feature_id}",
     "mission-control://projects/{project_id}/pytorch/features",
@@ -151,11 +155,15 @@ def test_docs_explain_resources_prompts_and_headless_boundary() -> None:
     assert "mission-control://projects/{project_id}/operator-snapshot" in resources_content
     assert "mission-control://projects/{project_id}/capability-report" in resources_content
     assert "mission-control://projects/{project_id}/capability-report/{section_key}" in resources_content
+    assert "mission-control://projects/{project_id}/runbook" in resources_content
+    assert "mission-control://projects/{project_id}/runbook/summary" in resources_content
     assert "mission-control://projects/{project_id}/webwright" in resources_content
     assert "mission-control://projects/{project_id}/nvidia-nim" in resources_content
     assert "mission-control://projects/{project_id}/nvidia-aiq" in resources_content
     assert "mission-control://projects/{project_id}/nvidia-validation-plan" in resources_content
     assert "mission-control://projects/{project_id}/workspace-tooling" in resources_content
+    assert "mission-control://projects/{project_id}/execution-policy/summary" in resources_content
+    assert "mission-control://projects/{project_id}/coordination/summary" in resources_content
     assert "mission-control://projects/{project_id}/tensorflow/features" in resources_content
     assert "mission-control://projects/{project_id}/tensorflow/features/{feature_id}" in resources_content
     assert "mission-control://projects/{project_id}/pytorch/features" in resources_content

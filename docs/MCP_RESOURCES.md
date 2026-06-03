@@ -23,7 +23,11 @@ Mission Control resources are read-only context surfaces for Codex chat.
 - `mission-control://integrations/health`
 - `mission-control://projects/{project_id}/integrations`
 - `mission-control://projects/{project_id}/integrations/{family}`
+- `mission-control://projects/{project_id}/runbook`
+- `mission-control://projects/{project_id}/runbook/summary`
 - `mission-control://projects/{project_id}/workspace-tooling`
+- `mission-control://projects/{project_id}/execution-policy/summary`
+- `mission-control://projects/{project_id}/coordination/summary`
 - `mission-control://projects/{project_id}/tensorflow/features`
 - `mission-control://projects/{project_id}/tensorflow/features/{feature_id}`
 - `mission-control://projects/{project_id}/pytorch/features`
@@ -57,6 +61,9 @@ Mission Control resources are read-only context surfaces for Codex chat.
 - handoff supports final bridge summaries
 - codebase map supports imported repo understanding
 - workspace tooling tells the bridge which repo-native helper lanes actually exist for intake, validation, and security before it recommends commands like a clown
+- runbook and runbook summary expose the current operational guide without forcing chat to scrape widget markdown like an animal
+- execution policy summary tells the bridge which runner, sandbox, approval, tool-routing, and validation posture is actually in effect before it suggests work that contradicts local policy
+- coordination summary exposes contract, lock, gate, conflict, and decision posture in one compact lane so chat can spot coordination drift before the swarm faceplants
 - diagnostics, risk register, decision ledger, and path locks support stuck-run debugging without exposing raw internals
 - the Webwright resource tells the bridge whether the local browser-agent runtime is actually ready or whether the user still has setup work to do
 - the NVIDIA resources tell the bridge whether GPU-backed inference, deep research, local CUDA tooling, and Prometheus/DCGM telemetry are actually available before Mission Control leans on them
