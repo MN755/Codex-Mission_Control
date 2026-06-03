@@ -2822,6 +2822,19 @@ class RunbookRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class RunbookSummaryRead(BaseModel):
+    project_id: int
+    exists: bool = False
+    section_count: int = 0
+    sections: list[str] = Field(default_factory=list)
+    run_command_count: int = 0
+    run_commands: list[str] = Field(default_factory=list)
+    content_preview: str | None = None
+    generated_from_handoff_id: int | None = None
+    generated_at: datetime | None = None
+    updated_at: datetime | None = None
+
+
 class RunbookUpdate(BaseModel):
     content_markdown: str = Field(min_length=1)
 

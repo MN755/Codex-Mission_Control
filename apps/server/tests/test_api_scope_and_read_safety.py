@@ -47,6 +47,7 @@ from models import (
     RecoveryPlan,
     RepoIntelligenceSummary,
     ReviewGate,
+    Runbook,
     SandboxProfile,
     SecurityPolicy,
     SwarmAgentSpec,
@@ -1426,6 +1427,66 @@ def test_coordination_summary_get_dedupes_duplicate_support_rows(client, bridge_
         assert db.scalar(select(func.count(ProjectConfidence.id)).where(ProjectConfidence.project_id == project_id, ProjectConfidence.category == "testing")) == 1
         assert db.scalar(select(func.count(ReviewGate.id)).where(ReviewGate.project_id == project_id, ReviewGate.gate_type == "tests")) == 1
         assert db.scalar(select(func.count(DecisionRecord.id)).where(DecisionRecord.project_id == project_id, DecisionRecord.decision_type == "manager_question", DecisionRecord.title == "Pick path")) == 1
+    finally:
+        db.close()
+
+
+def test_runbook_summary_get_is_read_only(client, bridge_headers) -> None:
+    project_id = _create_legacy_project("Runbook Summary Read Safety", "runbook-summary-read-safety")
+
+    db = SessionLocal()
+    try:
+        assert db.scalar(select(func.count(Runbook.id)).where(Runbook.project_id == project_id)) == 0
+    finally:
+        db.close()
+
+    response = client.get(f"/api/projects/{project_id}/runbook/summary", headers=bridge_headers)
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["project_id"] == project_id
+    assert payload["exists"] is False
+    assert payload["section_count"] == 0
+
+    db = SessionLocal()
+    try:
+        assert db.scalar(select(func.count(Runbook.id)).where(Runbook.project_id == project_id)) == 0
+    finally:
+        db.close()
+
+
+def test_runbook_get_dedupes_duplicate_rows(client, bridge_headers) -> None:
+    project = _create_project(client, "Runbook Dedupe", "runbook-dedupe")
+    project_id = project["id"]
+    timestamp = utc_now()
+
+    db = SessionLocal()
+    try:
+        db.add_all(
+            [
+                Runbook(project_id=project_id, content_markdown="# Old", generated_at=timestamp, updated_at=timestamp),
+                Runbook(project_id=project_id, content_markdown="# New\n\n## How to run tests\n- pytest", generated_at=timestamp, updated_at=timestamp),
+            ]
+        )
+        db.commit()
+    finally:
+        db.close()
+
+    response = client.get(f"/api/projects/{project_id}/runbook", headers=bridge_headers)
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["project_id"] == project_id
+    assert payload["content_markdown"].startswith("# New")
+
+    summary = client.get(f"/api/projects/{project_id}/runbook/summary", headers=bridge_headers)
+    assert summary.status_code == 200, summary.text
+    summary_payload = summary.json()
+    assert summary_payload["exists"] is True
+    assert summary_payload["section_count"] >= 1
+    assert summary_payload["run_command_count"] >= 1
+
+    db = SessionLocal()
+    try:
+        assert db.scalar(select(func.count(Runbook.id)).where(Runbook.project_id == project_id)) == 1
     finally:
         db.close()
 

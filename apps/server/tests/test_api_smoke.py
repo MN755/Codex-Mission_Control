@@ -463,6 +463,10 @@ def test_runtime_and_project_control_routes_require_token(client) -> None:
         assert raw_client.get(f"/api/projects/{project_id}/validation-coverage/summary").status_code == 401
         assert raw_client.get(f"/api/projects/{project_id}/execution-policy/summary").status_code == 401
         assert raw_client.get(f"/api/projects/{project_id}/coordination/summary").status_code == 401
+        assert raw_client.get(f"/api/projects/{project_id}/runbook").status_code == 401
+        assert raw_client.get(f"/api/projects/{project_id}/runbook/summary").status_code == 401
+        assert raw_client.post(f"/api/projects/{project_id}/runbook/generate").status_code == 401
+        assert raw_client.put(f"/api/projects/{project_id}/runbook", json={"content_markdown": "# hi"}).status_code == 401
         assert raw_client.get(f"/api/projects/{project_id}/workspace").status_code == 401
         assert raw_client.get(f"/api/projects/{project_id}/actions").status_code == 401
         assert raw_client.post(f"/api/projects/{project_id}/widgets", json={"widgets": ["Repo Intelligence"]}).status_code == 401
@@ -673,6 +677,50 @@ def test_workspace_tooling_and_codebase_search_routes_return_project_scoped_payl
     assert payload["project_id"] == project_id
     assert payload["search_backend"] == "ripgrep"
     assert payload["matches"][0]["path"] == "app.py"
+
+
+def test_runbook_routes_generate_update_and_summarize(client, bridge_headers) -> None:
+    workspace = sample_workspace("runbook-routes")
+    Path(workspace).mkdir(parents=True, exist_ok=True)
+    Path(workspace, "pyproject.toml").write_text("[project]\nname='demo'\n", encoding="utf-8")
+    Path(workspace, "app.py").write_text("print('hi')\n", encoding="utf-8")
+
+    project = client.post(
+        "/api/projects",
+        json={
+            "name": "Runbook Routes",
+            "idea": "Expose the runbook API properly",
+            "workspace_path": workspace,
+            "provider": "codex",
+            "runner_mode": "dry_run",
+            "manager_mode": "auto",
+        },
+    ).json()
+    project_id = project["id"]
+
+    initial = client.get(f"/api/projects/{project_id}/runbook", headers=bridge_headers)
+    assert initial.status_code == 200, initial.text
+    assert initial.json() is None
+
+    generated = client.post(f"/api/projects/{project_id}/runbook/generate", headers=bridge_headers)
+    assert generated.status_code == 200, generated.text
+    generated_payload = generated.json()
+    assert generated_payload["project_id"] == project_id
+    assert "# Runbook" in generated_payload["content_markdown"]
+
+    summary = client.get(f"/api/projects/{project_id}/runbook/summary", headers=bridge_headers)
+    assert summary.status_code == 200, summary.text
+    summary_payload = summary.json()
+    assert summary_payload["exists"] is True
+    assert summary_payload["section_count"] >= 1
+
+    updated = client.put(
+        f"/api/projects/{project_id}/runbook",
+        headers=bridge_headers,
+        json={"content_markdown": "# Custom Runbook\n\n## Start\n- python -m pytest"},
+    )
+    assert updated.status_code == 200, updated.text
+    assert updated.json()["content_markdown"].startswith("# Custom Runbook")
 
 
 def test_context_pack_routes_return_summary_rollups(client) -> None:

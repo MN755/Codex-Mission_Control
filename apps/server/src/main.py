@@ -199,6 +199,7 @@ from schemas import (
     RiskSummaryRead,
     RunReportRequest,
     RunbookRead,
+    RunbookSummaryRead,
     RunbookUpdate,
     SnapshotRestorePlanRead,
     StartupCheckRequest,
@@ -2269,6 +2270,48 @@ def generate_project_handoff_record(
 ) -> EvidenceBasedHandoffRead:
     project = _get_project_or_404(db, project_id)
     return EvidenceBasedHandoffRead.model_validate(service.generate_evidence_handoff(db, project))
+
+
+@app.get("/api/projects/{project_id}/runbook", response_model=RunbookRead | None)
+def get_project_runbook(
+    project_id: int,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> RunbookRead | None:
+    project = _get_project_or_404(db, project_id)
+    runbook = service.get_runbook(db, project)
+    return RunbookRead.model_validate(runbook) if runbook is not None else None
+
+
+@app.get("/api/projects/{project_id}/runbook/summary", response_model=RunbookSummaryRead)
+def get_project_runbook_summary(
+    project_id: int,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> RunbookSummaryRead:
+    project = _get_project_or_404(db, project_id)
+    return RunbookSummaryRead.model_validate(service.get_runbook_summary(db, project))
+
+
+@app.post("/api/projects/{project_id}/runbook/generate", response_model=RunbookRead)
+def generate_project_runbook(
+    project_id: int,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> RunbookRead:
+    project = _get_project_or_404(db, project_id)
+    return RunbookRead.model_validate(service.generate_runbook(db, project))
+
+
+@app.put("/api/projects/{project_id}/runbook", response_model=RunbookRead)
+def update_project_runbook(
+    project_id: int,
+    payload: RunbookUpdate,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> RunbookRead:
+    project = _get_project_or_404(db, project_id)
+    return RunbookRead.model_validate(service.update_runbook(db, project, payload.content_markdown))
 
 
 @app.get("/api/projects/{project_id}/safe-mode", response_model=SafeModeStatusRead)

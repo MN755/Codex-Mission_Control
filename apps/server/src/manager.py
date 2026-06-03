@@ -3228,7 +3228,7 @@ class MissionControlService:
     def generate_runbook(self, db: Session, project: Project) -> Runbook:
         repo = self._scan_repo_intelligence(db, project)
         handoff = self._latest_evidence_handoff(db, project.id)
-        runbook = db.scalar(select(Runbook).where(Runbook.project_id == project.id).order_by(Runbook.updated_at.desc(), Runbook.id.desc()))
+        runbook = self._latest_runbook_row(db, project)
         build_command = repo.build_commands_json[0] if repo.build_commands_json else "No build command detected."
         test_command = repo.test_commands_json[0] if repo.test_commands_json else "No automated test command detected."
         logs_location = str(self._project_docs_dir(project))
@@ -3271,7 +3271,7 @@ class MissionControlService:
         return runbook
 
     def update_runbook(self, db: Session, project: Project, content_markdown: str) -> Runbook:
-        runbook = db.scalar(select(Runbook).where(Runbook.project_id == project.id).order_by(Runbook.updated_at.desc(), Runbook.id.desc()))
+        runbook = self._latest_runbook_row(db, project)
         if runbook is None:
             runbook = Runbook(project_id=project.id, content_markdown=content_markdown)
             db.add(runbook)
@@ -3282,7 +3282,54 @@ class MissionControlService:
         return runbook
 
     def get_runbook(self, db: Session, project: Project) -> Runbook | None:
-        return db.scalar(select(Runbook).where(Runbook.project_id == project.id).order_by(Runbook.updated_at.desc(), Runbook.id.desc()))
+        return self._latest_runbook_row(db, project)
+
+    def _latest_runbook_row(self, db: Session, project: Project) -> Runbook | None:
+        matches = list(
+            db.scalars(
+                select(Runbook)
+                .where(Runbook.project_id == project.id)
+                .order_by(Runbook.updated_at.desc(), Runbook.id.desc())
+            )
+        )
+        if not matches:
+            return None
+        keep = matches[0]
+        for duplicate in matches[1:]:
+            db.delete(duplicate)
+        if len(matches) > 1:
+            db.flush()
+        return keep
+
+    def get_runbook_summary(self, db: Session, project: Project) -> dict[str, Any]:
+        runbook = self.get_runbook(db, project)
+        if runbook is None:
+            return {
+                "project_id": project.id,
+                "exists": False,
+                "section_count": 0,
+                "sections": [],
+                "run_command_count": 0,
+                "run_commands": [],
+                "content_preview": None,
+                "generated_from_handoff_id": None,
+                "generated_at": None,
+                "updated_at": None,
+            }
+        sections = [line[3:].strip() for line in runbook.content_markdown.splitlines() if line.startswith("## ")]
+        run_commands = [line[2:] for line in runbook.content_markdown.splitlines() if line.startswith("- ")]
+        return {
+            "project_id": project.id,
+            "exists": True,
+            "section_count": len(sections),
+            "sections": sections,
+            "run_command_count": len(run_commands),
+            "run_commands": run_commands[:8],
+            "content_preview": runbook.content_markdown[:1200],
+            "generated_from_handoff_id": runbook.generated_from_handoff_id,
+            "generated_at": runbook.generated_at,
+            "updated_at": runbook.updated_at,
+        }
 
     def list_agent_traces(self, db: Session, project: Project) -> list[AgentExecutionTrace]:
         return self._ensure_agent_execution_traces(db, project)
