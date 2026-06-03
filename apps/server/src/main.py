@@ -77,6 +77,7 @@ from schemas import (
     CompleteFirstRunRequest,
     ConflictRecordRead,
     ConflictResolveRequest,
+    CoordinationSummaryRead,
     CodexStatusRead,
     ChangeRequestCreate,
     ChangeRequestRead,
@@ -2586,6 +2587,16 @@ def get_project_execution_policy_summary(
 ) -> ExecutionPolicySummaryRead:
     project = _get_project_or_404(db, project_id)
     return ExecutionPolicySummaryRead(**service.build_execution_policy_summary(db, project))
+
+
+@app.get("/api/projects/{project_id}/coordination/summary", response_model=CoordinationSummaryRead)
+def get_project_coordination_summary(
+    project_id: int,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> CoordinationSummaryRead:
+    project = _get_project_or_404(db, project_id)
+    return CoordinationSummaryRead(**service.build_coordination_summary(db, project))
 
 
 @app.get("/api/projects/{project_id}/tensorflow/features", response_model=list[TensorFlowFeatureCatalogEntryRead])

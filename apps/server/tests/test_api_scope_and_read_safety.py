@@ -1344,6 +1344,92 @@ def test_execution_policy_summary_get_dedupes_duplicate_policy_rows(client, brid
         db.close()
 
 
+def test_coordination_summary_get_is_read_only(client, bridge_headers) -> None:
+    project_id = _create_legacy_project("Coordination Summary Read Safety", "coordination-summary-read-safety")
+
+    db = SessionLocal()
+    try:
+        baseline = {
+            "agent_contracts": db.scalar(select(func.count(AgentContract.id)).where(AgentContract.project_id == project_id)),
+            "path_locks": db.scalar(select(func.count(PathLock.id)).where(PathLock.project_id == project_id)),
+            "project_confidence": db.scalar(select(func.count(ProjectConfidence.id)).where(ProjectConfidence.project_id == project_id)),
+            "review_gates": db.scalar(select(func.count(ReviewGate.id)).where(ReviewGate.project_id == project_id)),
+            "decision_records": db.scalar(select(func.count(DecisionRecord.id)).where(DecisionRecord.project_id == project_id)),
+        }
+        assert baseline == {
+            "agent_contracts": 0,
+            "path_locks": 0,
+            "project_confidence": 0,
+            "review_gates": 0,
+            "decision_records": 0,
+        }
+    finally:
+        db.close()
+
+    response = client.get(f"/api/projects/{project_id}/coordination/summary", headers=bridge_headers)
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["project_id"] == project_id
+    assert payload["contract_count"] >= 0
+    assert payload["review_gate_count"] >= 0
+
+    db = SessionLocal()
+    try:
+        after = {
+            "agent_contracts": db.scalar(select(func.count(AgentContract.id)).where(AgentContract.project_id == project_id)),
+            "path_locks": db.scalar(select(func.count(PathLock.id)).where(PathLock.project_id == project_id)),
+            "project_confidence": db.scalar(select(func.count(ProjectConfidence.id)).where(ProjectConfidence.project_id == project_id)),
+            "review_gates": db.scalar(select(func.count(ReviewGate.id)).where(ReviewGate.project_id == project_id)),
+            "decision_records": db.scalar(select(func.count(DecisionRecord.id)).where(DecisionRecord.project_id == project_id)),
+        }
+        assert after == baseline
+    finally:
+        db.close()
+
+
+def test_coordination_summary_get_dedupes_duplicate_support_rows(client, bridge_headers) -> None:
+    project = _create_project(client, "Coordination Summary Dedupe", "coordination-summary-dedupe")
+    project_id = project["id"]
+    timestamp = utc_now()
+
+    db = SessionLocal()
+    try:
+        db.add_all(
+            [
+                AgentContract(project_id=project_id, agent_name="Builder", archetype="backend", mission="old", expected_output="old", updated_at=timestamp),
+                AgentContract(project_id=project_id, agent_name="Builder", archetype="backend", mission="new", expected_output="new", updated_at=timestamp),
+                PathLock(project_id=project_id, path_pattern="src/app.py", owner_agent_id=None, owner_task_id=None, reason="old", status="active", created_at=timestamp),
+                PathLock(project_id=project_id, path_pattern="src/app.py", owner_agent_id=None, owner_task_id=None, reason="new", status="active", created_at=timestamp),
+                ProjectConfidence(project_id=project_id, category="testing", confidence_score=10, reason="old", unknowns_json=["a"], last_updated=timestamp),
+                ProjectConfidence(project_id=project_id, category="testing", confidence_score=90, reason="new", unknowns_json=[], last_updated=timestamp),
+                ReviewGate(project_id=project_id, gate_type="tests", title="Tests", status="failed", required=True, updated_at=timestamp),
+                ReviewGate(project_id=project_id, gate_type="tests", title="Tests", status="passed", required=True, updated_at=timestamp),
+                DecisionRecord(project_id=project_id, decision_type="manager_question", title="Pick path", decision="old", reason="old", made_by="user", impact_area_json=["requirements"], created_at=timestamp),
+                DecisionRecord(project_id=project_id, decision_type="manager_question", title="Pick path", decision="new", reason="new", made_by="user", impact_area_json=["requirements"], created_at=timestamp),
+            ]
+        )
+        db.commit()
+    finally:
+        db.close()
+
+    response = client.get(f"/api/projects/{project_id}/coordination/summary", headers=bridge_headers)
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["project_id"] == project_id
+    assert "manager_question" in payload["decision_types"]
+    assert payload["decision_count"] >= 1
+
+    db = SessionLocal()
+    try:
+        assert db.scalar(select(func.count(AgentContract.id)).where(AgentContract.project_id == project_id, AgentContract.agent_name == "Builder")) == 1
+        assert db.scalar(select(func.count(PathLock.id)).where(PathLock.project_id == project_id, PathLock.path_pattern == "src/app.py", PathLock.status == "active")) == 1
+        assert db.scalar(select(func.count(ProjectConfidence.id)).where(ProjectConfidence.project_id == project_id, ProjectConfidence.category == "testing")) == 1
+        assert db.scalar(select(func.count(ReviewGate.id)).where(ReviewGate.project_id == project_id, ReviewGate.gate_type == "tests")) == 1
+        assert db.scalar(select(func.count(DecisionRecord.id)).where(DecisionRecord.project_id == project_id, DecisionRecord.decision_type == "manager_question", DecisionRecord.title == "Pick path")) == 1
+    finally:
+        db.close()
+
+
 def test_preference_summary_reads_do_not_seed_rows(client, bridge_headers) -> None:
     project_id = _create_legacy_project("Preference Summary Read Safety", "preference-summary-read-safety")
 

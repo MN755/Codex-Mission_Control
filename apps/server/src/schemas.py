@@ -1758,6 +1758,24 @@ class ExecutionPolicySummaryRead(BaseModel):
     validation_status: str
 
 
+class CoordinationSummaryRead(BaseModel):
+    project_id: int
+    project_name: str
+    current_action_type: str
+    contract_count: int = 0
+    active_contract_count: int = 0
+    waiting_lock_count: int = 0
+    active_lock_count: int = 0
+    unresolved_conflict_count: int = 0
+    decision_count: int = 0
+    decision_types: list[str] = Field(default_factory=list)
+    low_confidence_count: int = 0
+    low_confidence_categories: list[str] = Field(default_factory=list)
+    failed_gate_count: int = 0
+    pending_gate_count: int = 0
+    review_gate_count: int = 0
+
+
 class TensorFlowFeatureCatalogEntryRead(BaseModel):
     feature_id: str
     title: str

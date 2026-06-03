@@ -4587,7 +4587,7 @@ class MissionControlService:
         return sources
 
     def _sync_agent_contracts(self, db: Session, project: Project) -> list[AgentContract]:
-        existing = {entry.agent_name: entry for entry in db.scalars(select(AgentContract).where(AgentContract.project_id == project.id))}
+        existing = self._latest_agent_contract_rows(db, project)
         active_names: set[str] = set()
         for payload in self._agent_contract_payloads(db, project):
             active_names.add(str(payload["agent_name"]))
@@ -4614,8 +4614,49 @@ class MissionControlService:
         db.flush()
         return list(db.scalars(select(AgentContract).where(AgentContract.project_id == project.id).order_by(AgentContract.updated_at.desc(), AgentContract.id.asc())))
 
+    def _latest_agent_contract_rows(self, db: Session, project: Project) -> dict[str, AgentContract]:
+        matches = list(
+            db.scalars(
+                select(AgentContract)
+                .where(AgentContract.project_id == project.id)
+                .order_by(AgentContract.agent_name.asc(), AgentContract.updated_at.desc(), AgentContract.id.desc())
+            )
+        )
+        kept: dict[str, AgentContract] = {}
+        duplicates: list[AgentContract] = []
+        for entry in matches:
+            if entry.agent_name not in kept:
+                kept[entry.agent_name] = entry
+                continue
+            duplicates.append(entry)
+        for duplicate in duplicates:
+            db.delete(duplicate)
+        if duplicates:
+            db.flush()
+        return kept
+
     def _preview_agent_contracts(self, db: Session, project: Project) -> list[AgentContract]:
-        existing = {entry.agent_name: entry for entry in list(project.agent_contracts or [])}
+        existing = {
+            name: AgentContract(
+                project_id=project.id,
+                agent_id=entry.agent_id,
+                agent_name=entry.agent_name,
+                archetype=entry.archetype,
+                mission=entry.mission,
+                allowed_paths_json=list(entry.allowed_paths_json or []),
+                forbidden_paths_json=list(entry.forbidden_paths_json or []),
+                allowed_tools_json=list(entry.allowed_tools_json or []),
+                expected_output=entry.expected_output,
+                validation_required_json=list(entry.validation_required_json or []),
+                stop_conditions_json=list(entry.stop_conditions_json or []),
+                escalation_conditions_json=list(entry.escalation_conditions_json or []),
+                completion_report_schema_json=dict(entry.completion_report_schema_json or {}),
+                status=entry.status,
+                created_at=entry.created_at,
+                updated_at=entry.updated_at,
+            )
+            for name, entry in self._latest_agent_contract_rows(db, project).items()
+        }
         active_names: set[str] = set()
         now = utc_now()
         for payload in self._agent_contract_payloads(db, project):
@@ -4652,10 +4693,7 @@ class MissionControlService:
     def _sync_path_locks(self, db: Session, project: Project) -> list[PathLock]:
         reservations = self.list_reservations(db, project.id)
         tasks = list(db.scalars(select(Task).where(Task.project_id == project.id).order_by(Task.id.asc())))
-        existing = {
-            (entry.path_pattern, entry.owner_agent_id, entry.owner_task_id, entry.status): entry
-            for entry in db.scalars(select(PathLock).where(PathLock.project_id == project.id))
-        }
+        existing = self._latest_path_lock_rows(db, project)
         active_keys: set[tuple[str, int | None, int | None, str]] = set()
         for reservation in reservations:
             key = (reservation.path, reservation.agent_id, reservation.task_id, "active")
@@ -4695,13 +4733,44 @@ class MissionControlService:
         db.flush()
         return list(db.scalars(select(PathLock).where(PathLock.project_id == project.id).order_by(PathLock.status.asc(), PathLock.created_at.desc())))
 
+    def _latest_path_lock_rows(self, db: Session, project: Project) -> dict[tuple[str, int | None, int | None, str], PathLock]:
+        matches = list(
+            db.scalars(
+                select(PathLock)
+                .where(PathLock.project_id == project.id)
+                .order_by(PathLock.path_pattern.asc(), PathLock.created_at.desc(), PathLock.id.desc())
+            )
+        )
+        kept: dict[tuple[str, int | None, int | None, str], PathLock] = {}
+        duplicates: list[PathLock] = []
+        for entry in matches:
+            key = (entry.path_pattern, entry.owner_agent_id, entry.owner_task_id, entry.status)
+            if key not in kept:
+                kept[key] = entry
+                continue
+            duplicates.append(entry)
+        for duplicate in duplicates:
+            db.delete(duplicate)
+        if duplicates:
+            db.flush()
+        return kept
+
     def _preview_path_locks(self, db: Session, project: Project) -> list[PathLock]:
         reservations = self.list_reservations(db, project.id)
         tasks = list(db.scalars(select(Task).where(Task.project_id == project.id).order_by(Task.id.asc())))
         now = utc_now()
         preview = {
-            (entry.path_pattern, entry.owner_agent_id, entry.owner_task_id, entry.status): entry
-            for entry in list(project.path_locks or [])
+            key: PathLock(
+                project_id=project.id,
+                path_pattern=entry.path_pattern,
+                owner_agent_id=entry.owner_agent_id,
+                owner_task_id=entry.owner_task_id,
+                reason=entry.reason,
+                status=entry.status,
+                created_at=entry.created_at,
+                released_at=entry.released_at,
+            )
+            for key, entry in self._latest_path_lock_rows(db, project).items()
         }
         active_keys: set[tuple[str, int | None, int | None, str]] = set()
         for reservation in reservations:
@@ -4741,10 +4810,7 @@ class MissionControlService:
 
     def _sync_project_confidence(self, db: Session, project: Project) -> list[ProjectConfidence]:
         understanding = self._ensure_project_understanding(db, project)
-        existing = {
-            entry.category: entry
-            for entry in db.scalars(select(ProjectConfidence).where(ProjectConfidence.project_id == project.id))
-        }
+        existing = self._latest_project_confidence_rows(db, project)
         entries = self._project_confidence_entries(project, understanding, existing=existing)
         for entry in entries:
             if entry.id is None:
@@ -4757,6 +4823,27 @@ class MissionControlService:
                 .order_by(ProjectConfidence.confidence_score.asc(), ProjectConfidence.category.asc())
             )
         )
+
+    def _latest_project_confidence_rows(self, db: Session, project: Project) -> dict[str, ProjectConfidence]:
+        matches = list(
+            db.scalars(
+                select(ProjectConfidence)
+                .where(ProjectConfidence.project_id == project.id)
+                .order_by(ProjectConfidence.category.asc(), ProjectConfidence.last_updated.desc(), ProjectConfidence.id.desc())
+            )
+        )
+        kept: dict[str, ProjectConfidence] = {}
+        duplicates: list[ProjectConfidence] = []
+        for entry in matches:
+            if entry.category not in kept:
+                kept[entry.category] = entry
+                continue
+            duplicates.append(entry)
+        for duplicate in duplicates:
+            db.delete(duplicate)
+        if duplicates:
+            db.flush()
+        return kept
 
     def _project_confidence_entries(
         self,
@@ -4802,11 +4889,18 @@ class MissionControlService:
                 entry.reason = f"{category} is still underspecified."
         return sorted(existing.values(), key=lambda item: (item.confidence_score, item.category.lower()))
 
-    def _preview_project_confidence(self, project: Project) -> list[ProjectConfidence]:
+    def _preview_project_confidence(self, db: Session, project: Project) -> list[ProjectConfidence]:
         understanding = self._project_understanding(project)
         existing = {
-            entry.category: entry
-            for entry in list(project.project_confidence or [])
+            category: ProjectConfidence(
+                project_id=project.id,
+                category=entry.category,
+                confidence_score=entry.confidence_score,
+                reason=entry.reason,
+                unknowns_json=list(entry.unknowns_json or []),
+                last_updated=entry.last_updated,
+            )
+            for category, entry in self._latest_project_confidence_rows(db, project).items()
         }
         return self._project_confidence_entries(project, understanding, existing=existing)
 
@@ -5024,10 +5118,7 @@ class MissionControlService:
             latest_handoff=latest_handoff,
             conflicts=conflicts,
         )
-        existing = {
-            entry.gate_type: entry
-            for entry in db.scalars(select(ReviewGate).where(ReviewGate.project_id == project.id))
-        }
+        existing = self._latest_review_gate_rows(db, project)
         gates = self._review_gate_entries(project, requirements, existing=existing)
         for gate in gates:
             if gate.id is None:
@@ -5054,8 +5145,44 @@ class MissionControlService:
             latest_handoff=latest_handoff,
             conflicts=conflicts,
         )
-        existing = {entry.gate_type: entry for entry in list(project.review_gates or [])}
+        existing = {
+            gate_type: ReviewGate(
+                project_id=project.id,
+                gate_type=entry.gate_type,
+                title=entry.title,
+                status=entry.status,
+                required=entry.required,
+                related_task_id=entry.related_task_id,
+                related_agent_id=entry.related_agent_id,
+                required_checks_json=list(entry.required_checks_json or []),
+                evidence_ids_json=list(entry.evidence_ids_json or []),
+                result_summary=entry.result_summary,
+                updated_at=entry.updated_at,
+            )
+            for gate_type, entry in self._latest_review_gate_rows(db, project).items()
+        }
         return self._review_gate_entries(project, requirements, existing=existing)
+
+    def _latest_review_gate_rows(self, db: Session, project: Project) -> dict[str, ReviewGate]:
+        matches = list(
+            db.scalars(
+                select(ReviewGate)
+                .where(ReviewGate.project_id == project.id)
+                .order_by(ReviewGate.gate_type.asc(), ReviewGate.updated_at.desc(), ReviewGate.id.desc())
+            )
+        )
+        kept: dict[str, ReviewGate] = {}
+        duplicates: list[ReviewGate] = []
+        for entry in matches:
+            if entry.gate_type not in kept:
+                kept[entry.gate_type] = entry
+                continue
+            duplicates.append(entry)
+        for duplicate in duplicates:
+            db.delete(duplicate)
+        if duplicates:
+            db.flush()
+        return kept
 
     def _model_policy_values(self, project: Project, settings: ProjectSettings) -> dict[str, Any]:
         provider = settings.provider
@@ -5657,8 +5784,21 @@ class MissionControlService:
         preview: dict[tuple[str, str], DecisionRecord] = {}
         now = utc_now()
         if include_existing:
-            for existing in list(project.decision_records or []):
-                preview[(existing.decision_type, existing.title)] = existing
+            for key, existing in self._latest_decision_record_rows(db, project).items():
+                preview[key] = DecisionRecord(
+                    project_id=project.id,
+                    decision_type=existing.decision_type,
+                    title=existing.title,
+                    decision=existing.decision,
+                    reason=existing.reason,
+                    made_by=existing.made_by,
+                    impact_area_json=list(existing.impact_area_json or []),
+                    related_task_id=existing.related_task_id,
+                    related_agent_id=existing.related_agent_id,
+                    created_at=existing.created_at,
+                    reversible=existing.reversible,
+                    superseded_by=existing.superseded_by,
+                )
         approvals = db.scalars(
             select(ApprovalRequest)
             .where(ApprovalRequest.project_id == project.id, ApprovalRequest.status != "pending")
@@ -5713,6 +5853,28 @@ class MissionControlService:
                 created_at=swarm_plan.updated_at or swarm_plan.created_at or now,
             )
         return sorted(preview.values(), key=lambda item: (item.created_at or now, item.id or 0), reverse=True)
+
+    def _latest_decision_record_rows(self, db: Session, project: Project) -> dict[tuple[str, str], DecisionRecord]:
+        matches = list(
+            db.scalars(
+                select(DecisionRecord)
+                .where(DecisionRecord.project_id == project.id)
+                .order_by(DecisionRecord.decision_type.asc(), DecisionRecord.title.asc(), DecisionRecord.created_at.desc(), DecisionRecord.id.desc())
+            )
+        )
+        kept: dict[tuple[str, str], DecisionRecord] = {}
+        duplicates: list[DecisionRecord] = []
+        for entry in matches:
+            key = (entry.decision_type, entry.title)
+            if key not in kept:
+                kept[key] = entry
+                continue
+            duplicates.append(entry)
+        for duplicate in duplicates:
+            db.delete(duplicate)
+        if duplicates:
+            db.flush()
+        return kept
 
     def _ensure_widget_support_records(
         self,
@@ -5816,10 +5978,10 @@ class MissionControlService:
         overview = overview or self._project_overview(db, project, tasks, current_action)
         preferences = project.swarm_preferences or self._swarm_preferences(project)
         budget = project.swarm_budget or self._preview_swarm_budget(db, project)
-        contracts = list(project.agent_contracts or []) or self._preview_agent_contracts(db, project)
-        path_locks = list(project.path_locks or []) or self._preview_path_locks(db, project)
+        contracts = self._preview_agent_contracts(db, project)
+        path_locks = self._preview_path_locks(db, project)
         conflicts = self._preview_conflicts(db, project)
-        confidence = list(project.project_confidence or []) or self._preview_project_confidence(project)
+        confidence = self._preview_project_confidence(db, project)
         persisted_stuck_signals = list(
             db.scalars(
                 select(AgentStuckSignal)
@@ -5830,7 +5992,7 @@ class MissionControlService:
         stuck_signals: list[AgentStuckSignal] | list[dict[str, Any]] = persisted_stuck_signals or self._preview_stuck_signals(db, project)
         recovery_preview = self.preview_recovery_plans(db, project)
         recovery_plans = list(recovery_preview["persisted"])
-        review_gates = list(project.review_gates or []) or self._preview_review_gates(
+        review_gates = self._preview_review_gates(
             db,
             project,
             tasks=tasks,
@@ -5933,7 +6095,7 @@ class MissionControlService:
         evidence = self.list_handoff_evidence(db, project)
         latest_handoff = self._latest_evidence_handoff(db, project.id)
         runbook = self.get_runbook(db, project)
-        decisions = list(project.decision_records or []) or self._preview_decision_records(db, project)
+        decisions = self._preview_decision_records(db, project)
         blocked_agents = [agent for agent in self._sorted_workspace_agents(db, project.id) if agent["display_status"] in {"blocked", "error"}]
         pending_approvals = self.list_pending_approvals(db, project)
         health = self._project_health(
@@ -6953,7 +7115,7 @@ class MissionControlService:
                 warnings_json=list(rebalance["risks"][:3]),
             )
         if instance.widget_type == "Agent Contracts":
-            contracts = list(project.agent_contracts or []) or self._preview_agent_contracts(db, project)
+            contracts = self._preview_agent_contracts(db, project)
             if not contracts:
                 return self._serialize_widget_data(instance, status="empty", empty_state="No active agent contracts exist yet.")
             return self._serialize_widget_data(
@@ -6977,7 +7139,7 @@ class MissionControlService:
                 },
             )
         if instance.widget_type == "Path Ownership Map":
-            path_locks = list(project.path_locks or []) or self._preview_path_locks(db, project)
+            path_locks = self._preview_path_locks(db, project)
             if not path_locks:
                 return self._serialize_widget_data(instance, status="empty", empty_state="No path ownership data exists yet.")
             waiting = [entry for entry in path_locks if entry.status == "waiting"]
@@ -7000,7 +7162,7 @@ class MissionControlService:
                 warnings_json=warnings,
             )
         if instance.widget_type == "Decision Ledger":
-            decisions = list(project.decision_records or []) or self._preview_decision_records(db, project)
+            decisions = self._preview_decision_records(db, project)
             if not decisions:
                 return self._serialize_widget_data(instance, status="empty", empty_state="No decisions have been recorded yet.")
             return self._serialize_widget_data(
@@ -7021,7 +7183,7 @@ class MissionControlService:
                 ]},
             )
         if instance.widget_type == "Confidence Tracker":
-            confidence = list(project.project_confidence or []) or self._preview_project_confidence(project)
+            confidence = self._preview_project_confidence(db, project)
             return self._serialize_widget_data(
                 instance,
                 status="ready",
@@ -7111,7 +7273,7 @@ class MissionControlService:
             )
         if instance.widget_type == "Merge / Review Gates":
             preferences = project.swarm_preferences or self._swarm_preferences(project)
-            gates = list(project.review_gates or []) or self._preview_review_gates(
+            gates = self._preview_review_gates(
                 db,
                 project,
                 tasks=tasks,
@@ -11337,9 +11499,8 @@ class MissionControlService:
         snapshot = self.build_operator_snapshot(db, project)
         handoff = self.get_project_handoff_summary(db, project)
         coverage = validation_coverage_service.coverage_summary(db, project)
-        persisted_locks = list(project.path_locks or [])
-        preview_locks = persisted_locks or self._preview_path_locks(db, project)
-        recent_decisions = list(project.decision_records or []) or self._preview_decision_records(db, project)
+        preview_locks = self._preview_path_locks(db, project)
+        recent_decisions = self._preview_decision_records(db, project)
         latest_report = next(iter(self.recent_diagnostic_reports(project)), None)
         performance_profile = latest_report.get("performance_profile") if isinstance(latest_report, dict) else {}
         instincts: list[dict[str, Any]] = []
@@ -11477,7 +11638,7 @@ class MissionControlService:
         )
         preferences = project.swarm_preferences or self._swarm_preferences(project)
         conflicts = self._preview_conflicts(db, project)
-        review_gates = list(project.review_gates or []) or self._preview_review_gates(
+        review_gates = self._preview_review_gates(
             db,
             project,
             tasks=tasks,
@@ -11560,6 +11721,51 @@ class MissionControlService:
             "validation_command_count": len(validation_commands),
             "validation_commands": validation_commands,
             "validation_status": validation_recipe.status,
+        }
+
+    def build_coordination_summary(self, db: Session, project: Project) -> dict[str, Any]:
+        tasks = list(db.scalars(select(Task).where(Task.project_id == project.id).order_by(Task.priority.asc(), Task.id.asc())))
+        degraded_notices = self._workspace_degraded_notices_preview(project)
+        current_action = self._derive_current_action_preview(db, project, degraded_notices)
+        overview = self._project_overview(db, project, tasks, current_action)
+        preferences = project.swarm_preferences or self._swarm_preferences(project)
+        contracts = self._preview_agent_contracts(db, project)
+        locks = self._preview_path_locks(db, project)
+        confidence = self._preview_project_confidence(db, project)
+        conflicts = self._preview_conflicts(db, project)
+        review_gates = self._preview_review_gates(
+            db,
+            project,
+            tasks=tasks,
+            overview=overview,
+            testing_depth=preferences.testing_depth,
+            conflicts=conflicts,
+        )
+        decisions = self._preview_decision_records(db, project)
+        active_contracts = [entry for entry in contracts if entry.status == "active"]
+        waiting_locks = [entry for entry in locks if entry.status == "waiting"]
+        active_locks = [entry for entry in locks if entry.status == "active"]
+        unresolved_conflicts = [entry for entry in conflicts if entry.status not in {"resolved", "dismissed"}]
+        low_confidence = [entry for entry in confidence if entry.confidence_score < 40]
+        failed_gates = [entry for entry in review_gates if entry.status == "failed"]
+        pending_gates = [entry for entry in review_gates if entry.required and entry.status == "pending"]
+        decision_types = self._dedupe_strings([entry.decision_type for entry in decisions if entry.decision_type])
+        return {
+            "project_id": project.id,
+            "project_name": project.name,
+            "current_action_type": str(current_action.get("type") or "no_action"),
+            "contract_count": len(contracts),
+            "active_contract_count": len(active_contracts),
+            "waiting_lock_count": len(waiting_locks),
+            "active_lock_count": len(active_locks),
+            "unresolved_conflict_count": len(unresolved_conflicts),
+            "decision_count": len(decisions),
+            "decision_types": decision_types,
+            "low_confidence_count": len(low_confidence),
+            "low_confidence_categories": [entry.category for entry in low_confidence],
+            "failed_gate_count": len(failed_gates),
+            "pending_gate_count": len(pending_gates),
+            "review_gate_count": len(review_gates),
         }
         recommended_checks = self._dedupe_strings(
             [
