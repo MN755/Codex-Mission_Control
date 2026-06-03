@@ -14822,12 +14822,15 @@ class MissionControlService:
         artifact_type_family_ids = _group_artifact_type_family_ids()
         artifact_types = sorted(artifact_type_family_ids)
         artifact_type_counts = _counts_from_grouped_family_ids(artifact_type_family_ids)
+        artifact_type_family_counts = artifact_type_counts
         artifact_type_group_count = len(artifact_type_counts)
         artifact_type_families = artifact_family_ids
         artifact_type_family_count = len(artifact_type_families)
         safe_commands = _merge_unique_strings("safe_commands")
+        safe_command_values = sorted(_group_list_family_ids("safe_commands"))
         safe_command_value_family_ids = _group_list_family_ids("safe_commands")
         safe_command_value_counts = _counts_from_grouped_family_ids(safe_command_value_family_ids)
+        safe_command_value_family_counts = safe_command_value_counts
         safe_command_value_group_count = len(safe_command_value_counts)
         safe_command_value_families = _families_with_values("safe_commands")
         safe_command_value_family_count = len(safe_command_value_families)
@@ -14835,8 +14838,10 @@ class MissionControlService:
         blocker_family_count = len(blocker_family_ids)
         blockers = _merge_unique_strings("blockers")
         blocker_count = len(blockers)
+        blocker_values = sorted(_group_list_family_ids("blockers"))
         blocker_value_family_ids = _group_list_family_ids("blockers")
         blocker_value_counts = _counts_from_grouped_family_ids(blocker_value_family_ids)
+        blocker_value_family_counts = blocker_value_counts
         blocker_value_group_count = len(blocker_value_counts)
         blocker_value_families = _families_with_values("blockers")
         blocker_value_family_count = len(blocker_value_families)
@@ -14844,8 +14849,10 @@ class MissionControlService:
         recommended_fix_family_count = len(recommended_fix_family_ids)
         recommended_fixes = _merge_unique_strings("recommended_fixes")
         recommended_fix_count = len(recommended_fixes)
+        recommended_fix_values = sorted(_group_list_family_ids("recommended_fixes"))
         recommended_fix_value_family_ids = _group_list_family_ids("recommended_fixes")
         recommended_fix_value_counts = _counts_from_grouped_family_ids(recommended_fix_value_family_ids)
+        recommended_fix_value_family_counts = recommended_fix_value_counts
         recommended_fix_value_group_count = len(recommended_fix_value_counts)
         recommended_fix_value_families = _families_with_values("recommended_fixes")
         recommended_fix_value_family_count = len(recommended_fix_value_families)
@@ -14853,8 +14860,10 @@ class MissionControlService:
         note_family_count = len(note_family_ids)
         notes = _merge_unique_strings("notes")
         note_count = len(notes)
+        note_values = sorted(_group_list_family_ids("notes"))
         note_value_family_ids = _group_list_family_ids("notes")
         note_value_counts = _counts_from_grouped_family_ids(note_value_family_ids)
+        note_value_family_counts = note_value_counts
         note_value_group_count = len(note_value_counts)
         note_value_families = _families_with_values("notes")
         note_value_family_count = len(note_value_families)
@@ -15484,12 +15493,15 @@ class MissionControlService:
             "artifact_types": artifact_types,
             "artifact_type_counts": artifact_type_counts,
             "artifact_type_family_ids": artifact_type_family_ids,
+            "artifact_type_family_counts": artifact_type_family_counts,
             "artifact_type_group_count": artifact_type_group_count,
             "artifact_type_family_count": artifact_type_family_count,
             "artifact_type_families": artifact_type_families,
             "safe_commands": safe_commands,
+            "safe_command_values": safe_command_values,
             "safe_command_value_counts": safe_command_value_counts,
             "safe_command_value_family_ids": safe_command_value_family_ids,
+            "safe_command_value_family_counts": safe_command_value_family_counts,
             "safe_command_value_group_count": safe_command_value_group_count,
             "safe_command_value_family_count": safe_command_value_family_count,
             "safe_command_value_families": safe_command_value_families,
@@ -15497,8 +15509,10 @@ class MissionControlService:
             "blocker_family_count": blocker_family_count,
             "blocker_family_ids": blocker_family_ids,
             "blockers": blockers,
+            "blocker_values": blocker_values,
             "blocker_value_counts": blocker_value_counts,
             "blocker_value_family_ids": blocker_value_family_ids,
+            "blocker_value_family_counts": blocker_value_family_counts,
             "blocker_value_group_count": blocker_value_group_count,
             "blocker_value_family_count": blocker_value_family_count,
             "blocker_value_families": blocker_value_families,
@@ -15506,8 +15520,10 @@ class MissionControlService:
             "recommended_fix_family_count": recommended_fix_family_count,
             "recommended_fix_family_ids": recommended_fix_family_ids,
             "recommended_fixes": recommended_fixes,
+            "recommended_fix_values": recommended_fix_values,
             "recommended_fix_value_counts": recommended_fix_value_counts,
             "recommended_fix_value_family_ids": recommended_fix_value_family_ids,
+            "recommended_fix_value_family_counts": recommended_fix_value_family_counts,
             "recommended_fix_value_group_count": recommended_fix_value_group_count,
             "recommended_fix_value_family_count": recommended_fix_value_family_count,
             "recommended_fix_value_families": recommended_fix_value_families,
@@ -15515,8 +15531,10 @@ class MissionControlService:
             "note_family_count": note_family_count,
             "note_family_ids": note_family_ids,
             "notes": notes,
+            "note_values": note_values,
             "note_value_counts": note_value_counts,
             "note_value_family_ids": note_value_family_ids,
+            "note_value_family_counts": note_value_family_counts,
             "note_value_group_count": note_value_group_count,
             "note_value_family_count": note_value_family_count,
             "note_value_families": note_value_families,

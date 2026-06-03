@@ -920,12 +920,15 @@ def test_project_integrations_and_action_preview_flow(client, bridge_headers, mo
     assert project_integrations_payload["artifact_types"] == sorted(_artifact_type_family_ids())
     assert project_integrations_payload["artifact_type_counts"] == {key: len(value) for key, value in _artifact_type_family_ids().items()}
     assert project_integrations_payload["artifact_type_family_ids"] == _artifact_type_family_ids()
+    assert project_integrations_payload["artifact_type_family_counts"] == {key: len(value) for key, value in _artifact_type_family_ids().items()}
     assert project_integrations_payload["artifact_type_group_count"] == len(project_integrations_payload["artifact_type_counts"])
     assert project_integrations_payload["artifact_type_family_count"] == len(project_integrations_payload["artifact_type_families"])
     assert project_integrations_payload["artifact_type_families"] == [item["family"] for item in family_list if item["artifacts"]]
     assert project_integrations_payload["safe_commands"] == _merge_unique_strings("safe_commands")
+    assert project_integrations_payload["safe_command_values"] == sorted(_group_list_family_ids("safe_commands"))
     assert project_integrations_payload["safe_command_value_counts"] == {key: len(value) for key, value in _group_list_family_ids("safe_commands").items()}
     assert project_integrations_payload["safe_command_value_family_ids"] == _group_list_family_ids("safe_commands")
+    assert project_integrations_payload["safe_command_value_family_counts"] == {key: len(value) for key, value in _group_list_family_ids("safe_commands").items()}
     assert project_integrations_payload["safe_command_value_group_count"] == len(project_integrations_payload["safe_command_value_counts"])
     assert project_integrations_payload["safe_command_value_family_count"] == len(project_integrations_payload["safe_command_value_families"])
     assert project_integrations_payload["safe_command_value_families"] == [item["family"] for item in family_list if item["safe_commands"]]
@@ -933,8 +936,10 @@ def test_project_integrations_and_action_preview_flow(client, bridge_headers, mo
     assert project_integrations_payload["blocker_family_count"] == sum(1 for item in family_list if item["blockers"])
     assert project_integrations_payload["blocker_family_ids"] == [item["family"] for item in family_list if item["blockers"]]
     assert project_integrations_payload["blockers"] == _merge_unique_strings("blockers")
+    assert project_integrations_payload["blocker_values"] == sorted(_group_list_family_ids("blockers"))
     assert project_integrations_payload["blocker_value_counts"] == {key: len(value) for key, value in _group_list_family_ids("blockers").items()}
     assert project_integrations_payload["blocker_value_family_ids"] == _group_list_family_ids("blockers")
+    assert project_integrations_payload["blocker_value_family_counts"] == {key: len(value) for key, value in _group_list_family_ids("blockers").items()}
     assert project_integrations_payload["blocker_value_group_count"] == len(project_integrations_payload["blocker_value_counts"])
     assert project_integrations_payload["blocker_value_family_count"] == len(project_integrations_payload["blocker_value_families"])
     assert project_integrations_payload["blocker_value_families"] == [item["family"] for item in family_list if item["blockers"]]
@@ -942,8 +947,10 @@ def test_project_integrations_and_action_preview_flow(client, bridge_headers, mo
     assert project_integrations_payload["recommended_fix_family_count"] == sum(1 for item in family_list if item["recommended_fixes"])
     assert project_integrations_payload["recommended_fix_family_ids"] == [item["family"] for item in family_list if item["recommended_fixes"]]
     assert project_integrations_payload["recommended_fixes"] == _merge_unique_strings("recommended_fixes")
+    assert project_integrations_payload["recommended_fix_values"] == sorted(_group_list_family_ids("recommended_fixes"))
     assert project_integrations_payload["recommended_fix_value_counts"] == {key: len(value) for key, value in _group_list_family_ids("recommended_fixes").items()}
     assert project_integrations_payload["recommended_fix_value_family_ids"] == _group_list_family_ids("recommended_fixes")
+    assert project_integrations_payload["recommended_fix_value_family_counts"] == {key: len(value) for key, value in _group_list_family_ids("recommended_fixes").items()}
     assert project_integrations_payload["recommended_fix_value_group_count"] == len(project_integrations_payload["recommended_fix_value_counts"])
     assert project_integrations_payload["recommended_fix_value_family_count"] == len(project_integrations_payload["recommended_fix_value_families"])
     assert project_integrations_payload["recommended_fix_value_families"] == [item["family"] for item in family_list if item["recommended_fixes"]]
@@ -951,8 +958,10 @@ def test_project_integrations_and_action_preview_flow(client, bridge_headers, mo
     assert project_integrations_payload["note_family_count"] == sum(1 for item in family_list if item["notes"])
     assert project_integrations_payload["note_family_ids"] == [item["family"] for item in family_list if item["notes"]]
     assert project_integrations_payload["notes"] == _merge_unique_strings("notes")
+    assert project_integrations_payload["note_values"] == sorted(_group_list_family_ids("notes"))
     assert project_integrations_payload["note_value_counts"] == {key: len(value) for key, value in _group_list_family_ids("notes").items()}
     assert project_integrations_payload["note_value_family_ids"] == _group_list_family_ids("notes")
+    assert project_integrations_payload["note_value_family_counts"] == {key: len(value) for key, value in _group_list_family_ids("notes").items()}
     assert project_integrations_payload["note_value_group_count"] == len(project_integrations_payload["note_value_counts"])
     assert project_integrations_payload["note_value_family_count"] == len(project_integrations_payload["note_value_families"])
     assert project_integrations_payload["note_value_families"] == [item["family"] for item in family_list if item["notes"]]
