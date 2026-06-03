@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from sqlalchemy import select
+
 import diagnostics
 from db import SessionLocal
 from models import AppProfile
@@ -69,7 +71,7 @@ def test_complete_first_run_persists_builtin_ollama_adapter_recipe(client) -> No
     assert complete.status_code == 200
     db = SessionLocal()
     try:
-        profile = db.get(AppProfile, 1)
+        profile = db.scalar(select(AppProfile).order_by(AppProfile.updated_at.desc(), AppProfile.id.desc()))
         assert profile is not None
         assert profile.provider_endpoint == "http://localhost:11434"
         assert profile.adapter_command

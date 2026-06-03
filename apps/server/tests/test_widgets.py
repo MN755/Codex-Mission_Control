@@ -42,7 +42,7 @@ def test_widget_catalog_reads_are_read_only_and_dashboard_instances_stay_empty(c
     try:
         assert db.scalar(select(func.count(WidgetDefinition.id))) == 0
         assert db.scalar(select(func.count(WidgetInstance.id))) == 0
-        profile = db.get(AppProfile, 1)
+        profile = db.scalar(select(AppProfile).order_by(AppProfile.updated_at.desc(), AppProfile.id.desc()))
         assert profile is not None
         assert profile.dashboard_widgets_json == []
     finally:
@@ -117,6 +117,28 @@ def test_profile_get_is_read_only(client, bridge_headers) -> None:
         db.close()
 
 
+def test_profile_summary_get_is_read_only(client, bridge_headers) -> None:
+    db = SessionLocal()
+    try:
+        assert db.scalar(select(func.count(AppProfile.id))) == 0
+    finally:
+        db.close()
+
+    response = client.get("/api/profile/summary", headers=bridge_headers)
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["exists"] is False
+    assert payload["display_name"] == "Operator"
+    assert payload["selected_provider"] == "codex"
+    assert payload["dashboard_widget_count"] == 0
+
+    db = SessionLocal()
+    try:
+        assert db.scalar(select(func.count(AppProfile.id))) == 0
+    finally:
+        db.close()
+
+
 def test_project_widget_instances_read_does_not_seed_from_legacy_workspace_preferences(client) -> None:
     project = create_project(client, "Legacy Widget Project", "legacy-widget-project")
     project_id = project["id"]
@@ -175,9 +197,57 @@ def test_dashboard_widget_instance_crud_publishes_app_events(client) -> None:
             )
         ]
         assert actions == ["created", "updated", "deleted"]
-        profile = db.get(AppProfile, 1)
+        profile = db.scalar(select(AppProfile).order_by(AppProfile.updated_at.desc(), AppProfile.id.desc()))
         assert profile is not None
         assert "Connected Accounts" not in (profile.dashboard_widgets_json or [])
+    finally:
+        db.close()
+
+
+def test_profile_summary_prefers_latest_row_and_cleans_duplicates(client) -> None:
+    db = SessionLocal()
+    try:
+        stale = AppProfile(
+            id=1,
+            display_name="Stale",
+            selected_provider="codex",
+            preferred_provider_choice="codex",
+            notification_preferences_json={},
+            dashboard_widgets_json=["Connected Accounts"],
+        )
+        fresh = AppProfile(
+            id=2,
+            display_name="Fresh",
+            selected_provider="ollama",
+            preferred_provider_choice="ollama",
+            provider_endpoint="http://localhost:11434",
+            adapter_command="python",
+            notification_preferences_json={"desktop_toasts": True, "sound": False},
+            dashboard_widgets_json=["Connected Accounts", "Diagnostics Summary"],
+        )
+        db.add_all([stale, fresh])
+        db.commit()
+        fresh.updated_at = fresh.updated_at.replace(year=fresh.updated_at.year + 1)
+        db.commit()
+    finally:
+        db.close()
+
+    response = client.get("/api/profile/summary")
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["exists"] is True
+    assert payload["display_name"] == "Fresh"
+    assert payload["selected_provider"] == "ollama"
+    assert payload["dashboard_widget_count"] == 2
+    assert payload["enabled_notification_count"] == 1
+    assert payload["has_provider_endpoint"] is True
+    assert payload["has_adapter"] is True
+
+    db = SessionLocal()
+    try:
+        rows = list(db.scalars(select(AppProfile).order_by(AppProfile.id.asc())))
+        assert len(rows) == 1
+        assert rows[0].display_name == "Fresh"
     finally:
         db.close()
 

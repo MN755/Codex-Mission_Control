@@ -3418,6 +3418,26 @@ class AppProfileUpdate(BaseModel):
     dashboard_widget_preferences_json: dict[str, Any] | None = None
 
 
+class AppProfileSummaryRead(BaseModel):
+    id: int = 1
+    exists: bool = False
+    display_name: str
+    selected_provider: ProviderId = "codex"
+    first_run_completed: bool = False
+    onboarding_completed: bool = False
+    startup_behavior: StartupBehavior = "dashboard"
+    default_runner_mode: RunnerMode = "auto"
+    sandbox_mode: SandboxMode = "workspace-write"
+    approval_policy: ApprovalPolicy = "on-request"
+    connected_account_count: int = 0
+    dashboard_widget_count: int = 0
+    enabled_notification_count: int = 0
+    has_provider_endpoint: bool = False
+    has_adapter: bool = False
+    updated_at: datetime
+    last_opened_at: datetime | None = None
+
+
 class StartupCheckRead(BaseModel):
     name: str
     required: bool

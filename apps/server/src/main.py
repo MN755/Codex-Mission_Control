@@ -64,6 +64,7 @@ from schemas import (
     AgentReputationSummaryRead,
     AppStateRead,
     AppProfileRead,
+    AppProfileSummaryRead,
     AppProfileUpdate,
     ApiKeyLoginRequest,
     AuthJobRead,
@@ -761,6 +762,14 @@ def get_profile(
     _: None = Depends(_require_bridge_token),
 ) -> AppProfileRead:
     return service.get_app_profile(db)
+
+
+@app.get("/api/profile/summary", response_model=AppProfileSummaryRead)
+def get_profile_summary(
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> AppProfileSummaryRead:
+    return AppProfileSummaryRead(**service.get_app_profile_summary(db))
 
 
 @app.put("/api/profile", response_model=AppProfileRead)

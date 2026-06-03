@@ -351,6 +351,7 @@ def test_privileged_headless_and_status_routes_require_token() -> None:
     with TestClient(app) as raw_client:
         assert raw_client.get("/api/system/status").status_code == 401
         assert raw_client.get("/api/profile").status_code == 401
+        assert raw_client.get("/api/profile/summary").status_code == 401
         assert raw_client.get("/api/diagnostics/identity").status_code == 401
         assert raw_client.get("/api/headless/config").status_code == 401
         assert raw_client.get("/api/runners/status").status_code == 401
@@ -413,6 +414,7 @@ def test_runtime_and_project_control_routes_require_token(client) -> None:
         assert raw_client.post(f"/api/projects/{project_id}/swarm/plan").status_code == 401
         assert raw_client.post(f"/api/projects/{project_id}/swarm/spawn").status_code == 401
         assert raw_client.get("/api/playbooks").status_code == 401
+        assert raw_client.get("/api/profile/summary").status_code == 401
         assert raw_client.get(f"/api/projects/{project_id}/playbook").status_code == 401
         assert raw_client.get(f"/api/projects/{project_id}/playbook/recommendations").status_code == 401
         assert raw_client.post(f"/api/projects/{project_id}/playbook/suggest").status_code == 401

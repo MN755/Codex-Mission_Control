@@ -8,11 +8,9 @@ from urllib.request import urlopen
 from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
 
-from app_profile import complete_first_run, get_or_create_app_profile
-from config import DEFAULT_APPROVAL_POLICY, DEFAULT_RUNNER_MODE, DEFAULT_SANDBOX
+from app_profile import complete_first_run, get_or_create_app_profile, preview_app_profile
 from diagnostics import write_diagnostic_report
 from errors import MissionControlError
-from integration_registry import normalize_integration_registry
 from models import AppProfile, Project
 from provider_support import normalize_provider
 from runtime_paths import ensure_runtime_paths
@@ -161,44 +159,7 @@ class StartupCoordinator:
             )
 
     def _preview_profile(self, db: Session) -> AppProfile:
-        profile = db.get(AppProfile, 1)
-        if profile is not None:
-            return profile
-        timestamp = _now()
-        return AppProfile(
-            id=1,
-            display_name=None,
-            install_id="missing-install-id",
-            preferred_provider_choice="codex",
-            preferred_start_mode="new_project",
-            selected_provider="codex",
-            auth_mode=None,
-            connected_accounts_json={},
-            integration_registry_json=normalize_integration_registry({}, {}),
-            first_run_completed=False,
-            setup_version_completed=None,
-            onboarding_completed=False,
-            default_runner_mode=DEFAULT_RUNNER_MODE,
-            manager_model=None,
-            default_worker_model=None,
-            manager_reasoning_effort=None,
-            default_worker_reasoning_effort=None,
-            sandbox_mode=DEFAULT_SANDBOX,
-            approval_policy=DEFAULT_APPROVAL_POLICY,
-            theme="system",
-            startup_behavior="dashboard",
-            notification_preferences_json={},
-            dashboard_widgets_json=[],
-            dashboard_widget_preferences_json={},
-            tool_permission_overrides_json={},
-            provider_endpoint=None,
-            adapter_command=None,
-            adapter_args_json=[],
-            recent_startup_error_json=None,
-            created_at=timestamp,
-            updated_at=timestamp,
-            last_opened_at=timestamp,
-        )
+        return preview_app_profile(db, install_id="missing-install-id")
 
     def _check_settings_preview(self, db: Session) -> tuple[dict[str, Any], AppProfile]:
         profile = self._preview_profile(db)

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import uuid
 
+from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -61,67 +62,12 @@ def _sync_completion_flags(profile: AppProfile) -> None:
         profile.first_run_completed = True
 
 
-def get_or_create_app_profile(db: Session) -> AppProfile:
-    profile = db.get(AppProfile, 1)
-    if profile is not None:
-        updated = False
-        if not profile.install_id:
-            profile.install_id = uuid.uuid4().hex
-            updated = True
-        if not profile.selected_provider:
-            profile.selected_provider = normalize_startup_provider_choice(profile.preferred_provider_choice)
-            updated = True
-        if not profile.connected_accounts_json:
-            profile.connected_accounts_json = {}
-            updated = True
-        normalized_registry = normalize_integration_registry(
-            profile.integration_registry_json,
-            profile.connected_accounts_json,
-        )
-        if dict(profile.integration_registry_json or {}) != normalized_registry:
-            profile.integration_registry_json = normalized_registry
-            updated = True
-        normalized_legacy = registry_to_legacy_connected_accounts(profile.integration_registry_json)
-        merged_legacy = dict(normalized_legacy)
-        merged_legacy.update({key: value for key, value in dict(profile.connected_accounts_json or {}).items() if key not in merged_legacy})
-        if dict(profile.connected_accounts_json or {}) != merged_legacy:
-            profile.connected_accounts_json = merged_legacy
-            updated = True
-        if not profile.adapter_args_json:
-            profile.adapter_args_json = []
-            updated = True
-        if not profile.notification_preferences_json:
-            profile.notification_preferences_json = dict(DEFAULT_NOTIFICATION_PREFERENCES)
-            updated = True
-        if not profile.dashboard_widgets_json:
-            profile.dashboard_widgets_json = []
-            updated = True
-        if not profile.dashboard_widget_preferences_json:
-            profile.dashboard_widget_preferences_json = {}
-            updated = True
-        if not profile.tool_permission_overrides_json:
-            profile.tool_permission_overrides_json = {}
-            updated = True
-        normalized_theme = normalize_theme(profile.theme)
-        if profile.theme != normalized_theme:
-            profile.theme = normalized_theme
-            updated = True
-        normalized_startup_behavior = normalize_startup_behavior(profile.startup_behavior)
-        if profile.startup_behavior != normalized_startup_behavior:
-            profile.startup_behavior = normalized_startup_behavior
-            updated = True
-        original_first_run = profile.first_run_completed
-        original_onboarding = profile.onboarding_completed
-        _sync_completion_flags(profile)
-        if profile.first_run_completed != original_first_run or profile.onboarding_completed != original_onboarding:
-            updated = True
-        if updated:
-            db.flush()
-        return profile
-    profile = AppProfile(
+def _default_app_profile(*, install_id: str | None) -> AppProfile:
+    timestamp = utc_now()
+    return AppProfile(
         id=1,
         display_name=None,
-        install_id=uuid.uuid4().hex,
+        install_id=install_id,
         preferred_provider_choice="codex",
         preferred_start_mode="new_project",
         selected_provider="codex",
@@ -148,8 +94,90 @@ def get_or_create_app_profile(db: Session) -> AppProfile:
         adapter_command=None,
         adapter_args_json=[],
         recent_startup_error_json=None,
-        last_opened_at=utc_now(),
+        created_at=timestamp,
+        updated_at=timestamp,
+        last_opened_at=timestamp,
     )
+
+
+def _latest_app_profile_row(db: Session) -> AppProfile | None:
+    return db.scalars(select(AppProfile).order_by(AppProfile.updated_at.desc(), AppProfile.id.desc())).first()
+
+
+def _normalize_profile(profile: AppProfile) -> bool:
+    updated = False
+    if not profile.install_id:
+        profile.install_id = uuid.uuid4().hex
+        updated = True
+    if not profile.selected_provider:
+        profile.selected_provider = normalize_startup_provider_choice(profile.preferred_provider_choice)
+        updated = True
+    if not profile.connected_accounts_json:
+        profile.connected_accounts_json = {}
+        updated = True
+    normalized_registry = normalize_integration_registry(
+        profile.integration_registry_json,
+        profile.connected_accounts_json,
+    )
+    if dict(profile.integration_registry_json or {}) != normalized_registry:
+        profile.integration_registry_json = normalized_registry
+        updated = True
+    normalized_legacy = registry_to_legacy_connected_accounts(profile.integration_registry_json)
+    merged_legacy = dict(normalized_legacy)
+    merged_legacy.update({key: value for key, value in dict(profile.connected_accounts_json or {}).items() if key not in merged_legacy})
+    if dict(profile.connected_accounts_json or {}) != merged_legacy:
+        profile.connected_accounts_json = merged_legacy
+        updated = True
+    if not profile.adapter_args_json:
+        profile.adapter_args_json = []
+        updated = True
+    if not profile.notification_preferences_json:
+        profile.notification_preferences_json = dict(DEFAULT_NOTIFICATION_PREFERENCES)
+        updated = True
+    if not profile.dashboard_widgets_json:
+        profile.dashboard_widgets_json = []
+        updated = True
+    if not profile.dashboard_widget_preferences_json:
+        profile.dashboard_widget_preferences_json = {}
+        updated = True
+    if not profile.tool_permission_overrides_json:
+        profile.tool_permission_overrides_json = {}
+        updated = True
+    normalized_theme = normalize_theme(profile.theme)
+    if profile.theme != normalized_theme:
+        profile.theme = normalized_theme
+        updated = True
+    normalized_startup_behavior = normalize_startup_behavior(profile.startup_behavior)
+    if profile.startup_behavior != normalized_startup_behavior:
+        profile.startup_behavior = normalized_startup_behavior
+        updated = True
+    original_first_run = profile.first_run_completed
+    original_onboarding = profile.onboarding_completed
+    _sync_completion_flags(profile)
+    if profile.first_run_completed != original_first_run or profile.onboarding_completed != original_onboarding:
+        updated = True
+    return updated
+
+
+def _dedupe_app_profiles(db: Session, keep: AppProfile) -> bool:
+    duplicates = list(db.scalars(select(AppProfile).where(AppProfile.id != keep.id)))
+    if not duplicates:
+        return False
+    for duplicate in duplicates:
+        db.delete(duplicate)
+    return True
+
+
+def get_or_create_app_profile(db: Session) -> AppProfile:
+    profile = _latest_app_profile_row(db)
+    if profile is not None:
+        updated = _normalize_profile(profile)
+        if _dedupe_app_profiles(db, profile):
+            updated = True
+        if updated:
+            db.flush()
+        return profile
+    profile = _default_app_profile(install_id=uuid.uuid4().hex)
     db.add(profile)
     try:
         db.flush()
@@ -157,6 +185,21 @@ def get_or_create_app_profile(db: Session) -> AppProfile:
     except IntegrityError:
         db.rollback()
         return get_or_create_app_profile(db)
+
+
+def preview_app_profile(db: Session, *, install_id: str | None = None) -> AppProfile:
+    profile = _latest_app_profile_row(db)
+    if profile is not None:
+        updated = _normalize_profile(profile)
+        if _dedupe_app_profiles(db, profile):
+            updated = True
+        if profile.install_id is None and install_id is not None:
+            profile.install_id = install_id
+            updated = True
+        if updated:
+            db.flush()
+        return profile
+    return _default_app_profile(install_id=install_id)
 
 
 def update_app_profile(db: Session, payload: AppProfileUpdate) -> AppProfile:

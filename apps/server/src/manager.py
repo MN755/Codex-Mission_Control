@@ -17,7 +17,7 @@ from pydantic import BaseModel, Field, ValidationError
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app_profile import display_name_or_default, get_or_create_app_profile, update_app_profile
+from app_profile import display_name_or_default, get_or_create_app_profile, preview_app_profile, update_app_profile
 from capabilities import CAPABILITY_CATEGORIES, capability_service
 from codex_auth import auth_service
 from codex_runner.app_server_runner import AppServerCodexRunner
@@ -950,44 +950,7 @@ class MissionControlService:
         return get_or_create_project_settings(db, project)
 
     def _app_profile_preview(self, db: Session) -> AppProfile:
-        profile = db.get(AppProfile, 1)
-        if profile is not None:
-            return profile
-        timestamp = utc_now()
-        return AppProfile(
-            id=1,
-            display_name=None,
-            install_id=None,
-            preferred_provider_choice="codex",
-            preferred_start_mode="new_project",
-            selected_provider="codex",
-            auth_mode=None,
-            connected_accounts_json={},
-            integration_registry_json=normalize_integration_registry({}, {}),
-            first_run_completed=False,
-            setup_version_completed=None,
-            onboarding_completed=False,
-            default_runner_mode=DEFAULT_RUNNER_MODE,
-            manager_model=None,
-            default_worker_model=None,
-            manager_reasoning_effort=None,
-            default_worker_reasoning_effort=None,
-            sandbox_mode=DEFAULT_SANDBOX,
-            approval_policy=DEFAULT_APPROVAL_POLICY,
-            theme="system",
-            startup_behavior="dashboard",
-            notification_preferences_json={},
-            dashboard_widgets_json=[],
-            dashboard_widget_preferences_json={},
-            tool_permission_overrides_json={},
-            provider_endpoint=None,
-            adapter_command=None,
-            adapter_args_json=[],
-            recent_startup_error_json=None,
-            created_at=timestamp,
-            updated_at=timestamp,
-            last_opened_at=timestamp,
-        )
+        return preview_app_profile(db)
 
     def _project_settings_preview(self, db: Session, project: Project) -> ProjectSettings:
         if project.settings is not None:
@@ -10775,6 +10738,30 @@ class MissionControlService:
 
     def get_app_profile(self, db: Session) -> AppProfile:
         return self._app_profile_preview(db)
+
+    def get_app_profile_summary(self, db: Session) -> dict[str, Any]:
+        profile = self._app_profile_preview(db)
+        has_persisted_profile = db.scalar(select(AppProfile.id).limit(1)) is not None
+        enabled_notifications = sum(1 for value in dict(profile.notification_preferences_json or {}).values() if value)
+        return {
+            "id": profile.id,
+            "exists": has_persisted_profile,
+            "display_name": display_name_or_default(profile.display_name),
+            "selected_provider": normalize_provider(profile.selected_provider or profile.preferred_provider_choice),
+            "first_run_completed": bool(profile.first_run_completed),
+            "onboarding_completed": bool(profile.onboarding_completed),
+            "startup_behavior": profile.startup_behavior or "dashboard",
+            "default_runner_mode": profile.default_runner_mode or DEFAULT_RUNNER_MODE,
+            "sandbox_mode": profile.sandbox_mode or DEFAULT_SANDBOX,
+            "approval_policy": profile.approval_policy or DEFAULT_APPROVAL_POLICY,
+            "connected_account_count": len(dict(profile.connected_accounts_json or {})),
+            "dashboard_widget_count": len(list(profile.dashboard_widgets_json or [])),
+            "enabled_notification_count": enabled_notifications,
+            "has_provider_endpoint": bool(profile.provider_endpoint),
+            "has_adapter": bool(profile.adapter_command),
+            "updated_at": profile.updated_at,
+            "last_opened_at": profile.last_opened_at,
+        }
 
     def update_app_profile(self, db: Session, payload: AppProfileUpdate) -> AppProfile:
         return update_app_profile(db, payload)
