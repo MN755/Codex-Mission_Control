@@ -17,6 +17,8 @@ Mission Control resources are read-only context surfaces for Codex chat.
 - `mission-control://projects/{project_id}/agents`
 - `mission-control://projects/{project_id}/pending-decisions`
 - `mission-control://projects/{project_id}/handoff`
+- `mission-control://projects/{project_id}/handoff/evidence`
+- `mission-control://projects/{project_id}/handoff/evidence/preview`
 - `mission-control://projects/{project_id}/codebase-map`
 - `mission-control://integrations/catalog`
 - `mission-control://integrations/connections`
@@ -27,6 +29,8 @@ Mission Control resources are read-only context surfaces for Codex chat.
 - `mission-control://projects/{project_id}/integrations/{family}`
 - `mission-control://projects/{project_id}/runbook`
 - `mission-control://projects/{project_id}/runbook/summary`
+- `mission-control://projects/{project_id}/recovery-plans`
+- `mission-control://projects/{project_id}/recovery-plans/preview`
 - `mission-control://projects/{project_id}/playbook`
 - `mission-control://projects/{project_id}/playbook/recommendations`
 - `mission-control://projects/{project_id}/workspace-tooling`
@@ -64,10 +68,12 @@ Mission Control resources are read-only context surfaces for Codex chat.
 - status and events support compact progress reporting
 - pending decisions support approval relay
 - handoff supports final bridge summaries
+- handoff evidence and handoff evidence preview expose stored proof plus safe derived candidates without making chat scrape raw agent reports or create rows on read
 - codebase map supports imported repo understanding
 - workspace tooling tells the bridge which repo-native helper lanes actually exist for intake, validation, and security before it recommends commands like a clown
 - profile summary and subagent policy summary expose the operator defaults that shape provider choice, approvals, and whether subagent bursts are even allowed before the bridge starts making heroic assumptions
 - runbook and runbook summary expose the current operational guide without forcing chat to scrape widget markdown like an animal
+- recovery plans and recovery plan preview expose persisted rescue options plus current derived candidates before the bridge starts improvising “helpful” chaos
 - playbook and playbook recommendations expose the current execution template and nearby alternatives so chat can discuss project posture without re-deriving the same pattern match from scratch every time
 - execution policy summary tells the bridge which runner, sandbox, approval, tool-routing, and validation posture is actually in effect before it suggests work that contradicts local policy
 - coordination summary exposes contract, lock, gate, conflict, and decision posture in one compact lane so chat can spot coordination drift before the swarm faceplants
@@ -87,4 +93,4 @@ Mission Control resources are read-only context surfaces for Codex chat.
 
 ## Deliberate Non-Resources
 
-Some backend routes are still real code without MCP exposure, but profile summary, subagent policy summary, playbook, latest swarm simulation, and the TensorFlow, PyTorch, and spatial starter catalogs are no longer among them.
+Some backend routes are still real code without MCP exposure, but profile summary, subagent policy summary, handoff evidence preview, recovery plan preview, playbook, latest swarm simulation, and the TensorFlow, PyTorch, and spatial starter catalogs are no longer among them.

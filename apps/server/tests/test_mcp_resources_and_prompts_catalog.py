@@ -40,6 +40,8 @@ EXPECTED_RESOURCES = [
     "mission-control://projects/{project_id}/agents",
     "mission-control://projects/{project_id}/pending-decisions",
     "mission-control://projects/{project_id}/handoff",
+    "mission-control://projects/{project_id}/handoff/evidence",
+    "mission-control://projects/{project_id}/handoff/evidence/preview",
     "mission-control://projects/{project_id}/codebase-map",
     "mission-control://integrations/catalog",
     "mission-control://integrations/connections",
@@ -50,6 +52,8 @@ EXPECTED_RESOURCES = [
     "mission-control://projects/{project_id}/integrations/{family}",
     "mission-control://projects/{project_id}/runbook",
     "mission-control://projects/{project_id}/runbook/summary",
+    "mission-control://projects/{project_id}/recovery-plans",
+    "mission-control://projects/{project_id}/recovery-plans/preview",
     "mission-control://projects/{project_id}/playbook",
     "mission-control://projects/{project_id}/playbook/recommendations",
     "mission-control://projects/{project_id}/workspace-tooling",
@@ -199,11 +203,15 @@ def test_docs_explain_resources_prompts_and_headless_boundary() -> None:
     assert "localhost" in runtime_content.lower()
     assert "mission_control_attach_workspace" in tools_content
     assert "mission-control://projects/{project_id}/decision-ledger" in resources_content
+    assert "mission-control://projects/{project_id}/handoff/evidence" in resources_content
+    assert "mission-control://projects/{project_id}/handoff/evidence/preview" in resources_content
     assert "mission-control://projects/{project_id}/operator-snapshot" in resources_content
     assert "mission-control://projects/{project_id}/capability-report" in resources_content
     assert "mission-control://projects/{project_id}/capability-report/{section_key}" in resources_content
     assert "mission-control://projects/{project_id}/runbook" in resources_content
     assert "mission-control://projects/{project_id}/runbook/summary" in resources_content
+    assert "mission-control://projects/{project_id}/recovery-plans" in resources_content
+    assert "mission-control://projects/{project_id}/recovery-plans/preview" in resources_content
     assert "mission-control://profile/summary" in resources_content
     assert "mission-control://subagent-policy/summary" in resources_content
     assert "mission-control://projects/{project_id}/playbook" in resources_content

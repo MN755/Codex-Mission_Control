@@ -23,6 +23,8 @@ EXPECTED_RESOURCES = {
     "mission-control://projects/{project_id}/agents",
     "mission-control://projects/{project_id}/pending-decisions",
     "mission-control://projects/{project_id}/handoff",
+    "mission-control://projects/{project_id}/handoff/evidence",
+    "mission-control://projects/{project_id}/handoff/evidence/preview",
     "mission-control://projects/{project_id}/codebase-map",
     "mission-control://integrations/catalog",
     "mission-control://integrations/connections",
@@ -33,6 +35,8 @@ EXPECTED_RESOURCES = {
     "mission-control://projects/{project_id}/integrations/{family}",
     "mission-control://projects/{project_id}/runbook",
     "mission-control://projects/{project_id}/runbook/summary",
+    "mission-control://projects/{project_id}/recovery-plans",
+    "mission-control://projects/{project_id}/recovery-plans/preview",
     "mission-control://projects/{project_id}/playbook",
     "mission-control://projects/{project_id}/playbook/recommendations",
     "mission-control://projects/{project_id}/workspace-tooling",
@@ -978,6 +982,37 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
     )
     monkeypatch.setattr(
         client,
+        "get_handoff_evidence",
+        lambda project_id: [
+            {
+                "id": 41,
+                "project_id": project_id,
+                "evidence_type": "test_result",
+                "claim": "pytest suite passed",
+                "summary": "Named pytest slice completed cleanly.",
+                "source_path": "apps/server/tests/test_api_smoke.py",
+                "command": "python -m pytest apps/server/tests/test_api_smoke.py -q",
+                "status": "passed",
+                "created_at": "2026-06-03T13:00:00Z",
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        client,
+        "get_handoff_evidence_preview",
+        lambda project_id: {
+            "project_id": project_id,
+            "persisted": [],
+            "derived_candidates": [
+                {"evidence_type": "test_result", "claim": "pytest slice", "summary": "Derived from agent report.", "status": "pending"}
+            ],
+            "stored_count": 0,
+            "derived_candidate_count": 1,
+            "generated_at": "2026-06-03T13:05:00Z",
+        },
+    )
+    monkeypatch.setattr(
+        client,
         "get_runbook",
         lambda project_id: {
             "id": 12,
@@ -1002,6 +1037,49 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
             "generated_from_handoff_id": 3,
             "generated_at": "2026-06-03T12:00:00Z",
             "updated_at": "2026-06-03T12:30:00Z",
+        },
+    )
+    monkeypatch.setattr(
+        client,
+        "get_recovery_plans",
+        lambda project_id: [
+            {
+                "id": 55,
+                "project_id": project_id,
+                "trigger_type": "blocked_task",
+                "trigger_summary": "Validation gate is blocked.",
+                "status": "proposed",
+                "selected_action": "rerun_validation",
+                "suggested_actions_json": ["rerun_validation", "request_help"],
+                "created_at": "2026-06-03T13:10:00Z",
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        client,
+        "get_recovery_plans_preview",
+        lambda project_id: {
+            "project_id": project_id,
+            "current_action": "Investigate blocked validation lane.",
+            "blocked_task_count": 1,
+            "stuck_signal_count": 1,
+            "persisted_statuses": ["proposed"],
+            "persisted_status_counts": {"proposed": 1},
+            "persisted_status_group_count": 1,
+            "persisted": [],
+            "derived_trigger_types": ["blocked_task"],
+            "derived_trigger_type_counts": {"blocked_task": 1},
+            "derived_trigger_type_group_count": 1,
+            "suggested_action_count": 2,
+            "suggested_action_values": ["rerun_validation", "request_help"],
+            "suggested_action_counts": {"rerun_validation": 1, "request_help": 1},
+            "suggested_action_group_count": 2,
+            "derived_candidates": [
+                {"trigger_type": "blocked_task", "trigger_summary": "Validation gate is blocked.", "suggested_actions_json": ["rerun_validation", "request_help"]}
+            ],
+            "stored_count": 0,
+            "derived_candidate_count": 1,
+            "generated_at": "2026-06-03T13:15:00Z",
         },
     )
     monkeypatch.setattr(
@@ -1407,9 +1485,13 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
     verification = client.read_resource("mission-control://projects/7/verification-brief")
     capability_report = client.read_resource("mission-control://projects/7/capability-report")
     capability_section = client.read_resource("mission-control://projects/7/capability-report/semantic_code_impact_mapping")
+    handoff_evidence = client.read_resource("mission-control://projects/7/handoff/evidence")
+    handoff_evidence_preview = client.read_resource("mission-control://projects/7/handoff/evidence/preview")
     tooling = client.read_resource("mission-control://projects/7/workspace-tooling")
     runbook = client.read_resource("mission-control://projects/7/runbook")
     runbook_summary = client.read_resource("mission-control://projects/7/runbook/summary")
+    recovery_plans = client.read_resource("mission-control://projects/7/recovery-plans")
+    recovery_plans_preview = client.read_resource("mission-control://projects/7/recovery-plans/preview")
     playbook = client.read_resource("mission-control://projects/7/playbook")
     playbook_recommendations = client.read_resource("mission-control://projects/7/playbook/recommendations")
     agent_contracts = client.read_resource("mission-control://projects/7/agent-contracts")
@@ -1442,11 +1524,17 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
     assert capability_report["sections"][0]["key"] == "issue_to_execution_profiles"
     assert capability_section["section_key"] == "semantic_code_impact_mapping"
     assert capability_section["metadata_json"]["semantic_backend"] == "python-ast-graph"
+    assert handoff_evidence["evidence_count"] == 1
+    assert handoff_evidence["evidence_items"][0]["evidence_type"] == "test_result"
+    assert handoff_evidence_preview["derived_candidate_count"] == 1
     assert tooling["validation_commands"] == ["uv run pytest", "ruff check ."]
     assert runbook["exists"] is True
     assert runbook["generated_from_handoff_id"] == 3
     assert runbook_summary["section_count"] == 2
     assert runbook_summary["run_commands"] == ["python -m pytest"]
+    assert recovery_plans["recovery_plan_count"] == 1
+    assert recovery_plans["plans"][0]["selected_action"] == "rerun_validation"
+    assert recovery_plans_preview["suggested_action_count"] == 2
     assert playbook["playbook_key"] == "existing_repo_fix"
     assert playbook["playbook"]["name"] == "Existing Repo Fix"
     assert playbook_recommendations["project_id"] == 7

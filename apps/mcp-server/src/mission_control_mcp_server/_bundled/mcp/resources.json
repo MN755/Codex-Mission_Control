@@ -185,6 +185,60 @@
       }
     },
     {
+      "uri_template": "mission-control://projects/{project_id}/handoff/evidence",
+      "title": "Handoff evidence",
+      "summary": "Stored handoff evidence summarized by type and status so chat can inspect proof without scraping raw reports.",
+      "support_status": "implemented",
+      "source_hint": {
+        "rest_endpoints": [
+          "/api/projects/{project_id}/handoff/evidence"
+        ]
+      },
+      "default_fields": [
+        "project_id",
+        "evidence_count",
+        "evidence_types",
+        "evidence_type_counts",
+        "status_counts",
+        "evidence_items"
+      ],
+      "redaction": {
+        "omit_fields": [
+          "raw_log",
+          "secret_values",
+          "private_paths_outside_workspace"
+        ],
+        "notes": "Expose compact evidence metadata only, not full artifacts or secret-bearing report payloads."
+      }
+    },
+    {
+      "uri_template": "mission-control://projects/{project_id}/handoff/evidence/preview",
+      "title": "Handoff evidence preview",
+      "summary": "Read-only preview of persisted handoff evidence and derived candidate evidence without creating rows on read.",
+      "support_status": "implemented",
+      "source_hint": {
+        "rest_endpoints": [
+          "/api/projects/{project_id}/handoff/evidence/preview"
+        ]
+      },
+      "default_fields": [
+        "project_id",
+        "stored_count",
+        "derived_candidate_count",
+        "persisted",
+        "derived_candidates",
+        "generated_at"
+      ],
+      "redaction": {
+        "omit_fields": [
+          "raw_log",
+          "secret_values",
+          "private_paths_outside_workspace"
+        ],
+        "notes": "Expose preview-safe evidence candidates only, not raw run transcripts."
+      }
+    },
+    {
       "uri_template": "mission-control://projects/{project_id}/codebase-map",
       "title": "Codebase map",
       "summary": "Compact structure and repo-understanding summary for imported or attached codebases.",
@@ -479,6 +533,61 @@
           "private_paths_outside_workspace"
         ],
         "notes": "Expose a compact runbook readiness view only."
+      }
+    },
+    {
+      "uri_template": "mission-control://projects/{project_id}/recovery-plans",
+      "title": "Recovery plans",
+      "summary": "Stored project recovery plans summarized by trigger, status, and selected action.",
+      "support_status": "implemented",
+      "source_hint": {
+        "rest_endpoints": [
+          "/api/projects/{project_id}/recovery-plans"
+        ]
+      },
+      "default_fields": [
+        "project_id",
+        "recovery_plan_count",
+        "plans"
+      ],
+      "redaction": {
+        "omit_fields": [
+          "raw_log",
+          "secret_values",
+          "private_paths_outside_workspace"
+        ],
+        "notes": "Expose compact recovery-plan posture only, not raw diagnostics or secret-bearing payloads."
+      }
+    },
+    {
+      "uri_template": "mission-control://projects/{project_id}/recovery-plans/preview",
+      "title": "Recovery plan preview",
+      "summary": "Read-only recovery preview with persisted plans, derived candidates, and suggested rescue actions.",
+      "support_status": "implemented",
+      "source_hint": {
+        "rest_endpoints": [
+          "/api/projects/{project_id}/recovery-plans/preview"
+        ]
+      },
+      "default_fields": [
+        "project_id",
+        "current_action",
+        "blocked_task_count",
+        "stuck_signal_count",
+        "persisted_statuses",
+        "derived_trigger_types",
+        "suggested_action_values",
+        "stored_count",
+        "derived_candidate_count",
+        "generated_at"
+      ],
+      "redaction": {
+        "omit_fields": [
+          "raw_log",
+          "secret_values",
+          "private_paths_outside_workspace"
+        ],
+        "notes": "Expose preview-safe recovery options only, not raw run transcripts or secret-bearing diagnostics."
       }
     },
     {

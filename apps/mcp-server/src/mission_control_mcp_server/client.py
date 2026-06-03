@@ -478,6 +478,12 @@ class MissionControlDaemonClient:
     def get_project_handoff(self, project_id: int) -> dict[str, Any]:
         return self._request("GET", f"/api/projects/{project_id}/handoff", requires_token=True)
 
+    def get_handoff_evidence(self, project_id: int) -> list[dict[str, Any]]:
+        return self._request("GET", f"/api/projects/{project_id}/handoff/evidence")
+
+    def get_handoff_evidence_preview(self, project_id: int) -> dict[str, Any]:
+        return self._request("GET", f"/api/projects/{project_id}/handoff/evidence/preview")
+
     def get_decision_ledger(self, project_id: int) -> list[dict[str, Any]]:
         return self._request("GET", f"/api/projects/{project_id}/decision-ledger")
 
@@ -513,6 +519,12 @@ class MissionControlDaemonClient:
 
     def get_runbook_summary(self, project_id: int) -> dict[str, Any]:
         return self._request("GET", f"/api/projects/{project_id}/runbook/summary")
+
+    def get_recovery_plans(self, project_id: int) -> list[dict[str, Any]]:
+        return self._request("GET", f"/api/projects/{project_id}/recovery-plans")
+
+    def get_recovery_plans_preview(self, project_id: int) -> dict[str, Any]:
+        return self._request("GET", f"/api/projects/{project_id}/recovery-plans/preview")
 
     def get_playbook(self, project_id: int) -> dict[str, Any]:
         return self._request("GET", f"/api/projects/{project_id}/playbook")
@@ -1394,6 +1406,35 @@ class MissionControlDaemonClient:
             "dry_run": handoff.get("dry_run", False),
         }
 
+    def _summarize_handoff_evidence(self, project_id: int, evidence: list[dict[str, Any]]) -> dict[str, Any]:
+        type_counts: dict[str, int] = {}
+        status_counts: dict[str, int] = {}
+        for item in evidence:
+            evidence_type = str(item.get("evidence_type") or "unknown")
+            status = str(item.get("status") or "unknown")
+            type_counts[evidence_type] = type_counts.get(evidence_type, 0) + 1
+            status_counts[status] = status_counts.get(status, 0) + 1
+        return {
+            "project_id": project_id,
+            "evidence_count": len(evidence),
+            "evidence_types": sorted(type_counts),
+            "evidence_type_counts": type_counts,
+            "status_counts": status_counts,
+            "evidence_items": [
+                {
+                    "id": item.get("id"),
+                    "evidence_type": item.get("evidence_type"),
+                    "claim": self._safe_short(item.get("claim")),
+                    "summary": self._safe_short(item.get("summary")),
+                    "status": item.get("status"),
+                    "source_path": item.get("source_path"),
+                    "command": item.get("command"),
+                    "created_at": item.get("created_at"),
+                }
+                for item in evidence[:12]
+            ],
+        }
+
     def _summarize_codebase_map(self, codebase_map: dict[str, Any], understanding: dict[str, Any] | None) -> dict[str, Any]:
         return {
             "project_id": codebase_map.get("project_id"),
@@ -1596,6 +1637,10 @@ class MissionControlDaemonClient:
                 decisions = self.get_pending_decisions(project_id=project_id)
                 return self._summarize_pending_decisions(project_id, decisions)
             if kind == "handoff":
+                if len(parts) == 4 and parts[3] == "evidence":
+                    return self._summarize_handoff_evidence(project_id, self.get_handoff_evidence(project_id))
+                if len(parts) == 5 and parts[3] == "evidence" and parts[4] == "preview":
+                    return self.get_handoff_evidence_preview(project_id)
                 return self._summarize_handoff(project_id, self.get_project_handoff(project_id))
             if kind == "codebase-map":
                 codebase_map = self.get_codebase_map(project_id)
@@ -1640,6 +1685,10 @@ class MissionControlDaemonClient:
                 if len(parts) == 4 and parts[3] == "summary":
                     return self.get_runbook_summary(project_id)
                 return self._summarize_runbook(project_id, self.get_runbook(project_id))
+            if kind == "recovery-plans":
+                if len(parts) == 4 and parts[3] == "preview":
+                    return self.get_recovery_plans_preview(project_id)
+                return self._summarize_recovery_plans(project_id, self.get_recovery_plans(project_id))
             if kind == "playbook":
                 if len(parts) == 4 and parts[3] == "recommendations":
                     return {"project_id": project_id, "recommendations": self.get_playbook_recommendations(project_id)}
