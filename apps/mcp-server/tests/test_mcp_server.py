@@ -1059,6 +1059,49 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
     )
     monkeypatch.setattr(
         client,
+        "get_agent_contracts",
+        lambda project_id: [
+            {
+                "id": 21,
+                "project_id": project_id,
+                "agent_id": "reviewer-1",
+                "agent_name": "Reviewer",
+                "archetype": "review",
+                "mission": "Review the backend hardening patch.",
+                "allowed_paths_json": ["apps/server/src", "apps/server/tests"],
+                "forbidden_paths_json": ["apps/dashboard"],
+                "allowed_tools_json": ["rg", "pytest"],
+                "expected_output": "Risk-focused review notes.",
+                "validation_required_json": ["python -m pytest apps/server/tests/test_api_smoke.py -q"],
+                "stop_conditions_json": ["Stop if branch protection blocks push."],
+                "escalation_conditions_json": ["Escalate if write scope must widen."],
+                "completion_report_schema_json": {"sections": ["findings", "validation"]},
+                "status": "active",
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        client,
+        "get_decision_ledger",
+        lambda project_id: [
+            {
+                "id": 9,
+                "project_id": project_id,
+                "decision_type": "approval",
+                "title": "Keep direct pushes temporary",
+                "decision": "Continue direct pushes until branch protection is fixed.",
+                "reason": "Required build check is still bypassed on main.",
+                "made_by": "operator",
+                "impact_area_json": ["release", "governance"],
+                "related_task_id": "release-hardening",
+                "related_agent_id": "manager",
+                "reversible": True,
+                "superseded_by": None,
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        client,
         "get_execution_policy_summary",
         lambda project_id: {
             "project_id": project_id,
@@ -1369,6 +1412,8 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
     runbook_summary = client.read_resource("mission-control://projects/7/runbook/summary")
     playbook = client.read_resource("mission-control://projects/7/playbook")
     playbook_recommendations = client.read_resource("mission-control://projects/7/playbook/recommendations")
+    agent_contracts = client.read_resource("mission-control://projects/7/agent-contracts")
+    decision_ledger = client.read_resource("mission-control://projects/7/decision-ledger")
     execution_policy = client.read_resource("mission-control://projects/7/execution-policy/summary")
     coordination = client.read_resource("mission-control://projects/7/coordination/summary")
     tensorflow_catalog = client.read_resource("mission-control://projects/7/tensorflow/features")
@@ -1406,6 +1451,12 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
     assert playbook["playbook"]["name"] == "Existing Repo Fix"
     assert playbook_recommendations["project_id"] == 7
     assert playbook_recommendations["recommendations"][0]["score"] == 95
+    assert agent_contracts["contract_count"] == 1
+    assert agent_contracts["contracts"][0]["agent_name"] == "Reviewer"
+    assert agent_contracts["contracts"][0]["allowed_paths"] == ["apps/server/src", "apps/server/tests"]
+    assert decision_ledger["decision_count"] == 1
+    assert decision_ledger["recent_decisions"][0]["title"] == "Keep direct pushes temporary"
+    assert decision_ledger["recent_decisions"][0]["made_by"] == "operator"
     assert execution_policy["model_policy_name"] == "default"
     assert execution_policy["approval_required_tools"] == ["git push"]
     assert coordination["decision_count"] == 4

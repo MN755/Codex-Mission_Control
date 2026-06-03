@@ -19,6 +19,16 @@ TOOLS_DOC = ROOT / "docs" / "MCP_TOOLS.md"
 RESOURCES_DOC = ROOT / "docs" / "MCP_RESOURCES.md"
 PROMPTS_DOC = ROOT / "docs" / "MCP_PROMPTS.md"
 PENDING_DOC = ROOT / "docs" / "PENDING_DECISIONS.md"
+AGENT_CONTRACT_SKILLS = [
+    ROOT / "plugins" / "mission-control" / "skills" / "mission-control-agent-contracts" / "SKILL.md",
+    ROOT / ".codex" / "plugins" / "mission-control" / "skills" / "mission-control-agent-contracts" / "SKILL.md",
+    ROOT / "apps" / "mcp-server" / "src" / "mission_control_mcp_server" / "_bundled" / "skills" / "mission-control-agent-contracts" / "SKILL.md",
+]
+DECISION_LEDGER_SKILLS = [
+    ROOT / "plugins" / "mission-control" / "skills" / "mission-control-decision-ledger" / "SKILL.md",
+    ROOT / ".codex" / "plugins" / "mission-control" / "skills" / "mission-control-decision-ledger" / "SKILL.md",
+    ROOT / "apps" / "mcp-server" / "src" / "mission_control_mcp_server" / "_bundled" / "skills" / "mission-control-decision-ledger" / "SKILL.md",
+]
 
 
 EXPECTED_RESOURCES = [
@@ -220,3 +230,15 @@ def test_docs_explain_resources_prompts_and_headless_boundary() -> None:
     assert "review_spatial_feature_catalog" in prompts_content
     assert "review_spatial_feature_bundle" in prompts_content
     assert "Invalid answers are rejected" in pending_content
+
+
+def test_skill_docs_do_not_claim_live_resources_are_missing() -> None:
+    for path in AGENT_CONTRACT_SKILLS:
+        content = path.read_text(encoding="utf-8")
+        assert "mission-control://projects/{project_id}/agent-contracts" in content
+        assert "not yet a first-class resource" not in content
+
+    for path in DECISION_LEDGER_SKILLS:
+        content = path.read_text(encoding="utf-8")
+        assert "mission-control://projects/{project_id}/decision-ledger" in content
+        assert "not yet exposed" not in content

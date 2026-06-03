@@ -1489,14 +1489,6 @@ class MissionControlDaemonClient:
             ],
         }
 
-    def _stub_agent_contracts(self, project_id: int) -> dict[str, Any]:
-        return {
-            "project_id": project_id,
-            "support_status": "stubbed",
-            "summary": "The backend tracks agent contracts internally, but the MCP bridge does not yet expose a dedicated read endpoint.",
-            "todo": "Expose a read-only agent-contract summary endpoint for Codex chat."
-        }
-
     def _summarize_snapshots(self, project_id: int, snapshots: list[dict[str, Any]]) -> dict[str, Any]:
         return {
             "project_id": project_id,

@@ -50,7 +50,7 @@ If the ledger shows unresolved decisions, route the user to the approval skill i
 
 ## Failure and fallback
 
-If a dedicated decision-ledger resource is not yet exposed, summarize from pending decisions, plan state, and handoff notes and mark the ledger resource as expected or future.
+If the resource returns no decision records, say that explicitly and avoid reconstructing history from pending decisions, plan state, or handoff notes alone.
 
 ## Example invocation
 

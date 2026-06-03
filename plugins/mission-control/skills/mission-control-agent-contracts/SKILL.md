@@ -50,7 +50,7 @@ Changes to contracts can affect safety and write scope, so treat them as explici
 
 ## Failure and fallback
 
-If agent contracts are not yet a first-class resource, infer boundaries from swarm plans, path locks, and agent roles, and label that as inferred state.
+If the resource returns no active contracts, say that explicitly and avoid inferring permissions from swarm plans, path locks, or agent roles alone.
 
 ## Example invocation
 
