@@ -11312,9 +11312,37 @@ class MissionControlService:
                 }
             )
         instincts = instincts[:5]
+        confidence_counts: dict[str, int] = {}
+        tag_counts: dict[str, int] = {}
+        evidence_item_count = 0
+        evidenceful_instinct_count = 0
+        for instinct in instincts:
+            confidence = str(instinct.get("confidence") or "").strip()
+            if confidence:
+                confidence_counts[confidence] = confidence_counts.get(confidence, 0) + 1
+            evidence = list(instinct.get("evidence") or [])
+            evidence_item_count += len(evidence)
+            if evidence:
+                evidenceful_instinct_count += 1
+            seen_tags: set[str] = set()
+            for tag in list(instinct.get("tags") or []):
+                normalized_tag = str(tag or "").strip()
+                if not normalized_tag or normalized_tag in seen_tags:
+                    continue
+                seen_tags.add(normalized_tag)
+                tag_counts[normalized_tag] = tag_counts.get(normalized_tag, 0) + 1
         return {
             "project_id": project.id,
             "instinct_count": len(instincts),
+            "instinct_keys": [str(item.get("key") or "") for item in instincts if str(item.get("key") or "").strip()],
+            "confidence_levels": sorted(confidence_counts),
+            "confidence_counts": confidence_counts,
+            "confidence_group_count": len(confidence_counts),
+            "tags": sorted(tag_counts),
+            "tag_counts": tag_counts,
+            "tag_group_count": len(tag_counts),
+            "evidence_item_count": evidence_item_count,
+            "evidenceful_instinct_count": evidenceful_instinct_count,
             "instincts": instincts,
             "generated_at": utc_now(),
         }
@@ -11507,11 +11535,17 @@ class MissionControlService:
             "project_id": project.id,
             "readiness": readiness,
             "required_checks": required_checks,
+            "required_check_count": len(required_checks),
             "recommended_checks": recommended_checks[:8],
+            "recommended_check_count": len(recommended_checks[:8]),
             "evidence_gaps": evidence_gaps[:8],
+            "evidence_gap_count": len(evidence_gaps[:8]),
             "release_blockers": release_blockers[:8],
+            "release_blocker_count": len(release_blockers[:8]),
             "handoff_warnings": handoff_warnings[:8],
+            "handoff_warning_count": len(handoff_warnings[:8]),
             "loop_strategy": loop_strategy,
+            "loop_strategy_count": len(loop_strategy),
             "brief_markdown": brief_markdown,
             "generated_at": utc_now(),
         }

@@ -1557,6 +1557,15 @@ class OperationalInstinctRead(BaseModel):
 class OperationalInstinctPreviewRead(BaseModel):
     project_id: int
     instinct_count: int = 0
+    instinct_keys: list[str] = Field(default_factory=list)
+    confidence_levels: list[str] = Field(default_factory=list)
+    confidence_counts: dict[str, int] = Field(default_factory=dict)
+    confidence_group_count: int = 0
+    tags: list[str] = Field(default_factory=list)
+    tag_counts: dict[str, int] = Field(default_factory=dict)
+    tag_group_count: int = 0
+    evidence_item_count: int = 0
+    evidenceful_instinct_count: int = 0
     instincts: list[OperationalInstinctRead] = Field(default_factory=list)
     generated_at: datetime
 
@@ -1565,11 +1574,17 @@ class VerificationBriefRead(BaseModel):
     project_id: int
     readiness: str
     required_checks: list[str] = Field(default_factory=list)
+    required_check_count: int = 0
     recommended_checks: list[str] = Field(default_factory=list)
+    recommended_check_count: int = 0
     evidence_gaps: list[str] = Field(default_factory=list)
+    evidence_gap_count: int = 0
     release_blockers: list[str] = Field(default_factory=list)
+    release_blocker_count: int = 0
     handoff_warnings: list[str] = Field(default_factory=list)
+    handoff_warning_count: int = 0
     loop_strategy: list[str] = Field(default_factory=list)
+    loop_strategy_count: int = 0
     brief_markdown: str
     generated_at: datetime
 

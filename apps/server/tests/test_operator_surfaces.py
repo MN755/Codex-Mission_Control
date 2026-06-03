@@ -304,6 +304,27 @@ def test_instincts_preview_endpoint_derives_reusable_rules(client, bridge_header
     payload = response.json()
     assert payload["project_id"] == project_id
     assert payload["instinct_count"] >= 3
+    assert payload["instinct_count"] == len(payload["instincts"])
+    assert payload["instinct_keys"] == [item["key"] for item in payload["instincts"]]
+    expected_confidence_counts = {}
+    expected_tag_counts = {}
+    expected_evidence_item_count = 0
+    expected_evidenceful_instinct_count = 0
+    for item in payload["instincts"]:
+        expected_confidence_counts[item["confidence"]] = expected_confidence_counts.get(item["confidence"], 0) + 1
+        if item["evidence"]:
+            expected_evidenceful_instinct_count += 1
+        expected_evidence_item_count += len(item["evidence"])
+        for tag in set(item["tags"]):
+            expected_tag_counts[tag] = expected_tag_counts.get(tag, 0) + 1
+    assert payload["confidence_levels"] == sorted(expected_confidence_counts)
+    assert payload["confidence_counts"] == expected_confidence_counts
+    assert payload["confidence_group_count"] == len(expected_confidence_counts)
+    assert payload["tags"] == sorted(expected_tag_counts)
+    assert payload["tag_counts"] == expected_tag_counts
+    assert payload["tag_group_count"] == len(expected_tag_counts)
+    assert payload["evidence_item_count"] == expected_evidence_item_count
+    assert payload["evidenceful_instinct_count"] == expected_evidenceful_instinct_count
     keys = {item["key"] for item in payload["instincts"]}
     assert "path-lock-before-parallel-edit" in keys
     assert "ship-with-evidence" in keys
@@ -318,6 +339,12 @@ def test_verification_brief_endpoint_exposes_checks_and_blockers(client, bridge_
     payload = response.json()
     assert payload["project_id"] == project_id
     assert payload["readiness"] == "blocked"
+    assert payload["required_check_count"] == len(payload["required_checks"])
+    assert payload["recommended_check_count"] == len(payload["recommended_checks"])
+    assert payload["evidence_gap_count"] == len(payload["evidence_gaps"])
+    assert payload["release_blocker_count"] == len(payload["release_blockers"])
+    assert payload["handoff_warning_count"] == len(payload["handoff_warnings"])
+    assert payload["loop_strategy_count"] == len(payload["loop_strategy"])
     assert any("python -m pytest apps/server/tests/test_operator_surfaces.py -q" in item for item in payload["required_checks"])
     assert payload["evidence_gaps"]
     assert payload["release_blockers"]
@@ -349,6 +376,12 @@ def test_verification_brief_endpoint_surfaces_notebook_config_and_artifact_follo
     assert response.status_code == 200, response.text
     payload = response.json()
 
+    assert payload["required_check_count"] == len(payload["required_checks"])
+    assert payload["recommended_check_count"] == len(payload["recommended_checks"])
+    assert payload["evidence_gap_count"] == len(payload["evidence_gaps"])
+    assert payload["release_blocker_count"] == len(payload["release_blockers"])
+    assert payload["handoff_warning_count"] == len(payload["handoff_warnings"])
+    assert payload["loop_strategy_count"] == len(payload["loop_strategy"])
     assert "python train.py" in payload["required_checks"]
     assert any(item == "Focus path: train.py" for item in payload["recommended_checks"])
     assert "saved_model_cli show --dir artifacts/exported_model --all" in payload["required_checks"]
