@@ -110,8 +110,8 @@ def test_sync_local_plugin_marketplace_creates_discoverable_plugin_entry(tmp_pat
         ),
         encoding="utf-8",
     )
-    (plugin_root / "assets" / "icon.svg").parent.mkdir(parents=True, exist_ok=True)
-    (plugin_root / "assets" / "icon.svg").write_text("<svg />", encoding="utf-8")
+    (plugin_root / "assets" / "mission-control-logo.png").parent.mkdir(parents=True, exist_ok=True)
+    (plugin_root / "assets" / "mission-control-logo.png").write_bytes(b"\x89PNG\r\n\x1a\n")
 
     payload = module.sync_local_plugin_marketplace(repo_root, agents_home, dry_run=False)
 
@@ -709,7 +709,7 @@ def test_packaged_plugin_manifest_is_ready_for_codex_sync() -> None:
     assert "manager" in manifest["interface"]["longDescription"].lower()
     assert "diagnose the failing tests" in " ".join(manifest["interface"]["defaultPrompt"]).lower()
     assert manifest["version"]
-    assert (plugin_root / "assets" / "icon.svg").exists()
+    assert (plugin_root / "assets" / "mission-control-logo.png").exists()
     assert manifest["skills"] == "./skills/"
 
     catalog_manifest = json.loads((ROOT / "plugins" / "mission-control" / "plugin.json").read_text(encoding="utf-8"))

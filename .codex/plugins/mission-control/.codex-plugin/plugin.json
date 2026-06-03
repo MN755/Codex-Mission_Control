@@ -36,8 +36,8 @@
       "Attach this workspace, show me the blockers, and tell me what you need from me.",
       "Review the latest Mission Control handoff and evidence."
     ],
-    "composerIcon": "./assets/icon.svg",
-    "logo": "./assets/icon.svg",
+    "composerIcon": "./assets/mission-control-logo.png",
+    "logo": "./assets/mission-control-logo.png",
     "screenshots": [],
     "brandColor": "#0F766E"
   }
