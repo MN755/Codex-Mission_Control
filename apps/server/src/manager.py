@@ -11552,9 +11552,76 @@ class MissionControlService:
 
     def build_workspace_tooling_status(self, project: Project) -> dict[str, Any]:
         payload = detect_workspace_tooling(project.workspace_path or project.source_path, project_name=project.name)
+        tools = list(payload.get("tools") or [])
+        packs = list(payload.get("packs") or [])
+        tool_status_counts: dict[str, int] = {}
+        tool_category_counts: dict[str, int] = {}
+        for tool in tools:
+            status = str(tool.get("status") or "unknown")
+            tool_status_counts[status] = tool_status_counts.get(status, 0) + 1
+            category = str(tool.get("category") or "unknown")
+            tool_category_counts[category] = tool_category_counts.get(category, 0) + 1
+        pack_status_counts: dict[str, int] = {}
+        for pack in packs:
+            status = str(pack.get("status") or "unknown")
+            pack_status_counts[status] = pack_status_counts.get(status, 0) + 1
+        tool_ids = [str(tool.get("id") or "") for tool in tools if str(tool.get("id") or "").strip()]
+        installed_tool_ids = [str(tool.get("id") or "") for tool in tools if tool.get("installed") and str(tool.get("id") or "").strip()]
+        configured_tool_ids = [str(tool.get("id") or "") for tool in tools if tool.get("configured") and str(tool.get("id") or "").strip()]
+        missing_tool_ids = [str(tool.get("id") or "") for tool in tools if not tool.get("installed") and str(tool.get("id") or "").strip()]
+        pack_ids = [str(pack.get("id") or "") for pack in packs if str(pack.get("id") or "").strip()]
+        commands = self._dedupe_strings(
+            [
+                *list(payload.get("intake_commands") or []),
+                *list(payload.get("notebook_commands") or []),
+                *list(payload.get("validation_commands") or []),
+                *list(payload.get("observability_commands") or []),
+                *list(payload.get("security_commands") or []),
+                *list(payload.get("deployment_commands") or []),
+                *list(payload.get("artifact_inspection_commands") or []),
+                *list(payload.get("checkpoint_commands") or []),
+                *list(payload.get("distributed_launcher_commands") or []),
+                *list(payload.get("config_review_commands") or []),
+                *[
+                    str(command)
+                    for tool in tools
+                    for command in list(tool.get("recommended_commands") or [])
+                ],
+            ]
+        )
         return {
             "project_id": project.id,
             "project_name": project.name,
+            "tool_count": len(tools),
+            "tool_ids": tool_ids,
+            "installed_tool_count": len(installed_tool_ids),
+            "installed_tool_ids": installed_tool_ids,
+            "configured_tool_count": len(configured_tool_ids),
+            "configured_tool_ids": configured_tool_ids,
+            "missing_tool_count": len(missing_tool_ids),
+            "missing_tool_ids": missing_tool_ids,
+            "tool_statuses": sorted(tool_status_counts),
+            "tool_status_counts": tool_status_counts,
+            "tool_status_group_count": len(tool_status_counts),
+            "tool_categories": sorted(tool_category_counts),
+            "tool_category_counts": tool_category_counts,
+            "tool_category_group_count": len(tool_category_counts),
+            "pack_count": len(packs),
+            "pack_ids": pack_ids,
+            "pack_statuses": sorted(pack_status_counts),
+            "pack_status_counts": pack_status_counts,
+            "pack_status_group_count": len(pack_status_counts),
+            "recommended_next_step_count": len(list(payload.get("recommended_next_steps") or [])),
+            "repo_mode_summary_count": len(list(payload.get("repo_mode_summaries") or [])),
+            "important_path_count": len(list(payload.get("important_paths") or [])),
+            "execution_entrypoint_count": len(list(payload.get("execution_entrypoints") or [])),
+            "runtime_blocker_count": len(list(payload.get("runtime_blockers") or [])),
+            "validation_evidence_target_count": len(list(payload.get("validation_evidence_targets") or [])),
+            "product_lane_status_count": len(list(payload.get("product_lane_statuses") or [])),
+            "execution_lane_summary_count": len(list(payload.get("execution_lane_summaries") or [])),
+            "artifact_kind_summary_count": len(list(payload.get("artifact_kind_summaries") or [])),
+            "command_count": len(commands),
+            "commands": commands,
             **payload,
         }
 

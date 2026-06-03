@@ -1655,17 +1655,47 @@ class WorkspaceToolingStatusRead(BaseModel):
     available: bool = False
     summary: str
     repo_profile: dict[str, Any] = Field(default_factory=dict)
+    tool_count: int = 0
+    tool_ids: list[str] = Field(default_factory=list)
+    installed_tool_count: int = 0
+    installed_tool_ids: list[str] = Field(default_factory=list)
+    configured_tool_count: int = 0
+    configured_tool_ids: list[str] = Field(default_factory=list)
+    missing_tool_count: int = 0
+    missing_tool_ids: list[str] = Field(default_factory=list)
+    tool_statuses: list[str] = Field(default_factory=list)
+    tool_status_counts: dict[str, int] = Field(default_factory=dict)
+    tool_status_group_count: int = 0
+    tool_categories: list[str] = Field(default_factory=list)
+    tool_category_counts: dict[str, int] = Field(default_factory=dict)
+    tool_category_group_count: int = 0
     tools: list[WorkspaceToolingItemRead] = Field(default_factory=list)
+    pack_count: int = 0
+    pack_ids: list[str] = Field(default_factory=list)
+    pack_statuses: list[str] = Field(default_factory=list)
+    pack_status_counts: dict[str, int] = Field(default_factory=dict)
+    pack_status_group_count: int = 0
     packs: list[WorkspaceToolingPackRead] = Field(default_factory=list)
+    recommended_next_step_count: int = 0
     recommended_next_steps: list[str] = Field(default_factory=list)
+    repo_mode_summary_count: int = 0
     repo_mode_summaries: list[str] = Field(default_factory=list)
+    important_path_count: int = 0
     important_paths: list[str] = Field(default_factory=list)
+    execution_entrypoint_count: int = 0
     execution_entrypoints: list[str] = Field(default_factory=list)
+    runtime_blocker_count: int = 0
     runtime_blockers: list[str] = Field(default_factory=list)
+    validation_evidence_target_count: int = 0
     validation_evidence_targets: list[str] = Field(default_factory=list)
+    product_lane_status_count: int = 0
     product_lane_statuses: list[str] = Field(default_factory=list)
+    execution_lane_summary_count: int = 0
     execution_lane_summaries: list[str] = Field(default_factory=list)
+    artifact_kind_summary_count: int = 0
     artifact_kind_summaries: list[str] = Field(default_factory=list)
+    command_count: int = 0
+    commands: list[str] = Field(default_factory=list)
     intake_commands: list[str] = Field(default_factory=list)
     notebook_paths: list[str] = Field(default_factory=list)
     notebook_commands: list[str] = Field(default_factory=list)

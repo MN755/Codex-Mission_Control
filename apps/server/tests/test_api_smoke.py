@@ -495,6 +495,105 @@ def test_workspace_tooling_and_codebase_search_routes_return_project_scoped_payl
     ).json()
     project_id = project["id"]
 
+    monkeypatch.setattr(
+        "manager.detect_workspace_tooling",
+        lambda _workspace, project_name=None: {
+            "workspace_path": workspace,
+            "available": True,
+            "summary": "Repo-native tooling is detectable.",
+            "repo_profile": {"python_repo": True, "node_repo": True},
+            "tools": [
+                {
+                    "id": "ruff",
+                    "label": "Ruff",
+                    "category": "validation",
+                    "installed": True,
+                    "binary_path": "C:/tools/ruff.exe",
+                    "configured": True,
+                    "config_files": ["pyproject.toml"],
+                    "config_sections": ["[tool.ruff]"],
+                    "status": "ready",
+                    "recommended_commands": ["ruff check ."],
+                    "notes": [],
+                },
+                {
+                    "id": "playwright",
+                    "label": "Playwright",
+                    "category": "validation",
+                    "installed": False,
+                    "binary_path": None,
+                    "configured": True,
+                    "config_files": ["playwright.config.ts"],
+                    "config_sections": [],
+                    "status": "needs_setup",
+                    "recommended_commands": ["playwright test"],
+                    "notes": [],
+                },
+                {
+                    "id": "gitleaks",
+                    "label": "Gitleaks",
+                    "category": "security",
+                    "installed": True,
+                    "binary_path": "C:/tools/gitleaks.exe",
+                    "configured": False,
+                    "config_files": [],
+                    "config_sections": [],
+                    "status": "available",
+                    "recommended_commands": ["gitleaks dir . --redact"],
+                    "notes": [],
+                },
+            ],
+            "packs": [
+                {
+                    "id": "validation_evidence_pack",
+                    "title": "Validation evidence pack",
+                    "status": "needs_setup",
+                    "summary": "Validation helpers still need setup.",
+                    "tool_ids": ["ruff", "playwright"],
+                    "installed_tool_ids": ["ruff"],
+                    "missing_tool_ids": ["playwright"],
+                },
+                {
+                    "id": "security_pack",
+                    "title": "Security pack",
+                    "status": "ready",
+                    "summary": "Security lane is available.",
+                    "tool_ids": ["gitleaks"],
+                    "installed_tool_ids": ["gitleaks"],
+                    "missing_tool_ids": [],
+                },
+            ],
+            "recommended_next_steps": ["Install Playwright."],
+            "repo_mode_summaries": ["Node and Python lanes detected."],
+            "important_paths": ["app.py"],
+            "execution_entrypoints": ["python app.py"],
+            "runtime_blockers": ["Playwright browser binaries are missing."],
+            "validation_evidence_targets": ["Capture a named validation run."],
+            "product_lane_statuses": ["python:ready", "browser:needs_setup"],
+            "execution_lane_summaries": ["Validation lane exists."],
+            "artifact_kind_summaries": ["log:1"],
+            "intake_commands": ["rg --files"],
+            "notebook_paths": [],
+            "notebook_commands": [],
+            "validation_commands": ["ruff check .", "playwright test"],
+            "observability_commands": [],
+            "security_commands": ["gitleaks dir . --redact"],
+            "deployment_commands": ["python app.py"],
+            "artifact_paths": ["artifacts/build.log"],
+            "artifact_inspection_commands": ["type artifacts/build.log"],
+            "checkpoint_commands": [],
+            "distributed_launcher_commands": [],
+            "config_review_paths": [],
+            "config_review_commands": [],
+            "tensorflow_repo": {"enabled": False},
+            "tensorflow_validation_plan": {"status": "not_applicable"},
+            "pytorch_repo": {"enabled": False},
+            "pytorch_runtime_status": {"status": "not_applicable"},
+            "pytorch_validation_plan": {"status": "not_applicable"},
+            "spatial3d_repo": {"enabled": False},
+            "spatial3d_validation_plan": {"status": "not_applicable"},
+        },
+    )
     monkeypatch.setattr("manager.shutil.which", lambda command: "C:/tools/rg.exe" if command == "rg" else None)
 
     class Result:
@@ -505,8 +604,47 @@ def test_workspace_tooling_and_codebase_search_routes_return_project_scoped_payl
 
     tooling = client.get(f"/api/projects/{project_id}/workspace-tooling", headers=bridge_headers)
     assert tooling.status_code == 200
-    assert tooling.json()["project_id"] == project_id
-    assert "repo_profile" in tooling.json()
+    tooling_payload = tooling.json()
+    assert tooling_payload["project_id"] == project_id
+    assert tooling_payload["project_name"] == "Tooling Search Demo"
+    assert tooling_payload["tool_count"] == len(tooling_payload["tools"]) == 3
+    assert tooling_payload["tool_ids"] == ["ruff", "playwright", "gitleaks"]
+    assert tooling_payload["installed_tool_count"] == 2
+    assert tooling_payload["installed_tool_ids"] == ["ruff", "gitleaks"]
+    assert tooling_payload["configured_tool_count"] == 2
+    assert tooling_payload["configured_tool_ids"] == ["ruff", "playwright"]
+    assert tooling_payload["missing_tool_count"] == 1
+    assert tooling_payload["missing_tool_ids"] == ["playwright"]
+    assert tooling_payload["tool_statuses"] == ["available", "needs_setup", "ready"]
+    assert tooling_payload["tool_status_counts"] == {"available": 1, "needs_setup": 1, "ready": 1}
+    assert tooling_payload["tool_status_group_count"] == 3
+    assert tooling_payload["tool_categories"] == ["security", "validation"]
+    assert tooling_payload["tool_category_counts"] == {"security": 1, "validation": 2}
+    assert tooling_payload["tool_category_group_count"] == 2
+    assert tooling_payload["pack_count"] == len(tooling_payload["packs"]) == 2
+    assert tooling_payload["pack_ids"] == ["validation_evidence_pack", "security_pack"]
+    assert tooling_payload["pack_statuses"] == ["needs_setup", "ready"]
+    assert tooling_payload["pack_status_counts"] == {"needs_setup": 1, "ready": 1}
+    assert tooling_payload["pack_status_group_count"] == 2
+    assert tooling_payload["recommended_next_step_count"] == len(tooling_payload["recommended_next_steps"]) == 1
+    assert tooling_payload["repo_mode_summary_count"] == len(tooling_payload["repo_mode_summaries"]) == 1
+    assert tooling_payload["important_path_count"] == len(tooling_payload["important_paths"]) == 1
+    assert tooling_payload["execution_entrypoint_count"] == len(tooling_payload["execution_entrypoints"]) == 1
+    assert tooling_payload["runtime_blocker_count"] == len(tooling_payload["runtime_blockers"]) == 1
+    assert tooling_payload["validation_evidence_target_count"] == len(tooling_payload["validation_evidence_targets"]) == 1
+    assert tooling_payload["product_lane_status_count"] == len(tooling_payload["product_lane_statuses"]) == 2
+    assert tooling_payload["execution_lane_summary_count"] == len(tooling_payload["execution_lane_summaries"]) == 1
+    assert tooling_payload["artifact_kind_summary_count"] == len(tooling_payload["artifact_kind_summaries"]) == 1
+    assert tooling_payload["command_count"] == len(tooling_payload["commands"]) == 6
+    assert tooling_payload["commands"] == [
+        "rg --files",
+        "ruff check .",
+        "playwright test",
+        "gitleaks dir . --redact",
+        "python app.py",
+        "type artifacts/build.log",
+    ]
+    assert "repo_profile" in tooling_payload
 
     search = client.post(
         f"/api/projects/{project_id}/codebase/search",
