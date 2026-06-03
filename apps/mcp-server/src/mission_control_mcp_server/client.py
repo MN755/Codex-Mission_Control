@@ -502,6 +502,18 @@ class MissionControlDaemonClient:
     def get_workspace_tooling(self, project_id: int) -> dict[str, Any]:
         return self._request("GET", f"/api/projects/{project_id}/workspace-tooling")
 
+    def get_runbook(self, project_id: int) -> dict[str, Any] | None:
+        return self._request("GET", f"/api/projects/{project_id}/runbook")
+
+    def get_runbook_summary(self, project_id: int) -> dict[str, Any]:
+        return self._request("GET", f"/api/projects/{project_id}/runbook/summary")
+
+    def get_execution_policy_summary(self, project_id: int) -> dict[str, Any]:
+        return self._request("GET", f"/api/projects/{project_id}/execution-policy/summary")
+
+    def get_coordination_summary(self, project_id: int) -> dict[str, Any]:
+        return self._request("GET", f"/api/projects/{project_id}/coordination/summary")
+
     def get_integrations_catalog(self) -> list[dict[str, Any]]:
         return self._request("GET", "/api/integrations/catalog")
 
@@ -1086,6 +1098,26 @@ class MissionControlDaemonClient:
             "tools": list(payload.get("tools") or [])[:12],
         }
 
+    def _summarize_runbook(self, project_id: int, payload: dict[str, Any] | None) -> dict[str, Any]:
+        if not payload:
+            return {
+                "project_id": project_id,
+                "exists": False,
+                "content_markdown": None,
+                "generated_from_handoff_id": None,
+                "generated_at": None,
+                "updated_at": None,
+            }
+        return {
+            "id": payload.get("id"),
+            "project_id": project_id,
+            "exists": True,
+            "content_markdown": payload.get("content_markdown"),
+            "generated_from_handoff_id": payload.get("generated_from_handoff_id"),
+            "generated_at": payload.get("generated_at"),
+            "updated_at": payload.get("updated_at"),
+        }
+
     def _summarize_ml_feature_catalog(self, project_id: int, payload: list[dict[str, Any]]) -> dict[str, Any]:
         features = list(payload or [])
         return {
@@ -1591,6 +1623,14 @@ class MissionControlDaemonClient:
                 return self._summarize_capability_report(project_id, self.get_capability_report(project_id))
             if kind == "workspace-tooling":
                 return self._summarize_workspace_tooling(project_id, self.get_workspace_tooling(project_id))
+            if kind == "runbook":
+                if len(parts) == 4 and parts[3] == "summary":
+                    return self.get_runbook_summary(project_id)
+                return self._summarize_runbook(project_id, self.get_runbook(project_id))
+            if kind == "execution-policy" and len(parts) == 4 and parts[3] == "summary":
+                return self.get_execution_policy_summary(project_id)
+            if kind == "coordination" and len(parts) == 4 and parts[3] == "summary":
+                return self.get_coordination_summary(project_id)
             if kind == "integrations":
                 if project_id is None:
                     raise ValueError("Project-scoped integration resources require a project id.")

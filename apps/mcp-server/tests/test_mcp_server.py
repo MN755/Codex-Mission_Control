@@ -29,7 +29,11 @@ EXPECTED_RESOURCES = {
     "mission-control://integrations/health",
     "mission-control://projects/{project_id}/integrations",
     "mission-control://projects/{project_id}/integrations/{family}",
+    "mission-control://projects/{project_id}/runbook",
+    "mission-control://projects/{project_id}/runbook/summary",
     "mission-control://projects/{project_id}/workspace-tooling",
+    "mission-control://projects/{project_id}/execution-policy/summary",
+    "mission-control://projects/{project_id}/coordination/summary",
     "mission-control://projects/{project_id}/tensorflow/features",
     "mission-control://projects/{project_id}/tensorflow/features/{feature_id}",
     "mission-control://projects/{project_id}/pytorch/features",
@@ -927,6 +931,82 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
     )
     monkeypatch.setattr(
         client,
+        "get_runbook",
+        lambda project_id: {
+            "id": 12,
+            "project_id": project_id,
+            "content_markdown": "# Runbook\n\n## Run\n- python -m pytest\n",
+            "generated_from_handoff_id": 3,
+            "generated_at": "2026-06-03T12:00:00Z",
+            "updated_at": "2026-06-03T12:30:00Z",
+        },
+    )
+    monkeypatch.setattr(
+        client,
+        "get_runbook_summary",
+        lambda project_id: {
+            "project_id": project_id,
+            "exists": True,
+            "section_count": 2,
+            "sections": ["Run", "Validate"],
+            "run_command_count": 1,
+            "run_commands": ["python -m pytest"],
+            "content_preview": "Run and validate the project.",
+            "generated_from_handoff_id": 3,
+            "generated_at": "2026-06-03T12:00:00Z",
+            "updated_at": "2026-06-03T12:30:00Z",
+        },
+    )
+    monkeypatch.setattr(
+        client,
+        "get_execution_policy_summary",
+        lambda project_id: {
+            "project_id": project_id,
+            "project_name": "Demo",
+            "provider": "codex",
+            "runner_mode": "auto",
+            "sandbox_mode": "workspace-write",
+            "approval_policy": "on-request",
+            "model_policy_name": "default",
+            "manager_model": "gpt-5-codex",
+            "worker_model_count": 2,
+            "tool_routing_count": 1,
+            "approval_required_tool_count": 1,
+            "approval_required_tools": ["git push"],
+            "blocked_tool_count": 1,
+            "blocked_tools": ["rm -rf"],
+            "sandbox_profile_count": 1,
+            "default_sandbox_profile": "workspace-write",
+            "current_sandbox_profile": "workspace-write",
+            "validation_step_count": 2,
+            "validation_command_count": 1,
+            "validation_commands": ["python -m pytest"],
+            "validation_status": "ready",
+        },
+    )
+    monkeypatch.setattr(
+        client,
+        "get_coordination_summary",
+        lambda project_id: {
+            "project_id": project_id,
+            "project_name": "Demo",
+            "current_action_type": "manager_question",
+            "contract_count": 3,
+            "active_contract_count": 2,
+            "waiting_lock_count": 1,
+            "active_lock_count": 1,
+            "unresolved_conflict_count": 0,
+            "decision_count": 4,
+            "decision_types": ["scope_change", "approval"],
+            "low_confidence_count": 1,
+            "low_confidence_categories": ["validation"],
+            "failed_gate_count": 0,
+            "pending_gate_count": 1,
+            "review_gate_count": 2,
+        },
+    )
+    monkeypatch.setattr(
+        client,
         "get_tensorflow_feature_catalog",
         lambda project_id: [
             {
@@ -1165,6 +1245,10 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
     capability_report = client.read_resource("mission-control://projects/7/capability-report")
     capability_section = client.read_resource("mission-control://projects/7/capability-report/semantic_code_impact_mapping")
     tooling = client.read_resource("mission-control://projects/7/workspace-tooling")
+    runbook = client.read_resource("mission-control://projects/7/runbook")
+    runbook_summary = client.read_resource("mission-control://projects/7/runbook/summary")
+    execution_policy = client.read_resource("mission-control://projects/7/execution-policy/summary")
+    coordination = client.read_resource("mission-control://projects/7/coordination/summary")
     tensorflow_catalog = client.read_resource("mission-control://projects/7/tensorflow/features")
     tensorflow_bundle = client.read_resource("mission-control://projects/7/tensorflow/features/keras_scaffold")
     pytorch_catalog = client.read_resource("mission-control://projects/7/pytorch/features")
@@ -1189,6 +1273,14 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
     assert capability_section["section_key"] == "semantic_code_impact_mapping"
     assert capability_section["metadata_json"]["semantic_backend"] == "python-ast-graph"
     assert tooling["validation_commands"] == ["uv run pytest", "ruff check ."]
+    assert runbook["exists"] is True
+    assert runbook["generated_from_handoff_id"] == 3
+    assert runbook_summary["section_count"] == 2
+    assert runbook_summary["run_commands"] == ["python -m pytest"]
+    assert execution_policy["model_policy_name"] == "default"
+    assert execution_policy["approval_required_tools"] == ["git push"]
+    assert coordination["decision_count"] == 4
+    assert coordination["low_confidence_categories"] == ["validation"]
     assert tensorflow_catalog["feature_count"] == 1
     assert tensorflow_bundle["feature_id"] == "keras_scaffold"
     assert pytorch_catalog["feature_count"] == 1
@@ -1348,6 +1440,22 @@ def test_daemon_client_bridge_auth_protected_reads_include_token(monkeypatch) ->
         ("GET", "/api/projects/7/codebase-map", True),
         ("GET", "/api/projects/7/codebase-understanding", True),
     ]
+
+
+def test_daemon_client_runbook_resource_returns_stable_missing_payload(monkeypatch) -> None:
+    client = MissionControlDaemonClient(base_url="http://127.0.0.1:8010", timeout=0.1)
+    monkeypatch.setattr(client, "get_runbook", lambda project_id: None)
+
+    payload = client.read_resource("mission-control://projects/7/runbook")
+
+    assert payload == {
+        "project_id": 7,
+        "exists": False,
+        "content_markdown": None,
+        "generated_from_handoff_id": None,
+        "generated_at": None,
+        "updated_at": None,
+    }
 
 
 def test_catalog_uses_bundled_assets_when_repo_is_unavailable(monkeypatch) -> None:
