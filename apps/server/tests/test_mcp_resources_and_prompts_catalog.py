@@ -20,11 +20,13 @@ RESOURCES_DOC = ROOT / "docs" / "MCP_RESOURCES.md"
 PROMPTS_DOC = ROOT / "docs" / "MCP_PROMPTS.md"
 PENDING_DOC = ROOT / "docs" / "PENDING_DECISIONS.md"
 AGENT_CONTRACT_SKILLS = [
+    ROOT / ".codex" / "skills" / "mission-control-agent-contracts" / "SKILL.md",
     ROOT / "plugins" / "mission-control" / "skills" / "mission-control-agent-contracts" / "SKILL.md",
     ROOT / ".codex" / "plugins" / "mission-control" / "skills" / "mission-control-agent-contracts" / "SKILL.md",
     ROOT / "apps" / "mcp-server" / "src" / "mission_control_mcp_server" / "_bundled" / "skills" / "mission-control-agent-contracts" / "SKILL.md",
 ]
 DECISION_LEDGER_SKILLS = [
+    ROOT / ".codex" / "skills" / "mission-control-decision-ledger" / "SKILL.md",
     ROOT / "plugins" / "mission-control" / "skills" / "mission-control-decision-ledger" / "SKILL.md",
     ROOT / ".codex" / "plugins" / "mission-control" / "skills" / "mission-control-decision-ledger" / "SKILL.md",
     ROOT / "apps" / "mcp-server" / "src" / "mission_control_mcp_server" / "_bundled" / "skills" / "mission-control-decision-ledger" / "SKILL.md",
