@@ -399,18 +399,27 @@ def test_project_widget_instance_routes_require_matching_project_context(client)
     assert wrong_project.status_code == 404
 
     updated = client.patch(
-        f"/api/widgets/instances/{instance['id']}",
-        params={"project_id": project_one["id"]},
+        f"/api/projects/{project_one['id']}/widgets/instances/{instance['id']}",
         json={"collapsed": True},
     )
     assert updated.status_code == 200
     assert updated.json()["collapsed"] is True
 
+    wrong_project_update = client.patch(
+        f"/api/projects/{project_two['id']}/widgets/instances/{instance['id']}",
+        json={"collapsed": False},
+    )
+    assert wrong_project_update.status_code == 404
+
     deleted = client.delete(
-        f"/api/widgets/instances/{instance['id']}",
-        params={"project_id": project_one["id"]},
+        f"/api/projects/{project_one['id']}/widgets/instances/{instance['id']}",
     )
     assert deleted.status_code == 204
+
+    wrong_project_delete = client.delete(
+        f"/api/projects/{project_two['id']}/widgets/instances/{instance['id']}",
+    )
+    assert wrong_project_delete.status_code == 404
 
 
 def test_readding_disabled_widget_applies_new_layout_and_config(client) -> None:
@@ -423,8 +432,7 @@ def test_readding_disabled_widget_applies_new_layout_and_config(client) -> None:
     instance = created.json()
 
     disabled = client.patch(
-        f"/api/widgets/instances/{instance['id']}",
-        params={"project_id": project["id"]},
+        f"/api/projects/{project['id']}/widgets/instances/{instance['id']}",
         json={"enabled": False},
     )
     assert disabled.status_code == 200, disabled.text

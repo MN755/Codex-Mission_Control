@@ -1175,6 +1175,23 @@ def patch_widget_instance(
         raise HTTPException(status_code=status_code, detail=str(exc)) from exc
 
 
+@app.patch("/api/projects/{project_id}/widgets/instances/{instance_id}", response_model=WidgetInstanceRead)
+def patch_project_widget_instance(
+    project_id: int,
+    instance_id: int,
+    payload: WidgetInstanceUpdate,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> WidgetInstanceRead:
+    project = _get_project_or_404(db, project_id)
+    try:
+        data = payload.model_dump(exclude_unset=True) if hasattr(payload, "model_dump") else payload.dict(exclude_unset=True)
+        return WidgetInstanceRead(**service.update_widget_instance(db, instance_id, data, project=project))
+    except ValueError as exc:
+        status_code = 404 if "not found" in str(exc).lower() else 400
+        raise HTTPException(status_code=status_code, detail=str(exc)) from exc
+
+
 @app.delete("/api/widgets/instances/{instance_id}", status_code=204)
 def delete_widget_instance(
     instance_id: int,
@@ -1183,6 +1200,21 @@ def delete_widget_instance(
     _: None = Depends(_require_bridge_token),
 ) -> None:
     project = _get_project_or_404(db, project_id) if project_id is not None else None
+    try:
+        service.delete_widget_instance(db, instance_id, project=project)
+    except ValueError as exc:
+        status_code = 404 if "not found" in str(exc).lower() else 400
+        raise HTTPException(status_code=status_code, detail=str(exc)) from exc
+
+
+@app.delete("/api/projects/{project_id}/widgets/instances/{instance_id}", status_code=204)
+def delete_project_widget_instance(
+    project_id: int,
+    instance_id: int,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> None:
+    project = _get_project_or_404(db, project_id)
     try:
         service.delete_widget_instance(db, instance_id, project=project)
     except ValueError as exc:
