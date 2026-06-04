@@ -131,11 +131,17 @@ EXPECTED_RESOURCES = {
     "mission-control://projects/{project_id}/diagnostics",
     "mission-control://projects/{project_id}/diagnostics/latest-report",
     "mission-control://projects/{project_id}/webwright",
+    "mission-control://projects/{project_id}/nvidia/dynamo",
     "mission-control://projects/{project_id}/nvidia-dynamo",
+    "mission-control://projects/{project_id}/nvidia/nim",
     "mission-control://projects/{project_id}/nvidia-nim",
+    "mission-control://projects/{project_id}/nvidia/aiq",
     "mission-control://projects/{project_id}/nvidia-aiq",
+    "mission-control://projects/{project_id}/nvidia/gpu-diagnostics",
     "mission-control://projects/{project_id}/nvidia-gpu-diagnostics",
+    "mission-control://projects/{project_id}/nvidia/local-runtime",
     "mission-control://projects/{project_id}/nvidia-local-runtime",
+    "mission-control://projects/{project_id}/nvidia/validation-plan",
     "mission-control://projects/{project_id}/nvidia-validation-plan",
     "mission-control://projects/{project_id}/swarm/preferences",
     "mission-control://projects/{project_id}/swarm/plan",
@@ -3383,12 +3389,13 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
     spatial_catalog = client.read_resource("mission-control://projects/7/spatial/features")
     spatial_bundle = client.read_resource("mission-control://projects/7/spatial/features/asset_pipeline")
     webwright = client.read_resource("mission-control://projects/7/webwright")
-    dynamo = client.read_resource("mission-control://projects/7/nvidia-dynamo")
-    nim = client.read_resource("mission-control://projects/7/nvidia-nim")
-    aiq = client.read_resource("mission-control://projects/7/nvidia-aiq")
-    gpu = client.read_resource("mission-control://projects/7/nvidia-gpu-diagnostics")
-    local_runtime = client.read_resource("mission-control://projects/7/nvidia-local-runtime")
-    validation_plan = client.read_resource("mission-control://projects/7/nvidia-validation-plan")
+    dynamo = client.read_resource("mission-control://projects/7/nvidia/dynamo")
+    nim = client.read_resource("mission-control://projects/7/nvidia/nim")
+    aiq = client.read_resource("mission-control://projects/7/nvidia/aiq")
+    gpu = client.read_resource("mission-control://projects/7/nvidia/gpu-diagnostics")
+    local_runtime = client.read_resource("mission-control://projects/7/nvidia/local-runtime")
+    validation_plan = client.read_resource("mission-control://projects/7/nvidia/validation-plan")
+    dynamo_alias = client.read_resource("mission-control://projects/7/nvidia-dynamo")
     swarm_preferences = client.read_resource("mission-control://projects/7/swarm/preferences")
     swarm_plan = client.read_resource("mission-control://projects/7/swarm/plan")
     subagent_batches = client.read_resource("mission-control://projects/7/subagent-batches")
@@ -3610,6 +3617,7 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
     assert webwright["available"] is True
     assert webwright["launch_command"] == "webwright"
     assert dynamo["reachable"] is True
+    assert dynamo_alias == dynamo
     assert nim["reachable"] is True
     assert aiq["install_status"] == "ready"
     assert gpu["status"] == "ready"

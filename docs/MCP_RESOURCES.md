@@ -124,11 +124,17 @@ Mission Control resources are read-only context surfaces for Codex chat.
 - `mission-control://projects/{project_id}/diagnostics`
 - `mission-control://projects/{project_id}/diagnostics/latest-report`
 - `mission-control://projects/{project_id}/webwright`
+- `mission-control://projects/{project_id}/nvidia/dynamo`
 - `mission-control://projects/{project_id}/nvidia-dynamo`
+- `mission-control://projects/{project_id}/nvidia/nim`
 - `mission-control://projects/{project_id}/nvidia-nim`
+- `mission-control://projects/{project_id}/nvidia/aiq`
 - `mission-control://projects/{project_id}/nvidia-aiq`
+- `mission-control://projects/{project_id}/nvidia/gpu-diagnostics`
 - `mission-control://projects/{project_id}/nvidia-gpu-diagnostics`
+- `mission-control://projects/{project_id}/nvidia/local-runtime`
 - `mission-control://projects/{project_id}/nvidia-local-runtime`
+- `mission-control://projects/{project_id}/nvidia/validation-plan`
 - `mission-control://projects/{project_id}/nvidia-validation-plan`
 - `mission-control://projects/{project_id}/swarm/preferences`
 - `mission-control://projects/{project_id}/swarm/plan`

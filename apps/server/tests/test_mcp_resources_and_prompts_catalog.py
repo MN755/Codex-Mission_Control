@@ -149,11 +149,17 @@ EXPECTED_RESOURCES = [
     "mission-control://projects/{project_id}/diagnostics",
     "mission-control://projects/{project_id}/diagnostics/latest-report",
     "mission-control://projects/{project_id}/webwright",
+    "mission-control://projects/{project_id}/nvidia/dynamo",
     "mission-control://projects/{project_id}/nvidia-dynamo",
+    "mission-control://projects/{project_id}/nvidia/nim",
     "mission-control://projects/{project_id}/nvidia-nim",
+    "mission-control://projects/{project_id}/nvidia/aiq",
     "mission-control://projects/{project_id}/nvidia-aiq",
+    "mission-control://projects/{project_id}/nvidia/gpu-diagnostics",
     "mission-control://projects/{project_id}/nvidia-gpu-diagnostics",
+    "mission-control://projects/{project_id}/nvidia/local-runtime",
     "mission-control://projects/{project_id}/nvidia-local-runtime",
+    "mission-control://projects/{project_id}/nvidia/validation-plan",
     "mission-control://projects/{project_id}/nvidia-validation-plan",
     "mission-control://projects/{project_id}/swarm/preferences",
     "mission-control://projects/{project_id}/swarm/plan",
@@ -379,6 +385,9 @@ def test_docs_explain_resources_prompts_and_headless_boundary() -> None:
     assert "mission-control://projects/{project_id}/widgets/summary" in resources_content
     assert "mission-control://projects/{project_id}/widgets/instances" in resources_content
     assert "mission-control://projects/{project_id}/webwright" in resources_content
+    assert "mission-control://projects/{project_id}/nvidia/nim" in resources_content
+    assert "mission-control://projects/{project_id}/nvidia/aiq" in resources_content
+    assert "mission-control://projects/{project_id}/nvidia/validation-plan" in resources_content
     assert "mission-control://projects/{project_id}/nvidia-nim" in resources_content
     assert "mission-control://projects/{project_id}/nvidia-aiq" in resources_content
     assert "mission-control://projects/{project_id}/nvidia-validation-plan" in resources_content
