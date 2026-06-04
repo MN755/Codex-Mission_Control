@@ -43,6 +43,8 @@ Mission Control resources are read-only context surfaces for Codex chat.
 - `mission-control://widgets/catalog`
 - `mission-control://widgets/catalog/{scope}`
 - `mission-control://tools`
+- `mission-control://handoffs`
+- `mission-control://diagnostics/reports`
 - `mission-control://profile/summary`
 - `mission-control://preferences/summary`
 - `mission-control://subagent-policy/summary`
@@ -60,8 +62,15 @@ Mission Control resources are read-only context surfaces for Codex chat.
 - `mission-control://projects/{project_id}/playbook/recommendations`
 - `mission-control://projects/{project_id}/preferences/summary`
 - `mission-control://projects/{project_id}/preferences/effective`
+- `mission-control://projects/{project_id}/workspace`
 - `mission-control://projects/{project_id}/widgets/summary`
 - `mission-control://projects/{project_id}/workspace-tooling`
+- `mission-control://projects/{project_id}/action`
+- `mission-control://projects/{project_id}/actions`
+- `mission-control://projects/{project_id}/manager/messages`
+- `mission-control://projects/{project_id}/manager/queue`
+- `mission-control://projects/{project_id}/tasks`
+- `mission-control://projects/{project_id}/events`
 - `mission-control://projects/{project_id}/execution-policy/summary`
 - `mission-control://projects/{project_id}/coordination/summary`
 - `mission-control://projects/{project_id}/tensorflow/features`
@@ -108,6 +117,7 @@ Mission Control resources are read-only context surfaces for Codex chat.
 - codebase understanding, import safety, and project settings expose what the daemon thinks it knows about the repo and how cautiously it should import or operate before the bridge starts improvising
 - workspace tooling tells the bridge which repo-native helper lanes actually exist for intake, validation, and security before it recommends commands like a clown
 - tool catalog and swarm preferences expose the safe action surface and collaboration posture directly instead of forcing chat to infer them from unrelated endpoints
+- workspace, current action, action backlog, manager messages, manager queue, tasks, events, handoffs, and diagnostic reports expose actual project motion directly instead of forcing chat to reconstruct operator state from scattered endpoint scraps
 - profile summary and subagent policy summary expose the operator defaults that shape provider choice, approvals, and whether subagent bursts are even allowed before the bridge starts making heroic assumptions
 - preference summary and effective preference resources expose global defaults, project overrides, and inherited values before the bridge starts making configuration assumptions from thin air
 - runbook and runbook summary expose the current operational guide without forcing chat to scrape widget markdown like an animal

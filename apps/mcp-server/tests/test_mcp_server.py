@@ -49,6 +49,8 @@ EXPECTED_RESOURCES = {
     "mission-control://widgets/catalog",
     "mission-control://widgets/catalog/{scope}",
     "mission-control://tools",
+    "mission-control://handoffs",
+    "mission-control://diagnostics/reports",
     "mission-control://profile/summary",
     "mission-control://preferences/summary",
     "mission-control://subagent-policy/summary",
@@ -67,7 +69,14 @@ EXPECTED_RESOURCES = {
     "mission-control://projects/{project_id}/preferences/summary",
     "mission-control://projects/{project_id}/preferences/effective",
     "mission-control://projects/{project_id}/widgets/summary",
+    "mission-control://projects/{project_id}/workspace",
     "mission-control://projects/{project_id}/workspace-tooling",
+    "mission-control://projects/{project_id}/action",
+    "mission-control://projects/{project_id}/actions",
+    "mission-control://projects/{project_id}/manager/messages",
+    "mission-control://projects/{project_id}/manager/queue",
+    "mission-control://projects/{project_id}/tasks",
+    "mission-control://projects/{project_id}/events",
     "mission-control://projects/{project_id}/execution-policy/summary",
     "mission-control://projects/{project_id}/coordination/summary",
     "mission-control://projects/{project_id}/tensorflow/features",
@@ -970,6 +979,144 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
             "recommended_next_steps": ["Install OSV-Scanner for dependency auditing."],
             "tools": [{"id": "uv", "label": "uv", "installed": True, "configured": True, "status": "ready"}],
         },
+    )
+    monkeypatch.setattr(
+        client,
+        "get_project_workspace",
+        lambda project_id: {
+            "project_id": project_id,
+            "workspace_path": "C:/demo",
+            "exists": True,
+            "is_git_repo": True,
+            "git_branch": "main",
+            "git_status": "dirty",
+            "top_level_entries": ["apps", "plugins", "docs"],
+            "updated_at": "2026-06-03T12:39:00Z",
+        },
+    )
+    monkeypatch.setattr(
+        client,
+        "get_project_action",
+        lambda project_id: {
+            "project_id": project_id,
+            "action_id": "run_validation",
+            "title": "Run validation",
+            "summary": "Execute the named pytest lane and record evidence.",
+            "status": "pending",
+            "priority": "high",
+            "owner": "manager",
+        },
+    )
+    monkeypatch.setattr(
+        client,
+        "list_project_actions",
+        lambda project_id: [
+            {
+                "project_id": project_id,
+                "action_id": "run_validation",
+                "title": "Run validation",
+                "summary": "Execute the named pytest lane and record evidence.",
+                "status": "pending",
+                "priority": "high",
+                "owner": "manager",
+            },
+            {
+                "project_id": project_id,
+                "action_id": "update_catalog",
+                "title": "Update MCP catalog",
+                "summary": "Keep runtime and metadata aligned.",
+                "status": "queued",
+                "priority": "medium",
+                "owner": "bridge",
+            },
+        ],
+    )
+    monkeypatch.setattr(
+        client,
+        "get_manager_messages",
+        lambda project_id: [
+            {
+                "id": 91,
+                "project_id": project_id,
+                "role": "manager",
+                "message": "Validation is blocked on evidence capture.",
+                "created_at": "2026-06-03T12:40:00Z",
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        client,
+        "get_manager_queue",
+        lambda project_id: {
+            "project_id": project_id,
+            "pending_question_count": 1,
+            "pending_approval_count": 1,
+            "pending_action_count": 2,
+            "stale_message_count": 0,
+            "next_priority": "high",
+            "updated_at": "2026-06-03T12:41:00Z",
+        },
+    )
+    monkeypatch.setattr(
+        client,
+        "get_project_tasks",
+        lambda project_id: [
+            {
+                "id": 101,
+                "project_id": project_id,
+                "title": "Stabilize MCP runtime reads",
+                "status": "in_progress",
+                "priority": 1,
+                "owner": "bridge",
+            },
+            {
+                "id": 102,
+                "project_id": project_id,
+                "title": "Validate catalog parity",
+                "status": "pending",
+                "priority": 2,
+                "owner": "reviewer",
+            },
+        ],
+    )
+    monkeypatch.setattr(
+        client,
+        "get_project_events",
+        lambda project_id: [
+            {
+                "id": 111,
+                "project_id": project_id,
+                "event_type": "task_updated",
+                "summary": "Validation task moved to in_progress.",
+                "created_at": "2026-06-03T12:42:00Z",
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        client,
+        "list_handoffs",
+        lambda: [
+            {
+                "project_id": 7,
+                "project_name": "Demo",
+                "status": "needs_review",
+                "summary": "Ready for review once evidence is attached.",
+                "updated_at": "2026-06-03T12:43:00Z",
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        client,
+        "list_diagnostic_reports",
+        lambda project_id=None: [
+            {
+                "project_id": project_id or 7,
+                "report_id": 121,
+                "status": "warning",
+                "summary": "One runtime catalog mismatch was corrected.",
+                "created_at": "2026-06-03T12:44:00Z",
+            }
+        ],
     )
     monkeypatch.setattr(
         client,
@@ -2173,6 +2320,8 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
     widget_catalog = client.read_resource("mission-control://widgets/catalog")
     project_widget_catalog = client.read_resource("mission-control://widgets/catalog/project")
     tool_catalog = client.read_resource("mission-control://tools")
+    handoffs = client.read_resource("mission-control://handoffs")
+    diagnostic_reports = client.read_resource("mission-control://diagnostics/reports")
     subagent_policy_summary = client.read_resource("mission-control://subagent-policy/summary")
     pending_questions = client.read_resource("mission-control://projects/7/questions/pending")
     pending_approvals = client.read_resource("mission-control://projects/7/approvals/pending")
@@ -2188,7 +2337,12 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
     codebase_understanding = client.read_resource("mission-control://projects/7/codebase-understanding")
     import_safety = client.read_resource("mission-control://projects/7/import-safety")
     project_settings = client.read_resource("mission-control://projects/7/settings")
+    workspace = client.read_resource("mission-control://projects/7/workspace")
     tooling = client.read_resource("mission-control://projects/7/workspace-tooling")
+    project_action = client.read_resource("mission-control://projects/7/action")
+    project_actions = client.read_resource("mission-control://projects/7/actions")
+    manager_messages = client.read_resource("mission-control://projects/7/manager/messages")
+    manager_queue = client.read_resource("mission-control://projects/7/manager/queue")
     runbook = client.read_resource("mission-control://projects/7/runbook")
     runbook_summary = client.read_resource("mission-control://projects/7/runbook/summary")
     safe_mode = client.read_resource("mission-control://projects/7/safe-mode")
@@ -2223,6 +2377,8 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
     local_runtime = client.read_resource("mission-control://projects/7/nvidia-local-runtime")
     validation_plan = client.read_resource("mission-control://projects/7/nvidia-validation-plan")
     swarm_preferences = client.read_resource("mission-control://projects/7/swarm/preferences")
+    tasks = client.read_resource("mission-control://projects/7/tasks")
+    events = client.read_resource("mission-control://projects/7/events")
     latest_simulation = client.read_resource("mission-control://projects/7/swarm/simulations/latest")
 
     assert profile_summary["display_name"] == "Mike"
@@ -2247,6 +2403,10 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
     assert project_widget_catalog["catalog"][0]["scope"] == "project"
     assert tool_catalog["tool_count"] == 1
     assert tool_catalog["tools"][0]["name"] == "mission_control_attach_workspace"
+    assert handoffs["handoff_count"] == 1
+    assert handoffs["handoffs"][0]["project_name"] == "Demo"
+    assert diagnostic_reports["report_count"] == 1
+    assert diagnostic_reports["reports"][0]["status"] == "warning"
     assert subagent_policy_summary["default_mode"] == "limited_write"
     assert pending_questions["question_count"] == 1
     assert pending_questions["questions"][0]["category"] == "scope"
@@ -2269,7 +2429,12 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
     assert codebase_understanding["recommended_interview_mode"] == "targeted"
     assert import_safety["safe_to_import"] is True
     assert project_settings["preferred_runner_mode"] == "auto"
+    assert workspace["git_branch"] == "main"
     assert tooling["validation_commands"] == ["uv run pytest", "ruff check ."]
+    assert project_action["action_id"] == "run_validation"
+    assert project_actions["action_count"] == 2
+    assert manager_messages["message_count"] == 1
+    assert manager_queue["pending_action_count"] == 2
     assert runbook["exists"] is True
     assert runbook["generated_from_handoff_id"] == 3
     assert runbook_summary["section_count"] == 2
@@ -2327,6 +2492,8 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
     assert local_runtime["repo_mode"] == "cuda_cpp"
     assert validation_plan["status"] == "needs_review"
     assert swarm_preferences["max_agents"] == 4
+    assert tasks["task_count"] == 2
+    assert events["event_count"] == 1
     assert latest_simulation["simulation_id"] == 17
     assert latest_simulation["persisted"] is False
 
@@ -2470,6 +2637,15 @@ def test_daemon_client_bridge_auth_protected_reads_include_token(monkeypatch) ->
     client.get_project_settings(7)
     client.get_tool_catalog()
     client.get_swarm_preferences(7)
+    client.get_project_workspace(7)
+    client.get_project_action(7)
+    client.list_project_actions(7)
+    client.get_manager_messages(7)
+    client.get_manager_queue(7)
+    client.get_project_tasks(7)
+    client.get_project_events(7)
+    client.list_handoffs()
+    client.list_diagnostic_reports()
 
     assert calls == [
         ("GET", "/api/daemon/status", True),
@@ -2480,6 +2656,15 @@ def test_daemon_client_bridge_auth_protected_reads_include_token(monkeypatch) ->
         ("GET", "/api/settings", True),
         ("GET", "/api/tools", True),
         ("GET", "/api/projects/7/swarm/preferences", True),
+        ("GET", "/api/projects/7/workspace", True),
+        ("GET", "/api/projects/7/action", True),
+        ("GET", "/api/projects/7/actions", True),
+        ("GET", "/api/projects/7/manager/messages", True),
+        ("GET", "/api/projects/7/manager/queue", True),
+        ("GET", "/api/projects/7/tasks", True),
+        ("GET", "/api/projects/7/events", True),
+        ("GET", "/api/handoffs", True),
+        ("GET", "/api/diagnostics/reports", True),
     ]
 
 

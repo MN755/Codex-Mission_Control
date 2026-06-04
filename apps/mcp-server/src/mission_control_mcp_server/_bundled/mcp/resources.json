@@ -890,6 +890,52 @@
       }
     },
     {
+      "uri_template": "mission-control://handoffs",
+      "title": "Handoffs",
+      "summary": "Global list of recent project handoffs so operators can review what is ready, blocked, or waiting for evidence.",
+      "support_status": "implemented",
+      "source_hint": {
+        "rest_endpoints": [
+          "/api/handoffs"
+        ]
+      },
+      "default_fields": [
+        "handoff_count",
+        "handoffs"
+      ],
+      "redaction": {
+        "omit_fields": [
+          "raw_log",
+          "secret_values",
+          "private_paths_outside_workspace"
+        ],
+        "notes": "Expose handoff summaries only, not raw transcripts or secret-bearing payloads."
+      }
+    },
+    {
+      "uri_template": "mission-control://diagnostics/reports",
+      "title": "Diagnostic reports",
+      "summary": "Global list of recent Mission Control diagnostic reports for operator triage and runtime auditing.",
+      "support_status": "implemented",
+      "source_hint": {
+        "rest_endpoints": [
+          "/api/diagnostics/reports"
+        ]
+      },
+      "default_fields": [
+        "report_count",
+        "reports"
+      ],
+      "redaction": {
+        "omit_fields": [
+          "raw_log",
+          "secret_values",
+          "private_paths_outside_workspace"
+        ],
+        "notes": "Expose compact diagnostic report metadata only, not raw logs or secrets."
+      }
+    },
+    {
       "uri_template": "mission-control://profile/summary",
       "title": "Profile summary",
       "summary": "Compact Mission Control app-profile summary covering provider choice, runner defaults, startup posture, and account readiness.",
@@ -1385,6 +1431,34 @@
       }
     },
     {
+      "uri_template": "mission-control://projects/{project_id}/workspace",
+      "title": "Project workspace",
+      "summary": "Project-scoped workspace metadata including git posture and top-level structure for headless operator review.",
+      "support_status": "implemented",
+      "source_hint": {
+        "rest_endpoints": [
+          "/api/projects/{project_id}/workspace"
+        ]
+      },
+      "default_fields": [
+        "project_id",
+        "workspace_path",
+        "exists",
+        "is_git_repo",
+        "git_branch",
+        "git_status",
+        "top_level_entries"
+      ],
+      "redaction": {
+        "omit_fields": [
+          "raw_file_contents",
+          "secret_env",
+          "private_paths_outside_workspace"
+        ],
+        "notes": "Expose workspace posture and structure only, not raw file contents."
+      }
+    },
+    {
       "uri_template": "mission-control://projects/{project_id}/workspace-tooling",
       "title": "Workspace tooling",
       "summary": "Project-scoped repo-native tooling summary covering intake, validation, and security helper lanes.",
@@ -1413,6 +1487,158 @@
           "private_files_outside_workspace"
         ],
         "notes": "Expose installed/configured tooling posture and safe suggested commands only."
+      }
+    },
+    {
+      "uri_template": "mission-control://projects/{project_id}/action",
+      "title": "Current project action",
+      "summary": "Current highest-priority project action that the manager or operator should address next.",
+      "support_status": "implemented",
+      "source_hint": {
+        "rest_endpoints": [
+          "/api/projects/{project_id}/action"
+        ]
+      },
+      "default_fields": [
+        "project_id",
+        "action_id",
+        "title",
+        "summary",
+        "status",
+        "priority",
+        "owner"
+      ],
+      "redaction": {
+        "omit_fields": [
+          "raw_log",
+          "secret_values",
+          "private_paths_outside_workspace"
+        ],
+        "notes": "Expose action metadata only, not raw transcripts."
+      }
+    },
+    {
+      "uri_template": "mission-control://projects/{project_id}/actions",
+      "title": "Project actions",
+      "summary": "Queued and in-flight project actions so headless chat can inspect the current work stack directly.",
+      "support_status": "implemented",
+      "source_hint": {
+        "rest_endpoints": [
+          "/api/projects/{project_id}/actions"
+        ]
+      },
+      "default_fields": [
+        "project_id",
+        "action_count",
+        "actions"
+      ],
+      "redaction": {
+        "omit_fields": [
+          "raw_log",
+          "secret_values",
+          "private_paths_outside_workspace"
+        ],
+        "notes": "Expose compact action metadata only, not raw transcripts."
+      }
+    },
+    {
+      "uri_template": "mission-control://projects/{project_id}/manager/messages",
+      "title": "Manager messages",
+      "summary": "Recent manager messages for a project so headless users can inspect current guidance without the dashboard.",
+      "support_status": "implemented",
+      "source_hint": {
+        "rest_endpoints": [
+          "/api/projects/{project_id}/manager/messages"
+        ]
+      },
+      "default_fields": [
+        "project_id",
+        "message_count",
+        "messages"
+      ],
+      "redaction": {
+        "omit_fields": [
+          "raw_log",
+          "secret_values",
+          "private_paths_outside_workspace"
+        ],
+        "notes": "Expose recent message metadata only, not raw logs or secret-bearing attachments."
+      }
+    },
+    {
+      "uri_template": "mission-control://projects/{project_id}/manager/queue",
+      "title": "Manager queue",
+      "summary": "Compact queue state for pending questions, approvals, actions, and next priority within a project.",
+      "support_status": "implemented",
+      "source_hint": {
+        "rest_endpoints": [
+          "/api/projects/{project_id}/manager/queue"
+        ]
+      },
+      "default_fields": [
+        "project_id",
+        "pending_question_count",
+        "pending_approval_count",
+        "pending_action_count",
+        "stale_message_count",
+        "next_priority",
+        "updated_at"
+      ],
+      "redaction": {
+        "omit_fields": [
+          "raw_log",
+          "secret_values",
+          "private_paths_outside_workspace"
+        ],
+        "notes": "Expose queue posture only, not raw approval or message transcripts."
+      }
+    },
+    {
+      "uri_template": "mission-control://projects/{project_id}/tasks",
+      "title": "Project tasks",
+      "summary": "Project task backlog with compact status, ownership, and priority fields for headless review.",
+      "support_status": "implemented",
+      "source_hint": {
+        "rest_endpoints": [
+          "/api/projects/{project_id}/tasks"
+        ]
+      },
+      "default_fields": [
+        "project_id",
+        "task_count",
+        "tasks"
+      ],
+      "redaction": {
+        "omit_fields": [
+          "raw_log",
+          "secret_values",
+          "private_paths_outside_workspace"
+        ],
+        "notes": "Expose task metadata only, not raw task transcripts."
+      }
+    },
+    {
+      "uri_template": "mission-control://projects/{project_id}/events",
+      "title": "Project events",
+      "summary": "Recent project events so operators can inspect state transitions without opening the event stream.",
+      "support_status": "implemented",
+      "source_hint": {
+        "rest_endpoints": [
+          "/api/projects/{project_id}/events"
+        ]
+      },
+      "default_fields": [
+        "project_id",
+        "event_count",
+        "events"
+      ],
+      "redaction": {
+        "omit_fields": [
+          "raw_log",
+          "secret_values",
+          "private_paths_outside_workspace"
+        ],
+        "notes": "Expose recent event metadata only, not raw stream payloads."
       }
     },
     {

@@ -520,6 +520,34 @@ class MissionControlDaemonClient:
     def get_workspace_tooling(self, project_id: int) -> dict[str, Any]:
         return self._request("GET", f"/api/projects/{project_id}/workspace-tooling")
 
+    def get_project_workspace(self, project_id: int) -> dict[str, Any]:
+        return self._request("GET", f"/api/projects/{project_id}/workspace")
+
+    def get_project_action(self, project_id: int) -> dict[str, Any]:
+        return self._request("GET", f"/api/projects/{project_id}/action")
+
+    def list_project_actions(self, project_id: int) -> list[dict[str, Any]]:
+        return self._request("GET", f"/api/projects/{project_id}/actions")
+
+    def get_manager_messages(self, project_id: int) -> list[dict[str, Any]]:
+        return self._request("GET", f"/api/projects/{project_id}/manager/messages")
+
+    def get_manager_queue(self, project_id: int) -> dict[str, Any]:
+        return self._request("GET", f"/api/projects/{project_id}/manager/queue")
+
+    def get_project_tasks(self, project_id: int) -> list[dict[str, Any]]:
+        return self._request("GET", f"/api/projects/{project_id}/tasks")
+
+    def get_project_events(self, project_id: int) -> list[dict[str, Any]]:
+        return self._request("GET", f"/api/projects/{project_id}/events")
+
+    def list_handoffs(self) -> list[dict[str, Any]]:
+        return self._request("GET", "/api/handoffs")
+
+    def list_diagnostic_reports(self, project_id: int | None = None) -> list[dict[str, Any]]:
+        params = {"project_id": project_id} if project_id is not None else None
+        return self._request("GET", "/api/diagnostics/reports", params=params)
+
     def get_profile_summary(self) -> dict[str, Any]:
         return self._request("GET", "/api/profile/summary")
 
@@ -1704,10 +1732,55 @@ class MissionControlDaemonClient:
             ],
         }
 
+    def _summarize_project_actions(self, project_id: int, actions: list[dict[str, Any]]) -> dict[str, Any]:
+        return {
+            "project_id": project_id,
+            "action_count": len(actions),
+            "actions": actions[:20],
+        }
+
+    def _summarize_manager_messages(self, project_id: int, messages: list[dict[str, Any]]) -> dict[str, Any]:
+        return {
+            "project_id": project_id,
+            "message_count": len(messages),
+            "messages": messages[:20],
+        }
+
+    def _summarize_tasks(self, project_id: int, tasks: list[dict[str, Any]]) -> dict[str, Any]:
+        return {
+            "project_id": project_id,
+            "task_count": len(tasks),
+            "tasks": tasks[:24],
+        }
+
+    def _summarize_project_events(self, project_id: int, events: list[dict[str, Any]]) -> dict[str, Any]:
+        return {
+            "project_id": project_id,
+            "event_count": len(events),
+            "events": events[:40],
+        }
+
+    def _summarize_handoffs(self, handoffs: list[dict[str, Any]]) -> dict[str, Any]:
+        return {
+            "handoff_count": len(handoffs),
+            "handoffs": handoffs[:20],
+        }
+
+    def _summarize_diagnostic_reports(self, reports: list[dict[str, Any]], *, project_id: int | None = None) -> dict[str, Any]:
+        return {
+            "project_id": project_id,
+            "report_count": len(reports),
+            "reports": reports[:20],
+        }
+
     def read_resource(self, uri: str) -> dict[str, Any]:
         if not uri.startswith("mission-control://"):
             raise RuntimeError("Unsupported Mission Control resource URI.")
         parts = [segment for segment in uri.removeprefix("mission-control://").split("/") if segment]
+        if len(parts) >= 1 and parts[0] == "handoffs":
+            return self._summarize_handoffs(self.list_handoffs())
+        if len(parts) >= 2 and parts[0] == "diagnostics" and parts[1] == "reports":
+            return self._summarize_diagnostic_reports(self.list_diagnostic_reports())
         if len(parts) >= 2 and parts[0] == "integrations":
             kind = parts[1]
             if kind == "catalog":
@@ -1851,18 +1924,32 @@ class MissionControlDaemonClient:
                         self.get_capability_section(project_id, section_key),
                     )
                 return self._summarize_capability_report(project_id, self.get_capability_report(project_id))
+            if kind == "workspace":
+                return self.get_project_workspace(project_id)
             if kind == "workspace-tooling":
                 return self._summarize_workspace_tooling(project_id, self.get_workspace_tooling(project_id))
+            if kind == "action":
+                return self.get_project_action(project_id)
+            if kind == "actions":
+                return self._summarize_project_actions(project_id, self.list_project_actions(project_id))
+            if kind == "manager" and len(parts) == 4 and parts[3] == "messages":
+                return self._summarize_manager_messages(project_id, self.get_manager_messages(project_id))
+            if kind == "manager" and len(parts) == 4 and parts[3] == "queue":
+                return self.get_manager_queue(project_id)
             if kind == "runbook":
                 if len(parts) == 4 and parts[3] == "summary":
                     return self.get_runbook_summary(project_id)
                 return self._summarize_runbook(project_id, self.get_runbook(project_id))
             if kind == "safe-mode":
                 return self.get_safe_mode(project_id)
+            if kind == "tasks":
+                return self._summarize_tasks(project_id, self.get_project_tasks(project_id))
             if kind == "recovery-plans":
                 if len(parts) == 4 and parts[3] == "preview":
                     return self.get_recovery_plans_preview(project_id)
                 return self._summarize_recovery_plans(project_id, self.get_recovery_plans(project_id))
+            if kind == "events":
+                return self._summarize_project_events(project_id, self.get_project_events(project_id))
             if kind == "snapshots":
                 if len(parts) == 5 and parts[4] == "restore-plan":
                     return self.get_snapshot_restore_plan(project_id, int(parts[3]))
