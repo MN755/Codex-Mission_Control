@@ -128,6 +128,7 @@ EXPECTED_RESOURCES = {
     "mission-control://projects/{project_id}/spatial/features",
     "mission-control://projects/{project_id}/spatial/features/{feature_id}",
     "mission-control://projects/{project_id}/diagnostics",
+    "mission-control://projects/{project_id}/diagnostics/latest-report",
     "mission-control://projects/{project_id}/webwright",
     "mission-control://projects/{project_id}/nvidia-dynamo",
     "mission-control://projects/{project_id}/nvidia-nim",
@@ -217,20 +218,20 @@ def test_handoff_summary_infers_ready_from_status() -> None:
 
 def test_project_diagnostics_requests_project_scoped_report_history(monkeypatch) -> None:
     client = MissionControlDaemonClient(base_url="http://127.0.0.1:8010", timeout=0.1)
-    requested_paths: list[str] = []
+    requested_calls: list[tuple[str, dict[str, object]]] = []
 
     monkeypatch.setattr(client, "plugin_health", lambda: {"status": "healthy", "checks": []})
     monkeypatch.setattr(
         client,
         "_request",
-        lambda method, path, **kwargs: requested_paths.append(path) or [],
+        lambda method, path, **kwargs: requested_calls.append((path, kwargs)) or [],
     )
     monkeypatch.setattr(client, "get_status", lambda **kwargs: {"manager_status": "idle", "orchestration_status": "idle"})
 
     payload = client.get_diagnostics(project_id=7)
 
     assert payload["recent_reports"] == []
-    assert "/api/diagnostics/reports?project_id=7" in requested_paths
+    assert ("/api/diagnostics/reports", {"params": {"project_id": 7}}) in requested_calls
 
 
 def test_daemon_client_rejects_non_local_spawn(monkeypatch) -> None:
@@ -3097,6 +3098,7 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
     verification = client.read_resource("mission-control://projects/7/verification-brief")
     capability_report = client.read_resource("mission-control://projects/7/capability-report")
     capability_section = client.read_resource("mission-control://projects/7/capability-report/semantic_code_impact_mapping")
+    latest_diagnostic_report = client.read_resource("mission-control://projects/7/diagnostics/latest-report")
     handoff_evidence = client.read_resource("mission-control://projects/7/handoff/evidence")
     handoff_evidence_preview = client.read_resource("mission-control://projects/7/handoff/evidence/preview")
     codebase_understanding = client.read_resource("mission-control://projects/7/codebase-understanding")
@@ -3254,6 +3256,8 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
     assert capability_report["sections"][0]["key"] == "issue_to_execution_profiles"
     assert capability_section["section_key"] == "semantic_code_impact_mapping"
     assert capability_section["metadata_json"]["semantic_backend"] == "python-ast-graph"
+    assert latest_diagnostic_report["exists"] is True
+    assert latest_diagnostic_report["report"]["report_id"] == 121
     assert handoff_evidence["evidence_count"] == 1
     assert handoff_evidence["evidence_items"][0]["evidence_type"] == "test_result"
     assert handoff_evidence_preview["derived_candidate_count"] == 1
@@ -3631,6 +3635,7 @@ def test_daemon_client_bridge_auth_protected_reads_include_token(monkeypatch) ->
     client.get_subagent_batch(7, 51)
     client.list_handoffs()
     client.list_diagnostic_reports()
+    client.list_diagnostic_reports(7)
     client.active_project_orchestration(7)
 
     assert calls == [
@@ -3698,6 +3703,7 @@ def test_daemon_client_bridge_auth_protected_reads_include_token(monkeypatch) ->
         ("GET", "/api/projects/7/subagent-batches", True),
         ("GET", "/api/subagents/batches/51", True),
         ("GET", "/api/handoffs", True),
+        ("GET", "/api/diagnostics/reports", True),
         ("GET", "/api/diagnostics/reports", True),
         ("GET", "/api/projects/7/orchestrations/active", True),
     ]

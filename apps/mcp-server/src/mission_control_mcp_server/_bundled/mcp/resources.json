@@ -3042,7 +3042,7 @@
       "source_hint": {
         "rest_endpoints": [
           "/api/diagnostics/reports",
-          "/api/orchestrations/plugin-health",
+          "/api/plugin/health",
           "/api/projects/{project_id}/orchestrations/active"
         ]
       },
@@ -3066,6 +3066,31 @@
           "env_dump"
         ],
         "notes": "Return report metadata and top-level failures only."
+      }
+    },
+    {
+      "uri_template": "mission-control://projects/{project_id}/diagnostics/latest-report",
+      "title": "Latest diagnostic report",
+      "summary": "Project-scoped latest diagnostic report so chat can inspect the newest evidence bundle without scanning the full report history.",
+      "support_status": "implemented",
+      "source_hint": {
+        "rest_endpoints": [
+          "/api/diagnostics/reports"
+        ]
+      },
+      "default_fields": [
+        "project_id",
+        "exists",
+        "report_count",
+        "report"
+      ],
+      "redaction": {
+        "omit_fields": [
+          "raw_log",
+          "stack_trace",
+          "secret_values"
+        ],
+        "notes": "Expose only the latest safe diagnostic report payload, not raw traces or secrets."
       }
     },
     {

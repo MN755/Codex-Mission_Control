@@ -990,10 +990,7 @@ class MissionControlDaemonClient:
         if resolved_project_id is None and orchestration_id is not None:
             session = self.get_orchestration(orchestration_id, project_id=project_id)
             resolved_project_id = int(session["project_id"])
-        reports_path = "/api/diagnostics/reports"
-        if resolved_project_id is not None:
-            reports_path = f"{reports_path}?project_id={resolved_project_id}"
-        reports = self._request("GET", reports_path)
+        reports = self.list_diagnostic_reports(project_id=resolved_project_id)
         latest_report = reports[0] if reports else None
         status = None
         if resolved_project_id is not None:
@@ -2300,6 +2297,15 @@ class MissionControlDaemonClient:
             "reports": reports[:20],
         }
 
+    def _summarize_latest_diagnostic_report(self, project_id: int, reports: list[dict[str, Any]]) -> dict[str, Any]:
+        latest = reports[0] if reports else None
+        return {
+            "project_id": project_id,
+            "exists": latest is not None,
+            "report_count": len(reports),
+            "report": latest,
+        }
+
     def _summarize_agent_archetypes(self, archetypes: list[dict[str, Any]]) -> dict[str, Any]:
         return {
             "archetype_count": len(archetypes),
@@ -2597,6 +2603,8 @@ class MissionControlDaemonClient:
                 return self._summarize_reservations(project_id, self.get_reservations(project_id))
             if kind == "import-safety":
                 return self.get_import_safety(project_id)
+            if kind == "diagnostics" and len(parts) == 4 and parts[3] == "latest-report":
+                return self._summarize_latest_diagnostic_report(project_id, self.list_diagnostic_reports(project_id=project_id))
             if kind == "diagnostics":
                 return self._summarize_diagnostics(project_id, self.get_diagnostics(project_id=project_id))
             if kind == "settings":

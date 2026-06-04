@@ -146,6 +146,7 @@ EXPECTED_RESOURCES = [
     "mission-control://projects/{project_id}/spatial/features",
     "mission-control://projects/{project_id}/spatial/features/{feature_id}",
     "mission-control://projects/{project_id}/diagnostics",
+    "mission-control://projects/{project_id}/diagnostics/latest-report",
     "mission-control://projects/{project_id}/webwright",
     "mission-control://projects/{project_id}/nvidia-dynamo",
     "mission-control://projects/{project_id}/nvidia-nim",
@@ -298,6 +299,7 @@ def test_docs_explain_resources_prompts_and_headless_boundary() -> None:
     assert "mission-control://projects/{project_id}/orchestrations/{orchestration_id}/handoff-summary" in resources_content
     assert "mission-control://projects/{project_id}/agents/{agent_id}/logs" in resources_content
     assert "mission-control://projects/{project_id}/integrations/{family}/actions/{action_id}/preview" in resources_content
+    assert "mission-control://projects/{project_id}/diagnostics/latest-report" in resources_content
     assert "mission-control://projects/{project_id}/questions/pending" in resources_content
     assert "mission-control://projects/{project_id}/approvals/pending" in resources_content
     assert "mission-control://system/auth-jobs/{job_id}" in resources_content

@@ -257,6 +257,7 @@
     "mission-control://projects/{project_id}/spatial/features",
     "mission-control://projects/{project_id}/spatial/features/{feature_id}",
     "mission-control://projects/{project_id}/diagnostics",
+    "mission-control://projects/{project_id}/diagnostics/latest-report",
     "mission-control://projects/{project_id}/webwright",
     "mission-control://projects/{project_id}/nvidia-dynamo",
     "mission-control://projects/{project_id}/nvidia-nim",
