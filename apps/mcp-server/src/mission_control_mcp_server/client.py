@@ -384,9 +384,9 @@ class MissionControlDaemonClient:
 
     def get_orchestration(self, orchestration_id: int, *, project_id: int | None = None) -> dict[str, Any]:
         resolved_project_id = self._project_id_for_orchestration(orchestration_id, project_id)
-        payload = self._request("GET", f"/api/orchestrations/{orchestration_id}", params={"project_id": resolved_project_id})
+        payload = self._request("GET", f"/api/projects/{resolved_project_id}/orchestrations/{orchestration_id}")
         if isinstance(payload, dict):
-            self._remember_orchestration_project(payload.get("id"), payload.get("project_id"))
+            self._remember_orchestration_project(payload.get("id"), payload.get("project_id") or resolved_project_id)
         return payload
 
     def active_project_orchestration(self, project_id: int) -> dict[str, Any] | None:
@@ -408,7 +408,7 @@ class MissionControlDaemonClient:
             action="Mission Control status",
         )
         resolved_project_id = self._project_id_for_orchestration(resolved_id, project_id=project_id)
-        payload = self._request("GET", f"/api/orchestrations/{resolved_id}/status", params={"project_id": resolved_project_id})
+        payload = self._request("GET", f"/api/projects/{resolved_project_id}/orchestrations/{resolved_id}/status")
         if isinstance(payload, dict):
             self._remember_orchestration_project(payload.get("orchestration_id") or resolved_id, payload.get("project_id") or resolved_project_id)
         return payload
@@ -429,7 +429,7 @@ class MissionControlDaemonClient:
                 return []
             return self._request("GET", f"/api/projects/{project_id}/pending-decisions")
         resolved_project_id = self._project_id_for_orchestration(resolved_id, project_id=project_id)
-        return self._request("GET", f"/api/orchestrations/{resolved_id}/pending-decisions", params={"project_id": resolved_project_id})
+        return self._request("GET", f"/api/projects/{resolved_project_id}/orchestrations/{resolved_id}/pending-decisions")
 
     def get_decision_bridge_message(self, decision_id: int, *, project_id: int) -> dict[str, Any]:
         return self._request("GET", f"/api/projects/{project_id}/decisions/{decision_id}/bridge-message")
@@ -467,7 +467,7 @@ class MissionControlDaemonClient:
             action="Mission Control handoff lookup",
         )
         resolved_project_id = self._project_id_for_orchestration(resolved_id, project_id=project_id)
-        return self._request("GET", f"/api/orchestrations/{resolved_id}/handoff", params={"project_id": resolved_project_id})
+        return self._request("GET", f"/api/projects/{resolved_project_id}/orchestrations/{resolved_id}/handoff")
 
     def get_event_digest(
         self,
@@ -500,7 +500,7 @@ class MissionControlDaemonClient:
             action="Orchestration events",
         )
         resolved_project_id = self._project_id_for_orchestration(resolved_id, project_id=project_id)
-        return self._request("GET", f"/api/orchestrations/{resolved_id}/events", params={"project_id": resolved_project_id})
+        return self._request("GET", f"/api/projects/{resolved_project_id}/orchestrations/{resolved_id}/events")
 
     def get_agents(self, project_id: int) -> list[dict[str, Any]]:
         return self._request("GET", f"/api/projects/{project_id}/agents")

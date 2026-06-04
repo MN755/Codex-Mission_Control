@@ -2049,6 +2049,19 @@ def get_orchestration(
     return OrchestrationSessionRead(**coordinator._serialize_session(session))
 
 
+@app.get("/api/projects/{project_id}/orchestrations/{orchestration_id}", response_model=OrchestrationSessionRead)
+def get_project_orchestration(
+    project_id: int,
+    orchestration_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> OrchestrationSessionRead:
+    session = _get_orchestration_or_404(db, orchestration_id)
+    _require_project_scope("Orchestration session", session.project_id, project_id)
+    return OrchestrationSessionRead(**coordinator._serialize_session(session))
+
+
 @app.get("/api/projects/{project_id}/orchestrations/active", response_model=OrchestrationSessionRead | None)
 def get_active_project_orchestration(
     project_id: int,
@@ -2066,6 +2079,19 @@ async def get_orchestration_status(
     orchestration_id: int,
     request: Request,
     project_id: int = Query(...),
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> OrchestrationStatusRead:
+    session = _get_orchestration_or_404(db, orchestration_id)
+    _require_project_scope("Orchestration session", session.project_id, project_id)
+    return OrchestrationStatusRead(**(await coordinator.get_status(db, session)))
+
+
+@app.get("/api/projects/{project_id}/orchestrations/{orchestration_id}/status", response_model=OrchestrationStatusRead)
+async def get_project_orchestration_status(
+    project_id: int,
+    orchestration_id: int,
+    request: Request,
     db: Session = Depends(get_db),
     _: None = Depends(_require_bridge_token),
 ) -> OrchestrationStatusRead:
@@ -2118,6 +2144,19 @@ def get_orchestration_events(
     return [OrchestrationEventRead(**event) for event in coordinator.list_events(db, session)]
 
 
+@app.get("/api/projects/{project_id}/orchestrations/{orchestration_id}/events", response_model=list[OrchestrationEventRead])
+def get_project_orchestration_events(
+    project_id: int,
+    orchestration_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> list[OrchestrationEventRead]:
+    session = _get_orchestration_or_404(db, orchestration_id)
+    _require_project_scope("Orchestration session", session.project_id, project_id)
+    return [OrchestrationEventRead(**event) for event in coordinator.list_events(db, session)]
+
+
 @app.get("/api/orchestrations/{orchestration_id}/handoff", response_model=OrchestrationHandoffRead)
 def get_orchestration_handoff(
     orchestration_id: int,
@@ -2131,11 +2170,38 @@ def get_orchestration_handoff(
     return OrchestrationHandoffRead(**coordinator.get_handoff(db, session))
 
 
+@app.get("/api/projects/{project_id}/orchestrations/{orchestration_id}/handoff", response_model=OrchestrationHandoffRead)
+def get_project_orchestration_handoff(
+    project_id: int,
+    orchestration_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> OrchestrationHandoffRead:
+    session = _get_orchestration_or_404(db, orchestration_id)
+    _require_project_scope("Orchestration session", session.project_id, project_id)
+    return OrchestrationHandoffRead(**coordinator.get_handoff(db, session))
+
+
 @app.get("/api/orchestrations/{orchestration_id}/pending-decisions", response_model=list[PendingDecisionRead])
 def get_orchestration_pending_decisions(
     orchestration_id: int,
     request: Request,
     project_id: int = Query(...),
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> list[PendingDecisionRead]:
+    session = _get_orchestration_or_404(db, orchestration_id)
+    _require_project_scope("Orchestration session", session.project_id, project_id)
+    project = _get_project_or_404(db, session.project_id)
+    return [PendingDecisionRead(**item) for item in bridge_runtime_service.get_pending_decisions(db, project=project, orchestration=session)]
+
+
+@app.get("/api/projects/{project_id}/orchestrations/{orchestration_id}/pending-decisions", response_model=list[PendingDecisionRead])
+def get_project_orchestration_pending_decisions(
+    project_id: int,
+    orchestration_id: int,
+    request: Request,
     db: Session = Depends(get_db),
     _: None = Depends(_require_bridge_token),
 ) -> list[PendingDecisionRead]:

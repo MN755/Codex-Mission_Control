@@ -282,6 +282,9 @@ def test_dry_run_project_flow(client, bridge_headers, monkeypatch) -> None:
     assert details_response.status_code == 200
     assert details_response.json()["id"] == project_id
 
+    active_orchestration = client.get(f"/api/projects/{project_id}/orchestrations/active")
+    assert active_orchestration.status_code == 200
+
     settings_response = client.get(f"/api/settings?project_id={project_id}")
     assert settings_response.status_code == 200
     assert settings_response.json()["runner_mode"] == "dry_run"
@@ -363,6 +366,22 @@ def test_dry_run_project_flow(client, bridge_headers, monkeypatch) -> None:
     instincts_preview = client.get(f"/api/projects/{project_id}/instincts/preview")
     assert instincts.status_code == 200
     assert instincts.json() == instincts_preview.json()
+
+    orchestration = active_orchestration.json()
+    if orchestration is not None:
+        orchestration_id = orchestration["id"]
+        orchestration_detail = client.get(f"/api/projects/{project_id}/orchestrations/{orchestration_id}")
+        orchestration_status = client.get(f"/api/projects/{project_id}/orchestrations/{orchestration_id}/status")
+        orchestration_events = client.get(f"/api/projects/{project_id}/orchestrations/{orchestration_id}/events")
+        orchestration_handoff = client.get(f"/api/projects/{project_id}/orchestrations/{orchestration_id}/handoff")
+        orchestration_pending_decisions = client.get(
+            f"/api/projects/{project_id}/orchestrations/{orchestration_id}/pending-decisions"
+        )
+        assert orchestration_detail.status_code == 200
+        assert orchestration_status.status_code == 200
+        assert orchestration_events.status_code == 200
+        assert orchestration_handoff.status_code == 200
+        assert orchestration_pending_decisions.status_code == 200
 
     docs_response = client.post(f"/api/projects/{project_id}/docs/generate")
     assert docs_response.status_code == 200
@@ -464,6 +483,11 @@ def test_runtime_and_project_control_routes_require_token(client) -> None:
         assert raw_client.get(f"/api/projects/{project_id}/risk-register").status_code == 401
         assert raw_client.get(f"/api/projects/{project_id}/validation-summary").status_code == 401
         assert raw_client.get(f"/api/projects/{project_id}/instincts").status_code == 401
+        assert raw_client.get(f"/api/projects/{project_id}/orchestrations/1").status_code == 401
+        assert raw_client.get(f"/api/projects/{project_id}/orchestrations/1/status").status_code == 401
+        assert raw_client.get(f"/api/projects/{project_id}/orchestrations/1/events").status_code == 401
+        assert raw_client.get(f"/api/projects/{project_id}/orchestrations/1/handoff").status_code == 401
+        assert raw_client.get(f"/api/projects/{project_id}/orchestrations/1/pending-decisions").status_code == 401
         assert raw_client.get(f"/api/projects/{project_id}/swarm/preferences").status_code == 401
         assert raw_client.post(f"/api/projects/{project_id}/swarm/plan").status_code == 401
         assert raw_client.post(f"/api/projects/{project_id}/swarm/spawn").status_code == 401
