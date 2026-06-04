@@ -1718,6 +1718,9 @@ class MissionControlDaemonClient:
                 return self.get_integration_health()
         if len(parts) >= 2 and parts[0] == "profile" and parts[1] == "summary":
             return self.get_profile_summary()
+        if len(parts) >= 1 and parts[0] == "tools":
+            tools = self.get_tool_catalog()
+            return {"tool_count": len(tools), "tools": tools}
         if len(parts) >= 2 and parts[0] == "preferences" and parts[1] == "summary":
             return self.get_global_preference_summary()
         if len(parts) >= 1 and parts[0] == "playbooks":
@@ -1801,8 +1804,16 @@ class MissionControlDaemonClient:
                 codebase_map = self.get_codebase_map(project_id)
                 understanding = self.get_codebase_understanding(project_id)
                 return self._summarize_codebase_map(codebase_map, understanding)
+            if kind == "codebase-understanding":
+                return self.get_codebase_understanding(project_id)
+            if kind == "import-safety":
+                return self.get_import_safety(project_id)
             if kind == "diagnostics":
                 return self._summarize_diagnostics(project_id, self.get_diagnostics(project_id=project_id))
+            if kind == "settings":
+                return self.get_project_settings(project_id)
+            if kind == "swarm" and len(parts) == 4 and parts[3] == "preferences":
+                return self.get_swarm_preferences(project_id)
             if kind == "swarm-plan":
                 prefs = self.get_swarm_preferences(project_id)
                 plan = self.get_swarm_plan(project_id)

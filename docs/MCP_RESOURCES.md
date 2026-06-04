@@ -24,6 +24,8 @@ Mission Control resources are read-only context surfaces for Codex chat.
 - `mission-control://projects/{project_id}/handoff/evidence`
 - `mission-control://projects/{project_id}/handoff/evidence/preview`
 - `mission-control://projects/{project_id}/codebase-map`
+- `mission-control://projects/{project_id}/codebase-understanding`
+- `mission-control://projects/{project_id}/import-safety`
 - `mission-control://integrations/catalog`
 - `mission-control://integrations/connections`
 - `mission-control://integrations/health`
@@ -40,11 +42,13 @@ Mission Control resources are read-only context surfaces for Codex chat.
 - `mission-control://dashboard/summary`
 - `mission-control://widgets/catalog`
 - `mission-control://widgets/catalog/{scope}`
+- `mission-control://tools`
 - `mission-control://profile/summary`
 - `mission-control://preferences/summary`
 - `mission-control://subagent-policy/summary`
 - `mission-control://projects/{project_id}/integrations`
 - `mission-control://projects/{project_id}/integrations/{family}`
+- `mission-control://projects/{project_id}/settings`
 - `mission-control://projects/{project_id}/runbook`
 - `mission-control://projects/{project_id}/runbook/summary`
 - `mission-control://projects/{project_id}/safe-mode`
@@ -74,6 +78,7 @@ Mission Control resources are read-only context surfaces for Codex chat.
 - `mission-control://projects/{project_id}/nvidia-gpu-diagnostics`
 - `mission-control://projects/{project_id}/nvidia-local-runtime`
 - `mission-control://projects/{project_id}/nvidia-validation-plan`
+- `mission-control://projects/{project_id}/swarm/preferences`
 - `mission-control://projects/{project_id}/swarm-plan`
 - `mission-control://projects/{project_id}/swarm/simulations/latest`
 - `mission-control://risks/summary`
@@ -100,7 +105,9 @@ Mission Control resources are read-only context surfaces for Codex chat.
 - handoff supports final bridge summaries
 - handoff evidence and handoff evidence preview expose stored proof plus safe derived candidates without making chat scrape raw agent reports or create rows on read
 - codebase map supports imported repo understanding
+- codebase understanding, import safety, and project settings expose what the daemon thinks it knows about the repo and how cautiously it should import or operate before the bridge starts improvising
 - workspace tooling tells the bridge which repo-native helper lanes actually exist for intake, validation, and security before it recommends commands like a clown
+- tool catalog and swarm preferences expose the safe action surface and collaboration posture directly instead of forcing chat to infer them from unrelated endpoints
 - profile summary and subagent policy summary expose the operator defaults that shape provider choice, approvals, and whether subagent bursts are even allowed before the bridge starts making heroic assumptions
 - preference summary and effective preference resources expose global defaults, project overrides, and inherited values before the bridge starts making configuration assumptions from thin air
 - runbook and runbook summary expose the current operational guide without forcing chat to scrape widget markdown like an animal

@@ -30,6 +30,8 @@ EXPECTED_RESOURCES = {
     "mission-control://projects/{project_id}/handoff/evidence",
     "mission-control://projects/{project_id}/handoff/evidence/preview",
     "mission-control://projects/{project_id}/codebase-map",
+    "mission-control://projects/{project_id}/codebase-understanding",
+    "mission-control://projects/{project_id}/import-safety",
     "mission-control://integrations/catalog",
     "mission-control://integrations/connections",
     "mission-control://integrations/health",
@@ -46,11 +48,13 @@ EXPECTED_RESOURCES = {
     "mission-control://dashboard/summary",
     "mission-control://widgets/catalog",
     "mission-control://widgets/catalog/{scope}",
+    "mission-control://tools",
     "mission-control://profile/summary",
     "mission-control://preferences/summary",
     "mission-control://subagent-policy/summary",
     "mission-control://projects/{project_id}/integrations",
     "mission-control://projects/{project_id}/integrations/{family}",
+    "mission-control://projects/{project_id}/settings",
     "mission-control://projects/{project_id}/runbook",
     "mission-control://projects/{project_id}/runbook/summary",
     "mission-control://projects/{project_id}/safe-mode",
@@ -80,6 +84,7 @@ EXPECTED_RESOURCES = {
     "mission-control://projects/{project_id}/nvidia-gpu-diagnostics",
     "mission-control://projects/{project_id}/nvidia-local-runtime",
     "mission-control://projects/{project_id}/nvidia-validation-plan",
+    "mission-control://projects/{project_id}/swarm/preferences",
     "mission-control://projects/{project_id}/swarm-plan",
     "mission-control://projects/{project_id}/swarm/simulations/latest",
     "mission-control://risks/summary",
@@ -964,6 +969,80 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
             "security_commands": ["gitleaks dir . --redact"],
             "recommended_next_steps": ["Install OSV-Scanner for dependency auditing."],
             "tools": [{"id": "uv", "label": "uv", "installed": True, "configured": True, "status": "ready"}],
+        },
+    )
+    monkeypatch.setattr(
+        client,
+        "get_tool_catalog",
+        lambda: [
+            {
+                "name": "mission_control_attach_workspace",
+                "description": "Attach the current workspace to Mission Control.",
+                "category": "bootstrap",
+                "requires_project": False,
+                "requires_tool": None,
+                "coming_soon": False,
+                "risk_level": "low",
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        client,
+        "get_project_settings",
+        lambda project_id: {
+            "project_id": project_id,
+            "plan_autostart": True,
+            "auto_apply_safe_fixes": False,
+            "preferred_runner_mode": "auto",
+            "workspace_write_allowed": True,
+            "external_network_allowed": True,
+            "dangerous_commands_require_approval": True,
+            "preferred_diff_style": "unified",
+            "preferred_test_command": "python -m pytest",
+            "preferred_lint_command": "ruff check .",
+            "preferred_build_command": "python -m build",
+            "context_window_hint": 32000,
+            "updated_at": "2026-06-03T12:35:00Z",
+        },
+    )
+    monkeypatch.setattr(
+        client,
+        "get_codebase_understanding",
+        lambda project_id: {
+            "project_id": project_id,
+            "summary": "Mission Control is a headless-first orchestration bridge with a Python backend and bundled MCP surfaces.",
+            "architecture_notes": ["Codex chat bridges into the daemon.", "Plugin catalogs must stay in sync with runtime reads."],
+            "unknowns": ["Live branch protection is weaker than expected."],
+            "recommended_interview_mode": "targeted",
+            "updated_at": "2026-06-03T12:36:00Z",
+        },
+    )
+    monkeypatch.setattr(
+        client,
+        "get_import_safety",
+        lambda project_id: {
+            "project_id": project_id,
+            "workspace_path": "C:/demo",
+            "status": "ready",
+            "requires_interview": False,
+            "requires_confirmation": False,
+            "warnings": ["Large repo; prefer targeted summaries."],
+            "blockers": [],
+            "safe_to_import": True,
+            "updated_at": "2026-06-03T12:37:00Z",
+        },
+    )
+    monkeypatch.setattr(
+        client,
+        "get_swarm_preferences",
+        lambda project_id: {
+            "project_id": project_id,
+            "optimization_mode": "balanced",
+            "swarm_aggressiveness": "measured",
+            "max_agents": 4,
+            "allow_dynamic_spawning": True,
+            "allow_parallel_validation": True,
+            "updated_at": "2026-06-03T12:38:00Z",
         },
     )
     monkeypatch.setattr(
@@ -2093,6 +2172,7 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
     dashboard_summary = client.read_resource("mission-control://dashboard/summary")
     widget_catalog = client.read_resource("mission-control://widgets/catalog")
     project_widget_catalog = client.read_resource("mission-control://widgets/catalog/project")
+    tool_catalog = client.read_resource("mission-control://tools")
     subagent_policy_summary = client.read_resource("mission-control://subagent-policy/summary")
     pending_questions = client.read_resource("mission-control://projects/7/questions/pending")
     pending_approvals = client.read_resource("mission-control://projects/7/approvals/pending")
@@ -2105,6 +2185,9 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
     capability_section = client.read_resource("mission-control://projects/7/capability-report/semantic_code_impact_mapping")
     handoff_evidence = client.read_resource("mission-control://projects/7/handoff/evidence")
     handoff_evidence_preview = client.read_resource("mission-control://projects/7/handoff/evidence/preview")
+    codebase_understanding = client.read_resource("mission-control://projects/7/codebase-understanding")
+    import_safety = client.read_resource("mission-control://projects/7/import-safety")
+    project_settings = client.read_resource("mission-control://projects/7/settings")
     tooling = client.read_resource("mission-control://projects/7/workspace-tooling")
     runbook = client.read_resource("mission-control://projects/7/runbook")
     runbook_summary = client.read_resource("mission-control://projects/7/runbook/summary")
@@ -2139,6 +2222,7 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
     gpu = client.read_resource("mission-control://projects/7/nvidia-gpu-diagnostics")
     local_runtime = client.read_resource("mission-control://projects/7/nvidia-local-runtime")
     validation_plan = client.read_resource("mission-control://projects/7/nvidia-validation-plan")
+    swarm_preferences = client.read_resource("mission-control://projects/7/swarm/preferences")
     latest_simulation = client.read_resource("mission-control://projects/7/swarm/simulations/latest")
 
     assert profile_summary["display_name"] == "Mike"
@@ -2161,6 +2245,8 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
     assert widget_catalog["catalog"][0]["widget_type"] == "Connected Accounts"
     assert project_widget_catalog["scope"] == "project"
     assert project_widget_catalog["catalog"][0]["scope"] == "project"
+    assert tool_catalog["tool_count"] == 1
+    assert tool_catalog["tools"][0]["name"] == "mission_control_attach_workspace"
     assert subagent_policy_summary["default_mode"] == "limited_write"
     assert pending_questions["question_count"] == 1
     assert pending_questions["questions"][0]["category"] == "scope"
@@ -2180,6 +2266,9 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
     assert handoff_evidence["evidence_count"] == 1
     assert handoff_evidence["evidence_items"][0]["evidence_type"] == "test_result"
     assert handoff_evidence_preview["derived_candidate_count"] == 1
+    assert codebase_understanding["recommended_interview_mode"] == "targeted"
+    assert import_safety["safe_to_import"] is True
+    assert project_settings["preferred_runner_mode"] == "auto"
     assert tooling["validation_commands"] == ["uv run pytest", "ruff check ."]
     assert runbook["exists"] is True
     assert runbook["generated_from_handoff_id"] == 3
@@ -2237,6 +2326,7 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
     assert gpu["status"] == "ready"
     assert local_runtime["repo_mode"] == "cuda_cpp"
     assert validation_plan["status"] == "needs_review"
+    assert swarm_preferences["max_agents"] == 4
     assert latest_simulation["simulation_id"] == 17
     assert latest_simulation["persisted"] is False
 
@@ -2376,12 +2466,20 @@ def test_daemon_client_bridge_auth_protected_reads_include_token(monkeypatch) ->
     client.get_project_handoff(7)
     client.get_codebase_map(7)
     client.get_codebase_understanding(7)
+    client.get_import_safety(7)
+    client.get_project_settings(7)
+    client.get_tool_catalog()
+    client.get_swarm_preferences(7)
 
     assert calls == [
         ("GET", "/api/daemon/status", True),
         ("GET", "/api/projects/7/handoff", True),
         ("GET", "/api/projects/7/codebase-map", True),
         ("GET", "/api/projects/7/codebase-understanding", True),
+        ("GET", "/api/projects/7/import-safety", True),
+        ("GET", "/api/settings", True),
+        ("GET", "/api/tools", True),
+        ("GET", "/api/projects/7/swarm/preferences", True),
     ]
 
 

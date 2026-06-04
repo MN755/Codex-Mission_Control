@@ -47,6 +47,8 @@ EXPECTED_RESOURCES = [
     "mission-control://projects/{project_id}/handoff/evidence",
     "mission-control://projects/{project_id}/handoff/evidence/preview",
     "mission-control://projects/{project_id}/codebase-map",
+    "mission-control://projects/{project_id}/codebase-understanding",
+    "mission-control://projects/{project_id}/import-safety",
     "mission-control://integrations/catalog",
     "mission-control://integrations/connections",
     "mission-control://integrations/health",
@@ -63,11 +65,13 @@ EXPECTED_RESOURCES = [
     "mission-control://dashboard/summary",
     "mission-control://widgets/catalog",
     "mission-control://widgets/catalog/{scope}",
+    "mission-control://tools",
     "mission-control://profile/summary",
     "mission-control://preferences/summary",
     "mission-control://subagent-policy/summary",
     "mission-control://projects/{project_id}/integrations",
     "mission-control://projects/{project_id}/integrations/{family}",
+    "mission-control://projects/{project_id}/settings",
     "mission-control://projects/{project_id}/runbook",
     "mission-control://projects/{project_id}/runbook/summary",
     "mission-control://projects/{project_id}/safe-mode",
@@ -97,6 +101,7 @@ EXPECTED_RESOURCES = [
     "mission-control://projects/{project_id}/nvidia-gpu-diagnostics",
     "mission-control://projects/{project_id}/nvidia-local-runtime",
     "mission-control://projects/{project_id}/nvidia-validation-plan",
+    "mission-control://projects/{project_id}/swarm/preferences",
     "mission-control://projects/{project_id}/swarm-plan",
     "mission-control://projects/{project_id}/swarm/simulations/latest",
     "mission-control://risks/summary",
@@ -260,18 +265,23 @@ def test_docs_explain_resources_prompts_and_headless_boundary() -> None:
     assert "mission-control://dashboard/summary" in resources_content
     assert "mission-control://widgets/catalog" in resources_content
     assert "mission-control://widgets/catalog/{scope}" in resources_content
+    assert "mission-control://tools" in resources_content
     assert "mission-control://profile/summary" in resources_content
     assert "mission-control://preferences/summary" in resources_content
     assert "mission-control://subagent-policy/summary" in resources_content
+    assert "mission-control://projects/{project_id}/settings" in resources_content
     assert "mission-control://projects/{project_id}/playbook" in resources_content
     assert "mission-control://projects/{project_id}/playbook/recommendations" in resources_content
     assert "mission-control://projects/{project_id}/preferences/summary" in resources_content
     assert "mission-control://projects/{project_id}/preferences/effective" in resources_content
+    assert "mission-control://projects/{project_id}/codebase-understanding" in resources_content
+    assert "mission-control://projects/{project_id}/import-safety" in resources_content
     assert "mission-control://projects/{project_id}/widgets/summary" in resources_content
     assert "mission-control://projects/{project_id}/webwright" in resources_content
     assert "mission-control://projects/{project_id}/nvidia-nim" in resources_content
     assert "mission-control://projects/{project_id}/nvidia-aiq" in resources_content
     assert "mission-control://projects/{project_id}/nvidia-validation-plan" in resources_content
+    assert "mission-control://projects/{project_id}/swarm/preferences" in resources_content
     assert "mission-control://projects/{project_id}/workspace-tooling" in resources_content
     assert "mission-control://projects/{project_id}/execution-policy/summary" in resources_content
     assert "mission-control://projects/{project_id}/coordination/summary" in resources_content

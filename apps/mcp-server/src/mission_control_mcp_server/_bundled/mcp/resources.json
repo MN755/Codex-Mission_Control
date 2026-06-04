@@ -368,6 +368,62 @@
       }
     },
     {
+      "uri_template": "mission-control://projects/{project_id}/codebase-understanding",
+      "title": "Codebase understanding",
+      "summary": "Project-scoped understanding summary, unknowns, and interview guidance for imported or attached repos.",
+      "support_status": "implemented",
+      "source_hint": {
+        "rest_endpoints": [
+          "/api/projects/{project_id}/codebase-understanding"
+        ]
+      },
+      "default_fields": [
+        "project_id",
+        "summary",
+        "architecture_notes",
+        "unknowns",
+        "recommended_interview_mode",
+        "updated_at"
+      ],
+      "redaction": {
+        "omit_fields": [
+          "raw_source",
+          "private_file_contents",
+          "secret_values"
+        ],
+        "notes": "Expose synthesized understanding only, not raw code or private source excerpts."
+      }
+    },
+    {
+      "uri_template": "mission-control://projects/{project_id}/import-safety",
+      "title": "Import safety",
+      "summary": "Project-scoped import safety posture showing whether repo import requires interview, confirmation, or extra caution.",
+      "support_status": "implemented",
+      "source_hint": {
+        "rest_endpoints": [
+          "/api/projects/{project_id}/import-safety"
+        ]
+      },
+      "default_fields": [
+        "project_id",
+        "workspace_path",
+        "status",
+        "requires_interview",
+        "requires_confirmation",
+        "warnings",
+        "blockers",
+        "safe_to_import"
+      ],
+      "redaction": {
+        "omit_fields": [
+          "raw_log",
+          "secret_env",
+          "private_paths_outside_workspace"
+        ],
+        "notes": "Expose import posture and cautions only, not private environment details."
+      }
+    },
+    {
       "uri_template": "mission-control://integrations/catalog",
       "title": "Integration catalog",
       "summary": "Global cross-host integration catalog covering supported Mission Control integration families, providers, and action lanes.",
@@ -811,6 +867,29 @@
       }
     },
     {
+      "uri_template": "mission-control://tools",
+      "title": "Tool catalog",
+      "summary": "Global Mission Control tool catalog describing bridge-safe actions and their operational risk levels.",
+      "support_status": "implemented",
+      "source_hint": {
+        "rest_endpoints": [
+          "/api/tools"
+        ]
+      },
+      "default_fields": [
+        "tool_count",
+        "tools"
+      ],
+      "redaction": {
+        "omit_fields": [
+          "raw_log",
+          "secret_values",
+          "private_paths_outside_workspace"
+        ],
+        "notes": "Expose catalog metadata only, not tool invocation transcripts."
+      }
+    },
+    {
       "uri_template": "mission-control://profile/summary",
       "title": "Profile summary",
       "summary": "Compact Mission Control app-profile summary covering provider choice, runner defaults, startup posture, and account readiness.",
@@ -960,6 +1039,35 @@
           "private_paths_outside_workspace"
         ],
         "notes": "Expose family-level readiness, safe commands, and approval-relevant action metadata only."
+      }
+    },
+    {
+      "uri_template": "mission-control://projects/{project_id}/settings",
+      "title": "Project settings",
+      "summary": "Project-scoped execution and approval settings that shape how Mission Control should operate in the workspace.",
+      "support_status": "implemented",
+      "source_hint": {
+        "rest_endpoints": [
+          "/api/settings"
+        ]
+      },
+      "default_fields": [
+        "project_id",
+        "preferred_runner_mode",
+        "workspace_write_allowed",
+        "external_network_allowed",
+        "dangerous_commands_require_approval",
+        "preferred_test_command",
+        "preferred_lint_command",
+        "preferred_build_command"
+      ],
+      "redaction": {
+        "omit_fields": [
+          "secret_env",
+          "provider_api_key",
+          "private_paths_outside_workspace"
+        ],
+        "notes": "Expose operational policy and preferred commands only, not secrets."
       }
     },
     {
@@ -1761,6 +1869,34 @@
           "secret_env"
         ],
         "notes": "Return compact validation guidance and blockers only."
+      }
+    },
+    {
+      "uri_template": "mission-control://projects/{project_id}/swarm/preferences",
+      "title": "Swarm preferences",
+      "summary": "Project-scoped swarm tuning preferences that shape how aggressively Mission Control parallelizes and validates work.",
+      "support_status": "implemented",
+      "source_hint": {
+        "rest_endpoints": [
+          "/api/projects/{project_id}/swarm/preferences"
+        ]
+      },
+      "default_fields": [
+        "project_id",
+        "optimization_mode",
+        "swarm_aggressiveness",
+        "max_agents",
+        "allow_dynamic_spawning",
+        "allow_parallel_validation",
+        "updated_at"
+      ],
+      "redaction": {
+        "omit_fields": [
+          "raw_log",
+          "secret_env",
+          "private_paths_outside_workspace"
+        ],
+        "notes": "Expose collaboration posture and limits only, not internal runtime traces."
       }
     },
     {
