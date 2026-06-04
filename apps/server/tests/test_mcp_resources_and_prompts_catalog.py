@@ -36,6 +36,9 @@ DECISION_LEDGER_SKILLS = [
 EXPECTED_RESOURCES = [
     "mission-control://projects/{project_id}/orchestrations/{orchestration_id}/status",
     "mission-control://projects/{project_id}/orchestrations/{orchestration_id}/events",
+    "mission-control://projects/{project_id}/orchestrations/{orchestration_id}",
+    "mission-control://projects/{project_id}/orchestrations/{orchestration_id}/handoff",
+    "mission-control://projects/{project_id}/orchestrations/{orchestration_id}/pending-decisions",
     "mission-control://projects/{project_id}/orchestrations/active",
     "mission-control://projects/{project_id}/status",
     "mission-control://projects/{project_id}/agents",
@@ -82,6 +85,7 @@ EXPECTED_RESOURCES = [
     "mission-control://diagnostics/reports",
     "mission-control://diagnostics/identity",
     "mission-control://headless/health",
+    "mission-control://headless/diagnostic-summary",
     "mission-control://projects",
     "mission-control://profile",
     "mission-control://profile/summary",
@@ -118,6 +122,7 @@ EXPECTED_RESOURCES = [
     "mission-control://projects/{project_id}/workspace-tooling",
     "mission-control://projects/{project_id}/security/policy",
     "mission-control://projects/{project_id}/security/audit-log",
+    "mission-control://projects/{project_id}/decisions/{decision_id}/bridge-message",
     "mission-control://projects/{project_id}/action",
     "mission-control://projects/{project_id}/actions",
     "mission-control://projects/{project_id}/manager/messages",
@@ -125,6 +130,7 @@ EXPECTED_RESOURCES = [
     "mission-control://projects/{project_id}/tasks",
     "mission-control://projects/{project_id}/reservations",
     "mission-control://projects/{project_id}/events",
+    "mission-control://projects/{project_id}/status-summary",
     "mission-control://projects/{project_id}/execution-policy/summary",
     "mission-control://projects/{project_id}/coordination/summary",
     "mission-control://projects/{project_id}/tensorflow/features",
@@ -309,6 +315,7 @@ def test_docs_explain_resources_prompts_and_headless_boundary() -> None:
     assert "mission-control://runners/status" in resources_content
     assert "mission-control://plugin/health" in resources_content
     assert "mission-control://headless/config" in resources_content
+    assert "mission-control://headless/diagnostic-summary" in resources_content
     assert "mission-control://system/status" in resources_content
     assert "mission-control://system/auth-state" in resources_content
     assert "mission-control://system/codex-status" in resources_content
@@ -337,6 +344,9 @@ def test_docs_explain_resources_prompts_and_headless_boundary() -> None:
     assert "mission-control://projects/{project_id}/understanding" in resources_content
     assert "mission-control://projects/{project_id}/interview" in resources_content
     assert "mission-control://projects/{project_id}/plan" in resources_content
+    assert "mission-control://projects/{project_id}/orchestrations/{orchestration_id}" in resources_content
+    assert "mission-control://projects/{project_id}/orchestrations/{orchestration_id}/handoff" in resources_content
+    assert "mission-control://projects/{project_id}/orchestrations/{orchestration_id}/pending-decisions" in resources_content
     assert "mission-control://projects/{project_id}/orchestrations/active" in resources_content
     assert "mission-control://projects/{project_id}/playbook" in resources_content
     assert "mission-control://projects/{project_id}/playbook/recommendations" in resources_content
@@ -358,6 +368,7 @@ def test_docs_explain_resources_prompts_and_headless_boundary() -> None:
     assert "mission-control://projects/{project_id}/workspace-tooling" in resources_content
     assert "mission-control://projects/{project_id}/security/policy" in resources_content
     assert "mission-control://projects/{project_id}/security/audit-log" in resources_content
+    assert "mission-control://projects/{project_id}/decisions/{decision_id}/bridge-message" in resources_content
     assert "mission-control://projects/{project_id}/action" in resources_content
     assert "mission-control://projects/{project_id}/actions" in resources_content
     assert "mission-control://projects/{project_id}/manager/messages" in resources_content
@@ -365,6 +376,7 @@ def test_docs_explain_resources_prompts_and_headless_boundary() -> None:
     assert "mission-control://projects/{project_id}/tasks" in resources_content
     assert "mission-control://projects/{project_id}/reservations" in resources_content
     assert "mission-control://projects/{project_id}/events" in resources_content
+    assert "mission-control://projects/{project_id}/status-summary" in resources_content
     assert "mission-control://projects/{project_id}/subagent-batches" in resources_content
     assert "mission-control://projects/{project_id}/subagent-batches/{batch_id}" in resources_content
     assert "mission-control://projects/{project_id}/execution-policy/summary" in resources_content

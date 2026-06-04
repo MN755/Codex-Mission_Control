@@ -19,6 +19,9 @@ from mission_control_mcp_server.server import MissionControlMcpServer
 EXPECTED_RESOURCES = {
     "mission-control://projects/{project_id}/orchestrations/{orchestration_id}/status",
     "mission-control://projects/{project_id}/orchestrations/{orchestration_id}/events",
+    "mission-control://projects/{project_id}/orchestrations/{orchestration_id}",
+    "mission-control://projects/{project_id}/orchestrations/{orchestration_id}/handoff",
+    "mission-control://projects/{project_id}/orchestrations/{orchestration_id}/pending-decisions",
     "mission-control://projects/{project_id}/orchestrations/active",
     "mission-control://projects/{project_id}/status",
     "mission-control://projects/{project_id}/agents",
@@ -64,6 +67,7 @@ EXPECTED_RESOURCES = {
     "mission-control://diagnostics/reports",
     "mission-control://diagnostics/identity",
     "mission-control://headless/health",
+    "mission-control://headless/diagnostic-summary",
     "mission-control://projects",
     "mission-control://profile",
     "mission-control://profile/summary",
@@ -100,6 +104,7 @@ EXPECTED_RESOURCES = {
     "mission-control://projects/{project_id}/workspace-tooling",
     "mission-control://projects/{project_id}/security/policy",
     "mission-control://projects/{project_id}/security/audit-log",
+    "mission-control://projects/{project_id}/decisions/{decision_id}/bridge-message",
     "mission-control://projects/{project_id}/action",
     "mission-control://projects/{project_id}/actions",
     "mission-control://projects/{project_id}/manager/messages",
@@ -107,6 +112,7 @@ EXPECTED_RESOURCES = {
     "mission-control://projects/{project_id}/tasks",
     "mission-control://projects/{project_id}/reservations",
     "mission-control://projects/{project_id}/events",
+    "mission-control://projects/{project_id}/status-summary",
     "mission-control://projects/{project_id}/execution-policy/summary",
     "mission-control://projects/{project_id}/coordination/summary",
     "mission-control://projects/{project_id}/tensorflow/features",
@@ -1135,6 +1141,16 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
     )
     monkeypatch.setattr(
         client,
+        "get_decision_bridge_message",
+        lambda decision_id, project_id: {
+            "message_type": "pending_decision",
+            "summary": "Need approval for a direct push to main.",
+            "severity": "warning",
+            "bullets": [f"Decision {decision_id}", f"Project {project_id}"],
+        },
+    )
+    monkeypatch.setattr(
+        client,
         "get_manager_queue",
         lambda project_id: {
             "project_id": project_id,
@@ -1219,6 +1235,16 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
     )
     monkeypatch.setattr(
         client,
+        "get_headless_diagnostic_summary",
+        lambda: {
+            "message_type": "diagnostic_summary",
+            "summary": "Headless runtime is healthy.",
+            "severity": "info",
+            "bullets": ["Daemon reachable", "Plugin health checks are green"],
+        },
+    )
+    monkeypatch.setattr(
+        client,
         "list_diagnostic_reports",
         lambda project_id=None: [
             {
@@ -1262,6 +1288,36 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
             "preferred_build_command": "python -m build",
             "context_window_hint": 32000,
             "updated_at": "2026-06-03T12:35:00Z",
+        },
+    )
+    monkeypatch.setattr(
+        client,
+        "get_orchestration",
+        lambda orchestration_id, project_id=None: {
+            "id": orchestration_id,
+            "project_id": project_id or 7,
+            "workspace_path": "C:/demo",
+            "source": "codex_plugin",
+            "user_request": "Finish the MCP parity work.",
+            "status": "running",
+            "manager_status": "awaiting_validation",
+            "mode": "delegate",
+            "created_at": "2026-06-03T12:00:00Z",
+            "updated_at": "2026-06-03T12:46:00Z",
+            "completed_at": None,
+            "metadata_json": {"phase": "validation"},
+        },
+    )
+    monkeypatch.setattr(
+        client,
+        "get_status_summary",
+        lambda **kwargs: {
+            "message_type": "status_summary",
+            "summary": "Validation is the next gate.",
+            "severity": "warning",
+            "bullets": ["One approval is pending", "Validation evidence still missing"],
+            "project_id": kwargs.get("project_id"),
+            "orchestration_id": kwargs.get("orchestration_id"),
         },
     )
     monkeypatch.setattr(
@@ -1642,6 +1698,42 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
             "status": "ready",
             "summary": "Captures runtime routes, manifests, and guard tests.",
             "artifacts": ["client.py", "plugin.json", "resources.json"],
+        },
+    )
+    monkeypatch.setattr(
+        client,
+        "get_pending_decisions",
+        lambda **kwargs: [
+            {
+                "id": 31,
+                "project_id": kwargs.get("project_id", 7),
+                "orchestration_id": kwargs.get("orchestration_id", 14),
+                "category": "approval",
+                "question_text": "Approve direct push to main?",
+                "severity": "medium",
+                "options": [{"id": "approve", "label": "Approve"}],
+                "status": "pending",
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        client,
+        "get_handoff",
+        lambda **kwargs: {
+            "status": "needs_review",
+            "ready": True,
+            "handoff": {
+                "project_name": "Demo",
+                "status": "needs_review",
+                "summary": "Validation evidence still needs operator review.",
+                "run_instructions": ["python -m pytest"],
+                "tests_count": 1,
+                "confidence_level": "medium",
+                "evidence_status": "partial",
+                "missing_evidence": ["release check"],
+                "known_limitations": ["build check bypassed"],
+                "dry_run": False,
+            },
         },
     )
     monkeypatch.setattr(
@@ -2906,6 +2998,7 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
     health = client.read_resource("mission-control://health")
     diagnostics_identity = client.read_resource("mission-control://diagnostics/identity")
     headless_health = client.read_resource("mission-control://headless/health")
+    headless_diagnostic_summary = client.read_resource("mission-control://headless/diagnostic-summary")
     profile = client.read_resource("mission-control://profile")
     profile_summary = client.read_resource("mission-control://profile/summary")
     global_preferences = client.read_resource("mission-control://preferences")
@@ -2942,6 +3035,7 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
     subagent_policy_summary = client.read_resource("mission-control://subagent-policy/summary")
     pending_questions = client.read_resource("mission-control://projects/7/questions/pending")
     pending_approvals = client.read_resource("mission-control://projects/7/approvals/pending")
+    project_status_summary = client.read_resource("mission-control://projects/7/status-summary")
     event_digest = client.read_resource("mission-control://projects/7/event-digest")
     handoff_summary = client.read_resource("mission-control://projects/7/handoff-summary")
     snapshot = client.read_resource("mission-control://projects/7/operator-snapshot")
@@ -2958,10 +3052,14 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
     project_understanding = client.read_resource("mission-control://projects/7/understanding")
     interview = client.read_resource("mission-control://projects/7/interview")
     plan = client.read_resource("mission-control://projects/7/plan")
+    orchestration_session = client.read_resource("mission-control://projects/7/orchestrations/14")
+    orchestration_handoff = client.read_resource("mission-control://projects/7/orchestrations/14/handoff")
+    orchestration_pending_decisions = client.read_resource("mission-control://projects/7/orchestrations/14/pending-decisions")
     active_orchestration = client.read_resource("mission-control://projects/7/orchestrations/active")
     workspace = client.read_resource("mission-control://projects/7/workspace")
     tooling = client.read_resource("mission-control://projects/7/workspace-tooling")
     project_security_policy = client.read_resource("mission-control://projects/7/security/policy")
+    decision_bridge_message = client.read_resource("mission-control://projects/7/decisions/31/bridge-message")
     project_action = client.read_resource("mission-control://projects/7/action")
     project_actions = client.read_resource("mission-control://projects/7/actions")
     manager_messages = client.read_resource("mission-control://projects/7/manager/messages")
@@ -3020,6 +3118,7 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
     assert health["status"] == "ok"
     assert diagnostics_identity["service"] == "mission-control-daemon"
     assert headless_health["status"] == "ready"
+    assert headless_diagnostic_summary["message_type"] == "diagnostic_summary"
     assert profile["display_name"] == "Mike"
     assert profile["provider_endpoint_configured"] is False
     assert profile["tool_permission_overrides_json"] == {"git push": "ask"}
@@ -3080,6 +3179,7 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
     assert pending_questions["questions"][0]["category"] == "scope"
     assert pending_approvals["approval_count"] == 1
     assert pending_approvals["approvals"][0]["risk_level"] == "medium"
+    assert project_status_summary["message_type"] == "status_summary"
     assert event_digest["message_type"] == "event_digest"
     assert handoff_summary["message_type"] == "handoff_ready"
     assert snapshot["project_name"] == "Demo"
@@ -3107,12 +3207,17 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
     assert plan["exists"] is True
     assert plan["version"] == 2
     assert plan["summary_json"]["risk_count"] == 2
+    assert orchestration_session["orchestration_id"] == 14
+    assert orchestration_session["manager_status"] == "awaiting_validation"
+    assert orchestration_handoff["status"] == "needs_review"
+    assert orchestration_pending_decisions["decision_count"] == 1
     assert active_orchestration["exists"] is True
     assert active_orchestration["orchestration_id"] == 14
     assert active_orchestration["manager_status"] == "awaiting_validation"
     assert workspace["git_branch"] == "main"
     assert tooling["validation_commands"] == ["uv run pytest", "ruff check ."]
     assert project_security_policy["project_id"] == 7
+    assert decision_bridge_message["message_type"] == "pending_decision"
     assert project_action["action_id"] == "run_validation"
     assert project_actions["action_count"] == 2
     assert manager_messages["message_count"] == 1
@@ -3393,13 +3498,18 @@ def test_daemon_client_bridge_auth_protected_reads_include_token(monkeypatch) ->
     client.get_health()
     client.get_diagnostics_identity()
     client.get_headless_health()
+    client.get_headless_diagnostic_summary()
     client.daemon_status()
     client.get_profile()
+    client.get_handoff(orchestration_id=14, project_id=7)
+    client.get_pending_decisions(orchestration_id=14, project_id=7)
     client.get_project_handoff(7)
     client.get_codebase_map(7)
     client.get_codebase_understanding(7)
     client.get_import_safety(7)
     client.get_project_settings(7)
+    client.get_orchestration(14, project_id=7)
+    client.get_status_summary(project_id=7)
     client.list_projects()
     client.get_project(7)
     client.get_tool_catalog()
@@ -3428,6 +3538,7 @@ def test_daemon_client_bridge_auth_protected_reads_include_token(monkeypatch) ->
     client.get_security_policy(7)
     client.get_security_audit_log()
     client.get_security_audit_log(7)
+    client.get_decision_bridge_message(31, project_id=7)
     client.list_swarm_simulations(7)
     client.get_validation_coverage(7)
     client.get_project_workspace(7)
@@ -3448,13 +3559,19 @@ def test_daemon_client_bridge_auth_protected_reads_include_token(monkeypatch) ->
         ("GET", "/api/health", False),
         ("GET", "/api/diagnostics/identity", True),
         ("GET", "/api/headless/health", True),
+        ("GET", "/api/headless/diagnostic-summary", True),
         ("GET", "/api/daemon/status", True),
         ("GET", "/api/profile", True),
+        ("GET", "/api/orchestrations/14/handoff", True),
+        ("GET", "/api/orchestrations/14/pending-decisions", True),
         ("GET", "/api/projects/7/handoff", True),
         ("GET", "/api/projects/7/codebase-map", True),
         ("GET", "/api/projects/7/codebase-understanding", True),
         ("GET", "/api/projects/7/import-safety", True),
         ("GET", "/api/settings", True),
+        ("GET", "/api/orchestrations/14", True),
+        ("GET", "/api/projects/7/orchestrations/active", True),
+        ("GET", "/api/projects/7/status-summary", True),
         ("GET", "/api/projects", True),
         ("GET", "/api/projects/7", True),
         ("GET", "/api/tools", True),
@@ -3483,6 +3600,7 @@ def test_daemon_client_bridge_auth_protected_reads_include_token(monkeypatch) ->
         ("GET", "/api/projects/7/security/policy", True),
         ("GET", "/api/security/audit-log", True),
         ("GET", "/api/projects/7/security/audit-log", True),
+        ("GET", "/api/decisions/31/bridge-message", True),
         ("GET", "/api/projects/7/swarm/simulations", True),
         ("GET", "/api/projects/7/validation-coverage", True),
         ("GET", "/api/projects/7/workspace", True),

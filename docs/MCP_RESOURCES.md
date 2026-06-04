@@ -13,6 +13,9 @@ Mission Control resources are read-only context surfaces for Codex chat.
 
 - `mission-control://projects/{project_id}/orchestrations/{orchestration_id}/status`
 - `mission-control://projects/{project_id}/orchestrations/{orchestration_id}/events`
+- `mission-control://projects/{project_id}/orchestrations/{orchestration_id}`
+- `mission-control://projects/{project_id}/orchestrations/{orchestration_id}/handoff`
+- `mission-control://projects/{project_id}/orchestrations/{orchestration_id}/pending-decisions`
 - `mission-control://projects/{project_id}/orchestrations/active`
 - `mission-control://projects/{project_id}/status`
 - `mission-control://projects/{project_id}/agents`
@@ -59,6 +62,7 @@ Mission Control resources are read-only context surfaces for Codex chat.
 - `mission-control://diagnostics/reports`
 - `mission-control://diagnostics/identity`
 - `mission-control://headless/health`
+- `mission-control://headless/diagnostic-summary`
 - `mission-control://projects`
 - `mission-control://profile`
 - `mission-control://profile/summary`
@@ -93,6 +97,7 @@ Mission Control resources are read-only context surfaces for Codex chat.
 - `mission-control://projects/{project_id}/workspace-tooling`
 - `mission-control://projects/{project_id}/security/policy`
 - `mission-control://projects/{project_id}/security/audit-log`
+- `mission-control://projects/{project_id}/decisions/{decision_id}/bridge-message`
 - `mission-control://projects/{project_id}/action`
 - `mission-control://projects/{project_id}/actions`
 - `mission-control://projects/{project_id}/manager/messages`
@@ -100,6 +105,7 @@ Mission Control resources are read-only context surfaces for Codex chat.
 - `mission-control://projects/{project_id}/tasks`
 - `mission-control://projects/{project_id}/reservations`
 - `mission-control://projects/{project_id}/events`
+- `mission-control://projects/{project_id}/status-summary`
 - `mission-control://projects/{project_id}/execution-policy/summary`
 - `mission-control://projects/{project_id}/coordination/summary`
 - `mission-control://projects/{project_id}/tensorflow/features`
@@ -145,6 +151,7 @@ Mission Control resources are read-only context surfaces for Codex chat.
 
 - status and events support compact progress reporting
 - raw health, diagnostics identity, and headless health resources expose liveness, runtime identity, and packaged bridge health directly before chat starts diagnosing ghosts
+- orchestration session, orchestration handoff, orchestration pending-decision, project status-summary, decision bridge-message, and headless diagnostic-summary resources expose the exact bridge-safe operator narrative around one live run instead of making chat stitch it together from unrelated endpoints
 - raw profile and active orchestration resources expose the operator’s actual configured defaults and the current session record instead of making chat reverse-engineer them from summaries
 - pending decisions support approval relay
 - pending questions and pending approvals expose unresolved manager prompts and gated actions without forcing chat to rummage through UI-only queues

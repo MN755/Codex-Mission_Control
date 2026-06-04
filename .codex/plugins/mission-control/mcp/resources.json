@@ -69,6 +69,92 @@
       }
     },
     {
+      "uri_template": "mission-control://projects/{project_id}/orchestrations/{orchestration_id}",
+      "title": "Orchestration session",
+      "summary": "Project-scoped orchestration session record with source, mode, manager status, and request context.",
+      "support_status": "implemented",
+      "source_hint": {
+        "rest_endpoints": [
+          "/api/orchestrations/{orchestration_id}"
+        ]
+      },
+      "default_fields": [
+        "project_id",
+        "orchestration_id",
+        "workspace_path",
+        "source",
+        "user_request",
+        "status",
+        "manager_status",
+        "mode",
+        "metadata_json"
+      ],
+      "redaction": {
+        "omit_fields": [
+          "bridge_token",
+          "secret_headers",
+          "raw_log",
+          "stack_trace"
+        ],
+        "notes": "Expose one safe orchestration session record only, not raw bridge state or secrets."
+      }
+    },
+    {
+      "uri_template": "mission-control://projects/{project_id}/orchestrations/{orchestration_id}/handoff",
+      "title": "Orchestration handoff",
+      "summary": "Project-scoped orchestration handoff summary for one session with readiness, evidence posture, and next run guidance.",
+      "support_status": "implemented",
+      "source_hint": {
+        "rest_endpoints": [
+          "/api/orchestrations/{orchestration_id}/handoff"
+        ]
+      },
+      "default_fields": [
+        "project_id",
+        "status",
+        "ready",
+        "summary",
+        "run_instructions",
+        "tests_count",
+        "confidence_level",
+        "evidence_status"
+      ],
+      "redaction": {
+        "omit_fields": [
+          "bridge_token",
+          "secret_headers",
+          "raw_log",
+          "stack_trace"
+        ],
+        "notes": "Expose the bridge-safe handoff summary only, not raw artifacts or hidden traces."
+      }
+    },
+    {
+      "uri_template": "mission-control://projects/{project_id}/orchestrations/{orchestration_id}/pending-decisions",
+      "title": "Orchestration pending decisions",
+      "summary": "Project-scoped pending decisions tied to one orchestration so chat can review current manager questions without scanning unrelated project prompts.",
+      "support_status": "implemented",
+      "source_hint": {
+        "rest_endpoints": [
+          "/api/orchestrations/{orchestration_id}/pending-decisions"
+        ]
+      },
+      "default_fields": [
+        "project_id",
+        "decision_count",
+        "categories",
+        "decisions"
+      ],
+      "redaction": {
+        "omit_fields": [
+          "raw_log",
+          "secret_values",
+          "private_paths_outside_workspace"
+        ],
+        "notes": "Expose pending decision prompts and safe options only."
+      }
+    },
+    {
       "uri_template": "mission-control://projects/{project_id}/orchestrations/active",
       "title": "Active orchestration",
       "summary": "Project-scoped active orchestration session record with current mode, manager status, and user request context.",
@@ -1288,6 +1374,31 @@
       }
     },
     {
+      "uri_template": "mission-control://headless/diagnostic-summary",
+      "title": "Headless diagnostic summary",
+      "summary": "Bridge-safe diagnostic summary for the headless runtime with operator-readable severity, bullets, and current runtime guidance.",
+      "support_status": "implemented",
+      "source_hint": {
+        "rest_endpoints": [
+          "/api/headless/diagnostic-summary"
+        ]
+      },
+      "default_fields": [
+        "message_type",
+        "summary",
+        "severity",
+        "bullets"
+      ],
+      "redaction": {
+        "omit_fields": [
+          "raw_log",
+          "secret_values",
+          "private_paths_outside_workspace"
+        ],
+        "notes": "Expose bridge-safe diagnostic messaging only, not raw daemon logs or secrets."
+      }
+    },
+    {
       "uri_template": "mission-control://projects",
       "title": "Projects",
       "summary": "Global project inventory with compact status, pinning, milestone, and recent activity signals for headless review.",
@@ -2298,6 +2409,31 @@
       }
     },
     {
+      "uri_template": "mission-control://projects/{project_id}/decisions/{decision_id}/bridge-message",
+      "title": "Decision bridge message",
+      "summary": "Bridge-safe operator message for one pending decision, including summary, severity, and next-step framing.",
+      "support_status": "implemented",
+      "source_hint": {
+        "rest_endpoints": [
+          "/api/decisions/{decision_id}/bridge-message?project_id={project_id}"
+        ]
+      },
+      "default_fields": [
+        "message_type",
+        "summary",
+        "severity",
+        "bullets"
+      ],
+      "redaction": {
+        "omit_fields": [
+          "raw_log",
+          "secret_values",
+          "private_paths_outside_workspace"
+        ],
+        "notes": "Expose one bridge-safe pending-decision message only."
+      }
+    },
+    {
       "uri_template": "mission-control://projects/{project_id}/action",
       "title": "Current project action",
       "summary": "Current highest-priority project action that the manager or operator should address next.",
@@ -2472,6 +2608,31 @@
           "private_paths_outside_workspace"
         ],
         "notes": "Expose recent event metadata only, not raw stream payloads."
+      }
+    },
+    {
+      "uri_template": "mission-control://projects/{project_id}/status-summary",
+      "title": "Project status summary",
+      "summary": "Bridge-safe project status summary message with severity, bullets, and next-step framing.",
+      "support_status": "implemented",
+      "source_hint": {
+        "rest_endpoints": [
+          "/api/projects/{project_id}/status-summary"
+        ]
+      },
+      "default_fields": [
+        "message_type",
+        "summary",
+        "severity",
+        "bullets"
+      ],
+      "redaction": {
+        "omit_fields": [
+          "raw_log",
+          "secret_values",
+          "private_paths_outside_workspace"
+        ],
+        "notes": "Expose bridge-safe status messaging only, not raw daemon internals."
       }
     },
     {

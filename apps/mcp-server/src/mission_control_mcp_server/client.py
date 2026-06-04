@@ -376,6 +376,9 @@ class MissionControlDaemonClient:
     def get_profile(self) -> dict[str, Any]:
         return self._request("GET", "/api/profile")
 
+    def get_headless_diagnostic_summary(self) -> dict[str, Any]:
+        return self._request("GET", "/api/headless/diagnostic-summary")
+
     def get_orchestration(self, orchestration_id: int, *, project_id: int | None = None) -> dict[str, Any]:
         resolved_project_id = self._project_id_for_orchestration(orchestration_id, project_id)
         payload = self._request("GET", f"/api/orchestrations/{orchestration_id}", params={"project_id": resolved_project_id})
@@ -424,6 +427,9 @@ class MissionControlDaemonClient:
             return self._request("GET", f"/api/projects/{project_id}/pending-decisions")
         resolved_project_id = self._project_id_for_orchestration(resolved_id, project_id=project_id)
         return self._request("GET", f"/api/orchestrations/{resolved_id}/pending-decisions", params={"project_id": resolved_project_id})
+
+    def get_decision_bridge_message(self, decision_id: int, *, project_id: int) -> dict[str, Any]:
+        return self._request("GET", f"/api/decisions/{decision_id}/bridge-message", params={"project_id": project_id})
 
     def answer_decision(self, *, decision_id: int, project_id: int, option_id: str, selected_text: str, free_text: str | None = None) -> dict[str, Any]:
         return self._request(
@@ -1738,6 +1744,22 @@ class MissionControlDaemonClient:
             "dry_run": handoff.get("dry_run", False),
         }
 
+    def _summarize_orchestration_session(self, project_id: int, payload: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "project_id": project_id,
+            "orchestration_id": payload.get("id"),
+            "workspace_path": payload.get("workspace_path"),
+            "source": payload.get("source"),
+            "user_request": payload.get("user_request"),
+            "status": payload.get("status"),
+            "manager_status": payload.get("manager_status"),
+            "mode": payload.get("mode"),
+            "metadata_json": dict(payload.get("metadata_json") or {}),
+            "created_at": payload.get("created_at"),
+            "updated_at": payload.get("updated_at"),
+            "completed_at": payload.get("completed_at"),
+        }
+
     def _summarize_handoff_evidence(self, project_id: int, evidence: list[dict[str, Any]]) -> dict[str, Any]:
         type_counts: dict[str, int] = {}
         status_counts: dict[str, int] = {}
@@ -2360,6 +2382,8 @@ class MissionControlDaemonClient:
             return self._summarize_handoffs(self.list_handoffs())
         if len(parts) >= 1 and parts[0] == "health":
             return self.get_health()
+        if len(parts) >= 2 and parts[0] == "headless" and parts[1] == "diagnostic-summary":
+            return self.get_headless_diagnostic_summary()
         if len(parts) >= 2 and parts[0] == "diagnostics" and parts[1] == "reports":
             return self._summarize_diagnostic_reports(self.list_diagnostic_reports())
         if len(parts) >= 2 and parts[0] == "diagnostics" and parts[1] == "identity":
@@ -2454,8 +2478,23 @@ class MissionControlDaemonClient:
         if len(parts) >= 3 and parts[0] == "projects":
             project_id = int(parts[1])
             kind = parts[2]
+            if kind == "decisions" and len(parts) == 5 and parts[4] == "bridge-message":
+                return self.get_decision_bridge_message(int(parts[3]), project_id=project_id)
+            if kind == "status-summary":
+                return self.get_status_summary(project_id=project_id)
             if kind == "orchestrations" and len(parts) == 4 and parts[3] == "active":
                 return self._summarize_active_orchestration(project_id, self.active_project_orchestration(project_id))
+            if kind == "orchestrations" and len(parts) >= 4:
+                orchestration_id = int(parts[3])
+                if len(parts) == 4:
+                    return self._summarize_orchestration_session(project_id, self.get_orchestration(orchestration_id, project_id=project_id))
+                if len(parts) == 5 and parts[4] == "handoff":
+                    return self._summarize_handoff(project_id, self.get_handoff(orchestration_id=orchestration_id, project_id=project_id))
+                if len(parts) == 5 and parts[4] == "pending-decisions":
+                    return self._summarize_pending_decisions(
+                        project_id,
+                        self.get_pending_decisions(orchestration_id=orchestration_id, project_id=project_id),
+                    )
             if kind == "status":
                 project = self.get_project(project_id)
                 orchestration_id = self._maybe_orchestration_id(project_id=project_id)
