@@ -80,6 +80,7 @@ EXPECTED_RESOURCES = {
     "mission-control://preferences/summary",
     "mission-control://subagent-policy",
     "mission-control://subagent-policy/summary",
+    "mission-control://projects/{project_id}",
     "mission-control://projects/{project_id}/integrations",
     "mission-control://projects/{project_id}/integrations/{family}",
     "mission-control://projects/{project_id}/integrations/{family}/actions",
@@ -3314,6 +3315,7 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
     handoffs = client.read_resource("mission-control://handoffs")
     diagnostic_reports = client.read_resource("mission-control://diagnostics/reports")
     projects = client.read_resource("mission-control://projects")
+    project_resource = client.read_resource("mission-control://projects/7")
     subagent_policy = client.read_resource("mission-control://subagent-policy")
     subagent_policy_summary = client.read_resource("mission-control://subagent-policy/summary")
     pending_questions = client.read_resource("mission-control://projects/7/questions/pending")
@@ -3480,6 +3482,8 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
     assert diagnostic_reports["reports"][0]["status"] == "warning"
     assert projects["project_count"] == 1
     assert projects["projects"][0]["pinned"] is True
+    assert project_resource["project_name"] == "Demo"
+    assert project_resource["display_status"] == "needs_review"
     assert subagent_policy_summary["default_mode"] == "limited_write"
     assert pending_questions["question_count"] == 1
     assert pending_questions["questions"][0]["category"] == "scope"
@@ -3822,6 +3826,22 @@ def test_daemon_client_active_orchestration_resource_returns_stable_missing_payl
         "updated_at": None,
         "completed_at": None,
     }
+
+
+def test_daemon_client_rejects_invalid_extra_segments_for_strict_resources() -> None:
+    client = MissionControlDaemonClient(base_url="http://127.0.0.1:8010", timeout=0.1)
+
+    for uri in (
+        "mission-control://playbooks/ai_local_tool/extra",
+        "mission-control://context-packs/31/extra",
+        "mission-control://agents/reputation/extra",
+    ):
+        try:
+            client.read_resource(uri)
+        except RuntimeError as exc:
+            assert "Unsupported Mission Control resource URI" in str(exc)
+        else:
+            raise AssertionError(f"Expected invalid resource URI to be rejected: {uri}")
 
 
 def test_daemon_client_bridge_auth_protected_reads_include_token(monkeypatch) -> None:

@@ -1751,6 +1751,37 @@
       }
     },
     {
+      "uri_template": "mission-control://projects/{project_id}",
+      "title": "Project details",
+      "summary": "Canonical project detail resource with status, milestone, orchestration, workspace, and display summary fields.",
+      "support_status": "implemented",
+      "source_hint": {
+        "rest_endpoints": [
+          "/api/projects/{project_id}"
+        ]
+      },
+      "default_fields": [
+        "project_id",
+        "project_name",
+        "display_status",
+        "workspace_path",
+        "runner_mode",
+        "sandbox_mode",
+        "approval_policy",
+        "orchestration_id",
+        "current_task_summary",
+        "last_activity_summary"
+      ],
+      "redaction": {
+        "omit_fields": [
+          "secret_values",
+          "raw_log",
+          "private_paths_outside_workspace"
+        ],
+        "notes": "Expose project metadata and status only, not secret-bearing artifacts or raw workspace dumps."
+      }
+    },
+    {
       "uri_template": "mission-control://projects/{project_id}/integrations",
       "title": "Project integrations",
       "summary": "Project-scoped integration readiness view across supported provider families.",

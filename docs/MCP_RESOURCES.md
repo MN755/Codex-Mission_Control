@@ -75,6 +75,7 @@ Mission Control resources are read-only context surfaces for Codex chat.
 - `mission-control://preferences/summary`
 - `mission-control://subagent-policy`
 - `mission-control://subagent-policy/summary`
+- `mission-control://projects/{project_id}`
 - `mission-control://projects/{project_id}/integrations`
 - `mission-control://projects/{project_id}/integrations/{family}`
 - `mission-control://projects/{project_id}/integrations/{family}/actions`

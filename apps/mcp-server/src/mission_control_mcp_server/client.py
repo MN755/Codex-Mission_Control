@@ -2611,13 +2611,13 @@ class MissionControlDaemonClient:
                 return self._summarize_capability_benchmarks(self.get_capability_benchmarks())
             if parts[1] == "matrix":
                 return self._summarize_capability_matrix(self.get_capability_matrix())
-        if len(parts) >= 2 and parts[0] == "agents" and parts[1] == "reputation":
+        if len(parts) == 2 and parts[0] == "agents" and parts[1] == "reputation":
             return self._summarize_agent_reputation(self.get_agent_reputation())
-        if len(parts) >= 2 and parts[0] == "context-packs":
+        if len(parts) == 2 and parts[0] == "context-packs":
             return self.get_context_pack(int(parts[1]))
-        if len(parts) >= 1 and parts[0] == "handoffs":
+        if len(parts) == 1 and parts[0] == "handoffs":
             return self._summarize_handoffs(self.list_handoffs())
-        if len(parts) >= 1 and parts[0] == "health":
+        if len(parts) == 1 and parts[0] == "health":
             return self.get_health()
         if len(parts) >= 2 and parts[0] == "headless" and parts[1] == "diagnostic-summary":
             return self.get_headless_diagnostic_summary()
@@ -2641,7 +2641,7 @@ class MissionControlDaemonClient:
             return self._summarize_profile(self.get_profile())
         if len(parts) >= 2 and parts[0] == "profile" and parts[1] == "summary":
             return self.get_profile_summary()
-        if len(parts) >= 1 and parts[0] == "tools":
+        if len(parts) == 1 and parts[0] == "tools":
             tools = self.get_tool_catalog()
             return {"tool_count": len(tools), "tools": tools}
         if len(parts) >= 2 and parts[0] == "preferences" and parts[1] == "summary":
@@ -2649,7 +2649,8 @@ class MissionControlDaemonClient:
         if len(parts) >= 1 and parts[0] == "playbooks":
             if len(parts) == 1:
                 return {"playbooks": self.list_playbooks()}
-            return self.get_playbook_catalog_entry(parts[1])
+            if len(parts) == 2:
+                return self.get_playbook_catalog_entry(parts[1])
         if len(parts) >= 2 and parts[0] == "risks" and parts[1] == "summary":
             return self.get_risk_summary()
         if len(parts) >= 2 and parts[0] == "risks" and parts[1] == "common":
@@ -2693,6 +2694,8 @@ class MissionControlDaemonClient:
             return self._summarize_skills(self.get_skills())
         if len(parts) == 1 and parts[0] == "projects":
             return self._summarize_projects(self.list_projects())
+        if len(parts) == 2 and parts[0] == "projects":
+            return self._summarize_project_details(self.get_project(int(parts[1])))
         if len(parts) >= 5 and parts[0] == "projects" and parts[2] == "orchestrations":
             project_id = int(parts[1])
             orchestration_id = int(parts[3])

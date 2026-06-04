@@ -98,6 +98,7 @@ EXPECTED_RESOURCES = [
     "mission-control://preferences/summary",
     "mission-control://subagent-policy",
     "mission-control://subagent-policy/summary",
+    "mission-control://projects/{project_id}",
     "mission-control://projects/{project_id}/integrations",
     "mission-control://projects/{project_id}/integrations/{family}",
     "mission-control://projects/{project_id}/integrations/{family}/actions",
@@ -375,6 +376,7 @@ def test_docs_explain_resources_prompts_and_headless_boundary() -> None:
     assert "mission-control://projects/{project_id}/playbook" in resources_content
     assert "mission-control://projects/{project_id}/playbook/recommendations" in resources_content
     assert "mission-control://projects/{project_id}/context-packs" in resources_content
+    assert "mission-control://projects/{project_id}" in resources_content
     assert "mission-control://projects/{project_id}/agents/reputation" in resources_content
     assert "mission-control://projects/{project_id}/preferences" in resources_content
     assert "mission-control://projects/{project_id}/preferences/summary" in resources_content
