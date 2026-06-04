@@ -14,6 +14,9 @@ Mission Control resources are read-only context surfaces for Codex chat.
 - `mission-control://projects/{project_id}/orchestrations/{orchestration_id}/status`
 - `mission-control://projects/{project_id}/orchestrations/{orchestration_id}/events`
 - `mission-control://projects/{project_id}/orchestrations/{orchestration_id}`
+- `mission-control://projects/{project_id}/orchestrations/{orchestration_id}/status-summary`
+- `mission-control://projects/{project_id}/orchestrations/{orchestration_id}/event-digest`
+- `mission-control://projects/{project_id}/orchestrations/{orchestration_id}/handoff-summary`
 - `mission-control://projects/{project_id}/orchestrations/{orchestration_id}/handoff`
 - `mission-control://projects/{project_id}/orchestrations/{orchestration_id}/pending-decisions`
 - `mission-control://projects/{project_id}/orchestrations/active`
@@ -48,6 +51,7 @@ Mission Control resources are read-only context surfaces for Codex chat.
 - `mission-control://headless/config`
 - `mission-control://system/status`
 - `mission-control://system/auth-state`
+- `mission-control://system/auth-jobs/{job_id}`
 - `mission-control://system/codex-status`
 - `mission-control://startup/status`
 - `mission-control://dashboard/summary`
@@ -151,7 +155,7 @@ Mission Control resources are read-only context surfaces for Codex chat.
 
 - status and events support compact progress reporting
 - raw health, diagnostics identity, and headless health resources expose liveness, runtime identity, and packaged bridge health directly before chat starts diagnosing ghosts
-- orchestration session, orchestration handoff, orchestration pending-decision, project status-summary, decision bridge-message, and headless diagnostic-summary resources expose the exact bridge-safe operator narrative around one live run instead of making chat stitch it together from unrelated endpoints
+- orchestration session, orchestration status-summary, orchestration event-digest, orchestration handoff-summary, orchestration handoff, orchestration pending-decision, project status-summary, decision bridge-message, auth-job polling, and headless diagnostic-summary resources expose the exact bridge-safe operator narrative around one live run instead of making chat stitch it together from unrelated endpoints
 - raw profile and active orchestration resources expose the operator’s actual configured defaults and the current session record instead of making chat reverse-engineer them from summaries
 - pending decisions support approval relay
 - pending questions and pending approvals expose unresolved manager prompts and gated actions without forcing chat to rummage through UI-only queues

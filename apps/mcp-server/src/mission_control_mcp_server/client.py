@@ -370,6 +370,9 @@ class MissionControlDaemonClient:
     def get_diagnostics_identity(self) -> dict[str, Any]:
         return self._request("GET", "/api/diagnostics/identity")
 
+    def get_auth_job(self, job_id: str) -> dict[str, Any]:
+        return self._request("GET", f"/api/system/auth-jobs/{job_id}")
+
     def get_headless_health(self) -> dict[str, Any]:
         return self._request("GET", "/api/headless/health")
 
@@ -2390,6 +2393,8 @@ class MissionControlDaemonClient:
             return self.get_diagnostics_identity()
         if len(parts) >= 2 and parts[0] == "headless" and parts[1] == "health":
             return self.get_headless_health()
+        if len(parts) >= 3 and parts[0] == "system" and parts[1] == "auth-jobs":
+            return self.get_auth_job(parts[2])
         if len(parts) >= 2 and parts[0] == "integrations":
             kind = parts[1]
             if kind == "catalog":
@@ -2488,6 +2493,12 @@ class MissionControlDaemonClient:
                 orchestration_id = int(parts[3])
                 if len(parts) == 4:
                     return self._summarize_orchestration_session(project_id, self.get_orchestration(orchestration_id, project_id=project_id))
+                if len(parts) == 5 and parts[4] == "status-summary":
+                    return self.get_status_summary(orchestration_id=orchestration_id, project_id=project_id)
+                if len(parts) == 5 and parts[4] == "event-digest":
+                    return self.get_event_digest(orchestration_id=orchestration_id, project_id=project_id)
+                if len(parts) == 5 and parts[4] == "handoff-summary":
+                    return self.get_handoff_summary(orchestration_id=orchestration_id, project_id=project_id)
                 if len(parts) == 5 and parts[4] == "handoff":
                     return self._summarize_handoff(project_id, self.get_handoff(orchestration_id=orchestration_id, project_id=project_id))
                 if len(parts) == 5 and parts[4] == "pending-decisions":

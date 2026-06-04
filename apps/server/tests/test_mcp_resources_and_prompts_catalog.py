@@ -39,6 +39,9 @@ EXPECTED_RESOURCES = [
     "mission-control://projects/{project_id}/orchestrations/{orchestration_id}",
     "mission-control://projects/{project_id}/orchestrations/{orchestration_id}/handoff",
     "mission-control://projects/{project_id}/orchestrations/{orchestration_id}/pending-decisions",
+    "mission-control://projects/{project_id}/orchestrations/{orchestration_id}/status-summary",
+    "mission-control://projects/{project_id}/orchestrations/{orchestration_id}/event-digest",
+    "mission-control://projects/{project_id}/orchestrations/{orchestration_id}/handoff-summary",
     "mission-control://projects/{project_id}/orchestrations/active",
     "mission-control://projects/{project_id}/status",
     "mission-control://projects/{project_id}/agents",
@@ -71,6 +74,7 @@ EXPECTED_RESOURCES = [
     "mission-control://headless/config",
     "mission-control://system/status",
     "mission-control://system/auth-state",
+    "mission-control://system/auth-jobs/{job_id}",
     "mission-control://system/codex-status",
     "mission-control://startup/status",
     "mission-control://dashboard/summary",
@@ -287,8 +291,12 @@ def test_docs_explain_resources_prompts_and_headless_boundary() -> None:
     assert "localhost" in runtime_content.lower()
     assert "mission_control_attach_workspace" in tools_content
     assert "mission-control://projects/{project_id}/decision-ledger" in resources_content
+    assert "mission-control://projects/{project_id}/orchestrations/{orchestration_id}/status-summary" in resources_content
+    assert "mission-control://projects/{project_id}/orchestrations/{orchestration_id}/event-digest" in resources_content
+    assert "mission-control://projects/{project_id}/orchestrations/{orchestration_id}/handoff-summary" in resources_content
     assert "mission-control://projects/{project_id}/questions/pending" in resources_content
     assert "mission-control://projects/{project_id}/approvals/pending" in resources_content
+    assert "mission-control://system/auth-jobs/{job_id}" in resources_content
     assert "mission-control://projects/{project_id}/event-digest" in resources_content
     assert "mission-control://projects/{project_id}/handoff-summary" in resources_content
     assert "mission-control://projects/{project_id}/handoff/evidence" in resources_content

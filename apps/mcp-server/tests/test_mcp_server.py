@@ -22,6 +22,9 @@ EXPECTED_RESOURCES = {
     "mission-control://projects/{project_id}/orchestrations/{orchestration_id}",
     "mission-control://projects/{project_id}/orchestrations/{orchestration_id}/handoff",
     "mission-control://projects/{project_id}/orchestrations/{orchestration_id}/pending-decisions",
+    "mission-control://projects/{project_id}/orchestrations/{orchestration_id}/status-summary",
+    "mission-control://projects/{project_id}/orchestrations/{orchestration_id}/event-digest",
+    "mission-control://projects/{project_id}/orchestrations/{orchestration_id}/handoff-summary",
     "mission-control://projects/{project_id}/orchestrations/active",
     "mission-control://projects/{project_id}/status",
     "mission-control://projects/{project_id}/agents",
@@ -53,6 +56,7 @@ EXPECTED_RESOURCES = {
     "mission-control://headless/config",
     "mission-control://system/status",
     "mission-control://system/auth-state",
+    "mission-control://system/auth-jobs/{job_id}",
     "mission-control://system/codex-status",
     "mission-control://startup/status",
     "mission-control://dashboard/summary",
@@ -1245,6 +1249,19 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
     )
     monkeypatch.setattr(
         client,
+        "get_auth_job",
+        lambda job_id: {
+            "job_id": job_id,
+            "status": "running",
+            "auth_mode": "device",
+            "provider": "openai",
+            "message": "Waiting for device approval.",
+            "created_at": "2026-06-03T12:40:00Z",
+            "updated_at": "2026-06-03T12:45:00Z",
+        },
+    )
+    monkeypatch.setattr(
+        client,
         "list_diagnostic_reports",
         lambda project_id=None: [
             {
@@ -1774,6 +1791,8 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
             "summary": "One recent blocker needs attention.",
             "fallback_markdown": "## Mission Control Event Digest\n",
             "user_action_required": False,
+            "project_id": kwargs.get("project_id"),
+            "orchestration_id": kwargs.get("orchestration_id"),
         },
     )
     monkeypatch.setattr(
@@ -1785,6 +1804,8 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
             "summary": "Ready for review with one known limitation.",
             "fallback_markdown": "## Mission Control Handoff Summary\n",
             "user_action_required": False,
+            "project_id": kwargs.get("project_id"),
+            "orchestration_id": kwargs.get("orchestration_id"),
         },
     )
     monkeypatch.setattr(
@@ -3019,6 +3040,7 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
     headless_config = client.read_resource("mission-control://headless/config")
     system_status = client.read_resource("mission-control://system/status")
     auth_state = client.read_resource("mission-control://system/auth-state")
+    auth_job = client.read_resource("mission-control://system/auth-jobs/job-123")
     codex_status = client.read_resource("mission-control://system/codex-status")
     startup_status = client.read_resource("mission-control://startup/status")
     dashboard_summary = client.read_resource("mission-control://dashboard/summary")
@@ -3053,6 +3075,9 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
     interview = client.read_resource("mission-control://projects/7/interview")
     plan = client.read_resource("mission-control://projects/7/plan")
     orchestration_session = client.read_resource("mission-control://projects/7/orchestrations/14")
+    orchestration_status_summary = client.read_resource("mission-control://projects/7/orchestrations/14/status-summary")
+    orchestration_event_digest = client.read_resource("mission-control://projects/7/orchestrations/14/event-digest")
+    orchestration_handoff_summary = client.read_resource("mission-control://projects/7/orchestrations/14/handoff-summary")
     orchestration_handoff = client.read_resource("mission-control://projects/7/orchestrations/14/handoff")
     orchestration_pending_decisions = client.read_resource("mission-control://projects/7/orchestrations/14/pending-decisions")
     active_orchestration = client.read_resource("mission-control://projects/7/orchestrations/active")
@@ -3153,6 +3178,8 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
     assert headless_config["enabled"] is True
     assert system_status["runtime_ready"] is True
     assert auth_state["authenticated"] is True
+    assert auth_job["job_id"] == "job-123"
+    assert auth_job["status"] == "running"
     assert codex_status["runtime_summary"] == "Codex runtime is ready."
     assert startup_status["overall_status"] == "ready"
     assert dashboard_summary["archive_count"] == 1
@@ -3209,6 +3236,12 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
     assert plan["summary_json"]["risk_count"] == 2
     assert orchestration_session["orchestration_id"] == 14
     assert orchestration_session["manager_status"] == "awaiting_validation"
+    assert orchestration_status_summary["orchestration_id"] == 14
+    assert orchestration_status_summary["message_type"] == "status_summary"
+    assert orchestration_event_digest["orchestration_id"] == 14
+    assert orchestration_event_digest["message_type"] == "event_digest"
+    assert orchestration_handoff_summary["orchestration_id"] == 14
+    assert orchestration_handoff_summary["message_type"] == "handoff_ready"
     assert orchestration_handoff["status"] == "needs_review"
     assert orchestration_pending_decisions["decision_count"] == 1
     assert active_orchestration["exists"] is True
@@ -3501,6 +3534,7 @@ def test_daemon_client_bridge_auth_protected_reads_include_token(monkeypatch) ->
     client.get_headless_diagnostic_summary()
     client.daemon_status()
     client.get_profile()
+    client.get_auth_job("job-123")
     client.get_handoff(orchestration_id=14, project_id=7)
     client.get_pending_decisions(orchestration_id=14, project_id=7)
     client.get_project_handoff(7)
@@ -3509,6 +3543,9 @@ def test_daemon_client_bridge_auth_protected_reads_include_token(monkeypatch) ->
     client.get_import_safety(7)
     client.get_project_settings(7)
     client.get_orchestration(14, project_id=7)
+    client.get_status_summary(orchestration_id=14, project_id=7)
+    client.get_event_digest(orchestration_id=14, project_id=7)
+    client.get_handoff_summary(orchestration_id=14, project_id=7)
     client.get_status_summary(project_id=7)
     client.list_projects()
     client.get_project(7)
@@ -3562,6 +3599,7 @@ def test_daemon_client_bridge_auth_protected_reads_include_token(monkeypatch) ->
         ("GET", "/api/headless/diagnostic-summary", True),
         ("GET", "/api/daemon/status", True),
         ("GET", "/api/profile", True),
+        ("GET", "/api/system/auth-jobs/job-123", True),
         ("GET", "/api/orchestrations/14/handoff", True),
         ("GET", "/api/orchestrations/14/pending-decisions", True),
         ("GET", "/api/projects/7/handoff", True),
@@ -3570,6 +3608,9 @@ def test_daemon_client_bridge_auth_protected_reads_include_token(monkeypatch) ->
         ("GET", "/api/projects/7/import-safety", True),
         ("GET", "/api/settings", True),
         ("GET", "/api/orchestrations/14", True),
+        ("GET", "/api/orchestrations/14/status-summary", True),
+        ("GET", "/api/orchestrations/14/event-digest", True),
+        ("GET", "/api/orchestrations/14/handoff-summary", True),
         ("GET", "/api/projects/7/orchestrations/active", True),
         ("GET", "/api/projects/7/status-summary", True),
         ("GET", "/api/projects", True),

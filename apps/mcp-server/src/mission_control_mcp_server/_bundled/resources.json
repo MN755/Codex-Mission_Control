@@ -155,6 +155,89 @@
       }
     },
     {
+      "uri_template": "mission-control://projects/{project_id}/orchestrations/{orchestration_id}/status-summary",
+      "title": "Orchestration status summary",
+      "summary": "Project-scoped bridge message for one orchestration summarizing current phase, blockers, and the next expected action.",
+      "support_status": "implemented",
+      "source_hint": {
+        "rest_endpoints": [
+          "/api/orchestrations/{orchestration_id}/status-summary"
+        ]
+      },
+      "default_fields": [
+        "message_type",
+        "summary",
+        "severity",
+        "bullets",
+        "project_id",
+        "orchestration_id"
+      ],
+      "redaction": {
+        "omit_fields": [
+          "raw_log",
+          "stack_trace",
+          "secret_values"
+        ],
+        "notes": "Expose the bridge-safe status summary only, not raw execution traces."
+      }
+    },
+    {
+      "uri_template": "mission-control://projects/{project_id}/orchestrations/{orchestration_id}/event-digest",
+      "title": "Orchestration event digest",
+      "summary": "Project-scoped bridge digest for one orchestration so chat can review recent issues without scanning the full event stream.",
+      "support_status": "implemented",
+      "source_hint": {
+        "rest_endpoints": [
+          "/api/orchestrations/{orchestration_id}/event-digest"
+        ]
+      },
+      "default_fields": [
+        "message_type",
+        "title",
+        "summary",
+        "fallback_markdown",
+        "user_action_required",
+        "project_id",
+        "orchestration_id"
+      ],
+      "redaction": {
+        "omit_fields": [
+          "raw_log",
+          "stack_trace",
+          "secret_values"
+        ],
+        "notes": "Expose the compact bridge digest only, not the raw event stream."
+      }
+    },
+    {
+      "uri_template": "mission-control://projects/{project_id}/orchestrations/{orchestration_id}/handoff-summary",
+      "title": "Orchestration handoff summary",
+      "summary": "Project-scoped bridge handoff summary for one orchestration with review posture, limitations, and next-step guidance.",
+      "support_status": "implemented",
+      "source_hint": {
+        "rest_endpoints": [
+          "/api/orchestrations/{orchestration_id}/handoff-summary"
+        ]
+      },
+      "default_fields": [
+        "message_type",
+        "title",
+        "summary",
+        "fallback_markdown",
+        "user_action_required",
+        "project_id",
+        "orchestration_id"
+      ],
+      "redaction": {
+        "omit_fields": [
+          "raw_log",
+          "stack_trace",
+          "secret_values"
+        ],
+        "notes": "Expose the bridge-safe handoff summary only, not raw artifacts or hidden traces."
+      }
+    },
+    {
       "uri_template": "mission-control://projects/{project_id}/orchestrations/active",
       "title": "Active orchestration",
       "summary": "Project-scoped active orchestration session record with current mode, manager status, and user request context.",
@@ -1018,6 +1101,34 @@
           "secret_values"
         ],
         "notes": "Expose auth posture only, not credentials."
+      }
+    },
+    {
+      "uri_template": "mission-control://system/auth-jobs/{job_id}",
+      "title": "Auth job",
+      "summary": "One authentication job status record so chat can poll device or login progress without guessing from global auth posture.",
+      "support_status": "implemented",
+      "source_hint": {
+        "rest_endpoints": [
+          "/api/system/auth-jobs/{job_id}"
+        ]
+      },
+      "default_fields": [
+        "job_id",
+        "status",
+        "auth_mode",
+        "provider",
+        "message",
+        "created_at",
+        "updated_at"
+      ],
+      "redaction": {
+        "omit_fields": [
+          "raw_log",
+          "secret_values",
+          "api_key"
+        ],
+        "notes": "Expose auth progress only, not credentials or secret-bearing payloads."
       }
     },
     {
