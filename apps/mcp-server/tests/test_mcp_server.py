@@ -35,8 +35,13 @@ EXPECTED_RESOURCES = {
     "mission-control://integrations/catalog",
     "mission-control://integrations/connections",
     "mission-control://integrations/health",
+    "mission-control://agent-archetypes",
+    "mission-control://capabilities/benchmarks",
+    "mission-control://capabilities/matrix",
+    "mission-control://context-packs/{context_pack_id}",
     "mission-control://playbooks",
     "mission-control://playbooks/{playbook_key}",
+    "mission-control://security/policy",
     "mission-control://daemon/status",
     "mission-control://runners/status",
     "mission-control://plugin/health",
@@ -66,11 +71,13 @@ EXPECTED_RESOURCES = {
     "mission-control://projects/{project_id}/snapshots/{snapshot_id}/restore-plan",
     "mission-control://projects/{project_id}/playbook",
     "mission-control://projects/{project_id}/playbook/recommendations",
+    "mission-control://projects/{project_id}/context-packs",
     "mission-control://projects/{project_id}/preferences/summary",
     "mission-control://projects/{project_id}/preferences/effective",
     "mission-control://projects/{project_id}/widgets/summary",
     "mission-control://projects/{project_id}/workspace",
     "mission-control://projects/{project_id}/workspace-tooling",
+    "mission-control://projects/{project_id}/security/policy",
     "mission-control://projects/{project_id}/action",
     "mission-control://projects/{project_id}/actions",
     "mission-control://projects/{project_id}/manager/messages",
@@ -95,7 +102,9 @@ EXPECTED_RESOURCES = {
     "mission-control://projects/{project_id}/nvidia-validation-plan",
     "mission-control://projects/{project_id}/swarm/preferences",
     "mission-control://projects/{project_id}/swarm-plan",
+    "mission-control://projects/{project_id}/swarm/simulations",
     "mission-control://projects/{project_id}/swarm/simulations/latest",
+    "mission-control://risks/common",
     "mission-control://risks/summary",
     "mission-control://projects/{project_id}/risk-register",
     "mission-control://projects/{project_id}/risks/summary",
@@ -1194,6 +1203,20 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
     )
     monkeypatch.setattr(
         client,
+        "list_swarm_simulations",
+        lambda project_id: [
+            {
+                "id": 17,
+                "project_id": project_id,
+                "mode": "balanced",
+                "recommended_agent_count": 3,
+                "approval_required": False,
+                "created_at": "2026-06-03T12:47:00Z",
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        client,
         "get_profile_summary",
         lambda: {
             "id": 1,
@@ -1233,6 +1256,41 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
             "read_only_default": False,
             "command_capable": True,
         },
+    )
+    monkeypatch.setattr(
+        client,
+        "get_agent_archetypes",
+        lambda: [
+            {
+                "id": 1,
+                "name": "reviewer",
+                "description": "Finds regressions and validation gaps.",
+                "default_temperature": 0.1,
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        client,
+        "get_capability_benchmarks",
+        lambda: [
+            {
+                "capability_key": "bridge_runtime_reads",
+                "score": 95,
+                "status": "ready",
+                "summary": "Runtime read coverage is strong.",
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        client,
+        "get_capability_matrix",
+        lambda: [
+            {
+                "capability_key": "mcp_runtime",
+                "support_level": "full",
+                "notes": "Client, manifests, and bundled catalogs agree.",
+            }
+        ],
     )
     monkeypatch.setattr(
         client,
@@ -1298,6 +1356,31 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
             "typical_structure_json": ["apps/server", "plugins"],
             "created_at": "2026-06-03T11:00:00Z",
             "updated_at": "2026-06-03T11:30:00Z",
+        },
+    )
+    monkeypatch.setattr(
+        client,
+        "get_context_packs",
+        lambda project_id: [
+            {
+                "id": 31,
+                "project_id": project_id,
+                "title": "Bridge Runtime Pack",
+                "status": "ready",
+                "summary": "Captures runtime routes, manifests, and guard tests.",
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        client,
+        "get_context_pack",
+        lambda context_pack_id: {
+            "id": context_pack_id,
+            "project_id": 7,
+            "title": "Bridge Runtime Pack",
+            "status": "ready",
+            "summary": "Captures runtime routes, manifests, and guard tests.",
+            "artifacts": ["client.py", "plugin.json", "resources.json"],
         },
     )
     monkeypatch.setattr(
@@ -1637,6 +1720,19 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
     )
     monkeypatch.setattr(
         client,
+        "get_security_policy",
+        lambda project_id=None: {
+            "id": 44 if project_id is None else 45,
+            "project_id": project_id,
+            "approval_mode": "on-request",
+            "allow_network": True,
+            "allow_file_edits": True,
+            "allow_background_processes": False,
+            "updated_at": "2026-06-03T12:46:00Z",
+        },
+    )
+    monkeypatch.setattr(
+        client,
         "get_agent_contracts",
         lambda project_id: [
             {
@@ -1700,6 +1796,17 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
                 }
             ],
         },
+    )
+    monkeypatch.setattr(
+        client,
+        "get_common_risks",
+        lambda: [
+            {
+                "title": "Metadata drift",
+                "severity": "high",
+                "detail": "Runtime behavior and catalogs disagree unless parity tests stay enforced.",
+            }
+        ],
     )
     monkeypatch.setattr(
         client,
@@ -2305,9 +2412,15 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
 
     profile_summary = client.read_resource("mission-control://profile/summary")
     global_preference_summary = client.read_resource("mission-control://preferences/summary")
+    agent_archetypes = client.read_resource("mission-control://agent-archetypes")
+    capability_benchmarks = client.read_resource("mission-control://capabilities/benchmarks")
+    capability_matrix = client.read_resource("mission-control://capabilities/matrix")
+    context_pack = client.read_resource("mission-control://context-packs/31")
     playbooks = client.read_resource("mission-control://playbooks")
     playbook_catalog_entry = client.read_resource("mission-control://playbooks/ai_local_tool")
+    common_risks = client.read_resource("mission-control://risks/common")
     global_risk_summary = client.read_resource("mission-control://risks/summary")
+    global_security_policy = client.read_resource("mission-control://security/policy")
     daemon_status = client.read_resource("mission-control://daemon/status")
     runners_status = client.read_resource("mission-control://runners/status")
     plugin_health = client.read_resource("mission-control://plugin/health")
@@ -2339,6 +2452,7 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
     project_settings = client.read_resource("mission-control://projects/7/settings")
     workspace = client.read_resource("mission-control://projects/7/workspace")
     tooling = client.read_resource("mission-control://projects/7/workspace-tooling")
+    project_security_policy = client.read_resource("mission-control://projects/7/security/policy")
     project_action = client.read_resource("mission-control://projects/7/action")
     project_actions = client.read_resource("mission-control://projects/7/actions")
     manager_messages = client.read_resource("mission-control://projects/7/manager/messages")
@@ -2352,6 +2466,7 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
     restore_plan = client.read_resource("mission-control://projects/7/snapshots/61/restore-plan")
     playbook = client.read_resource("mission-control://projects/7/playbook")
     playbook_recommendations = client.read_resource("mission-control://projects/7/playbook/recommendations")
+    context_packs = client.read_resource("mission-control://projects/7/context-packs")
     project_preference_summary = client.read_resource("mission-control://projects/7/preferences/summary")
     effective_preferences = client.read_resource("mission-control://projects/7/preferences/effective")
     widget_summary = client.read_resource("mission-control://projects/7/widgets/summary")
@@ -2377,6 +2492,7 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
     local_runtime = client.read_resource("mission-control://projects/7/nvidia-local-runtime")
     validation_plan = client.read_resource("mission-control://projects/7/nvidia-validation-plan")
     swarm_preferences = client.read_resource("mission-control://projects/7/swarm/preferences")
+    swarm_simulations = client.read_resource("mission-control://projects/7/swarm/simulations")
     tasks = client.read_resource("mission-control://projects/7/tasks")
     events = client.read_resource("mission-control://projects/7/events")
     latest_simulation = client.read_resource("mission-control://projects/7/swarm/simulations/latest")
@@ -2384,10 +2500,20 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
     assert profile_summary["display_name"] == "Mike"
     assert global_preference_summary["scope"] == "global"
     assert global_preference_summary["item_count"] == 1
+    assert agent_archetypes["archetype_count"] == 1
+    assert agent_archetypes["archetypes"][0]["name"] == "reviewer"
+    assert capability_benchmarks["benchmark_count"] == 1
+    assert capability_benchmarks["benchmarks"][0]["capability_key"] == "bridge_runtime_reads"
+    assert capability_matrix["entry_count"] == 1
+    assert capability_matrix["entries"][0]["capability_key"] == "mcp_runtime"
+    assert context_pack["id"] == 31
     assert playbooks["playbooks"][0]["key"] == "ai_local_tool"
     assert playbook_catalog_entry["key"] == "ai_local_tool"
+    assert common_risks["common_risk_count"] == 1
+    assert common_risks["common_risks"][0]["title"] == "Metadata drift"
     assert global_risk_summary["project_id"] is None
     assert global_risk_summary["open_count"] == 3
+    assert global_security_policy["approval_mode"] == "on-request"
     assert daemon_status["healthy"] is True
     assert runners_status["runner_count"] == 2
     assert plugin_health["status"] == "ready"
@@ -2431,6 +2557,7 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
     assert project_settings["preferred_runner_mode"] == "auto"
     assert workspace["git_branch"] == "main"
     assert tooling["validation_commands"] == ["uv run pytest", "ruff check ."]
+    assert project_security_policy["project_id"] == 7
     assert project_action["action_id"] == "run_validation"
     assert project_actions["action_count"] == 2
     assert manager_messages["message_count"] == 1
@@ -2452,6 +2579,8 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
     assert playbook["playbook"]["name"] == "Existing Repo Fix"
     assert playbook_recommendations["project_id"] == 7
     assert playbook_recommendations["recommendations"][0]["score"] == 95
+    assert context_packs["context_pack_count"] == 1
+    assert context_packs["context_packs"][0]["title"] == "Bridge Runtime Pack"
     assert project_preference_summary["scope"] == "project"
     assert project_preference_summary["inherited_count"] == 1
     assert effective_preferences["item_count"] == 2
@@ -2492,6 +2621,8 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
     assert local_runtime["repo_mode"] == "cuda_cpp"
     assert validation_plan["status"] == "needs_review"
     assert swarm_preferences["max_agents"] == 4
+    assert swarm_simulations["simulation_count"] == 1
+    assert swarm_simulations["simulations"][0]["recommended_agent_count"] == 3
     assert tasks["task_count"] == 2
     assert events["event_count"] == 1
     assert latest_simulation["simulation_id"] == 17
@@ -2637,6 +2768,15 @@ def test_daemon_client_bridge_auth_protected_reads_include_token(monkeypatch) ->
     client.get_project_settings(7)
     client.get_tool_catalog()
     client.get_swarm_preferences(7)
+    client.get_agent_archetypes()
+    client.get_capability_benchmarks()
+    client.get_capability_matrix()
+    client.get_context_packs(7)
+    client.get_context_pack(31)
+    client.get_common_risks()
+    client.get_security_policy()
+    client.get_security_policy(7)
+    client.list_swarm_simulations(7)
     client.get_project_workspace(7)
     client.get_project_action(7)
     client.list_project_actions(7)
@@ -2656,6 +2796,15 @@ def test_daemon_client_bridge_auth_protected_reads_include_token(monkeypatch) ->
         ("GET", "/api/settings", True),
         ("GET", "/api/tools", True),
         ("GET", "/api/projects/7/swarm/preferences", True),
+        ("GET", "/api/agent-archetypes", True),
+        ("GET", "/api/capabilities/benchmarks", True),
+        ("GET", "/api/capabilities/matrix", True),
+        ("GET", "/api/projects/7/context-packs", True),
+        ("GET", "/api/context-packs/31", True),
+        ("GET", "/api/risks/common", True),
+        ("GET", "/api/security/policy", True),
+        ("GET", "/api/projects/7/security/policy", True),
+        ("GET", "/api/projects/7/swarm/simulations", True),
         ("GET", "/api/projects/7/workspace", True),
         ("GET", "/api/projects/7/action", True),
         ("GET", "/api/projects/7/actions", True),

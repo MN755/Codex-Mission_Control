@@ -623,6 +623,15 @@ class MissionControlDaemonClient:
     def get_project_widget_summary(self, project_id: int) -> dict[str, Any]:
         return self._request("GET", f"/api/projects/{project_id}/widgets/summary")
 
+    def get_agent_archetypes(self) -> list[dict[str, Any]]:
+        return self._request("GET", "/api/agent-archetypes")
+
+    def get_capability_benchmarks(self) -> list[dict[str, Any]]:
+        return self._request("GET", "/api/capabilities/benchmarks")
+
+    def get_capability_matrix(self) -> list[dict[str, Any]]:
+        return self._request("GET", "/api/capabilities/matrix")
+
     def import_host_integrations(self) -> dict[str, Any]:
         return self._request("POST", "/api/integrations/import-host-state")
 
@@ -631,6 +640,12 @@ class MissionControlDaemonClient:
 
     def get_project_integration_family(self, project_id: int, family: str) -> dict[str, Any]:
         return self._request("GET", f"/api/projects/{project_id}/integrations/{family}")
+
+    def get_context_packs(self, project_id: int) -> list[dict[str, Any]]:
+        return self._request("GET", f"/api/projects/{project_id}/context-packs")
+
+    def get_context_pack(self, context_pack_id: int) -> dict[str, Any]:
+        return self._request("GET", f"/api/context-packs/{context_pack_id}")
 
     def preview_project_integration_action(self, project_id: int, family: str, action_id: str, *, params: dict[str, Any] | None = None) -> dict[str, Any]:
         return self._request(
@@ -797,6 +812,9 @@ class MissionControlDaemonClient:
             return self._request("GET", "/api/risks/summary")
         return self._request("GET", f"/api/projects/{project_id}/risks/summary")
 
+    def get_common_risks(self) -> list[dict[str, Any]]:
+        return self._request("GET", "/api/risks/common")
+
     def get_validation_coverage(self, project_id: int) -> list[dict[str, Any]]:
         return self._request("GET", f"/api/projects/{project_id}/validation-coverage")
 
@@ -808,6 +826,11 @@ class MissionControlDaemonClient:
 
     def get_agents_md_status(self, project_id: int) -> dict[str, Any]:
         return self._request("GET", f"/api/projects/{project_id}/agents-md/status")
+
+    def get_security_policy(self, project_id: int | None = None) -> dict[str, Any]:
+        if project_id is None:
+            return self._request("GET", "/api/security/policy")
+        return self._request("GET", f"/api/projects/{project_id}/security/policy")
 
     def propose_agents_md(self, project_id: int) -> dict[str, Any]:
         return self._request("POST", f"/api/projects/{project_id}/agents-md/propose", json_body={})
@@ -823,6 +846,9 @@ class MissionControlDaemonClient:
 
     def list_snapshots(self, project_id: int) -> list[dict[str, Any]]:
         return self._request("GET", f"/api/projects/{project_id}/snapshots")
+
+    def list_swarm_simulations(self, project_id: int) -> list[dict[str, Any]]:
+        return self._request("GET", f"/api/projects/{project_id}/swarm/simulations")
 
     def create_snapshot(
         self,
@@ -1773,10 +1799,57 @@ class MissionControlDaemonClient:
             "reports": reports[:20],
         }
 
+    def _summarize_agent_archetypes(self, archetypes: list[dict[str, Any]]) -> dict[str, Any]:
+        return {
+            "archetype_count": len(archetypes),
+            "archetypes": archetypes[:20],
+        }
+
+    def _summarize_capability_benchmarks(self, benchmarks: list[dict[str, Any]]) -> dict[str, Any]:
+        return {
+            "benchmark_count": len(benchmarks),
+            "benchmarks": benchmarks[:20],
+        }
+
+    def _summarize_capability_matrix(self, matrix: list[dict[str, Any]]) -> dict[str, Any]:
+        return {
+            "entry_count": len(matrix),
+            "entries": matrix[:40],
+        }
+
+    def _summarize_context_packs(self, project_id: int, packs: list[dict[str, Any]]) -> dict[str, Any]:
+        return {
+            "project_id": project_id,
+            "context_pack_count": len(packs),
+            "context_packs": packs[:20],
+        }
+
+    def _summarize_common_risks(self, risks: list[dict[str, Any]]) -> dict[str, Any]:
+        return {
+            "common_risk_count": len(risks),
+            "common_risks": risks[:20],
+        }
+
+    def _summarize_swarm_simulations(self, project_id: int, simulations: list[dict[str, Any]]) -> dict[str, Any]:
+        return {
+            "project_id": project_id,
+            "simulation_count": len(simulations),
+            "simulations": simulations[:20],
+        }
+
     def read_resource(self, uri: str) -> dict[str, Any]:
         if not uri.startswith("mission-control://"):
             raise RuntimeError("Unsupported Mission Control resource URI.")
         parts = [segment for segment in uri.removeprefix("mission-control://").split("/") if segment]
+        if len(parts) >= 1 and parts[0] == "agent-archetypes":
+            return self._summarize_agent_archetypes(self.get_agent_archetypes())
+        if len(parts) >= 2 and parts[0] == "capabilities":
+            if parts[1] == "benchmarks":
+                return self._summarize_capability_benchmarks(self.get_capability_benchmarks())
+            if parts[1] == "matrix":
+                return self._summarize_capability_matrix(self.get_capability_matrix())
+        if len(parts) >= 2 and parts[0] == "context-packs":
+            return self.get_context_pack(int(parts[1]))
         if len(parts) >= 1 and parts[0] == "handoffs":
             return self._summarize_handoffs(self.list_handoffs())
         if len(parts) >= 2 and parts[0] == "diagnostics" and parts[1] == "reports":
@@ -1802,6 +1875,10 @@ class MissionControlDaemonClient:
             return self.get_playbook_catalog_entry(parts[1])
         if len(parts) >= 2 and parts[0] == "risks" and parts[1] == "summary":
             return self.get_risk_summary()
+        if len(parts) >= 2 and parts[0] == "risks" and parts[1] == "common":
+            return self._summarize_common_risks(self.get_common_risks())
+        if len(parts) >= 2 and parts[0] == "security" and parts[1] == "policy":
+            return self.get_security_policy()
         if len(parts) >= 2 and parts[0] == "system" and parts[1] == "status":
             return self.get_system_status()
         if len(parts) >= 2 and parts[0] == "system" and parts[1] == "auth-state":
@@ -1877,6 +1954,8 @@ class MissionControlDaemonClient:
                 codebase_map = self.get_codebase_map(project_id)
                 understanding = self.get_codebase_understanding(project_id)
                 return self._summarize_codebase_map(codebase_map, understanding)
+            if kind == "context-packs":
+                return self._summarize_context_packs(project_id, self.get_context_packs(project_id))
             if kind == "codebase-understanding":
                 return self.get_codebase_understanding(project_id)
             if kind == "import-safety":
@@ -1887,6 +1966,8 @@ class MissionControlDaemonClient:
                 return self.get_project_settings(project_id)
             if kind == "swarm" and len(parts) == 4 and parts[3] == "preferences":
                 return self.get_swarm_preferences(project_id)
+            if kind == "swarm" and len(parts) == 4 and parts[3] == "simulations":
+                return self._summarize_swarm_simulations(project_id, self.list_swarm_simulations(project_id))
             if kind == "swarm-plan":
                 prefs = self.get_swarm_preferences(project_id)
                 plan = self.get_swarm_plan(project_id)
@@ -1907,6 +1988,8 @@ class MissionControlDaemonClient:
                 return self._summarize_decision_ledger(project_id, self.get_decision_ledger(project_id))
             if kind == "path-locks":
                 return self._summarize_path_locks(project_id, self.get_path_locks(project_id))
+            if kind == "security" and len(parts) == 4 and parts[3] == "policy":
+                return self.get_security_policy(project_id)
             if kind == "agents-md" and len(parts) == 4 and parts[3] == "status":
                 return self.get_agents_md_status(project_id)
             if kind == "operator-snapshot":

@@ -512,6 +512,102 @@
       }
     },
     {
+      "uri_template": "mission-control://agent-archetypes",
+      "title": "Agent archetype catalog",
+      "summary": "Global catalog of available agent archetypes, their specialties, and the coordination lanes they are designed to cover.",
+      "support_status": "implemented",
+      "source_hint": {
+        "rest_endpoints": [
+          "/api/agent-archetypes"
+        ]
+      },
+      "default_fields": [
+        "archetype_count",
+        "archetypes"
+      ],
+      "redaction": {
+        "omit_fields": [
+          "raw_log",
+          "secret_values",
+          "private_paths_outside_workspace"
+        ],
+        "notes": "Expose archetype metadata only."
+      }
+    },
+    {
+      "uri_template": "mission-control://capabilities/benchmarks",
+      "title": "Capability benchmarks",
+      "summary": "Global benchmark catalog for capability lanes so chat can compare validated performance and evidence coverage.",
+      "support_status": "implemented",
+      "source_hint": {
+        "rest_endpoints": [
+          "/api/capabilities/benchmarks"
+        ]
+      },
+      "default_fields": [
+        "benchmark_count",
+        "benchmarks"
+      ],
+      "redaction": {
+        "omit_fields": [
+          "raw_log",
+          "secret_values",
+          "private_paths_outside_workspace"
+        ],
+        "notes": "Expose benchmark summaries only."
+      }
+    },
+    {
+      "uri_template": "mission-control://capabilities/matrix",
+      "title": "Capability matrix",
+      "summary": "Global capability matrix describing which headless lanes exist, their support status, and the proof attached to them.",
+      "support_status": "implemented",
+      "source_hint": {
+        "rest_endpoints": [
+          "/api/capabilities/matrix"
+        ]
+      },
+      "default_fields": [
+        "entry_count",
+        "entries"
+      ],
+      "redaction": {
+        "omit_fields": [
+          "raw_log",
+          "secret_values",
+          "private_paths_outside_workspace"
+        ],
+        "notes": "Expose capability posture only."
+      }
+    },
+    {
+      "uri_template": "mission-control://context-packs/{context_pack_id}",
+      "title": "Context pack",
+      "summary": "One stored context pack with its status, summary, and artifacts so chat can inspect reusable planning context directly.",
+      "support_status": "implemented",
+      "source_hint": {
+        "rest_endpoints": [
+          "/api/context-packs/{context_pack_id}"
+        ]
+      },
+      "default_fields": [
+        "id",
+        "project_id",
+        "title",
+        "status",
+        "summary",
+        "artifacts"
+      ],
+      "redaction": {
+        "omit_fields": [
+          "raw_log",
+          "secret_values",
+          "private_paths_outside_workspace"
+        ],
+        "notes": "Expose stored context pack metadata and safe artifact references only."
+      }
+    },
+    {
       "uri_template": "mission-control://playbooks",
       "title": "Playbook catalog",
       "summary": "Catalog of shipped project playbooks so chat can inspect available execution templates before choosing one.",
@@ -563,6 +659,34 @@
           "private_paths_outside_workspace"
         ],
         "notes": "Expose the structured playbook template only."
+      }
+    },
+    {
+      "uri_template": "mission-control://security/policy",
+      "title": "Global security policy",
+      "summary": "Current effective global security policy covering approval mode, network posture, file edits, and background process allowance.",
+      "support_status": "implemented",
+      "source_hint": {
+        "rest_endpoints": [
+          "/api/security/policy"
+        ]
+      },
+      "default_fields": [
+        "id",
+        "project_id",
+        "approval_mode",
+        "allow_network",
+        "allow_file_edits",
+        "allow_background_processes",
+        "updated_at"
+      ],
+      "redaction": {
+        "omit_fields": [
+          "raw_log",
+          "secret_values",
+          "private_paths_outside_workspace"
+        ],
+        "notes": "Expose normalized security posture only."
       }
     },
     {
@@ -1119,7 +1243,7 @@
     {
       "uri_template": "mission-control://projects/{project_id}/runbook",
       "title": "Project runbook",
-      "summary": "Current project runbook with generated operational guidance, commands, and validation notes.",
+      "summary": "Current project runbook markdown for startup, test, build, debug, and recovery guidance.",
       "support_status": "implemented",
       "source_hint": {
         "rest_endpoints": [
@@ -1128,24 +1252,24 @@
       },
       "default_fields": [
         "project_id",
-        "title",
-        "summary",
-        "sections",
+        "content_markdown",
+        "generated_from_handoff_id",
+        "generated_at",
         "updated_at"
       ],
       "redaction": {
         "omit_fields": [
-          "raw_log",
-          "secret_env",
+          "raw_logs",
+          "secret_values",
           "private_paths_outside_workspace"
         ],
-        "notes": "Expose the runbook content and structure without leaking secrets or unrelated local paths."
+        "notes": "Expose runbook guidance and timestamps only. Do not attach unrelated raw logs or secret-bearing payloads."
       }
     },
     {
       "uri_template": "mission-control://projects/{project_id}/runbook/summary",
       "title": "Project runbook summary",
-      "summary": "Compact runbook summary with section counts, command coverage, and current preview text.",
+      "summary": "Compact runbook snapshot with section titles, runnable command hints, and preview content.",
       "support_status": "implemented",
       "source_hint": {
         "rest_endpoints": [
@@ -1154,18 +1278,22 @@
       },
       "default_fields": [
         "project_id",
-        "has_runbook",
+        "exists",
         "section_count",
-        "command_count",
-        "summary"
+        "sections",
+        "run_command_count",
+        "run_commands",
+        "generated_from_handoff_id",
+        "generated_at",
+        "updated_at"
       ],
       "redaction": {
         "omit_fields": [
-          "raw_log",
-          "secret_env",
+          "full_markdown",
+          "secret_values",
           "private_paths_outside_workspace"
         ],
-        "notes": "Expose a compact runbook readiness view only."
+        "notes": "Return a summary view so chat can reason about operator guidance without dragging full markdown by default."
       }
     },
     {
@@ -1188,7 +1316,7 @@
       "redaction": {
         "omit_fields": [
           "raw_log",
-          "secret_env",
+          "secret_values",
           "private_paths_outside_workspace"
         ],
         "notes": "Expose the current safe-mode guardrails only, not internal bridge state or raw logs."
@@ -1351,6 +1479,30 @@
       }
     },
     {
+      "uri_template": "mission-control://projects/{project_id}/context-packs",
+      "title": "Project context packs",
+      "summary": "Stored project context packs with reusable planning context, artifact summaries, and readiness status.",
+      "support_status": "implemented",
+      "source_hint": {
+        "rest_endpoints": [
+          "/api/projects/{project_id}/context-packs"
+        ]
+      },
+      "default_fields": [
+        "project_id",
+        "context_pack_count",
+        "context_packs"
+      ],
+      "redaction": {
+        "omit_fields": [
+          "raw_log",
+          "secret_values",
+          "private_paths_outside_workspace"
+        ],
+        "notes": "Expose project context pack summaries only."
+      }
+    },
+    {
       "uri_template": "mission-control://projects/{project_id}/preferences/summary",
       "title": "Project preference summary",
       "summary": "Project-scoped preference summary showing overrides, inherited items, and editability counts.",
@@ -1487,6 +1639,34 @@
           "private_files_outside_workspace"
         ],
         "notes": "Expose installed/configured tooling posture and safe suggested commands only."
+      }
+    },
+    {
+      "uri_template": "mission-control://projects/{project_id}/security/policy",
+      "title": "Project security policy",
+      "summary": "Current effective project security policy covering approval mode, network posture, file edits, and background process allowance.",
+      "support_status": "implemented",
+      "source_hint": {
+        "rest_endpoints": [
+          "/api/projects/{project_id}/security/policy"
+        ]
+      },
+      "default_fields": [
+        "id",
+        "project_id",
+        "approval_mode",
+        "allow_network",
+        "allow_file_edits",
+        "allow_background_processes",
+        "updated_at"
+      ],
+      "redaction": {
+        "omit_fields": [
+          "raw_log",
+          "secret_values",
+          "private_paths_outside_workspace"
+        ],
+        "notes": "Expose normalized project security posture only."
       }
     },
     {
@@ -1644,7 +1824,7 @@
     {
       "uri_template": "mission-control://projects/{project_id}/execution-policy/summary",
       "title": "Execution policy summary",
-      "summary": "Compact effective execution-policy view covering provider, runner, sandbox, tool-routing, and validation posture.",
+      "summary": "Compact summary of effective provider, runner, sandbox, approval, tool-routing, and validation posture for a project.",
       "support_status": "implemented",
       "source_hint": {
         "rest_endpoints": [
@@ -1653,25 +1833,32 @@
       },
       "default_fields": [
         "project_id",
-        "provider_mode",
-        "runner_type",
-        "sandbox_profile",
-        "tool_routing",
-        "validation_recipe"
+        "project_name",
+        "provider",
+        "runner_mode",
+        "sandbox_mode",
+        "approval_policy",
+        "model_policy_name",
+        "approval_required_tool_count",
+        "blocked_tool_count",
+        "default_sandbox_profile",
+        "current_sandbox_profile",
+        "validation_step_count",
+        "validation_command_count"
       ],
       "redaction": {
         "omit_fields": [
-          "raw_log",
-          "secret_env",
+          "raw_command_output",
+          "raw_tokens",
           "private_paths_outside_workspace"
         ],
-        "notes": "Expose effective execution posture only, not raw provider secrets or internal prompt payloads."
+        "notes": "Expose effective execution posture and safe command hints without leaking secrets or raw execution output."
       }
     },
     {
       "uri_template": "mission-control://projects/{project_id}/coordination/summary",
       "title": "Coordination summary",
-      "summary": "Compact coordination state covering contracts, locks, review gates, confidence, and recent decisions.",
+      "summary": "Compact coordination posture across contracts, locks, conflicts, low-confidence areas, review gates, and decisions.",
       "support_status": "implemented",
       "source_hint": {
         "rest_endpoints": [
@@ -1680,19 +1867,27 @@
       },
       "default_fields": [
         "project_id",
-        "agent_contract_count",
-        "path_lock_count",
-        "review_gate_status",
-        "confidence_status",
-        "recent_decisions"
+        "project_name",
+        "current_action_type",
+        "contract_count",
+        "active_contract_count",
+        "waiting_lock_count",
+        "active_lock_count",
+        "unresolved_conflict_count",
+        "decision_count",
+        "decision_types",
+        "low_confidence_count",
+        "failed_gate_count",
+        "pending_gate_count",
+        "review_gate_count"
       ],
       "redaction": {
         "omit_fields": [
-          "raw_log",
-          "secret_paths_outside_workspace",
-          "internal_reasoning"
+          "full_conflict_payloads",
+          "raw_logs",
+          "secret_values"
         ],
-        "notes": "Expose coordination posture and safety constraints without raw prompts or sensitive path details."
+        "notes": "Return counts and compact coordination posture only, not raw transcripts or sensitive execution details."
       }
     },
     {
@@ -2158,6 +2353,30 @@
       }
     },
     {
+      "uri_template": "mission-control://projects/{project_id}/swarm/simulations",
+      "title": "Swarm simulations",
+      "summary": "Project swarm simulation history with compact readiness, approval, and conflict posture for recent launch candidates.",
+      "support_status": "implemented",
+      "source_hint": {
+        "rest_endpoints": [
+          "/api/projects/{project_id}/swarm/simulations"
+        ]
+      },
+      "default_fields": [
+        "project_id",
+        "simulation_count",
+        "simulations"
+      ],
+      "redaction": {
+        "omit_fields": [
+          "raw_logs",
+          "secret_paths",
+          "private_paths_outside_workspace"
+        ],
+        "notes": "Expose compact simulation summaries only."
+      }
+    },
+    {
       "uri_template": "mission-control://projects/{project_id}/swarm/simulations/latest",
       "title": "Latest swarm simulation",
       "summary": "Latest swarm launch simulation snapshot with safe-launch counts, wait conditions, conflicts, and approval needs.",
@@ -2187,6 +2406,29 @@
           "private_paths_outside_workspace"
         ],
         "notes": "Expose compact launch readiness and coordination warnings only."
+      }
+    },
+    {
+      "uri_template": "mission-control://risks/common",
+      "title": "Common risks",
+      "summary": "Global common risk patterns with normalized titles, severity, and brief rationale so operators can spot recurring failure modes quickly.",
+      "support_status": "implemented",
+      "source_hint": {
+        "rest_endpoints": [
+          "/api/risks/common"
+        ]
+      },
+      "default_fields": [
+        "common_risk_count",
+        "common_risks"
+      ],
+      "redaction": {
+        "omit_fields": [
+          "raw_log",
+          "artifact_body",
+          "secret_paths"
+        ],
+        "notes": "Expose normalized recurring risk summaries only."
       }
     },
     {
@@ -2412,7 +2654,7 @@
       "redaction": {
         "omit_fields": [
           "raw_log",
-          "secret_env",
+          "secret_values",
           "private_paths_outside_workspace"
         ],
         "notes": "Expose AGENTS.md presence, path, and summary only."
@@ -2567,3 +2809,4 @@
     }
   ]
 }
+
