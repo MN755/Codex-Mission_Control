@@ -2356,6 +2356,191 @@ class MissionControlDaemonClient:
             "notes": list(payload.get("notes") or [])[:8],
         }
 
+    def _summarize_integration_catalog(self, entries: list[dict[str, Any]]) -> dict[str, Any]:
+        connected_count = 0
+        categories: dict[str, int] = {}
+        families = []
+        for entry in entries[:30]:
+            status = str(entry.get("status") or "unknown")
+            category = str(entry.get("category") or "other")
+            if status == "connected":
+                connected_count += 1
+            categories[category] = categories.get(category, 0) + 1
+            families.append(
+                {
+                    "family": entry.get("family"),
+                    "name": entry.get("name"),
+                    "category": category,
+                    "status": status,
+                    "provider_count": len(list(entry.get("providers") or [])),
+                    "action_count": len(list(entry.get("available_action_ids") or [])),
+                    "host_support_count": len(list(entry.get("host_support") or [])),
+                    "host_imported": bool(entry.get("host_imported", False)),
+                    "connection_source": entry.get("connection_source"),
+                }
+            )
+        return {
+            "family_count": len(entries),
+            "connected_family_count": connected_count,
+            "category_counts": categories,
+            "families": families,
+        }
+
+    def _summarize_integration_connections(self, connections: list[dict[str, Any]]) -> dict[str, Any]:
+        status_counts: dict[str, int] = {}
+        imported_count = 0
+        summarized = []
+        for connection in connections[:30]:
+            status = str(connection.get("status") or "unknown")
+            status_counts[status] = status_counts.get(status, 0) + 1
+            if connection.get("host_imported"):
+                imported_count += 1
+            summarized.append(
+                {
+                    "family": connection.get("family"),
+                    "status": status,
+                    "provider_count": len(list(connection.get("providers") or [])),
+                    "host_imported": bool(connection.get("host_imported", False)),
+                    "connection_source": connection.get("connection_source"),
+                    "approval_policy": connection.get("approval_policy"),
+                    "notes": list(connection.get("notes") or [])[:4],
+                }
+            )
+        return {
+            "connection_count": len(connections),
+            "host_imported_count": imported_count,
+            "status_counts": status_counts,
+            "connections": summarized,
+        }
+
+    def _summarize_integration_health(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "version": payload.get("version"),
+            "family_count": payload.get("family_count", 0),
+            "connection_count": payload.get("connection_count", 0),
+            "authoritative_connection_count": payload.get("authoritative_connection_count", 0),
+            "host_imported_count": payload.get("host_imported_count", 0),
+            "status_counts": dict(payload.get("status_counts") or {}),
+            "recent_action_failures": list(payload.get("recent_action_failures") or [])[:8],
+            "host_import_roots": dict(payload.get("host_import_roots") or {}),
+        }
+
+    def _summarize_project_integrations(self, project_id: int, payload: dict[str, Any]) -> dict[str, Any]:
+        families = list(payload.get("families") or [])
+        ready_family_count = 0
+        connected_family_count = 0
+        summarized = []
+        for family_payload in families[:30]:
+            status = str(family_payload.get("status") or "unknown")
+            connection_status = str(family_payload.get("connection_status") or status)
+            if status == "ready":
+                ready_family_count += 1
+            if connection_status == "connected":
+                connected_family_count += 1
+            summarized.append(
+                {
+                    "family": family_payload.get("family"),
+                    "name": family_payload.get("name"),
+                    "status": status,
+                    "connection_status": connection_status,
+                    "resolved_provider": family_payload.get("resolved_provider"),
+                    "action_count": family_payload.get("action_count", len(list(family_payload.get("available_actions") or []))),
+                    "blocker_count": family_payload.get("blocker_count", len(list(family_payload.get("blockers") or []))),
+                    "host_imported": bool(family_payload.get("host_imported", False)),
+                    "connection_source": family_payload.get("connection_source"),
+                }
+            )
+        return {
+            "project_id": project_id,
+            "project_name": payload.get("project_name"),
+            "workspace_path": payload.get("workspace_path"),
+            "summary": payload.get("summary"),
+            "family_count": payload.get("family_count", len(families)),
+            "ready_family_count": ready_family_count,
+            "connected_family_count": connected_family_count,
+            "status_counts": dict(payload.get("status_counts") or {}),
+            "connection_status_counts": dict(payload.get("connection_status_counts") or {}),
+            "families": summarized,
+        }
+
+    def _summarize_project_integration_family(self, project_id: int, payload: dict[str, Any]) -> dict[str, Any]:
+        actions = list(payload.get("available_actions") or [])
+        return {
+            "project_id": project_id,
+            "family": payload.get("family"),
+            "name": payload.get("name"),
+            "summary": payload.get("summary"),
+            "category": payload.get("category"),
+            "project_name": payload.get("project_name"),
+            "workspace_path": payload.get("workspace_path"),
+            "status": payload.get("status"),
+            "connection_status": payload.get("connection_status"),
+            "connection_source": payload.get("connection_source"),
+            "host_imported": bool(payload.get("host_imported", False)),
+            "resolved_provider": payload.get("resolved_provider"),
+            "provider_candidates": list(payload.get("provider_candidates") or [])[:8],
+            "required_permissions": list(payload.get("required_permissions") or [])[:8],
+            "safe_commands": list(payload.get("safe_commands") or [])[:8],
+            "blockers": list(payload.get("blockers") or [])[:8],
+            "recommended_fixes": list(payload.get("recommended_fixes") or [])[:8],
+            "action_count": payload.get("action_count", len(actions)),
+            "available_actions": [
+                {
+                    "action_id": action.get("action_id"),
+                    "title": action.get("title"),
+                    "status": action.get("status"),
+                    "risk_level": action.get("risk_level"),
+                    "permission_policy": action.get("permission_policy"),
+                    "provider": action.get("provider"),
+                    "requires_confirmation": bool(action.get("requires_confirmation", False)),
+                }
+                for action in actions[:12]
+            ],
+        }
+
+    def _summarize_project_integration_actions(self, project_id: int, family: str, payload: dict[str, Any]) -> dict[str, Any]:
+        actions = list(payload.get("available_actions") or [])
+        risk_level_counts: dict[str, int] = {}
+        status_counts: dict[str, int] = {}
+        preview_supported_count = 0
+        requires_confirmation_count = 0
+        summarized = []
+        for action in actions[:20]:
+            risk_level = str(action.get("risk_level") or "unknown")
+            status = str(action.get("status") or "unknown")
+            risk_level_counts[risk_level] = risk_level_counts.get(risk_level, 0) + 1
+            status_counts[status] = status_counts.get(status, 0) + 1
+            if action.get("preview_supported"):
+                preview_supported_count += 1
+            if action.get("requires_confirmation"):
+                requires_confirmation_count += 1
+            summarized.append(
+                {
+                    "action_id": action.get("action_id"),
+                    "title": action.get("title"),
+                    "status": status,
+                    "risk_level": risk_level,
+                    "permission_policy": action.get("permission_policy"),
+                    "provider": action.get("provider"),
+                    "preview_supported": bool(action.get("preview_supported", False)),
+                    "requires_confirmation": bool(action.get("requires_confirmation", False)),
+                    "ready_to_execute": bool(action.get("ready_to_execute", False)),
+                    "missing_params": list(action.get("missing_params") or [])[:6],
+                }
+            )
+        return {
+            "project_id": project_id,
+            "family": family,
+            "project_name": payload.get("project_name"),
+            "workspace_path": payload.get("workspace_path"),
+            "action_count": len(actions),
+            "preview_supported_count": preview_supported_count,
+            "requires_confirmation_count": requires_confirmation_count,
+            "risk_level_counts": risk_level_counts,
+            "status_counts": status_counts,
+            "actions": summarized,
+        }
+
     def _summarize_context_packs(self, project_id: int, packs: list[dict[str, Any]]) -> dict[str, Any]:
         return {
             "project_id": project_id,
@@ -2447,11 +2632,11 @@ class MissionControlDaemonClient:
         if len(parts) >= 2 and parts[0] == "integrations":
             kind = parts[1]
             if kind == "catalog":
-                return {"integrations": self.get_integrations_catalog()}
+                return self._summarize_integration_catalog(self.get_integrations_catalog())
             if kind == "connections":
-                return {"connections": self.get_integration_connections()}
+                return self._summarize_integration_connections(self.get_integration_connections())
             if kind == "health":
-                return self.get_integration_health()
+                return self._summarize_integration_health(self.get_integration_health())
         if len(parts) == 1 and parts[0] == "profile":
             return self._summarize_profile(self.get_profile())
         if len(parts) >= 2 and parts[0] == "profile" and parts[1] == "summary":
@@ -2719,6 +2904,13 @@ class MissionControlDaemonClient:
             if kind == "integrations":
                 if project_id is None:
                     raise ValueError("Project-scoped integration resources require a project id.")
+                if len(parts) == 5 and parts[4] == "actions":
+                    family = parts[3]
+                    return self._summarize_project_integration_actions(
+                        project_id,
+                        family,
+                        self.get_project_integration_family(project_id, family),
+                    )
                 if len(parts) == 7 and parts[4] == "actions" and parts[6] == "preview":
                     family = parts[3]
                     action_id = parts[5]
@@ -2729,8 +2921,11 @@ class MissionControlDaemonClient:
                         self.preview_project_integration_action(project_id, family, action_id),
                     )
                 if len(parts) == 4:
-                    return self.get_project_integration_family(project_id, parts[3])
-                return self.get_project_integrations(project_id)
+                    return self._summarize_project_integration_family(
+                        project_id,
+                        self.get_project_integration_family(project_id, parts[3]),
+                    )
+                return self._summarize_project_integrations(project_id, self.get_project_integrations(project_id))
             if kind == "tensorflow" and len(parts) >= 4 and parts[3] == "features":
                 if len(parts) == 4:
                     return self._summarize_ml_feature_catalog(project_id, self.get_tensorflow_feature_catalog(project_id))

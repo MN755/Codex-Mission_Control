@@ -1809,6 +1809,36 @@
       }
     },
     {
+      "uri_template": "mission-control://projects/{project_id}/integrations/{family}/actions",
+      "title": "Project integration actions",
+      "summary": "Action inventory for one integration family so chat can inspect what is available, blocked, or confirmation-gated before drilling into one preview.",
+      "support_status": "implemented",
+      "source_hint": {
+        "rest_endpoints": [
+          "/api/projects/{project_id}/integrations/{family}"
+        ]
+      },
+      "default_fields": [
+        "project_id",
+        "family",
+        "project_name",
+        "action_count",
+        "preview_supported_count",
+        "requires_confirmation_count",
+        "risk_level_counts",
+        "status_counts",
+        "actions"
+      ],
+      "redaction": {
+        "omit_fields": [
+          "raw_tokens",
+          "secret_values",
+          "private_paths_outside_workspace"
+        ],
+        "notes": "Expose action readiness, risk level, permission posture, and missing parameter hints only."
+      }
+    },
+    {
       "uri_template": "mission-control://projects/{project_id}/integrations/{family}/actions/{action_id}/preview",
       "title": "Integration action preview",
       "summary": "Project-scoped safe preview of one integration action so chat can inspect impact, command shape, and approval posture without executing the action.",

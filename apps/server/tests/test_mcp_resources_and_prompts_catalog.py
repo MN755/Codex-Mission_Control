@@ -100,6 +100,7 @@ EXPECTED_RESOURCES = [
     "mission-control://subagent-policy/summary",
     "mission-control://projects/{project_id}/integrations",
     "mission-control://projects/{project_id}/integrations/{family}",
+    "mission-control://projects/{project_id}/integrations/{family}/actions",
     "mission-control://projects/{project_id}/integrations/{family}/actions/{action_id}/preview",
     "mission-control://projects/{project_id}/settings",
     "mission-control://projects/{project_id}/details",

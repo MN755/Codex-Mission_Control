@@ -82,6 +82,7 @@ EXPECTED_RESOURCES = {
     "mission-control://subagent-policy/summary",
     "mission-control://projects/{project_id}/integrations",
     "mission-control://projects/{project_id}/integrations/{family}",
+    "mission-control://projects/{project_id}/integrations/{family}/actions",
     "mission-control://projects/{project_id}/integrations/{family}/actions/{action_id}/preview",
     "mission-control://projects/{project_id}/settings",
     "mission-control://projects/{project_id}/details",
@@ -347,15 +348,43 @@ class FakeClient:
 
     def get_integrations_catalog(self):
         self.calls.append(("get_integrations_catalog", {}))
-        return [{"family": "source_control", "name": "GitHub / GitLab / Bitbucket", "status": "connected"}]
+        return [{
+            "family": "source_control",
+            "name": "GitHub / GitLab / Bitbucket",
+            "summary": "Source control and review workflow lane.",
+            "category": "delivery",
+            "providers": ["github"],
+            "host_support": ["codex"],
+            "available_action_ids": ["create_issue"],
+            "status": "connected",
+            "connection_source": "codex_host",
+            "host_imported": True,
+        }]
 
     def get_integration_connections(self):
         self.calls.append(("get_integration_connections", {}))
-        return [{"family": "source_control", "status": "connected", "host_imported": True}]
+        return [{
+            "family": "source_control",
+            "status": "connected",
+            "providers": ["github"],
+            "connection_source": "codex_host",
+            "host_imported": True,
+            "approval_policy": "ask_every_time",
+            "notes": ["Imported from host CLI session."],
+        }]
 
     def get_integration_health(self):
         self.calls.append(("get_integration_health", {}))
-        return {"family_count": 30, "connection_count": 1, "status_counts": {"connected": 1}}
+        return {
+            "version": 2,
+            "family_count": 30,
+            "connection_count": 1,
+            "authoritative_connection_count": 1,
+            "host_imported_count": 1,
+            "status_counts": {"connected": 1},
+            "recent_action_failures": [],
+            "host_import_roots": {"codex": ["C:/demo"]},
+        }
 
     def import_host_integrations(self):
         self.calls.append(("import_host_integrations", {}))
@@ -368,7 +397,20 @@ class FakeClient:
             "project_name": "Demo",
             "workspace_path": "C:/demo",
             "summary": "1 ready family.",
-            "families": [{"family": "source_control", "status": "ready", "available_actions": []}],
+            "family_count": 1,
+            "status_counts": {"ready": 1},
+            "connection_status_counts": {"connected": 1},
+            "families": [{
+                "family": "source_control",
+                "name": "GitHub / GitLab / Bitbucket",
+                "status": "ready",
+                "connection_status": "connected",
+                "resolved_provider": "github",
+                "connection_source": "codex_host",
+                "host_imported": True,
+                "available_actions": [{"action_id": "create_issue"}],
+                "blockers": [],
+            }],
         }
 
     def get_project_integration_family(self, project_id: int, family: str):
@@ -390,7 +432,20 @@ class FakeClient:
             "safe_commands": ["gh repo view --json name,defaultBranchRef"],
             "blockers": [],
             "recommended_fixes": [],
-            "available_actions": [],
+            "action_count": 1,
+            "available_actions": [{
+                "action_id": "create_issue",
+                "title": "Create issue",
+                "summary": "Create a work item.",
+                "status": "available",
+                "risk_level": "medium",
+                "permission_policy": "ask_every_time",
+                "provider": "github",
+                "preview_supported": True,
+                "requires_confirmation": True,
+                "ready_to_execute": False,
+                "missing_params": ["title"],
+            }],
             "notes": [],
         }
 
@@ -1308,6 +1363,121 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
             "preferred_build_command": "python -m build",
             "context_window_hint": 32000,
             "updated_at": "2026-06-03T12:35:00Z",
+        },
+    )
+    monkeypatch.setattr(
+        client,
+        "get_integrations_catalog",
+        lambda: [
+            {
+                "family": "source_control",
+                "name": "GitHub / GitLab / Bitbucket",
+                "summary": "Source control and review workflow lane.",
+                "category": "delivery",
+                "providers": ["github"],
+                "host_support": ["codex"],
+                "available_action_ids": ["create_issue"],
+                "status": "connected",
+                "connection_source": "codex_host",
+                "host_imported": True,
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        client,
+        "get_integration_connections",
+        lambda: [
+            {
+                "family": "source_control",
+                "status": "connected",
+                "providers": ["github"],
+                "connection_source": "codex_host",
+                "host_imported": True,
+                "approval_policy": "ask_every_time",
+                "notes": ["Imported from host CLI session."],
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        client,
+        "get_integration_health",
+        lambda: {
+            "version": 2,
+            "family_count": 30,
+            "connection_count": 1,
+            "authoritative_connection_count": 1,
+            "host_imported_count": 1,
+            "status_counts": {"connected": 1},
+            "recent_action_failures": [],
+            "host_import_roots": {"codex": ["C:/demo"]},
+        },
+    )
+    monkeypatch.setattr(
+        client,
+        "get_project_integrations",
+        lambda project_id: {
+            "project_id": project_id,
+            "project_name": "Demo",
+            "workspace_path": "C:/demo",
+            "summary": "1 ready family.",
+            "family_count": 1,
+            "status_counts": {"ready": 1},
+            "connection_status_counts": {"connected": 1},
+            "families": [
+                {
+                    "family": "source_control",
+                    "name": "GitHub / GitLab / Bitbucket",
+                    "status": "ready",
+                    "connection_status": "connected",
+                    "resolved_provider": "github",
+                    "connection_source": "codex_host",
+                    "host_imported": True,
+                    "available_actions": [{"action_id": "create_issue"}],
+                    "blockers": [],
+                }
+            ],
+        },
+    )
+    monkeypatch.setattr(
+        client,
+        "get_project_integration_family",
+        lambda project_id, family: {
+            "family": family,
+            "name": "GitHub / GitLab / Bitbucket",
+            "summary": "Repo host lane.",
+            "category": "delivery",
+            "project_name": "Demo",
+            "workspace_path": "C:/demo",
+            "status": "ready",
+            "connection_status": "connected",
+            "connection_source": "codex_host",
+            "host_imported": True,
+            "providers": ["github"],
+            "resolved_provider": "github",
+            "provider_candidates": ["github"],
+            "required_permissions": ["ask_every_time"],
+            "health": {"cli_detected": ["gh"]},
+            "artifacts": [],
+            "safe_commands": ["gh repo view --json name,defaultBranchRef"],
+            "blockers": [],
+            "recommended_fixes": [],
+            "action_count": 1,
+            "available_actions": [
+                {
+                    "action_id": "create_issue",
+                    "title": "Create issue",
+                    "summary": "Create a work item.",
+                    "status": "available",
+                    "risk_level": "medium",
+                    "permission_policy": "ask_every_time",
+                    "provider": "github",
+                    "preview_supported": True,
+                    "requires_confirmation": True,
+                    "ready_to_execute": False,
+                    "missing_params": ["title"],
+                }
+            ],
+            "notes": [],
         },
     )
     monkeypatch.setattr(
@@ -3056,6 +3226,9 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
     profile_summary = client.read_resource("mission-control://profile/summary")
     global_preferences = client.read_resource("mission-control://preferences")
     global_preference_summary = client.read_resource("mission-control://preferences/summary")
+    integration_catalog = client.read_resource("mission-control://integrations/catalog")
+    integration_connections = client.read_resource("mission-control://integrations/connections")
+    integration_health = client.read_resource("mission-control://integrations/health")
     agent_archetypes = client.read_resource("mission-control://agent-archetypes")
     global_agent_reputation = client.read_resource("mission-control://agents/reputation")
     capability_benchmarks = client.read_resource("mission-control://capabilities/benchmarks")
@@ -3103,6 +3276,9 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
     handoff_evidence_preview = client.read_resource("mission-control://projects/7/handoff/evidence/preview")
     codebase_understanding = client.read_resource("mission-control://projects/7/codebase-understanding")
     import_safety = client.read_resource("mission-control://projects/7/import-safety")
+    project_integrations = client.read_resource("mission-control://projects/7/integrations")
+    project_integration_family = client.read_resource("mission-control://projects/7/integrations/source_control")
+    project_integration_actions = client.read_resource("mission-control://projects/7/integrations/source_control/actions")
     integration_action_preview = client.read_resource("mission-control://projects/7/integrations/source_control/actions/create_issue/preview")
     project_settings = client.read_resource("mission-control://projects/7/settings")
     project_details = client.read_resource("mission-control://projects/7/details")
@@ -3188,6 +3364,15 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
     assert global_preferences["items"][0]["key"] == "review_depth"
     assert global_preference_summary["scope"] == "global"
     assert global_preference_summary["item_count"] == 1
+    assert integration_catalog["family_count"] == 1
+    assert integration_catalog["connected_family_count"] == 1
+    assert integration_catalog["families"][0]["action_count"] == 1
+    assert integration_connections["connection_count"] == 1
+    assert integration_connections["host_imported_count"] == 1
+    assert integration_connections["connections"][0]["approval_policy"] == "ask_every_time"
+    assert integration_health["family_count"] == 30
+    assert integration_health["authoritative_connection_count"] == 1
+    assert integration_health["host_import_roots"]["codex"] == ["C:/demo"]
     assert subagent_policy["enabled"] is True
     assert subagent_policy["default_mode"] == "limited_write"
     assert subagent_policy["allowed_task_types_json"] == ["review", "planning", "failure_diagnosis"]
@@ -3263,6 +3448,16 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
     assert handoff_evidence_preview["derived_candidate_count"] == 1
     assert codebase_understanding["recommended_interview_mode"] == "targeted"
     assert import_safety["safe_to_import"] is True
+    assert project_integrations["project_id"] == 7
+    assert project_integrations["ready_family_count"] == 1
+    assert project_integrations["families"][0]["resolved_provider"] == "github"
+    assert project_integration_family["family"] == "source_control"
+    assert project_integration_family["action_count"] == 1
+    assert project_integration_family["available_actions"][0]["action_id"] == "create_issue"
+    assert project_integration_actions["family"] == "source_control"
+    assert project_integration_actions["action_count"] == 1
+    assert project_integration_actions["requires_confirmation_count"] == 1
+    assert project_integration_actions["actions"][0]["missing_params"] == ["title"]
     assert integration_action_preview["family"] == "source_control"
     assert integration_action_preview["action_id"] == "create_issue"
     assert integration_action_preview["requires_confirmation"] is True
