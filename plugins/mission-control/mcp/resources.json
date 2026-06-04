@@ -1901,6 +1901,71 @@
       }
     },
     {
+      "uri_template": "mission-control://projects/{project_id}/system/status",
+      "title": "Project system status",
+      "summary": "Project-scoped runtime and provider readiness surface covering auth posture, CLI availability, backend wiring, MCP state, and active runs.",
+      "support_status": "implemented",
+      "source_hint": {
+        "rest_endpoints": [
+          "/api/projects/{project_id}/system/status"
+        ]
+      },
+      "default_fields": [
+        "selected_provider",
+        "selected_provider_label",
+        "cli_detected",
+        "cli_execution_available",
+        "login_status",
+        "authenticated",
+        "runtime_ready",
+        "runtime_summary",
+        "backend_base_url",
+        "app_server_handshake_status",
+        "effective_runner_mode",
+        "active_runs",
+        "configured_plugins",
+        "notes"
+      ],
+      "redaction": {
+        "omit_fields": [
+          "raw_log",
+          "secret_values",
+          "private_paths_outside_workspace"
+        ],
+        "notes": "Expose project-scoped readiness and configuration posture only."
+      }
+    },
+    {
+      "uri_template": "mission-control://projects/{project_id}/system/codex-status",
+      "title": "Project codex status",
+      "summary": "Project-scoped Codex runtime status with provider, auth, runtime, MCP, and plugin posture.",
+      "support_status": "implemented",
+      "source_hint": {
+        "rest_endpoints": [
+          "/api/projects/{project_id}/system/codex-status"
+        ]
+      },
+      "default_fields": [
+        "selected_provider",
+        "selected_provider_label",
+        "authenticated",
+        "runtime_ready",
+        "runtime_summary",
+        "effective_runner_mode",
+        "backend_base_url",
+        "configured_plugins",
+        "notes"
+      ],
+      "redaction": {
+        "omit_fields": [
+          "raw_log",
+          "secret_values",
+          "private_paths_outside_workspace"
+        ],
+        "notes": "Expose project-scoped Codex runtime posture only."
+      }
+    },
+    {
       "uri_template": "mission-control://projects/{project_id}/settings",
       "title": "Project settings",
       "summary": "Project-scoped execution and approval settings that shape how Mission Control should operate in the workspace.",

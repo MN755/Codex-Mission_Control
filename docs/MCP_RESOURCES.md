@@ -80,6 +80,8 @@ Mission Control resources are read-only context surfaces for Codex chat.
 - `mission-control://projects/{project_id}/integrations/{family}`
 - `mission-control://projects/{project_id}/integrations/{family}/actions`
 - `mission-control://projects/{project_id}/integrations/{family}/actions/{action_id}/preview`
+- `mission-control://projects/{project_id}/system/status`
+- `mission-control://projects/{project_id}/system/codex-status`
 - `mission-control://projects/{project_id}/settings`
 - `mission-control://projects/{project_id}/details`
 - `mission-control://projects/{project_id}/understanding`

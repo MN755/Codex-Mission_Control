@@ -2811,6 +2811,10 @@ class MissionControlDaemonClient:
                     raise RuntimeError(f"Unsupported Mission Control resource URI: {uri}")
                 decisions = self.get_pending_decisions(project_id=project_id)
                 return self._summarize_pending_decisions(project_id, decisions)
+            if kind == "system" and len(parts) == 4 and parts[3] == "status":
+                return self.get_system_status(project_id)
+            if kind == "system" and len(parts) == 4 and parts[3] == "codex-status":
+                return self.get_codex_status(project_id)
             if kind == "questions" and len(parts) == 4 and parts[3] == "pending":
                 return self._summarize_pending_questions(project_id, self.get_pending_questions(project_id))
             if kind == "approvals" and len(parts) == 4 and parts[3] == "pending":

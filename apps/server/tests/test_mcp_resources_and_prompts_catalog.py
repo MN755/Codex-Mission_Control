@@ -103,6 +103,8 @@ EXPECTED_RESOURCES = [
     "mission-control://projects/{project_id}/integrations/{family}",
     "mission-control://projects/{project_id}/integrations/{family}/actions",
     "mission-control://projects/{project_id}/integrations/{family}/actions/{action_id}/preview",
+    "mission-control://projects/{project_id}/system/status",
+    "mission-control://projects/{project_id}/system/codex-status",
     "mission-control://projects/{project_id}/settings",
     "mission-control://projects/{project_id}/details",
     "mission-control://projects/{project_id}/understanding",
@@ -453,6 +455,8 @@ def test_docs_explain_resources_prompts_and_headless_boundary() -> None:
     assert "mission-control://system/status" in resources_content
     assert "mission-control://system/auth-state" in resources_content
     assert "mission-control://system/codex-status" in resources_content
+    assert "mission-control://projects/{project_id}/system/status" in resources_content
+    assert "mission-control://projects/{project_id}/system/codex-status" in resources_content
     assert "mission-control://startup/status" in resources_content
     assert "mission-control://dashboard/summary" in resources_content
     assert "mission-control://widgets/catalog" in resources_content

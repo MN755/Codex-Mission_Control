@@ -85,6 +85,8 @@ EXPECTED_RESOURCES = {
     "mission-control://projects/{project_id}/integrations/{family}",
     "mission-control://projects/{project_id}/integrations/{family}/actions",
     "mission-control://projects/{project_id}/integrations/{family}/actions/{action_id}/preview",
+    "mission-control://projects/{project_id}/system/status",
+    "mission-control://projects/{project_id}/system/codex-status",
     "mission-control://projects/{project_id}/settings",
     "mission-control://projects/{project_id}/details",
     "mission-control://projects/{project_id}/understanding",
@@ -2673,7 +2675,7 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
     monkeypatch.setattr(
         client,
         "get_codex_status",
-        lambda: {
+        lambda project_id=None: {
             "selected_provider": "codex",
             "selected_provider_label": "Codex",
             "cli_detected": True,
@@ -3352,6 +3354,8 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
     auth_state = client.read_resource("mission-control://system/auth-state")
     auth_job = client.read_resource("mission-control://system/auth-jobs/job-123")
     codex_status = client.read_resource("mission-control://system/codex-status")
+    project_system_status = client.read_resource("mission-control://projects/7/system/status")
+    project_codex_status = client.read_resource("mission-control://projects/7/system/codex-status")
     startup_status = client.read_resource("mission-control://startup/status")
     dashboard_summary = client.read_resource("mission-control://dashboard/summary")
     widget_catalog = client.read_resource("mission-control://widgets/catalog")
@@ -3507,10 +3511,12 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
     assert plugin_health["status"] == "ready"
     assert headless_config["enabled"] is True
     assert system_status["runtime_ready"] is True
+    assert project_system_status["runtime_ready"] is True
     assert auth_state["authenticated"] is True
     assert auth_job["job_id"] == "job-123"
     assert auth_job["status"] == "running"
     assert codex_status["runtime_summary"] == "Codex runtime is ready."
+    assert project_codex_status["runtime_summary"] == "Codex runtime is ready."
     assert startup_status["overall_status"] == "ready"
     assert dashboard_summary["archive_count"] == 1
     assert widget_catalog["scope"] == "all"
