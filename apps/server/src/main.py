@@ -1101,9 +1101,18 @@ def get_widget_catalog(
     return [WidgetDefinitionRead(**item) for item in service.list_widget_catalog(db, scope)]
 
 
+@app.get("/api/widgets/catalog/{scope}", response_model=list[WidgetDefinitionRead])
+def get_widget_catalog_for_scope(
+    scope: str,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> list[WidgetDefinitionRead]:
+    return [WidgetDefinitionRead(**item) for item in service.list_widget_catalog(db, scope)]
+
+
 @app.get("/api/widgets/instances", response_model=list[WidgetInstanceRead])
 def get_widget_instances(
-    scope: str = Query(...),
+    scope: str = Query(default="dashboard"),
     db: Session = Depends(get_db),
     _: None = Depends(_require_bridge_token),
 ) -> list[WidgetInstanceRead]:
@@ -2049,6 +2058,18 @@ def get_orchestration(
     return OrchestrationSessionRead(**coordinator._serialize_session(session))
 
 
+@app.get("/api/projects/{project_id}/orchestrations/active", response_model=OrchestrationSessionRead | None)
+def get_active_project_orchestration(
+    project_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> OrchestrationSessionRead | None:
+    project = _get_project_or_404(db, project_id)
+    session = coordinator.get_active_session_for_project(db, project)
+    return OrchestrationSessionRead(**coordinator._serialize_session(session)) if session else None
+
+
 @app.get("/api/projects/{project_id}/orchestrations/{orchestration_id}", response_model=OrchestrationSessionRead)
 def get_project_orchestration(
     project_id: int,
@@ -2060,18 +2081,6 @@ def get_project_orchestration(
     session = _get_orchestration_or_404(db, orchestration_id)
     _require_project_scope("Orchestration session", session.project_id, project_id)
     return OrchestrationSessionRead(**coordinator._serialize_session(session))
-
-
-@app.get("/api/projects/{project_id}/orchestrations/active", response_model=OrchestrationSessionRead | None)
-def get_active_project_orchestration(
-    project_id: int,
-    request: Request,
-    db: Session = Depends(get_db),
-    _: None = Depends(_require_bridge_token),
-) -> OrchestrationSessionRead | None:
-    project = _get_project_or_404(db, project_id)
-    session = coordinator.get_active_session_for_project(db, project)
-    return OrchestrationSessionRead(**coordinator._serialize_session(session)) if session else None
 
 
 @app.get("/api/orchestrations/{orchestration_id}/status", response_model=OrchestrationStatusRead)

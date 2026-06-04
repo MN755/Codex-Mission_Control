@@ -656,8 +656,9 @@ class MissionControlDaemonClient:
         return self._request("GET", "/api/dashboard/summary")
 
     def get_widget_catalog(self, scope: str | None = None) -> list[dict[str, Any]]:
-        params = {"scope": scope} if scope is not None else {}
-        return self._request("GET", "/api/widgets/catalog", params=params)
+        if scope is not None:
+            return self._request("GET", f"/api/widgets/catalog/{scope}")
+        return self._request("GET", "/api/widgets/catalog")
 
     def list_widget_instances(self) -> list[dict[str, Any]]:
         return self._request("GET", "/api/widgets/instances")

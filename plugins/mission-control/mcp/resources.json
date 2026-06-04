@@ -1279,7 +1279,7 @@
       "support_status": "implemented",
       "source_hint": {
         "rest_endpoints": [
-          "/api/widgets/catalog?scope={scope}"
+          "/api/widgets/catalog/{scope}"
         ]
       },
       "default_fields": [

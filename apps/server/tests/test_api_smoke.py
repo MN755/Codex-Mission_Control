@@ -282,6 +282,15 @@ def test_dry_run_project_flow(client, bridge_headers, monkeypatch) -> None:
     assert details_response.status_code == 200
     assert details_response.json()["id"] == project_id
 
+    widget_catalog_response = client.get("/api/widgets/catalog")
+    assert widget_catalog_response.status_code == 200
+
+    project_widget_catalog_response = client.get("/api/widgets/catalog/project")
+    assert project_widget_catalog_response.status_code == 200
+
+    widget_instances_response = client.get("/api/widgets/instances")
+    assert widget_instances_response.status_code == 200
+
     active_orchestration = client.get(f"/api/projects/{project_id}/orchestrations/active")
     assert active_orchestration.status_code == 200
 
@@ -365,7 +374,13 @@ def test_dry_run_project_flow(client, bridge_headers, monkeypatch) -> None:
     instincts = client.get(f"/api/projects/{project_id}/instincts")
     instincts_preview = client.get(f"/api/projects/{project_id}/instincts/preview")
     assert instincts.status_code == 200
-    assert instincts.json() == instincts_preview.json()
+    instincts_payload = instincts.json()
+    instincts_preview_payload = instincts_preview.json()
+    assert instincts_payload["generated_at"] != ""
+    assert instincts_preview_payload["generated_at"] != ""
+    assert {k: v for k, v in instincts_payload.items() if k != "generated_at"} == {
+        k: v for k, v in instincts_preview_payload.items() if k != "generated_at"
+    }
 
     orchestration = active_orchestration.json()
     if orchestration is not None:
@@ -512,7 +527,9 @@ def test_runtime_and_project_control_routes_require_token(client) -> None:
         assert raw_client.get("/api/handoffs").status_code == 401
         assert raw_client.get("/api/agent-archetypes").status_code == 401
         assert raw_client.get("/api/widgets/catalog").status_code == 401
+        assert raw_client.get("/api/widgets/catalog/project").status_code == 401
         assert raw_client.get("/api/widgets/instances", params={"scope": "dashboard"}).status_code == 401
+        assert raw_client.get("/api/widgets/instances").status_code == 401
         assert raw_client.get("/api/capabilities/matrix").status_code == 401
         assert raw_client.get("/api/capabilities/benchmarks").status_code == 401
         assert raw_client.get("/api/agents/reputation").status_code == 401

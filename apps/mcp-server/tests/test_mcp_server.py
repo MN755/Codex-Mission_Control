@@ -3861,6 +3861,8 @@ def test_daemon_client_bridge_auth_protected_reads_include_token(monkeypatch) ->
     client.daemon_status()
     client.get_profile()
     client.get_auth_job("job-123")
+    client.get_widget_catalog()
+    client.get_widget_catalog("project")
     client.get_handoff(orchestration_id=14, project_id=7)
     client.get_pending_decisions(orchestration_id=14, project_id=7)
     client.get_project_handoff(7)
@@ -3929,6 +3931,8 @@ def test_daemon_client_bridge_auth_protected_reads_include_token(monkeypatch) ->
         ("GET", "/api/daemon/status", True),
         ("GET", "/api/profile", True),
         ("GET", "/api/system/auth-jobs/job-123", True),
+        ("GET", "/api/widgets/catalog", True),
+        ("GET", "/api/widgets/catalog/project", True),
         ("GET", "/api/projects/7/orchestrations/14/handoff", True),
         ("GET", "/api/projects/7/orchestrations/14/pending-decisions", True),
         ("GET", "/api/projects/7/handoff", True),
