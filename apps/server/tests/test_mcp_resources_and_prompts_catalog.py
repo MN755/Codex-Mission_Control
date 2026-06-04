@@ -52,7 +52,13 @@ EXPECTED_RESOURCES = [
     "mission-control://integrations/health",
     "mission-control://playbooks",
     "mission-control://playbooks/{playbook_key}",
+    "mission-control://daemon/status",
+    "mission-control://runners/status",
+    "mission-control://plugin/health",
+    "mission-control://headless/config",
     "mission-control://system/status",
+    "mission-control://system/auth-state",
+    "mission-control://system/codex-status",
     "mission-control://startup/status",
     "mission-control://dashboard/summary",
     "mission-control://widgets/catalog",
@@ -243,7 +249,13 @@ def test_docs_explain_resources_prompts_and_headless_boundary() -> None:
     assert "mission-control://projects/{project_id}/snapshots/{snapshot_id}/restore-plan" in resources_content
     assert "mission-control://playbooks" in resources_content
     assert "mission-control://playbooks/{playbook_key}" in resources_content
+    assert "mission-control://daemon/status" in resources_content
+    assert "mission-control://runners/status" in resources_content
+    assert "mission-control://plugin/health" in resources_content
+    assert "mission-control://headless/config" in resources_content
     assert "mission-control://system/status" in resources_content
+    assert "mission-control://system/auth-state" in resources_content
+    assert "mission-control://system/codex-status" in resources_content
     assert "mission-control://startup/status" in resources_content
     assert "mission-control://dashboard/summary" in resources_content
     assert "mission-control://widgets/catalog" in resources_content

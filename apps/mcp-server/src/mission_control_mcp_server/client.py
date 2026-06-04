@@ -310,6 +310,18 @@ class MissionControlDaemonClient:
     def plugin_health_summary(self) -> dict[str, Any]:
         return self.plugin_health()
 
+    def get_auth_state(self) -> dict[str, Any]:
+        return self._request("GET", "/api/system/auth-state")
+
+    def get_runners_status(self) -> dict[str, Any]:
+        return self._request("GET", "/api/runners/status")
+
+    def get_headless_config(self) -> dict[str, Any]:
+        return self._request("GET", "/api/headless/config")
+
+    def get_codex_status(self) -> dict[str, Any]:
+        return self._request("GET", "/api/system/codex-status")
+
     def attach_workspace(
         self,
         *,
@@ -1716,8 +1728,20 @@ class MissionControlDaemonClient:
             return self.get_risk_summary()
         if len(parts) >= 2 and parts[0] == "system" and parts[1] == "status":
             return self.get_system_status()
+        if len(parts) >= 2 and parts[0] == "system" and parts[1] == "auth-state":
+            return self.get_auth_state()
+        if len(parts) >= 2 and parts[0] == "system" and parts[1] == "codex-status":
+            return self.get_codex_status()
         if len(parts) >= 2 and parts[0] == "startup" and parts[1] == "status":
             return self.get_startup_status()
+        if len(parts) >= 2 and parts[0] == "daemon" and parts[1] == "status":
+            return self.daemon_status()
+        if len(parts) >= 2 and parts[0] == "runners" and parts[1] == "status":
+            return self.get_runners_status()
+        if len(parts) >= 2 and parts[0] == "plugin" and parts[1] == "health":
+            return self.plugin_health_summary()
+        if len(parts) >= 2 and parts[0] == "headless" and parts[1] == "config":
+            return self.get_headless_config()
         if len(parts) >= 2 and parts[0] == "dashboard" and parts[1] == "summary":
             return self.get_dashboard_summary()
         if len(parts) >= 2 and parts[0] == "widgets" and parts[1] == "catalog":

@@ -35,7 +35,13 @@ EXPECTED_RESOURCES = {
     "mission-control://integrations/health",
     "mission-control://playbooks",
     "mission-control://playbooks/{playbook_key}",
+    "mission-control://daemon/status",
+    "mission-control://runners/status",
+    "mission-control://plugin/health",
+    "mission-control://headless/config",
     "mission-control://system/status",
+    "mission-control://system/auth-state",
+    "mission-control://system/codex-status",
     "mission-control://startup/status",
     "mission-control://dashboard/summary",
     "mission-control://widgets/catalog",
@@ -1521,6 +1527,115 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
     )
     monkeypatch.setattr(
         client,
+        "daemon_status",
+        lambda: {
+            "status": "running",
+            "pid": 4242,
+            "host": "127.0.0.1",
+            "port": 8010,
+            "healthy": True,
+        },
+    )
+    monkeypatch.setattr(
+        client,
+        "get_runners_status",
+        lambda: {
+            "runner_count": 2,
+            "available_runners": ["dry_run", "codex_cli"],
+            "default_runner": "dry_run",
+            "active_runner": "codex_cli",
+            "requires_approval": False,
+        },
+    )
+    monkeypatch.setattr(
+        client,
+        "plugin_health_summary",
+        lambda: {
+            "status": "ready",
+            "checks": [{"key": "plugin_manifest", "status": "ready", "summary": "Manifest is valid."}],
+        },
+    )
+    monkeypatch.setattr(
+        client,
+        "get_headless_config",
+        lambda: {
+            "enabled": True,
+            "backend_host": "127.0.0.1",
+            "backend_port": 8010,
+            "bridge_token_configured": True,
+            "default_mode": "existing_codebase",
+            "approvals_required": True,
+        },
+    )
+    monkeypatch.setattr(
+        client,
+        "get_auth_state",
+        lambda: {
+            "authenticated": True,
+            "auth_mode": "device_auth",
+            "login_status": "authenticated",
+            "cli_detected": True,
+            "provider": "codex",
+            "current_job": None,
+            "chatgpt_supported": True,
+            "device_auth_supported": True,
+            "api_key_supported": True,
+            "provider_statuses": [],
+            "notes": ["Auth looks healthy."],
+        },
+    )
+    monkeypatch.setattr(
+        client,
+        "get_codex_status",
+        lambda: {
+            "selected_provider": "codex",
+            "selected_provider_label": "Codex",
+            "cli_detected": True,
+            "cli_path": "C:/Tools/codex.exe",
+            "cli_path_exists": True,
+            "cli_execution_available": True,
+            "cli_version": "1.0.0",
+            "login_status": "authenticated",
+            "auth_mode": "device_auth",
+            "authenticated": True,
+            "runtime_ready": True,
+            "runtime_summary": "Codex runtime is ready.",
+            "app_server_supported": True,
+            "app_server_handshake_status": "connected",
+            "app_server_transport": "http",
+            "effective_runner_mode": "auto",
+            "dry_run_available": True,
+            "runtime_directory": "C:/Runtime",
+            "diagnostics_directory": "C:/Runtime/diagnostics",
+            "repo_root": "C:/Repo",
+            "launcher_root": "C:/Launcher",
+            "plugin_source_root": "C:/Repo/plugins/mission-control",
+            "backend_host": "127.0.0.1",
+            "backend_port": 8010,
+            "backend_base_url": "http://127.0.0.1:8010",
+            "configured_backend_port": 8010,
+            "backend_binding_source": "config",
+            "frontend_port": 4173,
+            "active_runs": [],
+            "current_settings_summary": None,
+            "selected_manager_model": "gpt-5-codex",
+            "selected_default_worker_model": "gpt-5-codex",
+            "available_models": ["gpt-5-codex"],
+            "model_advisories": [],
+            "provider_statuses": [],
+            "mcp_servers": [],
+            "configured_mcp_servers": [],
+            "mcp_state": {"healthy": True},
+            "configured_plugins": ["mission-control"],
+            "local_skills": ["mission-control"],
+            "current_auth_job": None,
+            "notes": ["Codex ready."],
+            "startup_summary": None,
+            "app_state_summary": None,
+        },
+    )
+    monkeypatch.setattr(
+        client,
         "get_startup_status",
         lambda: {
             "mode": "normal",
@@ -1967,7 +2082,13 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
     playbooks = client.read_resource("mission-control://playbooks")
     playbook_catalog_entry = client.read_resource("mission-control://playbooks/ai_local_tool")
     global_risk_summary = client.read_resource("mission-control://risks/summary")
+    daemon_status = client.read_resource("mission-control://daemon/status")
+    runners_status = client.read_resource("mission-control://runners/status")
+    plugin_health = client.read_resource("mission-control://plugin/health")
+    headless_config = client.read_resource("mission-control://headless/config")
     system_status = client.read_resource("mission-control://system/status")
+    auth_state = client.read_resource("mission-control://system/auth-state")
+    codex_status = client.read_resource("mission-control://system/codex-status")
     startup_status = client.read_resource("mission-control://startup/status")
     dashboard_summary = client.read_resource("mission-control://dashboard/summary")
     widget_catalog = client.read_resource("mission-control://widgets/catalog")
@@ -2027,7 +2148,13 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
     assert playbook_catalog_entry["key"] == "ai_local_tool"
     assert global_risk_summary["project_id"] is None
     assert global_risk_summary["open_count"] == 3
+    assert daemon_status["healthy"] is True
+    assert runners_status["runner_count"] == 2
+    assert plugin_health["status"] == "ready"
+    assert headless_config["enabled"] is True
     assert system_status["runtime_ready"] is True
+    assert auth_state["authenticated"] is True
+    assert codex_status["runtime_summary"] == "Codex runtime is ready."
     assert startup_status["overall_status"] == "ready"
     assert dashboard_summary["archive_count"] == 1
     assert widget_catalog["scope"] == "all"

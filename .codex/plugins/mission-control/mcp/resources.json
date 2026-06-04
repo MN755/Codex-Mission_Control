@@ -510,6 +510,105 @@
       }
     },
     {
+      "uri_template": "mission-control://daemon/status",
+      "title": "Daemon status",
+      "summary": "Current Mission Control daemon process status, health, binding, and PID.",
+      "support_status": "implemented",
+      "source_hint": {
+        "rest_endpoints": [
+          "/api/daemon/status"
+        ]
+      },
+      "default_fields": [
+        "status",
+        "pid",
+        "host",
+        "port",
+        "healthy"
+      ],
+      "redaction": {
+        "omit_fields": [
+          "raw_log",
+          "secret_values"
+        ],
+        "notes": "Expose daemon health and bind information only."
+      }
+    },
+    {
+      "uri_template": "mission-control://runners/status",
+      "title": "Runner status",
+      "summary": "Available and active runner modes with approval posture for execution lanes.",
+      "support_status": "implemented",
+      "source_hint": {
+        "rest_endpoints": [
+          "/api/runners/status"
+        ]
+      },
+      "default_fields": [
+        "runner_count",
+        "available_runners",
+        "default_runner",
+        "active_runner",
+        "requires_approval"
+      ],
+      "redaction": {
+        "omit_fields": [
+          "raw_log",
+          "secret_values"
+        ],
+        "notes": "Expose runner posture only."
+      }
+    },
+    {
+      "uri_template": "mission-control://plugin/health",
+      "title": "Plugin health",
+      "summary": "Mission Control plugin health summary with compact check results and recommended fixes.",
+      "support_status": "implemented",
+      "source_hint": {
+        "rest_endpoints": [
+          "/api/plugin/health"
+        ]
+      },
+      "default_fields": [
+        "status",
+        "checks"
+      ],
+      "redaction": {
+        "omit_fields": [
+          "raw_log",
+          "secret_values"
+        ],
+        "notes": "Expose plugin health verdicts and safe check summaries only."
+      }
+    },
+    {
+      "uri_template": "mission-control://headless/config",
+      "title": "Headless config",
+      "summary": "Current headless bridge configuration including backend host/port and approval posture.",
+      "support_status": "implemented",
+      "source_hint": {
+        "rest_endpoints": [
+          "/api/headless/config"
+        ]
+      },
+      "default_fields": [
+        "enabled",
+        "backend_host",
+        "backend_port",
+        "bridge_token_configured",
+        "default_mode",
+        "approvals_required"
+      ],
+      "redaction": {
+        "omit_fields": [
+          "bridge_token",
+          "raw_log",
+          "secret_values"
+        ],
+        "notes": "Expose bridge config posture only, never secret tokens."
+      }
+    },
+    {
       "uri_template": "mission-control://system/status",
       "title": "System status",
       "summary": "Global runtime and provider readiness surface covering auth posture, CLI availability, backend wiring, MCP state, and active runs.",
@@ -542,6 +641,66 @@
           "private_paths_outside_workspace"
         ],
         "notes": "Expose readiness and configuration posture only, not secret-bearing auth material."
+      }
+    },
+    {
+      "uri_template": "mission-control://system/auth-state",
+      "title": "Auth state",
+      "summary": "Current provider authentication posture including auth mode, login state, supported auth flows, and active auth job.",
+      "support_status": "implemented",
+      "source_hint": {
+        "rest_endpoints": [
+          "/api/system/auth-state"
+        ]
+      },
+      "default_fields": [
+        "authenticated",
+        "auth_mode",
+        "login_status",
+        "cli_detected",
+        "provider",
+        "current_job",
+        "chatgpt_supported",
+        "device_auth_supported",
+        "api_key_supported",
+        "provider_statuses",
+        "notes"
+      ],
+      "redaction": {
+        "omit_fields": [
+          "raw_log",
+          "secret_values"
+        ],
+        "notes": "Expose auth posture only, not credentials."
+      }
+    },
+    {
+      "uri_template": "mission-control://system/codex-status",
+      "title": "Codex status",
+      "summary": "Codex-specific runtime status with provider, auth, runtime, MCP, and plugin posture.",
+      "support_status": "implemented",
+      "source_hint": {
+        "rest_endpoints": [
+          "/api/system/codex-status"
+        ]
+      },
+      "default_fields": [
+        "selected_provider",
+        "selected_provider_label",
+        "authenticated",
+        "runtime_ready",
+        "runtime_summary",
+        "effective_runner_mode",
+        "backend_base_url",
+        "configured_plugins",
+        "notes"
+      ],
+      "redaction": {
+        "omit_fields": [
+          "raw_log",
+          "secret_values"
+        ],
+        "notes": "Expose Codex runtime posture only."
       }
     },
     {
