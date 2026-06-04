@@ -319,8 +319,10 @@ class MissionControlDaemonClient:
     def get_headless_config(self) -> dict[str, Any]:
         return self._request("GET", "/api/headless/config")
 
-    def get_codex_status(self) -> dict[str, Any]:
-        return self._request("GET", "/api/system/codex-status")
+    def get_codex_status(self, project_id: int | None = None) -> dict[str, Any]:
+        if project_id is None:
+            return self._request("GET", "/api/system/codex-status")
+        return self._request("GET", f"/api/projects/{project_id}/system/codex-status")
 
     def attach_workspace(
         self,
@@ -384,9 +386,9 @@ class MissionControlDaemonClient:
 
     def get_orchestration(self, orchestration_id: int, *, project_id: int | None = None) -> dict[str, Any]:
         resolved_project_id = self._project_id_for_orchestration(orchestration_id, project_id)
-        payload = self._request("GET", f"/api/orchestrations/{orchestration_id}", params={"project_id": resolved_project_id})
+        payload = self._request("GET", f"/api/projects/{resolved_project_id}/orchestrations/{orchestration_id}")
         if isinstance(payload, dict):
-            self._remember_orchestration_project(payload.get("id"), payload.get("project_id"))
+            self._remember_orchestration_project(payload.get("id"), payload.get("project_id") or resolved_project_id)
         return payload
 
     def active_project_orchestration(self, project_id: int) -> dict[str, Any] | None:
@@ -408,7 +410,7 @@ class MissionControlDaemonClient:
             action="Mission Control status",
         )
         resolved_project_id = self._project_id_for_orchestration(resolved_id, project_id=project_id)
-        payload = self._request("GET", f"/api/orchestrations/{resolved_id}/status", params={"project_id": resolved_project_id})
+        payload = self._request("GET", f"/api/projects/{resolved_project_id}/orchestrations/{resolved_id}/status")
         if isinstance(payload, dict):
             self._remember_orchestration_project(payload.get("orchestration_id") or resolved_id, payload.get("project_id") or resolved_project_id)
         return payload
@@ -417,7 +419,7 @@ class MissionControlDaemonClient:
         resolved_id = self._maybe_orchestration_id(orchestration_id=orchestration_id, project_id=project_id)
         if resolved_id is not None:
             resolved_project_id = self._project_id_for_orchestration(resolved_id, project_id=project_id)
-            return self._request("GET", f"/api/orchestrations/{resolved_id}/status-summary", params={"project_id": resolved_project_id})
+            return self._request("GET", f"/api/projects/{resolved_project_id}/orchestrations/{resolved_id}/status-summary")
         if project_id is None:
             raise RuntimeError("Mission Control status summary requires an orchestration_id or project_id.")
         return self._request("GET", f"/api/projects/{project_id}/status-summary")
@@ -429,16 +431,15 @@ class MissionControlDaemonClient:
                 return []
             return self._request("GET", f"/api/projects/{project_id}/pending-decisions")
         resolved_project_id = self._project_id_for_orchestration(resolved_id, project_id=project_id)
-        return self._request("GET", f"/api/orchestrations/{resolved_id}/pending-decisions", params={"project_id": resolved_project_id})
+        return self._request("GET", f"/api/projects/{resolved_project_id}/orchestrations/{resolved_id}/pending-decisions")
 
     def get_decision_bridge_message(self, decision_id: int, *, project_id: int) -> dict[str, Any]:
-        return self._request("GET", f"/api/decisions/{decision_id}/bridge-message", params={"project_id": project_id})
+        return self._request("GET", f"/api/projects/{project_id}/decisions/{decision_id}/bridge-message")
 
     def answer_decision(self, *, decision_id: int, project_id: int, option_id: str, selected_text: str, free_text: str | None = None) -> dict[str, Any]:
         return self._request(
             "POST",
-            f"/api/decisions/{decision_id}/answer",
-            params={"project_id": project_id},
+            f"/api/projects/{project_id}/decisions/{decision_id}/answer",
             json_body={"option_id": option_id, "selected_text": selected_text, "free_text": free_text},
         )
 
@@ -449,7 +450,7 @@ class MissionControlDaemonClient:
             action="Pause",
         )
         resolved_project_id = self._project_id_for_orchestration(resolved_id, project_id=project_id)
-        return self._request("POST", f"/api/orchestrations/{resolved_id}/pause", params={"project_id": resolved_project_id}, json_body={})
+        return self._request("POST", f"/api/projects/{resolved_project_id}/orchestrations/{resolved_id}/pause", json_body={})
 
     def resume(self, orchestration_id: int | None = None, *, project_id: int | None = None) -> dict[str, Any]:
         resolved_id = self._resolve_orchestration_id(
@@ -458,7 +459,7 @@ class MissionControlDaemonClient:
             action="Resume",
         )
         resolved_project_id = self._project_id_for_orchestration(resolved_id, project_id=project_id)
-        return self._request("POST", f"/api/orchestrations/{resolved_id}/resume", params={"project_id": resolved_project_id}, json_body={})
+        return self._request("POST", f"/api/projects/{resolved_project_id}/orchestrations/{resolved_id}/resume", json_body={})
 
     def get_handoff(self, *, orchestration_id: int | None = None, project_id: int | None = None) -> dict[str, Any]:
         resolved_id = self._resolve_orchestration_id(
@@ -467,7 +468,7 @@ class MissionControlDaemonClient:
             action="Mission Control handoff lookup",
         )
         resolved_project_id = self._project_id_for_orchestration(resolved_id, project_id=project_id)
-        return self._request("GET", f"/api/orchestrations/{resolved_id}/handoff", params={"project_id": resolved_project_id})
+        return self._request("GET", f"/api/projects/{resolved_project_id}/orchestrations/{resolved_id}/handoff")
 
     def get_event_digest(
         self,
@@ -479,7 +480,7 @@ class MissionControlDaemonClient:
         resolved_id = self._maybe_orchestration_id(orchestration_id=orchestration_id, project_id=project_id)
         if resolved_id is not None:
             resolved_project_id = self._project_id_for_orchestration(resolved_id, project_id=project_id)
-            return self._request("GET", f"/api/orchestrations/{resolved_id}/event-digest", params={"window": window, "project_id": resolved_project_id})
+            return self._request("GET", f"/api/projects/{resolved_project_id}/orchestrations/{resolved_id}/event-digest", params={"window": window})
         if project_id is None:
             raise RuntimeError("Event digest requires an orchestration_id or project_id.")
         return self._request("GET", f"/api/projects/{project_id}/event-digest", params={"window": window})
@@ -488,7 +489,7 @@ class MissionControlDaemonClient:
         resolved_id = self._maybe_orchestration_id(orchestration_id=orchestration_id, project_id=project_id)
         if resolved_id is not None:
             resolved_project_id = self._project_id_for_orchestration(resolved_id, project_id=project_id)
-            return self._request("GET", f"/api/orchestrations/{resolved_id}/handoff-summary", params={"project_id": resolved_project_id})
+            return self._request("GET", f"/api/projects/{resolved_project_id}/orchestrations/{resolved_id}/handoff-summary")
         if project_id is None:
             raise RuntimeError("Handoff summary requires an orchestration_id or project_id.")
         return self._request("GET", f"/api/projects/{project_id}/handoff-summary")
@@ -500,13 +501,13 @@ class MissionControlDaemonClient:
             action="Orchestration events",
         )
         resolved_project_id = self._project_id_for_orchestration(resolved_id, project_id=project_id)
-        return self._request("GET", f"/api/orchestrations/{resolved_id}/events", params={"project_id": resolved_project_id})
+        return self._request("GET", f"/api/projects/{resolved_project_id}/orchestrations/{resolved_id}/events")
 
     def get_agents(self, project_id: int) -> list[dict[str, Any]]:
         return self._request("GET", f"/api/projects/{project_id}/agents")
 
     def get_agent_logs(self, project_id: int, agent_id: int) -> dict[str, Any]:
-        return self._request("GET", f"/api/agents/{agent_id}/logs", params={"project_id": project_id})
+        return self._request("GET", f"/api/projects/{project_id}/agents/{agent_id}/logs")
 
     def get_agent_contracts(self, project_id: int) -> list[dict[str, Any]]:
         return self._request("GET", f"/api/projects/{project_id}/agent-contracts")
@@ -575,8 +576,9 @@ class MissionControlDaemonClient:
         return self._request("GET", "/api/handoffs")
 
     def list_diagnostic_reports(self, project_id: int | None = None) -> list[dict[str, Any]]:
-        params = {"project_id": project_id} if project_id is not None else None
-        return self._request("GET", "/api/diagnostics/reports", params=params)
+        if project_id is not None:
+            return self._request("GET", f"/api/projects/{project_id}/diagnostics/reports")
+        return self._request("GET", "/api/diagnostics/reports")
 
     def get_profile_summary(self) -> dict[str, Any]:
         return self._request("GET", "/api/profile/summary")
@@ -647,7 +649,7 @@ class MissionControlDaemonClient:
     def get_system_status(self, project_id: int | None = None) -> dict[str, Any]:
         if project_id is None:
             return self._request("GET", "/api/system/status")
-        return self._request("GET", "/api/system/status", params={"project_id": project_id})
+        return self._request("GET", f"/api/projects/{project_id}/system/status")
 
     def get_startup_status(self) -> dict[str, Any]:
         return self._request("GET", "/api/startup/status")
@@ -656,8 +658,9 @@ class MissionControlDaemonClient:
         return self._request("GET", "/api/dashboard/summary")
 
     def get_widget_catalog(self, scope: str | None = None) -> list[dict[str, Any]]:
-        params = {"scope": scope} if scope is not None else {}
-        return self._request("GET", "/api/widgets/catalog", params=params)
+        if scope is not None:
+            return self._request("GET", f"/api/widgets/catalog/{scope}")
+        return self._request("GET", "/api/widgets/catalog")
 
     def list_widget_instances(self) -> list[dict[str, Any]]:
         return self._request("GET", "/api/widgets/instances")
@@ -665,7 +668,9 @@ class MissionControlDaemonClient:
     def get_project_widget_instances(self, project_id: int) -> list[dict[str, Any]]:
         return self._request("GET", f"/api/projects/{project_id}/widgets/instances")
 
-    def get_widget_instance_data(self, instance_id: int) -> dict[str, Any]:
+    def get_widget_instance_data(self, instance_id: int, *, project_id: int | None = None) -> dict[str, Any]:
+        if project_id is not None:
+            return self._request("GET", f"/api/projects/{project_id}/widgets/instances/{instance_id}/data")
         return self._request("GET", f"/api/widgets/instances/{instance_id}/data")
 
     def get_project_widget_summary(self, project_id: int) -> dict[str, Any]:
@@ -694,12 +699,16 @@ class MissionControlDaemonClient:
     def get_project_integration_family(self, project_id: int, family: str) -> dict[str, Any]:
         return self._request("GET", f"/api/projects/{project_id}/integrations/{family}")
 
+    def get_project_integration_actions(self, project_id: int, family: str) -> dict[str, Any]:
+        return self._request("GET", f"/api/projects/{project_id}/integrations/{family}/actions")
+
     def get_context_packs(self, project_id: int) -> list[dict[str, Any]]:
         return self._request("GET", f"/api/projects/{project_id}/context-packs")
 
     def get_context_pack(self, context_pack_id: int, *, project_id: int | None = None) -> dict[str, Any]:
-        params = {"project_id": project_id} if project_id is not None else None
-        return self._request("GET", f"/api/context-packs/{context_pack_id}", params=params)
+        if project_id is not None:
+            return self._request("GET", f"/api/projects/{project_id}/context-packs/{context_pack_id}")
+        return self._request("GET", f"/api/context-packs/{context_pack_id}")
 
     def preview_project_integration_action(self, project_id: int, family: str, action_id: str, *, params: dict[str, Any] | None = None) -> dict[str, Any]:
         return self._request(
@@ -819,10 +828,10 @@ class MissionControlDaemonClient:
         return self._request("PATCH", f"/api/projects/{project_id}/import-safety", json_body=payload)
 
     def get_project_settings(self, project_id: int) -> dict[str, Any]:
-        return self._request("GET", "/api/settings", params={"project_id": project_id})
+        return self._request("GET", f"/api/projects/{project_id}/settings")
 
     def update_project_settings(self, project_id: int, payload: dict[str, Any]) -> dict[str, Any]:
-        return self._request("PUT", "/api/settings", params={"project_id": project_id}, json_body=payload)
+        return self._request("PUT", f"/api/projects/{project_id}/settings", json_body=payload)
 
     def get_tool_catalog(self) -> list[dict[str, Any]]:
         return self._request("GET", "/api/tools")
@@ -849,7 +858,7 @@ class MissionControlDaemonClient:
         return self._request("GET", f"/api/projects/{project_id}/subagent-batches")
 
     def get_subagent_batch(self, project_id: int, batch_id: int) -> dict[str, Any]:
-        return self._request("GET", f"/api/subagents/batches/{batch_id}", params={"project_id": project_id})
+        return self._request("GET", f"/api/projects/{project_id}/subagent-batches/{batch_id}")
 
     def get_swarm_preferences(self, project_id: int) -> dict[str, Any]:
         return self._request("GET", f"/api/projects/{project_id}/swarm/preferences")
@@ -2604,32 +2613,36 @@ class MissionControlDaemonClient:
         if not uri.startswith("mission-control://"):
             raise RuntimeError("Unsupported Mission Control resource URI.")
         parts = [segment for segment in uri.removeprefix("mission-control://").split("/") if segment]
-        if len(parts) >= 1 and parts[0] == "agent-archetypes":
+        if len(parts) == 1 and parts[0] == "agent-archetypes":
             return self._summarize_agent_archetypes(self.get_agent_archetypes())
-        if len(parts) >= 2 and parts[0] == "capabilities":
+        if len(parts) == 2 and parts[0] == "capabilities":
             if parts[1] == "benchmarks":
                 return self._summarize_capability_benchmarks(self.get_capability_benchmarks())
             if parts[1] == "matrix":
                 return self._summarize_capability_matrix(self.get_capability_matrix())
-        if len(parts) >= 2 and parts[0] == "agents" and parts[1] == "reputation":
+        if len(parts) == 2 and parts[0] == "agents" and parts[1] == "reputation":
             return self._summarize_agent_reputation(self.get_agent_reputation())
-        if len(parts) >= 2 and parts[0] == "context-packs":
-            return self.get_context_pack(int(parts[1]))
-        if len(parts) >= 1 and parts[0] == "handoffs":
+        if len(parts) == 2 and parts[0] == "context-packs":
+            try:
+                context_pack_id = int(parts[1])
+            except ValueError as exc:
+                raise RuntimeError(f"Unsupported Mission Control resource URI: {uri}") from exc
+            return self.get_context_pack(context_pack_id)
+        if len(parts) == 1 and parts[0] == "handoffs":
             return self._summarize_handoffs(self.list_handoffs())
-        if len(parts) >= 1 and parts[0] == "health":
+        if len(parts) == 1 and parts[0] == "health":
             return self.get_health()
-        if len(parts) >= 2 and parts[0] == "headless" and parts[1] == "diagnostic-summary":
+        if len(parts) == 2 and parts[0] == "headless" and parts[1] == "diagnostic-summary":
             return self.get_headless_diagnostic_summary()
-        if len(parts) >= 2 and parts[0] == "diagnostics" and parts[1] == "reports":
+        if len(parts) == 2 and parts[0] == "diagnostics" and parts[1] == "reports":
             return self._summarize_diagnostic_reports(self.list_diagnostic_reports())
-        if len(parts) >= 2 and parts[0] == "diagnostics" and parts[1] == "identity":
+        if len(parts) == 2 and parts[0] == "diagnostics" and parts[1] == "identity":
             return self.get_diagnostics_identity()
-        if len(parts) >= 2 and parts[0] == "headless" and parts[1] == "health":
+        if len(parts) == 2 and parts[0] == "headless" and parts[1] == "health":
             return self.get_headless_health()
-        if len(parts) >= 3 and parts[0] == "system" and parts[1] == "auth-jobs":
+        if len(parts) == 3 and parts[0] == "system" and parts[1] == "auth-jobs":
             return self.get_auth_job(parts[2])
-        if len(parts) >= 2 and parts[0] == "integrations":
+        if len(parts) == 2 and parts[0] == "integrations":
             kind = parts[1]
             if kind == "catalog":
                 return self._summarize_integration_catalog(self.get_integrations_catalog())
@@ -2639,70 +2652,82 @@ class MissionControlDaemonClient:
                 return self._summarize_integration_health(self.get_integration_health())
         if len(parts) == 1 and parts[0] == "profile":
             return self._summarize_profile(self.get_profile())
-        if len(parts) >= 2 and parts[0] == "profile" and parts[1] == "summary":
+        if len(parts) == 2 and parts[0] == "profile" and parts[1] == "summary":
             return self.get_profile_summary()
-        if len(parts) >= 1 and parts[0] == "tools":
+        if len(parts) == 1 and parts[0] == "tools":
             tools = self.get_tool_catalog()
             return {"tool_count": len(tools), "tools": tools}
-        if len(parts) >= 2 and parts[0] == "preferences" and parts[1] == "summary":
+        if len(parts) == 2 and parts[0] == "preferences" and parts[1] == "summary":
             return self.get_global_preference_summary()
         if len(parts) >= 1 and parts[0] == "playbooks":
             if len(parts) == 1:
                 return {"playbooks": self.list_playbooks()}
-            return self.get_playbook_catalog_entry(parts[1])
-        if len(parts) >= 2 and parts[0] == "risks" and parts[1] == "summary":
+            if len(parts) == 2:
+                return self.get_playbook_catalog_entry(parts[1])
+        if len(parts) == 2 and parts[0] == "risks" and parts[1] == "summary":
             return self.get_risk_summary()
-        if len(parts) >= 2 and parts[0] == "risks" and parts[1] == "common":
+        if len(parts) == 2 and parts[0] == "risks" and parts[1] == "common":
             return self._summarize_common_risks(self.get_common_risks())
-        if len(parts) >= 2 and parts[0] == "security" and parts[1] == "policy":
+        if len(parts) == 2 and parts[0] == "security" and parts[1] == "policy":
             return self.get_security_policy()
-        if len(parts) >= 2 and parts[0] == "security" and parts[1] == "audit-log":
+        if len(parts) == 2 and parts[0] == "security" and parts[1] == "audit-log":
             return self._summarize_security_audit_log(self.get_security_audit_log())
-        if len(parts) >= 2 and parts[0] == "system" and parts[1] == "status":
+        if len(parts) == 2 and parts[0] == "system" and parts[1] == "status":
             return self.get_system_status()
-        if len(parts) >= 2 and parts[0] == "system" and parts[1] == "auth-state":
+        if len(parts) == 2 and parts[0] == "system" and parts[1] == "auth-state":
             return self.get_auth_state()
-        if len(parts) >= 2 and parts[0] == "system" and parts[1] == "codex-status":
+        if len(parts) == 2 and parts[0] == "system" and parts[1] == "codex-status":
             return self.get_codex_status()
-        if len(parts) >= 2 and parts[0] == "startup" and parts[1] == "status":
+        if len(parts) == 2 and parts[0] == "startup" and parts[1] == "status":
             return self.get_startup_status()
-        if len(parts) >= 2 and parts[0] == "daemon" and parts[1] == "status":
+        if len(parts) == 2 and parts[0] == "daemon" and parts[1] == "status":
             return self.daemon_status()
-        if len(parts) >= 2 and parts[0] == "runners" and parts[1] == "status":
+        if len(parts) == 2 and parts[0] == "runners" and parts[1] == "status":
             return self.get_runners_status()
-        if len(parts) >= 2 and parts[0] == "plugin" and parts[1] == "health":
+        if len(parts) == 2 and parts[0] == "plugin" and parts[1] == "health":
             return self.plugin_health_summary()
-        if len(parts) >= 2 and parts[0] == "headless" and parts[1] == "config":
+        if len(parts) == 2 and parts[0] == "headless" and parts[1] == "config":
             return self.get_headless_config()
-        if len(parts) >= 2 and parts[0] == "dashboard" and parts[1] == "summary":
+        if len(parts) == 2 and parts[0] == "dashboard" and parts[1] == "summary":
             return self.get_dashboard_summary()
         if len(parts) >= 2 and parts[0] == "widgets" and parts[1] == "catalog":
-            scope = parts[2] if len(parts) >= 3 else None
+            if len(parts) not in (2, 3):
+                raise RuntimeError(f"Unsupported Mission Control resource URI: {uri}")
+            scope = parts[2] if len(parts) == 3 else None
             return {"scope": scope or "all", "catalog": self.get_widget_catalog(scope=scope)}
         if len(parts) >= 2 and parts[0] == "widgets" and parts[1] == "instances":
             if len(parts) == 4 and parts[3] == "data":
-                return self._summarize_widget_instance_data(int(parts[2]), self.get_widget_instance_data(int(parts[2])))
+                try:
+                    instance_id = int(parts[2])
+                except ValueError as exc:
+                    raise RuntimeError(f"Unsupported Mission Control resource URI: {uri}") from exc
+                return self._summarize_widget_instance_data(instance_id, self.get_widget_instance_data(instance_id))
+            if len(parts) != 2:
+                raise RuntimeError(f"Unsupported Mission Control resource URI: {uri}")
             return self._summarize_widget_instances(self.list_widget_instances())
         if len(parts) == 1 and parts[0] == "preferences":
             return self._summarize_preferences(self.get_preferences())
         if len(parts) >= 1 and parts[0] == "subagent-policy":
             if len(parts) == 2 and parts[1] == "summary":
                 return self.get_subagent_policy_summary()
+            if len(parts) != 1:
+                raise RuntimeError(f"Unsupported Mission Control resource URI: {uri}")
             return self._summarize_subagent_policy(self.get_subagent_policy())
-        if len(parts) >= 1 and parts[0] == "skills":
+        if len(parts) == 1 and parts[0] == "skills":
             return self._summarize_skills(self.get_skills())
         if len(parts) == 1 and parts[0] == "projects":
             return self._summarize_projects(self.list_projects())
-        if len(parts) >= 5 and parts[0] == "projects" and parts[2] == "orchestrations":
-            project_id = int(parts[1])
-            orchestration_id = int(parts[3])
-            kind = parts[4]
-            if kind == "status":
-                return self._summarize_status(self.get_status(orchestration_id=orchestration_id, project_id=project_id))
-            if kind == "events":
-                return self._summarize_events(orchestration_id, self.get_orchestration_events(orchestration_id, project_id=project_id))
+        if len(parts) == 2 and parts[0] == "projects":
+            try:
+                project_id = int(parts[1])
+            except ValueError as exc:
+                raise RuntimeError(f"Unsupported Mission Control resource URI: {uri}") from exc
+            return self._summarize_project_details(self.get_project(project_id))
         if len(parts) >= 3 and parts[0] == "orchestrations":
-            orchestration_id = int(parts[1])
+            try:
+                orchestration_id = int(parts[1])
+            except ValueError as exc:
+                raise RuntimeError(f"Unsupported Mission Control resource URI: {uri}") from exc
             kind = parts[2]
             if kind == "status":
                 raise RuntimeError(
@@ -2715,18 +2740,40 @@ class MissionControlDaemonClient:
                     "`mission-control://projects/{project_id}/orchestrations/{orchestration_id}/events`."
                 )
         if len(parts) >= 3 and parts[0] == "projects":
-            project_id = int(parts[1])
+            try:
+                project_id = int(parts[1])
+            except ValueError as exc:
+                raise RuntimeError(f"Unsupported Mission Control resource URI: {uri}") from exc
             kind = parts[2]
-            if kind == "decisions" and len(parts) == 5 and parts[4] == "bridge-message":
-                return self.get_decision_bridge_message(int(parts[3]), project_id=project_id)
-            if kind == "status-summary":
-                return self.get_status_summary(project_id=project_id)
-            if kind == "orchestrations" and len(parts) == 4 and parts[3] == "active":
+            if kind == "orchestrations" and len(parts) >= 4 and parts[3] == "active":
+                if len(parts) != 4:
+                    raise RuntimeError(f"Unsupported Mission Control resource URI: {uri}")
                 return self._summarize_active_orchestration(project_id, self.active_project_orchestration(project_id))
+            if kind == "orchestrations" and len(parts) == 4:
+                try:
+                    orchestration_id = int(parts[3])
+                except ValueError as exc:
+                    raise RuntimeError(f"Unsupported Mission Control resource URI: {uri}") from exc
+                return self._summarize_orchestration_session(project_id, self.get_orchestration(orchestration_id, project_id=project_id))
+            if kind == "orchestrations" and len(parts) >= 5:
+                try:
+                    orchestration_id = int(parts[3])
+                except ValueError as exc:
+                    raise RuntimeError(f"Unsupported Mission Control resource URI: {uri}") from exc
+                detail_kind = parts[4]
+                if detail_kind == "status" and len(parts) == 5:
+                    return self._summarize_status(self.get_status(orchestration_id=orchestration_id, project_id=project_id))
+                if detail_kind == "events" and len(parts) == 5:
+                    return self._summarize_events(orchestration_id, self.get_orchestration_events(orchestration_id, project_id=project_id))
+            if kind == "decisions" and len(parts) == 5 and parts[4] == "bridge-message":
+                try:
+                    decision_id = int(parts[3])
+                except ValueError as exc:
+                    raise RuntimeError(f"Unsupported Mission Control resource URI: {uri}") from exc
+                return self.get_decision_bridge_message(decision_id, project_id=project_id)
+            if kind == "status-summary" and len(parts) == 3:
+                return self.get_status_summary(project_id=project_id)
             if kind == "orchestrations" and len(parts) >= 4:
-                orchestration_id = int(parts[3])
-                if len(parts) == 4:
-                    return self._summarize_orchestration_session(project_id, self.get_orchestration(orchestration_id, project_id=project_id))
                 if len(parts) == 5 and parts[4] == "status-summary":
                     return self.get_status_summary(orchestration_id=orchestration_id, project_id=project_id)
                 if len(parts) == 5 and parts[4] == "event-digest":
@@ -2741,60 +2788,100 @@ class MissionControlDaemonClient:
                         self.get_pending_decisions(orchestration_id=orchestration_id, project_id=project_id),
                     )
             if kind == "status":
+                if len(parts) != 3:
+                    raise RuntimeError(f"Unsupported Mission Control resource URI: {uri}")
                 project = self.get_project(project_id)
                 orchestration_id = self._maybe_orchestration_id(project_id=project_id)
                 status = self.get_status(orchestration_id=orchestration_id, project_id=project_id) if orchestration_id is not None else None
                 return self._summarize_project_status(project, status)
             if kind == "agents" and len(parts) == 5 and parts[4] == "logs":
-                return self._summarize_agent_logs(project_id, int(parts[3]), self.get_agent_logs(project_id, int(parts[3])))
+                try:
+                    agent_id = int(parts[3])
+                except ValueError as exc:
+                    raise RuntimeError(f"Unsupported Mission Control resource URI: {uri}") from exc
+                return self._summarize_agent_logs(project_id, agent_id, self.get_agent_logs(project_id, agent_id))
             if kind == "agents" and len(parts) == 4 and parts[3] == "reputation":
                 return self._summarize_agent_reputation(self.get_agent_reputation(project_id), project_id=project_id)
             if kind == "agents":
+                if len(parts) != 3:
+                    raise RuntimeError(f"Unsupported Mission Control resource URI: {uri}")
                 return self._summarize_agents(project_id, self.get_agents(project_id))
             if kind == "pending-decisions":
+                if len(parts) != 3:
+                    raise RuntimeError(f"Unsupported Mission Control resource URI: {uri}")
                 decisions = self.get_pending_decisions(project_id=project_id)
                 return self._summarize_pending_decisions(project_id, decisions)
+            if kind == "system" and len(parts) == 4 and parts[3] == "status":
+                return self.get_system_status(project_id)
+            if kind == "system" and len(parts) == 4 and parts[3] == "codex-status":
+                return self.get_codex_status(project_id)
             if kind == "questions" and len(parts) == 4 and parts[3] == "pending":
                 return self._summarize_pending_questions(project_id, self.get_pending_questions(project_id))
             if kind == "approvals" and len(parts) == 4 and parts[3] == "pending":
                 return self._summarize_pending_approvals(project_id, self.get_pending_approvals(project_id))
-            if kind == "event-digest":
+            if kind == "event-digest" and len(parts) == 3:
                 return self.get_event_digest(project_id=project_id)
-            if kind == "handoff-summary":
+            if kind == "handoff-summary" and len(parts) == 3:
                 return self.get_handoff_summary(project_id=project_id)
             if kind == "handoff":
                 if len(parts) == 4 and parts[3] == "evidence":
                     return self._summarize_handoff_evidence(project_id, self.get_handoff_evidence(project_id))
                 if len(parts) == 5 and parts[3] == "evidence" and parts[4] == "preview":
                     return self.get_handoff_evidence_preview(project_id)
+                if len(parts) != 3:
+                    raise RuntimeError(f"Unsupported Mission Control resource URI: {uri}")
                 return self._summarize_handoff(project_id, self.get_project_handoff(project_id))
             if kind == "codebase-map":
+                if len(parts) != 3:
+                    raise RuntimeError(f"Unsupported Mission Control resource URI: {uri}")
                 codebase_map = self.get_codebase_map(project_id)
                 understanding = self.get_codebase_understanding(project_id)
                 return self._summarize_codebase_map(codebase_map, understanding)
             if kind == "context-packs":
+                if len(parts) != 3:
+                    raise RuntimeError(f"Unsupported Mission Control resource URI: {uri}")
                 return self._summarize_context_packs(project_id, self.get_context_packs(project_id))
             if kind == "scope-creep":
+                if len(parts) != 3:
+                    raise RuntimeError(f"Unsupported Mission Control resource URI: {uri}")
                 return self._summarize_scope_creep(project_id, self.get_scope_creep(project_id))
             if kind == "codebase-understanding":
+                if len(parts) != 3:
+                    raise RuntimeError(f"Unsupported Mission Control resource URI: {uri}")
                 return self.get_codebase_understanding(project_id)
             if kind == "understanding":
+                if len(parts) != 3:
+                    raise RuntimeError(f"Unsupported Mission Control resource URI: {uri}")
                 return self._summarize_project_understanding(project_id, self.get_project_understanding(project_id))
             if kind == "interview":
+                if len(parts) != 3:
+                    raise RuntimeError(f"Unsupported Mission Control resource URI: {uri}")
                 return self._summarize_interview(project_id, self.get_interview(project_id))
             if kind == "plan":
+                if len(parts) != 3:
+                    raise RuntimeError(f"Unsupported Mission Control resource URI: {uri}")
                 return self._summarize_plan(project_id, self.get_plan(project_id))
             if kind == "reservations":
+                if len(parts) != 3:
+                    raise RuntimeError(f"Unsupported Mission Control resource URI: {uri}")
                 return self._summarize_reservations(project_id, self.get_reservations(project_id))
             if kind == "import-safety":
+                if len(parts) != 3:
+                    raise RuntimeError(f"Unsupported Mission Control resource URI: {uri}")
                 return self.get_import_safety(project_id)
             if kind == "diagnostics" and len(parts) == 4 and parts[3] == "latest-report":
                 return self._summarize_latest_diagnostic_report(project_id, self.list_diagnostic_reports(project_id=project_id))
             if kind == "diagnostics":
+                if len(parts) != 3:
+                    raise RuntimeError(f"Unsupported Mission Control resource URI: {uri}")
                 return self._summarize_diagnostics(project_id, self.get_diagnostics(project_id=project_id))
             if kind == "settings":
+                if len(parts) != 3:
+                    raise RuntimeError(f"Unsupported Mission Control resource URI: {uri}")
                 return self.get_project_settings(project_id)
             if kind == "details":
+                if len(parts) != 3:
+                    raise RuntimeError(f"Unsupported Mission Control resource URI: {uri}")
                 return self._summarize_project_details(self.get_project(project_id))
             if kind == "swarm" and len(parts) == 4 and parts[3] == "preferences":
                 return self.get_swarm_preferences(project_id)
@@ -2807,26 +2894,38 @@ class MissionControlDaemonClient:
             if kind == "swarm" and len(parts) == 4 and parts[3] == "simulations":
                 return self._summarize_swarm_simulations(project_id, self.list_swarm_simulations(project_id))
             if kind == "swarm-plan":
+                if len(parts) != 3:
+                    raise RuntimeError(f"Unsupported Mission Control resource URI: {uri}")
                 prefs = self.get_swarm_preferences(project_id)
                 plan = self.get_swarm_plan(project_id)
                 return self._summarize_swarm_plan(project_id, plan, prefs)
             if kind == "swarm" and len(parts) == 5 and parts[3] == "simulations" and parts[4] == "latest":
                 return self.get_latest_swarm_simulation(project_id)
             if kind == "risk-register":
+                if len(parts) != 3:
+                    raise RuntimeError(f"Unsupported Mission Control resource URI: {uri}")
                 return self._summarize_risks(project_id, self.get_risks(project_id))
             if kind == "risks" and len(parts) == 3:
                 return self._summarize_risks(project_id, self.get_risks(project_id))
             if kind == "risks" and len(parts) == 4 and parts[3] == "summary":
                 return self.get_risk_summary(project_id)
             if kind == "agent-contracts":
+                if len(parts) != 3:
+                    raise RuntimeError(f"Unsupported Mission Control resource URI: {uri}")
                 return self._summarize_agent_contracts(project_id, self.get_agent_contracts(project_id))
             if kind == "validation-summary":
+                if len(parts) != 3:
+                    raise RuntimeError(f"Unsupported Mission Control resource URI: {uri}")
                 return self._summarize_validation_summary(project_id, self.get_validation_summary(project_id))
             if kind == "validation-coverage" and len(parts) == 4 and parts[3] == "summary":
                 return self.get_validation_coverage_summary(project_id)
             if kind == "decision-ledger":
+                if len(parts) != 3:
+                    raise RuntimeError(f"Unsupported Mission Control resource URI: {uri}")
                 return self._summarize_decision_ledger(project_id, self.get_decision_ledger(project_id))
             if kind == "path-locks":
+                if len(parts) != 3:
+                    raise RuntimeError(f"Unsupported Mission Control resource URI: {uri}")
                 return self._summarize_path_locks(project_id, self.get_path_locks(project_id))
             if kind == "security" and len(parts) == 4 and parts[3] == "policy":
                 return self.get_security_policy(project_id)
@@ -2835,12 +2934,18 @@ class MissionControlDaemonClient:
             if kind == "agents-md" and len(parts) == 4 and parts[3] == "status":
                 return self.get_agents_md_status(project_id)
             if kind == "operator-snapshot":
+                if len(parts) != 3:
+                    raise RuntimeError(f"Unsupported Mission Control resource URI: {uri}")
                 return self._summarize_operator_snapshot(project_id, self.get_operator_snapshot(project_id))
             if kind == "instincts":
                 if len(parts) == 4 and parts[3] == "preview":
                     return self._summarize_instincts_preview(project_id, self.get_instincts_preview(project_id))
+                if len(parts) != 3:
+                    raise RuntimeError(f"Unsupported Mission Control resource URI: {uri}")
                 return self._summarize_instincts_preview(project_id, self.get_instincts_preview(project_id))
             if kind == "verification-brief":
+                if len(parts) != 3:
+                    raise RuntimeError(f"Unsupported Mission Control resource URI: {uri}")
                 return self._summarize_verification_brief(project_id, self.get_verification_brief(project_id))
             if kind == "capability-report":
                 if len(parts) == 4:
@@ -2850,14 +2955,24 @@ class MissionControlDaemonClient:
                         section_key,
                         self.get_capability_section(project_id, section_key),
                     )
+                if len(parts) != 3:
+                    raise RuntimeError(f"Unsupported Mission Control resource URI: {uri}")
                 return self._summarize_capability_report(project_id, self.get_capability_report(project_id))
             if kind == "workspace":
+                if len(parts) != 3:
+                    raise RuntimeError(f"Unsupported Mission Control resource URI: {uri}")
                 return self.get_project_workspace(project_id)
             if kind == "workspace-tooling":
+                if len(parts) != 3:
+                    raise RuntimeError(f"Unsupported Mission Control resource URI: {uri}")
                 return self._summarize_workspace_tooling(project_id, self.get_workspace_tooling(project_id))
             if kind == "action":
+                if len(parts) != 3:
+                    raise RuntimeError(f"Unsupported Mission Control resource URI: {uri}")
                 return self.get_project_action(project_id)
             if kind == "actions":
+                if len(parts) != 3:
+                    raise RuntimeError(f"Unsupported Mission Control resource URI: {uri}")
                 return self._summarize_project_actions(project_id, self.list_project_actions(project_id))
             if kind == "manager" and len(parts) == 4 and parts[3] == "messages":
                 return self._summarize_manager_messages(project_id, self.get_manager_messages(project_id))
@@ -2865,27 +2980,54 @@ class MissionControlDaemonClient:
                 return self.get_manager_queue(project_id)
             if kind == "widgets" and len(parts) == 4 and parts[3] == "instances":
                 return self._summarize_widget_instances(self.get_project_widget_instances(project_id), project_id=project_id)
+            if kind == "widgets" and len(parts) == 6 and parts[3] == "instances" and parts[5] == "data":
+                try:
+                    instance_id = int(parts[4])
+                except ValueError as exc:
+                    raise RuntimeError(f"Unsupported Mission Control resource URI: {uri}") from exc
+                return self._summarize_widget_instance_data(
+                    instance_id,
+                    self.get_widget_instance_data(instance_id, project_id=project_id),
+                )
             if kind == "runbook":
                 if len(parts) == 4 and parts[3] == "summary":
                     return self.get_runbook_summary(project_id)
+                if len(parts) != 3:
+                    raise RuntimeError(f"Unsupported Mission Control resource URI: {uri}")
                 return self._summarize_runbook(project_id, self.get_runbook(project_id))
             if kind == "safe-mode":
+                if len(parts) != 3:
+                    raise RuntimeError(f"Unsupported Mission Control resource URI: {uri}")
                 return self.get_safe_mode(project_id)
             if kind == "tasks":
+                if len(parts) != 3:
+                    raise RuntimeError(f"Unsupported Mission Control resource URI: {uri}")
                 return self._summarize_tasks(project_id, self.get_project_tasks(project_id))
             if kind == "recovery-plans":
                 if len(parts) == 4 and parts[3] == "preview":
                     return self.get_recovery_plans_preview(project_id)
+                if len(parts) != 3:
+                    raise RuntimeError(f"Unsupported Mission Control resource URI: {uri}")
                 return self._summarize_recovery_plans(project_id, self.get_recovery_plans(project_id))
             if kind == "events":
+                if len(parts) != 3:
+                    raise RuntimeError(f"Unsupported Mission Control resource URI: {uri}")
                 return self._summarize_project_events(project_id, self.get_project_events(project_id))
             if kind == "snapshots":
                 if len(parts) == 5 and parts[4] == "restore-plan":
-                    return self.get_snapshot_restore_plan(project_id, int(parts[3]))
+                    try:
+                        snapshot_id = int(parts[3])
+                    except ValueError as exc:
+                        raise RuntimeError(f"Unsupported Mission Control resource URI: {uri}") from exc
+                    return self.get_snapshot_restore_plan(project_id, snapshot_id)
+                if len(parts) != 3:
+                    raise RuntimeError(f"Unsupported Mission Control resource URI: {uri}")
                 return self._summarize_snapshots(project_id, self.list_snapshots(project_id))
             if kind == "playbook":
                 if len(parts) == 4 and parts[3] == "recommendations":
                     return {"project_id": project_id, "recommendations": self.get_playbook_recommendations(project_id)}
+                if len(parts) != 3:
+                    raise RuntimeError(f"Unsupported Mission Control resource URI: {uri}")
                 return self.get_playbook(project_id)
             if kind == "preferences":
                 if len(parts) == 3:
@@ -2903,7 +3045,13 @@ class MissionControlDaemonClient:
                 return self.get_project_widget_summary(project_id)
             if kind == "subagent-batches":
                 if len(parts) == 4:
-                    return self._summarize_subagent_batch(project_id, self.get_subagent_batch(project_id, int(parts[3])))
+                    try:
+                        batch_id = int(parts[3])
+                    except ValueError as exc:
+                        raise RuntimeError(f"Unsupported Mission Control resource URI: {uri}") from exc
+                    return self._summarize_subagent_batch(project_id, self.get_subagent_batch(project_id, batch_id))
+                if len(parts) != 3:
+                    raise RuntimeError(f"Unsupported Mission Control resource URI: {uri}")
                 return self._summarize_subagent_batches(project_id, self.get_project_subagent_batches(project_id))
             if kind == "execution-policy" and len(parts) == 4 and parts[3] == "summary":
                 return self.get_execution_policy_summary(project_id)
@@ -2917,7 +3065,7 @@ class MissionControlDaemonClient:
                     return self._summarize_project_integration_actions(
                         project_id,
                         family,
-                        self.get_project_integration_family(project_id, family),
+                        self.get_project_integration_actions(project_id, family),
                     )
                 if len(parts) == 7 and parts[4] == "actions" and parts[6] == "preview":
                     family = parts[3]
@@ -2933,23 +3081,33 @@ class MissionControlDaemonClient:
                         project_id,
                         self.get_project_integration_family(project_id, parts[3]),
                     )
+                if len(parts) != 3:
+                    raise RuntimeError(f"Unsupported Mission Control resource URI: {uri}")
                 return self._summarize_project_integrations(project_id, self.get_project_integrations(project_id))
             if kind == "tensorflow" and len(parts) >= 4 and parts[3] == "features":
                 if len(parts) == 4:
                     return self._summarize_ml_feature_catalog(project_id, self.get_tensorflow_feature_catalog(project_id))
+                if len(parts) != 5:
+                    raise RuntimeError(f"Unsupported Mission Control resource URI: {uri}")
                 feature_id = parts[4]
                 return self._summarize_ml_feature_bundle(project_id, self.get_tensorflow_feature_bundle(project_id, feature_id))
             if kind == "pytorch" and len(parts) >= 4 and parts[3] == "features":
                 if len(parts) == 4:
                     return self._summarize_ml_feature_catalog(project_id, self.get_pytorch_feature_catalog(project_id))
+                if len(parts) != 5:
+                    raise RuntimeError(f"Unsupported Mission Control resource URI: {uri}")
                 feature_id = parts[4]
                 return self._summarize_ml_feature_bundle(project_id, self.get_pytorch_feature_bundle(project_id, feature_id))
             if kind == "spatial" and len(parts) >= 4 and parts[3] == "features":
                 if len(parts) == 4:
                     return self._summarize_spatial_feature_catalog(project_id, self.get_spatial_feature_catalog(project_id))
+                if len(parts) != 5:
+                    raise RuntimeError(f"Unsupported Mission Control resource URI: {uri}")
                 feature_id = parts[4]
                 return self._summarize_spatial_feature_bundle(project_id, self.get_spatial_feature_bundle(project_id, feature_id))
             if kind == "webwright":
+                if len(parts) != 3:
+                    raise RuntimeError(f"Unsupported Mission Control resource URI: {uri}")
                 return self._summarize_webwright_status(project_id, self.get_webwright_status(project_id))
             if kind == "nvidia" and len(parts) == 4:
                 nvidia_kind = parts[3]
@@ -2966,15 +3124,27 @@ class MissionControlDaemonClient:
                 if nvidia_kind == "validation-plan":
                     return self._summarize_nvidia_validation_plan(project_id, self.get_nvidia_validation_plan(project_id))
             if kind == "nvidia-dynamo":
+                if len(parts) != 3:
+                    raise RuntimeError(f"Unsupported Mission Control resource URI: {uri}")
                 return self._summarize_nvidia_dynamo_status(project_id, self.get_nvidia_dynamo_status(project_id))
             if kind == "nvidia-nim":
+                if len(parts) != 3:
+                    raise RuntimeError(f"Unsupported Mission Control resource URI: {uri}")
                 return self._summarize_nvidia_nim_status(project_id, self.get_nvidia_nim_status(project_id))
             if kind == "nvidia-aiq":
+                if len(parts) != 3:
+                    raise RuntimeError(f"Unsupported Mission Control resource URI: {uri}")
                 return self._summarize_nvidia_aiq_status(project_id, self.get_nvidia_aiq_status(project_id))
             if kind == "nvidia-gpu-diagnostics":
+                if len(parts) != 3:
+                    raise RuntimeError(f"Unsupported Mission Control resource URI: {uri}")
                 return self._summarize_nvidia_gpu_diagnostics(project_id, self.get_nvidia_gpu_diagnostics(project_id))
             if kind == "nvidia-local-runtime":
+                if len(parts) != 3:
+                    raise RuntimeError(f"Unsupported Mission Control resource URI: {uri}")
                 return self._summarize_nvidia_local_runtime_status(project_id, self.get_nvidia_local_runtime_status(project_id))
             if kind == "nvidia-validation-plan":
+                if len(parts) != 3:
+                    raise RuntimeError(f"Unsupported Mission Control resource URI: {uri}")
                 return self._summarize_nvidia_validation_plan(project_id, self.get_nvidia_validation_plan(project_id))
         raise RuntimeError("Unsupported Mission Control resource URI.")

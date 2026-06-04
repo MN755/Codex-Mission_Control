@@ -41,8 +41,8 @@ def test_workspace_dry_run_loop_and_action_flow(client) -> None:
 
     question = workspace["pending_question"]
     answer = client.post(
-        f"/api/questions/{question['id']}/answer",
-        json={"project_id": project["id"], "option_id": "workflow", "selected_text": "Workflow loop"},
+        f"/api/projects/{project['id']}/questions/{question['id']}/answer",
+        json={"option_id": "workflow", "selected_text": "Workflow loop"},
     )
     assert answer.status_code == 200
     assert answer.json()["status"] == "answered"
@@ -54,7 +54,7 @@ def test_workspace_dry_run_loop_and_action_flow(client) -> None:
     action = client.get(f"/api/projects/{project['id']}/action").json()
     assert action["type"] == "command_approval"
 
-    approval = client.post(f"/api/approvals/{approvals[0]['id']}/approve-once", json={"project_id": project["id"]})
+    approval = client.post(f"/api/projects/{project['id']}/approvals/{approvals[0]['id']}/approve-once", json={"project_id": project["id"]})
     assert approval.status_code == 200
     assert approval.json()["status"] == "approved_once"
 
@@ -90,7 +90,7 @@ def test_high_impact_question_cannot_auto_decide(client) -> None:
             manager_recommendation="No",
         )
         db.commit()
-        response = client.post(f"/api/questions/{question.id}/auto-decide", params={"project_id": project.id})
+        response = client.post(f"/api/projects/{project.id}/questions/{question.id}/auto-decide")
         assert response.status_code == 400
     finally:
         db.close()
@@ -166,7 +166,7 @@ def test_approval_resolution_is_project_scoped(client) -> None:
         )
         db.commit()
 
-        response = client.post(f"/api/approvals/{approval.id}/approve-once", json={"project_id": project_two.id})
+        response = client.post(f"/api/projects/{project_two.id}/approvals/{approval.id}/approve-once", json={"project_id": project_two.id})
         assert response.status_code == 404
 
         db.refresh(approval)
@@ -211,7 +211,7 @@ def test_legacy_project_without_settings_reads_defaults_without_persisting_row(c
     dashboard_response = client.get("/api/dashboard/summary")
     assert dashboard_response.status_code == 200
 
-    system_status_response = client.get(f"/api/system/status?project_id={project_id}", headers=bridge_headers)
+    system_status_response = client.get(f"/api/projects/{project_id}/system/status", headers=bridge_headers)
     assert system_status_response.status_code == 200
 
     db = SessionLocal()

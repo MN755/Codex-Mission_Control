@@ -16,7 +16,7 @@
       "support_status": "implemented",
       "source_hint": {
         "rest_endpoints": [
-          "/api/orchestrations/{orchestration_id}/status"
+          "/api/projects/{project_id}/orchestrations/{orchestration_id}/status"
         ]
       },
       "default_fields": [
@@ -49,7 +49,7 @@
       "support_status": "implemented",
       "source_hint": {
         "rest_endpoints": [
-          "/api/orchestrations/{orchestration_id}/events"
+          "/api/projects/{project_id}/orchestrations/{orchestration_id}/events"
         ]
       },
       "default_fields": [
@@ -75,7 +75,7 @@
       "support_status": "implemented",
       "source_hint": {
         "rest_endpoints": [
-          "/api/orchestrations/{orchestration_id}"
+          "/api/projects/{project_id}/orchestrations/{orchestration_id}"
         ]
       },
       "default_fields": [
@@ -106,7 +106,7 @@
       "support_status": "implemented",
       "source_hint": {
         "rest_endpoints": [
-          "/api/orchestrations/{orchestration_id}/handoff"
+          "/api/projects/{project_id}/orchestrations/{orchestration_id}/handoff"
         ]
       },
       "default_fields": [
@@ -136,7 +136,7 @@
       "support_status": "implemented",
       "source_hint": {
         "rest_endpoints": [
-          "/api/orchestrations/{orchestration_id}/pending-decisions"
+          "/api/projects/{project_id}/orchestrations/{orchestration_id}/pending-decisions"
         ]
       },
       "default_fields": [
@@ -161,7 +161,7 @@
       "support_status": "implemented",
       "source_hint": {
         "rest_endpoints": [
-          "/api/orchestrations/{orchestration_id}/status-summary"
+          "/api/projects/{project_id}/orchestrations/{orchestration_id}/status-summary"
         ]
       },
       "default_fields": [
@@ -188,7 +188,7 @@
       "support_status": "implemented",
       "source_hint": {
         "rest_endpoints": [
-          "/api/orchestrations/{orchestration_id}/event-digest"
+          "/api/projects/{project_id}/orchestrations/{orchestration_id}/event-digest"
         ]
       },
       "default_fields": [
@@ -216,7 +216,7 @@
       "support_status": "implemented",
       "source_hint": {
         "rest_endpoints": [
-          "/api/orchestrations/{orchestration_id}/handoff-summary"
+          "/api/projects/{project_id}/orchestrations/{orchestration_id}/handoff-summary"
         ]
       },
       "default_fields": [
@@ -278,7 +278,7 @@
         "rest_endpoints": [
           "/api/projects/{project_id}",
           "/api/projects/{project_id}/orchestrations/active",
-          "/api/orchestrations/{orchestration_id}/status"
+          "/api/projects/{project_id}/orchestrations/{orchestration_id}/status"
         ]
       },
       "default_fields": [
@@ -335,7 +335,7 @@
       "support_status": "implemented",
       "source_hint": {
         "rest_endpoints": [
-          "/api/agents/{agent_id}/logs"
+          "/api/projects/{project_id}/agents/{agent_id}/logs"
         ]
       },
       "default_fields": [
@@ -363,7 +363,7 @@
       "support_status": "implemented",
       "source_hint": {
         "rest_endpoints": [
-          "/api/orchestrations/{orchestration_id}/pending-decisions",
+          "/api/projects/{project_id}/orchestrations/{orchestration_id}/pending-decisions",
           "/api/projects/{project_id}/pending-decisions"
         ]
       },
@@ -1279,7 +1279,7 @@
       "support_status": "implemented",
       "source_hint": {
         "rest_endpoints": [
-          "/api/widgets/catalog?scope={scope}"
+          "/api/widgets/catalog/{scope}"
         ]
       },
       "default_fields": [
@@ -1751,6 +1751,37 @@
       }
     },
     {
+      "uri_template": "mission-control://projects/{project_id}",
+      "title": "Project details",
+      "summary": "Canonical project detail resource with status, milestone, orchestration, workspace, and display summary fields.",
+      "support_status": "implemented",
+      "source_hint": {
+        "rest_endpoints": [
+          "/api/projects/{project_id}"
+        ]
+      },
+      "default_fields": [
+        "project_id",
+        "project_name",
+        "display_status",
+        "workspace_path",
+        "runner_mode",
+        "sandbox_mode",
+        "approval_policy",
+        "orchestration_id",
+        "current_task_summary",
+        "last_activity_summary"
+      ],
+      "redaction": {
+        "omit_fields": [
+          "secret_values",
+          "raw_log",
+          "private_paths_outside_workspace"
+        ],
+        "notes": "Expose project metadata and status only, not secret-bearing artifacts or raw workspace dumps."
+      }
+    },
+    {
       "uri_template": "mission-control://projects/{project_id}/integrations",
       "title": "Project integrations",
       "summary": "Project-scoped integration readiness view across supported provider families.",
@@ -1815,7 +1846,7 @@
       "support_status": "implemented",
       "source_hint": {
         "rest_endpoints": [
-          "/api/projects/{project_id}/integrations/{family}"
+          "/api/projects/{project_id}/integrations/{family}/actions"
         ]
       },
       "default_fields": [
@@ -1870,13 +1901,78 @@
       }
     },
     {
+      "uri_template": "mission-control://projects/{project_id}/system/status",
+      "title": "Project system status",
+      "summary": "Project-scoped runtime and provider readiness surface covering auth posture, CLI availability, backend wiring, MCP state, and active runs.",
+      "support_status": "implemented",
+      "source_hint": {
+        "rest_endpoints": [
+          "/api/projects/{project_id}/system/status"
+        ]
+      },
+      "default_fields": [
+        "selected_provider",
+        "selected_provider_label",
+        "cli_detected",
+        "cli_execution_available",
+        "login_status",
+        "authenticated",
+        "runtime_ready",
+        "runtime_summary",
+        "backend_base_url",
+        "app_server_handshake_status",
+        "effective_runner_mode",
+        "active_runs",
+        "configured_plugins",
+        "notes"
+      ],
+      "redaction": {
+        "omit_fields": [
+          "raw_log",
+          "secret_values",
+          "private_paths_outside_workspace"
+        ],
+        "notes": "Expose project-scoped readiness and configuration posture only."
+      }
+    },
+    {
+      "uri_template": "mission-control://projects/{project_id}/system/codex-status",
+      "title": "Project codex status",
+      "summary": "Project-scoped Codex runtime status with provider, auth, runtime, MCP, and plugin posture.",
+      "support_status": "implemented",
+      "source_hint": {
+        "rest_endpoints": [
+          "/api/projects/{project_id}/system/codex-status"
+        ]
+      },
+      "default_fields": [
+        "selected_provider",
+        "selected_provider_label",
+        "authenticated",
+        "runtime_ready",
+        "runtime_summary",
+        "effective_runner_mode",
+        "backend_base_url",
+        "configured_plugins",
+        "notes"
+      ],
+      "redaction": {
+        "omit_fields": [
+          "raw_log",
+          "secret_values",
+          "private_paths_outside_workspace"
+        ],
+        "notes": "Expose project-scoped Codex runtime posture only."
+      }
+    },
+    {
       "uri_template": "mission-control://projects/{project_id}/settings",
       "title": "Project settings",
       "summary": "Project-scoped execution and approval settings that shape how Mission Control should operate in the workspace.",
       "support_status": "implemented",
       "source_hint": {
         "rest_endpoints": [
-          "/api/settings"
+          "/api/projects/{project_id}/settings"
         ]
       },
       "default_fields": [
@@ -1905,7 +2001,7 @@
       "support_status": "implemented",
       "source_hint": {
         "rest_endpoints": [
-          "/api/projects/{project_id}"
+          "/api/projects/{project_id}/details"
         ]
       },
       "default_fields": [
@@ -2419,7 +2515,7 @@
       "support_status": "implemented",
       "source_hint": {
         "rest_endpoints": [
-          "/api/subagents/batches/{batch_id}?project_id={project_id}"
+          "/api/projects/{project_id}/subagent-batches/{batch_id}"
         ]
       },
       "default_fields": [
@@ -2493,6 +2589,35 @@
           "private_paths_outside_workspace"
         ],
         "notes": "Expose project widget placement metadata only, not secret-bearing widget config payloads."
+      }
+    },
+    {
+      "uri_template": "mission-control://projects/{project_id}/widgets/instances/{instance_id}/data",
+      "title": "Project widget instance data",
+      "summary": "Compact project-scoped widget data payload for one instance with warnings, status, and safe top-level data fields.",
+      "support_status": "implemented",
+      "source_hint": {
+        "rest_endpoints": [
+          "/api/projects/{project_id}/widgets/instances/{instance_id}/data"
+        ]
+      },
+      "default_fields": [
+        "project_id",
+        "widget_instance_id",
+        "widget_type",
+        "title",
+        "status",
+        "warning_count",
+        "data_keys",
+        "updated_at"
+      ],
+      "redaction": {
+        "omit_fields": [
+          "raw_log",
+          "secret_values",
+          "private_paths_outside_workspace"
+        ],
+        "notes": "Expose summarized project widget data only, not secret-bearing widget config payloads."
       }
     },
     {
@@ -2615,7 +2740,7 @@
       "support_status": "implemented",
       "source_hint": {
         "rest_endpoints": [
-          "/api/decisions/{decision_id}/bridge-message?project_id={project_id}"
+          "/api/projects/{project_id}/decisions/{decision_id}/bridge-message"
         ]
       },
       "default_fields": [
@@ -3071,7 +3196,7 @@
       "support_status": "implemented",
       "source_hint": {
         "rest_endpoints": [
-          "/api/diagnostics/reports",
+          "/api/projects/{project_id}/diagnostics/reports",
           "/api/plugin/health",
           "/api/projects/{project_id}/orchestrations/active"
         ]
@@ -3105,7 +3230,7 @@
       "support_status": "implemented",
       "source_hint": {
         "rest_endpoints": [
-          "/api/diagnostics/reports"
+          "/api/projects/{project_id}/diagnostics/reports"
         ]
       },
       "default_fields": [
@@ -3190,7 +3315,7 @@
       "support_status": "implemented",
       "source_hint": {
         "rest_endpoints": [
-          "/api/projects/{project_id}/nvidia/dynamo"
+          "/api/projects/{project_id}/nvidia-dynamo"
         ]
       },
       "default_fields": [
@@ -3249,7 +3374,7 @@
       "support_status": "implemented",
       "source_hint": {
         "rest_endpoints": [
-          "/api/projects/{project_id}/nvidia/nim"
+          "/api/projects/{project_id}/nvidia-nim"
         ]
       },
       "default_fields": [
@@ -3310,7 +3435,7 @@
       "support_status": "implemented",
       "source_hint": {
         "rest_endpoints": [
-          "/api/projects/{project_id}/nvidia/aiq"
+          "/api/projects/{project_id}/nvidia-aiq"
         ]
       },
       "default_fields": [
@@ -3369,7 +3494,7 @@
       "support_status": "implemented",
       "source_hint": {
         "rest_endpoints": [
-          "/api/projects/{project_id}/nvidia/gpu-diagnostics"
+          "/api/projects/{project_id}/nvidia-gpu-diagnostics"
         ]
       },
       "default_fields": [
@@ -3427,7 +3552,7 @@
       "support_status": "implemented",
       "source_hint": {
         "rest_endpoints": [
-          "/api/projects/{project_id}/nvidia/local-runtime"
+          "/api/projects/{project_id}/nvidia-local-runtime"
         ]
       },
       "default_fields": [
@@ -3486,7 +3611,7 @@
       "support_status": "implemented",
       "source_hint": {
         "rest_endpoints": [
-          "/api/projects/{project_id}/nvidia/validation-plan"
+          "/api/projects/{project_id}/nvidia-validation-plan"
         ]
       },
       "default_fields": [
@@ -3543,7 +3668,6 @@
       "support_status": "implemented",
       "source_hint": {
         "rest_endpoints": [
-          "/api/projects/{project_id}/swarm/preferences",
           "/api/projects/{project_id}/swarm/plan"
         ]
       },
@@ -3575,8 +3699,7 @@
       "support_status": "implemented",
       "source_hint": {
         "rest_endpoints": [
-          "/api/projects/{project_id}/swarm/preferences",
-          "/api/projects/{project_id}/swarm/plan"
+          "/api/projects/{project_id}/swarm-plan"
         ]
       },
       "default_fields": [
@@ -3763,7 +3886,7 @@
       "support_status": "implemented",
       "source_hint": {
         "rest_endpoints": [
-          "/api/projects/{project_id}/risks"
+          "/api/projects/{project_id}/risk-register"
         ]
       },
       "default_fields": [
@@ -3865,7 +3988,7 @@
       "support_status": "implemented",
       "source_hint": {
         "rest_endpoints": [
-          "/api/projects/{project_id}/validation-coverage/summary"
+          "/api/projects/{project_id}/validation-summary"
         ]
       },
       "default_fields": [
@@ -4052,7 +4175,7 @@
       "support_status": "implemented",
       "source_hint": {
         "rest_endpoints": [
-          "/api/projects/{project_id}/instincts/preview"
+          "/api/projects/{project_id}/instincts"
         ]
       },
       "default_fields": [

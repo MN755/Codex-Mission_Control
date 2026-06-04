@@ -80,10 +80,13 @@ EXPECTED_RESOURCES = {
     "mission-control://preferences/summary",
     "mission-control://subagent-policy",
     "mission-control://subagent-policy/summary",
+    "mission-control://projects/{project_id}",
     "mission-control://projects/{project_id}/integrations",
     "mission-control://projects/{project_id}/integrations/{family}",
     "mission-control://projects/{project_id}/integrations/{family}/actions",
     "mission-control://projects/{project_id}/integrations/{family}/actions/{action_id}/preview",
+    "mission-control://projects/{project_id}/system/status",
+    "mission-control://projects/{project_id}/system/codex-status",
     "mission-control://projects/{project_id}/settings",
     "mission-control://projects/{project_id}/details",
     "mission-control://projects/{project_id}/understanding",
@@ -107,6 +110,7 @@ EXPECTED_RESOURCES = {
     "mission-control://projects/{project_id}/subagent-batches/{batch_id}",
     "mission-control://projects/{project_id}/widgets/summary",
     "mission-control://projects/{project_id}/widgets/instances",
+    "mission-control://projects/{project_id}/widgets/instances/{instance_id}/data",
     "mission-control://projects/{project_id}/workspace",
     "mission-control://projects/{project_id}/workspace-tooling",
     "mission-control://projects/{project_id}/security/policy",
@@ -241,7 +245,7 @@ def test_project_diagnostics_requests_project_scoped_report_history(monkeypatch)
     payload = client.get_diagnostics(project_id=7)
 
     assert payload["recent_reports"] == []
-    assert ("/api/diagnostics/reports", {"params": {"project_id": 7}}) in requested_calls
+    assert ("/api/projects/7/diagnostics/reports", {}) in requested_calls
 
 
 def test_daemon_client_rejects_non_local_spawn(monkeypatch) -> None:
@@ -904,6 +908,29 @@ def test_answer_decision_sends_answer() -> None:
     )
     assert result["structuredContent"]["status"] == "answered"
     assert client.calls[0][0] == "answer_decision"
+
+
+def test_daemon_client_answer_decision_uses_project_scoped_route(monkeypatch) -> None:
+    client = MissionControlDaemonClient(base_url="http://127.0.0.1:8010", timeout=0.1)
+    seen: dict[str, object] = {}
+
+    def fake_request(method: str, path: str, **kwargs):
+        seen["method"] = method
+        seen["path"] = path
+        seen["params"] = kwargs.get("params")
+        seen["json_body"] = kwargs.get("json_body")
+        return {}
+
+    monkeypatch.setattr(client, "_request", fake_request)
+
+    client.answer_decision(decision_id=31, project_id=7, option_id="approve_once", selected_text="Approve once")
+
+    assert seen == {
+        "method": "POST",
+        "path": "/api/projects/7/decisions/31/answer",
+        "params": None,
+        "json_body": {"option_id": "approve_once", "selected_text": "Approve once", "free_text": None},
+    }
 
 
 def test_core_orchestration_tools_require_project_scope() -> None:
@@ -2013,6 +2040,26 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
     )
     monkeypatch.setattr(
         client,
+        "get_project_integration_actions",
+        lambda project_id, family: {
+            "project_id": project_id,
+            "family": family,
+            "available_actions": [
+                {
+                    "action_id": "create_issue",
+                    "title": "Create issue",
+                    "status": "ready",
+                    "risk_level": "medium",
+                    "requires_confirmation": True,
+                    "preview_supported": True,
+                    "ready_to_execute": True,
+                    "missing_params": ["title"],
+                }
+            ],
+        },
+    )
+    monkeypatch.setattr(
+        client,
         "get_pending_questions",
         lambda project_id: [
             {
@@ -2628,7 +2675,7 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
     monkeypatch.setattr(
         client,
         "get_codex_status",
-        lambda: {
+        lambda project_id=None: {
             "selected_provider": "codex",
             "selected_provider_label": "Codex",
             "cli_detected": True,
@@ -2790,12 +2837,16 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
     monkeypatch.setattr(
         client,
         "get_widget_instance_data",
-        lambda instance_id: {
+        lambda instance_id, project_id=None: {
             "widget_instance_id": instance_id,
-            "widget_type": "recent_projects",
-            "title": "Recent Projects",
+            "widget_type": "runbook_status" if project_id is not None else "recent_projects",
+            "title": "Runbook Status" if project_id is not None else "Recent Projects",
             "status": "ready",
-            "data_json": {"project_count": 1, "project_names": ["Demo"]},
+            "data_json": (
+                {"runbook_exists": True, "project_id": project_id}
+                if project_id is not None
+                else {"project_count": 1, "project_names": ["Demo"]}
+            ),
             "empty_state": None,
             "warnings_json": [],
             "updated_at": "2026-06-03T12:50:00Z",
@@ -3303,6 +3354,8 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
     auth_state = client.read_resource("mission-control://system/auth-state")
     auth_job = client.read_resource("mission-control://system/auth-jobs/job-123")
     codex_status = client.read_resource("mission-control://system/codex-status")
+    project_system_status = client.read_resource("mission-control://projects/7/system/status")
+    project_codex_status = client.read_resource("mission-control://projects/7/system/codex-status")
     startup_status = client.read_resource("mission-control://startup/status")
     dashboard_summary = client.read_resource("mission-control://dashboard/summary")
     widget_catalog = client.read_resource("mission-control://widgets/catalog")
@@ -3314,6 +3367,7 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
     handoffs = client.read_resource("mission-control://handoffs")
     diagnostic_reports = client.read_resource("mission-control://diagnostics/reports")
     projects = client.read_resource("mission-control://projects")
+    project_resource = client.read_resource("mission-control://projects/7")
     subagent_policy = client.read_resource("mission-control://subagent-policy")
     subagent_policy_summary = client.read_resource("mission-control://subagent-policy/summary")
     pending_questions = client.read_resource("mission-control://projects/7/questions/pending")
@@ -3372,6 +3426,7 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
     effective_preferences = client.read_resource("mission-control://projects/7/preferences/effective")
     widget_summary = client.read_resource("mission-control://projects/7/widgets/summary")
     project_widget_instances = client.read_resource("mission-control://projects/7/widgets/instances")
+    project_widget_instance_data = client.read_resource("mission-control://projects/7/widgets/instances/302/data")
     project_risks = client.read_resource("mission-control://projects/7/risks")
     project_risk_summary = client.read_resource("mission-control://projects/7/risks/summary")
     agent_contracts = client.read_resource("mission-control://projects/7/agent-contracts")
@@ -3456,10 +3511,12 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
     assert plugin_health["status"] == "ready"
     assert headless_config["enabled"] is True
     assert system_status["runtime_ready"] is True
+    assert project_system_status["runtime_ready"] is True
     assert auth_state["authenticated"] is True
     assert auth_job["job_id"] == "job-123"
     assert auth_job["status"] == "running"
     assert codex_status["runtime_summary"] == "Codex runtime is ready."
+    assert project_codex_status["runtime_summary"] == "Codex runtime is ready."
     assert startup_status["overall_status"] == "ready"
     assert dashboard_summary["archive_count"] == 1
     assert widget_catalog["scope"] == "all"
@@ -3480,6 +3537,8 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
     assert diagnostic_reports["reports"][0]["status"] == "warning"
     assert projects["project_count"] == 1
     assert projects["projects"][0]["pinned"] is True
+    assert project_resource["project_name"] == "Demo"
+    assert project_resource["display_status"] == "needs_review"
     assert subagent_policy_summary["default_mode"] == "limited_write"
     assert pending_questions["question_count"] == 1
     assert pending_questions["questions"][0]["category"] == "scope"
@@ -3583,6 +3642,8 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
     assert widget_summary["instances"][0]["widget_type"] == "runbook_status"
     assert project_widget_instances["project_id"] == 7
     assert project_widget_instances["instances"][0]["widget_type"] == "runbook_status"
+    assert project_widget_instance_data["widget_instance_id"] == 302
+    assert project_widget_instance_data["data_keys"] == ["project_id", "runbook_exists"]
     assert project_risks["project_id"] == 7
     assert project_risks["risk_count"] == 1
     assert project_risks["open_risks"][0]["title"] == "Validation drift"
@@ -3824,6 +3885,102 @@ def test_daemon_client_active_orchestration_resource_returns_stable_missing_payl
     }
 
 
+def test_daemon_client_rejects_invalid_extra_segments_for_strict_resources() -> None:
+    client = MissionControlDaemonClient(base_url="http://127.0.0.1:8010", timeout=0.1)
+
+    for uri in (
+        "mission-control://playbooks/ai_local_tool/extra",
+        "mission-control://context-packs/31/extra",
+        "mission-control://context-packs/not-a-number",
+        "mission-control://agent-archetypes/extra",
+        "mission-control://capabilities/benchmarks/extra",
+        "mission-control://capabilities/matrix/extra",
+        "mission-control://agents/reputation/extra",
+        "mission-control://profile/summary/extra",
+        "mission-control://preferences/summary/extra",
+        "mission-control://subagent-policy/summary/extra",
+        "mission-control://system/status/extra",
+        "mission-control://system/auth-jobs/job-123/extra",
+        "mission-control://diagnostics/reports/extra",
+        "mission-control://diagnostics/identity/extra",
+        "mission-control://headless/health/extra",
+        "mission-control://headless/diagnostic-summary/extra",
+        "mission-control://integrations/catalog/extra",
+        "mission-control://integrations/connections/extra",
+        "mission-control://integrations/health/extra",
+        "mission-control://dashboard/summary/extra",
+        "mission-control://widgets/catalog/project/extra",
+        "mission-control://widgets/instances/extra",
+        "mission-control://widgets/instances/not-a-number/data",
+        "mission-control://orchestrations/not-a-number/status",
+        "mission-control://orchestrations/not-a-number/events",
+        "mission-control://projects/not-a-number",
+        "mission-control://projects/not-a-number/status",
+        "mission-control://projects/7/status-summary/extra",
+        "mission-control://projects/7/orchestrations/active/extra",
+        "mission-control://projects/7/orchestrations/not-a-number",
+        "mission-control://projects/7/orchestrations/14/status/not-real",
+        "mission-control://projects/7/orchestrations/14/events/not-real",
+        "mission-control://projects/7/status/extra",
+        "mission-control://projects/7/decisions/not-a-number/bridge-message",
+        "mission-control://projects/7/agents/15/logs/extra",
+        "mission-control://projects/7/agents/not-a-number/logs",
+        "mission-control://projects/7/event-digest/extra",
+        "mission-control://projects/7/handoff-summary/extra",
+        "mission-control://projects/7/handoff/evidence/preview/extra",
+        "mission-control://projects/7/codebase-map/extra",
+        "mission-control://projects/7/codebase-understanding/extra",
+        "mission-control://projects/7/understanding/extra",
+        "mission-control://projects/7/interview/extra",
+        "mission-control://projects/7/plan/extra",
+        "mission-control://projects/7/reservations/extra",
+        "mission-control://projects/7/import-safety/extra",
+        "mission-control://projects/7/settings/extra",
+        "mission-control://projects/7/details/extra",
+        "mission-control://projects/7/agents/reputation/extra",
+        "mission-control://projects/7/context-packs/extra",
+        "mission-control://projects/7/diagnostics/latest-report/extra",
+        "mission-control://projects/7/diagnostics/extra",
+        "mission-control://projects/7/playbook/recommendations/extra",
+        "mission-control://projects/7/risk-register/extra",
+        "mission-control://projects/7/agent-contracts/extra",
+        "mission-control://projects/7/validation-summary/extra",
+        "mission-control://projects/7/decision-ledger/extra",
+        "mission-control://projects/7/path-locks/extra",
+        "mission-control://projects/7/operator-snapshot/extra",
+        "mission-control://projects/7/instincts/preview/extra",
+        "mission-control://projects/7/verification-brief/extra",
+        "mission-control://projects/7/capability-report/semantic_code_impact_mapping/extra",
+        "mission-control://projects/7/workspace/extra",
+        "mission-control://projects/7/workspace-tooling/extra",
+        "mission-control://projects/7/action/extra",
+        "mission-control://projects/7/actions/extra",
+        "mission-control://projects/7/runbook/summary/extra",
+        "mission-control://projects/7/safe-mode/extra",
+        "mission-control://projects/7/tasks/extra",
+        "mission-control://projects/7/recovery-plans/preview/extra",
+        "mission-control://projects/7/events/extra",
+        "mission-control://projects/7/snapshots/61/restore-plan/extra",
+        "mission-control://projects/7/snapshots/not-a-number/restore-plan",
+        "mission-control://projects/7/swarm-plan/extra",
+        "mission-control://projects/7/subagent-batches/extra",
+        "mission-control://projects/7/subagent-batches/51/extra",
+        "mission-control://projects/7/integrations/source_control/actions/extra",
+        "mission-control://projects/7/integrations/source_control/actions/create_issue/preview/extra",
+        "mission-control://projects/7/tensorflow/features/keras_scaffold/extra",
+        "mission-control://projects/7/pytorch/features/project_scaffold/extra",
+        "mission-control://projects/7/spatial/features/asset_pipeline/extra",
+        "mission-control://projects/7/webwright/extra",
+        "mission-control://projects/7/nvidia-dynamo/extra",
+    ):
+        try:
+            client.read_resource(uri)
+        except RuntimeError as exc:
+            assert "Unsupported Mission Control resource URI" in str(exc)
+        else:
+            raise AssertionError(f"Expected invalid resource URI to be rejected: {uri}")
+
+
 def test_daemon_client_bridge_auth_protected_reads_include_token(monkeypatch) -> None:
     client = MissionControlDaemonClient(base_url="http://127.0.0.1:8010", timeout=0.1)
     calls: list[tuple[str, str, bool]] = []
@@ -3839,14 +3996,19 @@ def test_daemon_client_bridge_auth_protected_reads_include_token(monkeypatch) ->
     client.get_headless_health()
     client.get_headless_diagnostic_summary()
     client.daemon_status()
+    client.get_system_status(7)
+    client.get_codex_status(7)
     client.get_profile()
     client.get_auth_job("job-123")
+    client.get_widget_catalog()
+    client.get_widget_catalog("project")
     client.get_handoff(orchestration_id=14, project_id=7)
     client.get_pending_decisions(orchestration_id=14, project_id=7)
     client.get_project_handoff(7)
     client.get_codebase_map(7)
     client.get_codebase_understanding(7)
     client.get_import_safety(7)
+    client.get_project_integration_actions(7, "source_control")
     client.preview_project_integration_action(7, "source_control", "create_issue")
     client.get_project_settings(7)
     client.get_agent_logs(7, 15)
@@ -3864,6 +4026,7 @@ def test_daemon_client_bridge_auth_protected_reads_include_token(monkeypatch) ->
     client.list_widget_instances()
     client.get_project_widget_instances(7)
     client.get_widget_instance_data(301)
+    client.get_widget_instance_data(302, project_id=7)
     client.get_project_understanding(7)
     client.get_interview(7)
     client.get_plan(7)
@@ -3907,21 +4070,26 @@ def test_daemon_client_bridge_auth_protected_reads_include_token(monkeypatch) ->
         ("GET", "/api/headless/health", True),
         ("GET", "/api/headless/diagnostic-summary", True),
         ("GET", "/api/daemon/status", True),
+        ("GET", "/api/projects/7/system/status", True),
+        ("GET", "/api/projects/7/system/codex-status", True),
         ("GET", "/api/profile", True),
         ("GET", "/api/system/auth-jobs/job-123", True),
-        ("GET", "/api/orchestrations/14/handoff", True),
-        ("GET", "/api/orchestrations/14/pending-decisions", True),
+        ("GET", "/api/widgets/catalog", True),
+        ("GET", "/api/widgets/catalog/project", True),
+        ("GET", "/api/projects/7/orchestrations/14/handoff", True),
+        ("GET", "/api/projects/7/orchestrations/14/pending-decisions", True),
         ("GET", "/api/projects/7/handoff", True),
         ("GET", "/api/projects/7/codebase-map", True),
         ("GET", "/api/projects/7/codebase-understanding", True),
         ("GET", "/api/projects/7/import-safety", True),
+        ("GET", "/api/projects/7/integrations/source_control/actions", True),
         ("POST", "/api/projects/7/integrations/source_control/actions/create_issue/preview", True),
-        ("GET", "/api/settings", True),
-        ("GET", "/api/agents/15/logs", True),
-        ("GET", "/api/orchestrations/14", True),
-        ("GET", "/api/orchestrations/14/status-summary", True),
-        ("GET", "/api/orchestrations/14/event-digest", True),
-        ("GET", "/api/orchestrations/14/handoff-summary", True),
+        ("GET", "/api/projects/7/settings", True),
+        ("GET", "/api/projects/7/agents/15/logs", True),
+        ("GET", "/api/projects/7/orchestrations/14", True),
+        ("GET", "/api/projects/7/orchestrations/14/status-summary", True),
+        ("GET", "/api/projects/7/orchestrations/14/event-digest", True),
+        ("GET", "/api/projects/7/orchestrations/14/handoff-summary", True),
         ("GET", "/api/projects/7/orchestrations/active", True),
         ("GET", "/api/projects/7/status-summary", True),
         ("GET", "/api/projects", True),
@@ -3933,6 +4101,7 @@ def test_daemon_client_bridge_auth_protected_reads_include_token(monkeypatch) ->
         ("GET", "/api/widgets/instances", True),
         ("GET", "/api/projects/7/widgets/instances", True),
         ("GET", "/api/widgets/instances/301/data", True),
+        ("GET", "/api/projects/7/widgets/instances/302/data", True),
         ("GET", "/api/projects/7/understanding", True),
         ("GET", "/api/projects/7/interview", True),
         ("GET", "/api/projects/7/plan", True),
@@ -3944,7 +4113,7 @@ def test_daemon_client_bridge_auth_protected_reads_include_token(monkeypatch) ->
         ("GET", "/api/capabilities/benchmarks", True),
         ("GET", "/api/capabilities/matrix", True),
         ("GET", "/api/projects/7/context-packs", True),
-        ("GET", "/api/context-packs/31", True),
+        ("GET", "/api/projects/7/context-packs/31", True),
         ("GET", "/api/projects/7/preferences", True),
         ("GET", "/api/risks/common", True),
         ("GET", "/api/projects/7/scope-creep", True),
@@ -3952,7 +4121,7 @@ def test_daemon_client_bridge_auth_protected_reads_include_token(monkeypatch) ->
         ("GET", "/api/projects/7/security/policy", True),
         ("GET", "/api/security/audit-log", True),
         ("GET", "/api/projects/7/security/audit-log", True),
-        ("GET", "/api/decisions/31/bridge-message", True),
+        ("GET", "/api/projects/7/decisions/31/bridge-message", True),
         ("GET", "/api/projects/7/swarm/simulations", True),
         ("GET", "/api/projects/7/validation-coverage", True),
         ("GET", "/api/projects/7/workspace", True),
@@ -3964,10 +4133,10 @@ def test_daemon_client_bridge_auth_protected_reads_include_token(monkeypatch) ->
         ("GET", "/api/projects/7/reservations", True),
         ("GET", "/api/projects/7/events", True),
         ("GET", "/api/projects/7/subagent-batches", True),
-        ("GET", "/api/subagents/batches/51", True),
+        ("GET", "/api/projects/7/subagent-batches/51", True),
         ("GET", "/api/handoffs", True),
         ("GET", "/api/diagnostics/reports", True),
-        ("GET", "/api/diagnostics/reports", True),
+        ("GET", "/api/projects/7/diagnostics/reports", True),
         ("GET", "/api/projects/7/orchestrations/active", True),
     ]
 
@@ -3988,9 +4157,54 @@ def test_daemon_client_get_context_pack_passes_project_scope_when_provided(monke
 
     assert seen == {
         "method": "GET",
-        "path": "/api/context-packs/31",
-        "params": {"project_id": 7},
+        "path": "/api/projects/7/context-packs/31",
+        "params": None,
     }
+
+
+def test_daemon_client_pause_and_resume_use_project_scoped_routes(monkeypatch) -> None:
+    client = MissionControlDaemonClient(base_url="http://127.0.0.1:8010", timeout=0.1)
+    calls: list[dict[str, object]] = []
+
+    monkeypatch.setattr(
+        client,
+        "_resolve_orchestration_id",
+        lambda **kwargs: 14,
+    )
+    monkeypatch.setattr(
+        client,
+        "_project_id_for_orchestration",
+        lambda orchestration_id, project_id=None: 7,
+    )
+
+    def fake_request(method: str, path: str, **kwargs):
+        calls.append({
+            "method": method,
+            "path": path,
+            "params": kwargs.get("params"),
+            "json_body": kwargs.get("json_body"),
+        })
+        return {}
+
+    monkeypatch.setattr(client, "_request", fake_request)
+
+    client.pause(project_id=7)
+    client.resume(project_id=7)
+
+    assert calls == [
+        {
+            "method": "POST",
+            "path": "/api/projects/7/orchestrations/14/pause",
+            "params": None,
+            "json_body": {},
+        },
+        {
+            "method": "POST",
+            "path": "/api/projects/7/orchestrations/14/resume",
+            "params": None,
+            "json_body": {},
+        },
+    ]
 
 
 def test_daemon_client_runbook_resource_returns_stable_missing_payload(monkeypatch) -> None:

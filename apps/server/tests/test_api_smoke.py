@@ -278,9 +278,29 @@ def test_dry_run_project_flow(client, bridge_headers, monkeypatch) -> None:
     project_id = project["id"]
     assert project["created_by"] == "Morgan"
 
+    details_response = client.get(f"/api/projects/{project_id}/details")
+    assert details_response.status_code == 200
+    assert details_response.json()["id"] == project_id
+
+    widget_catalog_response = client.get("/api/widgets/catalog")
+    assert widget_catalog_response.status_code == 200
+
+    project_widget_catalog_response = client.get("/api/widgets/catalog/project")
+    assert project_widget_catalog_response.status_code == 200
+
+    widget_instances_response = client.get("/api/widgets/instances")
+    assert widget_instances_response.status_code == 200
+
+    active_orchestration = client.get(f"/api/projects/{project_id}/orchestrations/active")
+    assert active_orchestration.status_code == 200
+
     settings_response = client.get(f"/api/settings?project_id={project_id}")
     assert settings_response.status_code == 200
     assert settings_response.json()["runner_mode"] == "dry_run"
+
+    project_settings_response = client.get(f"/api/projects/{project_id}/settings")
+    assert project_settings_response.status_code == 200
+    assert project_settings_response.json()["runner_mode"] == "dry_run"
 
     updated_settings = client.put(
         f"/api/settings?project_id={project_id}",
@@ -303,7 +323,27 @@ def test_dry_run_project_flow(client, bridge_headers, monkeypatch) -> None:
     assert updated_settings.json()["manager_model"] == "gpt-5.5"
     assert updated_settings.json()["provider"] == "claude_code"
 
-    status = client.get(f"/api/system/status?project_id={project_id}", headers=bridge_headers).json()
+    updated_project_settings = client.put(
+        f"/api/projects/{project_id}/settings",
+        json={
+            "provider": "claude_code",
+            "manager_model": "gpt-5.5",
+            "default_worker_model": "gpt-5.4-mini",
+            "manager_reasoning_effort": "high",
+            "default_worker_reasoning_effort": "low",
+            "per_role_model_overrides_json": {"Primary implementation": "gpt-5.5-mini"},
+            "per_role_reasoning_overrides_json": {"Primary implementation": "minimal"},
+            "adapter_command": None,
+            "adapter_args_json": [],
+            "runner_mode": "dry_run",
+            "sandbox_mode": "workspace-write",
+            "approval_policy": "on-request",
+        },
+    )
+    assert updated_project_settings.status_code == 200
+    assert updated_project_settings.json()["manager_model"] == "gpt-5.5"
+
+    status = client.get(f"/api/projects/{project_id}/system/status", headers=bridge_headers).json()
     assert "active_runs" in status
     assert status["selected_provider"] == "claude_code"
     assert status["selected_manager_model"] == "gpt-5.5"
@@ -311,10 +351,57 @@ def test_dry_run_project_flow(client, bridge_headers, monkeypatch) -> None:
     assert "authenticated" in status
     assert "current_auth_job" in status
 
+    codex_status = client.get(f"/api/projects/{project_id}/system/codex-status", headers=bridge_headers).json()
+    assert codex_status["runtime_ready"] is True
+    assert codex_status["selected_provider"] == "claude_code"
+    assert codex_status["selected_manager_model"] == "gpt-5.5"
+
     auth_state = client.get("/api/system/auth-state").json()
     assert "authenticated" in auth_state
     assert "cli_detected" in auth_state
     assert "notes" in auth_state
+
+    swarm_plan_alias = client.get(f"/api/projects/{project_id}/swarm-plan")
+    swarm_plan_canonical = client.get(f"/api/projects/{project_id}/swarm/plan")
+    assert swarm_plan_alias.status_code == 200
+    assert swarm_plan_alias.json() == swarm_plan_canonical.json()
+
+    risk_register = client.get(f"/api/projects/{project_id}/risk-register")
+    risks = client.get(f"/api/projects/{project_id}/risks")
+    assert risk_register.status_code == 200
+    assert risk_register.json() == risks.json()
+
+    validation_summary = client.get(f"/api/projects/{project_id}/validation-summary")
+    validation_coverage_summary = client.get(f"/api/projects/{project_id}/validation-coverage/summary")
+    assert validation_summary.status_code == 200
+    assert validation_summary.json() == validation_coverage_summary.json()
+
+    instincts = client.get(f"/api/projects/{project_id}/instincts")
+    instincts_preview = client.get(f"/api/projects/{project_id}/instincts/preview")
+    assert instincts.status_code == 200
+    instincts_payload = instincts.json()
+    instincts_preview_payload = instincts_preview.json()
+    assert instincts_payload["generated_at"] != ""
+    assert instincts_preview_payload["generated_at"] != ""
+    assert {k: v for k, v in instincts_payload.items() if k != "generated_at"} == {
+        k: v for k, v in instincts_preview_payload.items() if k != "generated_at"
+    }
+
+    orchestration = active_orchestration.json()
+    if orchestration is not None:
+        orchestration_id = orchestration["id"]
+        orchestration_detail = client.get(f"/api/projects/{project_id}/orchestrations/{orchestration_id}")
+        orchestration_status = client.get(f"/api/projects/{project_id}/orchestrations/{orchestration_id}/status")
+        orchestration_events = client.get(f"/api/projects/{project_id}/orchestrations/{orchestration_id}/events")
+        orchestration_handoff = client.get(f"/api/projects/{project_id}/orchestrations/{orchestration_id}/handoff")
+        orchestration_pending_decisions = client.get(
+            f"/api/projects/{project_id}/orchestrations/{orchestration_id}/pending-decisions"
+        )
+        assert orchestration_detail.status_code == 200
+        assert orchestration_status.status_code == 200
+        assert orchestration_events.status_code == 200
+        assert orchestration_handoff.status_code == 200
+        assert orchestration_pending_decisions.status_code == 200
 
     docs_response = client.post(f"/api/projects/{project_id}/docs/generate")
     assert docs_response.status_code == 200
@@ -373,6 +460,7 @@ def test_privileged_headless_and_status_routes_require_token() -> None:
         assert raw_client.post("/api/startup/diagnostics", json={"include_support_bundle": True}).status_code == 401
         assert raw_client.post("/api/startup/open-diagnostics-folder").status_code == 401
         assert raw_client.get("/api/diagnostics/reports").status_code == 401
+        assert raw_client.get("/api/projects/1/diagnostics/reports").status_code == 401
 
 
 def test_runtime_and_project_control_routes_require_token(client) -> None:
@@ -410,6 +498,22 @@ def test_runtime_and_project_control_routes_require_token(client) -> None:
         assert raw_client.get("/api/dashboard/summary").status_code == 401
         assert raw_client.get("/api/dashboard/stream").status_code == 401
         assert raw_client.get("/api/settings", params={"project_id": project_id}).status_code == 401
+        assert raw_client.get(f"/api/projects/{project_id}/settings").status_code == 401
+        assert raw_client.get(f"/api/projects/{project_id}/details").status_code == 401
+        assert raw_client.get(f"/api/projects/{project_id}/swarm-plan").status_code == 401
+        assert raw_client.get(f"/api/projects/{project_id}/risk-register").status_code == 401
+        assert raw_client.get(f"/api/projects/{project_id}/validation-summary").status_code == 401
+        assert raw_client.get(f"/api/projects/{project_id}/instincts").status_code == 401
+        assert raw_client.get(f"/api/projects/{project_id}/orchestrations/1").status_code == 401
+        assert raw_client.get(f"/api/projects/{project_id}/orchestrations/1/status").status_code == 401
+        assert raw_client.post(f"/api/projects/{project_id}/orchestrations/1/pause").status_code == 401
+        assert raw_client.post(f"/api/projects/{project_id}/orchestrations/1/resume").status_code == 401
+        assert raw_client.get(f"/api/projects/{project_id}/orchestrations/1/events").status_code == 401
+        assert raw_client.get(f"/api/projects/{project_id}/orchestrations/1/handoff").status_code == 401
+        assert raw_client.get(f"/api/projects/{project_id}/orchestrations/1/pending-decisions").status_code == 401
+        assert raw_client.get(f"/api/projects/{project_id}/orchestrations/1/status-summary").status_code == 401
+        assert raw_client.get(f"/api/projects/{project_id}/orchestrations/1/event-digest").status_code == 401
+        assert raw_client.get(f"/api/projects/{project_id}/orchestrations/1/handoff-summary").status_code == 401
         assert raw_client.get(f"/api/projects/{project_id}/swarm/preferences").status_code == 401
         assert raw_client.post(f"/api/projects/{project_id}/swarm/plan").status_code == 401
         assert raw_client.post(f"/api/projects/{project_id}/swarm/spawn").status_code == 401
@@ -434,19 +538,44 @@ def test_runtime_and_project_control_routes_require_token(client) -> None:
         assert raw_client.get("/api/handoffs").status_code == 401
         assert raw_client.get("/api/agent-archetypes").status_code == 401
         assert raw_client.get("/api/widgets/catalog").status_code == 401
+        assert raw_client.get("/api/widgets/catalog/project").status_code == 401
         assert raw_client.get("/api/widgets/instances", params={"scope": "dashboard"}).status_code == 401
+        assert raw_client.get("/api/widgets/instances").status_code == 401
+        assert raw_client.get(f"/api/projects/{project_id}/system/status").status_code == 401
+        assert raw_client.get(f"/api/projects/{project_id}/system/codex-status").status_code == 401
+        assert raw_client.patch(f"/api/projects/{project_id}/widgets/instances/1", json={"collapsed": True}).status_code == 401
+        assert raw_client.delete(f"/api/projects/{project_id}/widgets/instances/1").status_code == 401
+        assert raw_client.get(f"/api/projects/{project_id}/widgets/instances/1/data").status_code == 401
         assert raw_client.get("/api/capabilities/matrix").status_code == 401
         assert raw_client.get("/api/capabilities/benchmarks").status_code == 401
         assert raw_client.get("/api/agents/reputation").status_code == 401
+        assert raw_client.post(f"/api/projects/{project_id}/agents/1/start").status_code == 401
+        assert raw_client.post(f"/api/projects/{project_id}/agents/1/stop").status_code == 401
+        assert raw_client.post(f"/api/projects/{project_id}/agents/1/pause").status_code == 401
+        assert raw_client.post(f"/api/projects/{project_id}/tasks/1/start").status_code == 401
+        assert raw_client.post(f"/api/projects/{project_id}/tasks/1/complete").status_code == 401
+        assert raw_client.post(f"/api/projects/{project_id}/subagent-batches/1/results", json={"results": []}).status_code == 401
+        assert raw_client.post(
+            f"/api/projects/{project_id}/runs/1/report",
+            json={"agent": "x", "task_id": "1", "status": "done", "summary": "x", "files_changed": [], "tests_run": [], "blockers": [], "risks": [], "recommended_next_task": "none"},
+        ).status_code == 401
         assert raw_client.post(f"/api/projects/{project_id}/change-requests", json={"request_text": "Make it better"}).status_code == 401
         assert raw_client.get(f"/api/projects/{project_id}/context-packs").status_code == 401
         assert raw_client.get(f"/api/projects/{project_id}/workspace-tooling").status_code == 401
         assert raw_client.get(f"/api/projects/{project_id}/integrations").status_code == 401
         assert raw_client.get(f"/api/projects/{project_id}/integrations/source_control").status_code == 401
+        assert raw_client.get(f"/api/projects/{project_id}/integrations/source_control/actions").status_code == 401
         assert raw_client.post(
             f"/api/projects/{project_id}/integrations/source_control/actions/create/preview",
             json={"params": {"title": "x", "body": "y"}},
         ).status_code == 401
+        assert raw_client.get(f"/api/projects/{project_id}/context-packs/1").status_code == 401
+        assert raw_client.get(f"/api/projects/{project_id}/nvidia-dynamo").status_code == 401
+        assert raw_client.get(f"/api/projects/{project_id}/nvidia-nim").status_code == 401
+        assert raw_client.get(f"/api/projects/{project_id}/nvidia-aiq").status_code == 401
+        assert raw_client.get(f"/api/projects/{project_id}/nvidia-gpu-diagnostics").status_code == 401
+        assert raw_client.get(f"/api/projects/{project_id}/nvidia-local-runtime").status_code == 401
+        assert raw_client.get(f"/api/projects/{project_id}/nvidia-validation-plan").status_code == 401
         assert raw_client.get(f"/api/projects/{project_id}/tensorflow/features").status_code == 401
         assert raw_client.get(f"/api/projects/{project_id}/pytorch/features").status_code == 401
         assert raw_client.post(f"/api/projects/{project_id}/codebase/search", json={"pattern": "TODO"}).status_code == 401
@@ -457,6 +586,15 @@ def test_runtime_and_project_control_routes_require_token(client) -> None:
         assert raw_client.get(f"/api/projects/{project_id}/risks/summary").status_code == 401
         assert raw_client.get(f"/api/projects/{project_id}/scope-creep").status_code == 401
         assert raw_client.post("/api/scope-creep/1/resolve", params={"project_id": project_id}, json={"status": "accepted"}).status_code == 401
+        assert raw_client.post(f"/api/projects/{project_id}/scope-creep/1/resolve", json={"status": "accepted"}).status_code == 401
+        assert raw_client.post(f"/api/projects/{project_id}/questions/1/answer", json={"option_id": "x", "selected_text": "x"}).status_code == 401
+        assert raw_client.post(f"/api/projects/{project_id}/questions/1/auto-decide").status_code == 401
+        assert raw_client.post(f"/api/projects/{project_id}/decisions/1/answer", json={"option_id": "x", "selected_text": "x"}).status_code == 401
+        assert raw_client.post(f"/api/projects/{project_id}/recovery-plans/1/select", json={"action": "ask_user"}).status_code == 401
+        assert raw_client.post(f"/api/projects/{project_id}/approvals/1/approve-once", json={"project_id": project_id}).status_code == 401
+        assert raw_client.post(f"/api/projects/{project_id}/approvals/1/deny", json={"project_id": project_id}).status_code == 401
+        assert raw_client.post(f"/api/projects/{project_id}/approvals/1/allow-for-project", json={"project_id": project_id}).status_code == 401
+        assert raw_client.patch(f"/api/projects/{project_id}/risks/1", json={"status": "accepted"}).status_code == 401
         assert raw_client.post(f"/api/projects/{project_id}/swarm/simulate-launch").status_code == 401
         assert raw_client.get(f"/api/projects/{project_id}/swarm/simulations").status_code == 401
         assert raw_client.get(f"/api/projects/{project_id}/swarm/simulations/latest").status_code == 401
@@ -782,7 +920,7 @@ def test_context_pack_routes_return_summary_rollups(client) -> None:
     assert listed_payload[0]["id"] == payload["id"]
     assert listed_payload[0]["section_type_counts"] == payload["section_type_counts"]
 
-    fetched = client.get(f"/api/context-packs/{payload['id']}", params={"project_id": project_id})
+    fetched = client.get(f"/api/projects/{project_id}/context-packs/{payload['id']}")
     assert fetched.status_code == 200, fetched.text
     fetched_payload = fetched.json()
     assert fetched_payload["id"] == payload["id"]

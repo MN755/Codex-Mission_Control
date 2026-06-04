@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from pathlib import Path
+from pathlib import Path, PurePath
 
 from integration_registry import (
     build_project_integration_status,
@@ -1030,6 +1030,20 @@ def test_project_integrations_and_action_preview_flow(client, bridge_headers, mo
     assert families["browser_testing"]["status"] == "ready"
     assert families["source_control"]["provider_specific_action_count"] >= 2
     assert families["source_control"]["guided_only_action_count"] == 0
+
+    actions_response = client.get(
+        f"/api/projects/{project_id}/integrations/source_control/actions",
+        headers=bridge_headers,
+    )
+    assert actions_response.status_code == 200
+    actions_payload = actions_response.json()
+    assert actions_payload["family"] == "source_control"
+    assert actions_payload["project_name"] == "Integration Spine Demo"
+    assert PurePath(actions_payload["workspace_path"]) == PurePath(workspace)
+    assert actions_payload["action_count"] == len(actions_payload["available_actions"])
+    assert actions_payload["available_action_count"] == families["source_control"]["available_action_count"]
+    assert actions_payload["blocked_action_count"] == families["source_control"]["blocked_action_count"]
+    assert actions_payload["available_actions"][0]["action_id"] == families["source_control"]["available_actions"][0]["action_id"]
 
     preview = client.post(
         f"/api/projects/{project_id}/integrations/source_control/actions/create/preview",

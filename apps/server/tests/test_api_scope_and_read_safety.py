@@ -223,8 +223,7 @@ def test_project_widget_data_route_keeps_import_and_security_widgets_read_only(c
 
     for instance_id in instance_ids:
         response = client.get(
-            f"/api/widgets/instances/{instance_id}/data",
-            params={"project_id": project_id},
+            f"/api/projects/{project_id}/widgets/instances/{instance_id}/data",
             headers=bridge_headers,
         )
         assert response.status_code == 200, response.text
@@ -345,8 +344,7 @@ def test_parallelism_safety_meter_data_is_read_only(client, bridge_headers) -> N
         db.close()
 
     response = client.get(
-        f"/api/widgets/instances/{instance_id}/data",
-        params={"project_id": project_id},
+        f"/api/projects/{project_id}/widgets/instances/{instance_id}/data",
         headers=bridge_headers,
     )
     assert response.status_code == 200, response.text
@@ -559,8 +557,7 @@ def test_swarm_strategy_widget_data_get_does_not_persist_launch_simulations(clie
         db.close()
 
     response = client.get(
-        f"/api/widgets/instances/{instance_id}/data",
-        params={"project_id": project_id},
+        f"/api/projects/{project_id}/widgets/instances/{instance_id}/data",
         headers=bridge_headers,
     )
     assert response.status_code == 200, response.text
@@ -1630,6 +1627,9 @@ def test_global_id_routes_require_matching_project_scope(client, bridge_headers)
     wrong_pack = client.get(f"/api/context-packs/{pack_id}", params={"project_id": project_two["id"]})
     assert wrong_pack.status_code == 404
 
+    wrong_project_pack = client.get(f"/api/projects/{project_two['id']}/context-packs/{pack_id}")
+    assert wrong_project_pack.status_code == 404
+
     orchestration = client.post(
         "/api/orchestrations",
         headers=bridge_headers,
@@ -1653,9 +1653,8 @@ def test_global_id_routes_require_matching_project_scope(client, bridge_headers)
     assert wrong_status.status_code == 404
 
     wrong_pause = client.post(
-        f"/api/orchestrations/{orchestration_id}/pause",
+        f"/api/projects/{project_two['id']}/orchestrations/{orchestration_id}/pause",
         headers=bridge_headers,
-        params={"project_id": project_two["id"]},
     )
     assert wrong_pause.status_code == 404
 
@@ -1668,17 +1667,28 @@ def test_global_id_routes_require_matching_project_scope(client, bridge_headers)
     )
     assert wrong_auto_decide.status_code == 404
 
-    paused = client.post(
-        f"/api/orchestrations/{orchestration_id}/pause",
+    wrong_project_auto_decide = client.post(
+        f"/api/projects/{project_two['id']}/questions/{question['id']}/auto-decide",
         headers=bridge_headers,
-        params={"project_id": project_one["id"]},
+    )
+    assert wrong_project_auto_decide.status_code == 404
+
+    wrong_project_answer = client.post(
+        f"/api/projects/{project_two['id']}/questions/{question['id']}/answer",
+        headers=bridge_headers,
+        json={"option_id": "workflow", "selected_text": "Workflow loop"},
+    )
+    assert wrong_project_answer.status_code == 404
+
+    paused = client.post(
+        f"/api/projects/{project_one['id']}/orchestrations/{orchestration_id}/pause",
+        headers=bridge_headers,
     )
     assert paused.status_code == 200, paused.text
 
     wrong_resume = client.post(
-        f"/api/orchestrations/{orchestration_id}/resume",
+        f"/api/projects/{project_two['id']}/orchestrations/{orchestration_id}/resume",
         headers=bridge_headers,
-        params={"project_id": project_two["id"]},
     )
     assert wrong_resume.status_code == 404
 
@@ -1753,12 +1763,24 @@ def test_agent_and_task_global_id_routes_require_matching_project_scope(client, 
     )
     assert wrong_agent_start.status_code == 404
 
+    wrong_project_agent_start = client.post(
+        f"/api/projects/{project_two['id']}/agents/{agent_id}/start",
+        headers=bridge_headers,
+    )
+    assert wrong_project_agent_start.status_code == 404
+
     wrong_agent_stop = client.post(
         f"/api/agents/{agent_id}/stop",
         headers=bridge_headers,
         params={"project_id": project_two["id"]},
     )
     assert wrong_agent_stop.status_code == 404
+
+    wrong_project_agent_stop = client.post(
+        f"/api/projects/{project_two['id']}/agents/{agent_id}/stop",
+        headers=bridge_headers,
+    )
+    assert wrong_project_agent_stop.status_code == 404
 
     wrong_agent_pause = client.post(
         f"/api/agents/{agent_id}/pause",
@@ -1767,12 +1789,24 @@ def test_agent_and_task_global_id_routes_require_matching_project_scope(client, 
     )
     assert wrong_agent_pause.status_code == 404
 
+    wrong_project_agent_pause = client.post(
+        f"/api/projects/{project_two['id']}/agents/{agent_id}/pause",
+        headers=bridge_headers,
+    )
+    assert wrong_project_agent_pause.status_code == 404
+
     wrong_agent_logs = client.get(
         f"/api/agents/{agent_id}/logs",
         headers=bridge_headers,
         params={"project_id": project_two["id"]},
     )
     assert wrong_agent_logs.status_code == 404
+
+    wrong_project_agent_logs = client.get(
+        f"/api/projects/{project_two['id']}/agents/{agent_id}/logs",
+        headers=bridge_headers,
+    )
+    assert wrong_project_agent_logs.status_code == 404
 
     wrong_task_start = client.post(
         f"/api/tasks/{task_id}/start",
@@ -1781,12 +1815,24 @@ def test_agent_and_task_global_id_routes_require_matching_project_scope(client, 
     )
     assert wrong_task_start.status_code == 404
 
+    wrong_project_task_start = client.post(
+        f"/api/projects/{project_two['id']}/tasks/{task_id}/start",
+        headers=bridge_headers,
+    )
+    assert wrong_project_task_start.status_code == 404
+
     wrong_task_complete = client.post(
         f"/api/tasks/{task_id}/complete",
         headers=bridge_headers,
         params={"project_id": project_two["id"]},
     )
     assert wrong_task_complete.status_code == 404
+
+    wrong_project_task_complete = client.post(
+        f"/api/projects/{project_two['id']}/tasks/{task_id}/complete",
+        headers=bridge_headers,
+    )
+    assert wrong_project_task_complete.status_code == 404
 
 
 def test_project_routes_reject_invalid_related_resource_ids(client) -> None:
@@ -1932,6 +1978,22 @@ def test_project_routes_reject_invalid_related_resource_ids(client) -> None:
     )
     assert invalid_recovery_agent.status_code == 404
 
+    valid_recovery = client.post(
+        f"/api/projects/{project_id}/recovery-plans",
+        json={
+            "trigger_type": "agent_stuck",
+            "trigger_summary": "Scoped recovery plan",
+            "suggested_actions_json": ["ask_user", "pause_project"],
+        },
+    )
+    assert valid_recovery.status_code == 200, valid_recovery.text
+
+    wrong_project_recovery_select = client.post(
+        f"/api/projects/{foreign_project['id']}/recovery-plans/{valid_recovery.json()['id']}/select",
+        json={"action": "ask_user"},
+    )
+    assert wrong_project_recovery_select.status_code == 404
+
 
 def test_context_pack_service_rejects_invalid_or_cross_project_refs(client) -> None:
     project = _create_project(client, "Context Pack Service Scope", "context-pack-service-scope")
@@ -2036,6 +2098,12 @@ def test_scope_creep_routes_reject_cross_project_refs_and_resolution(client) -> 
     )
     assert wrong_project_resolution.status_code == 404
 
+    wrong_project_resolution_alias = client.post(
+        f"/api/projects/{project['id']}/scope-creep/{signal_id}/resolve",
+        json={"status": "dismissed"},
+    )
+    assert wrong_project_resolution_alias.status_code == 404
+
 
 def test_run_report_requires_matching_project_scope(client, bridge_headers) -> None:
     project_one = _create_project(client, "Run Scope One", "run-scope-one")
@@ -2104,6 +2172,23 @@ def test_run_report_requires_matching_project_scope(client, bridge_headers) -> N
         },
     )
     assert response.status_code == 404
+
+    project_scoped_response = client.post(
+        f"/api/projects/{project_two['id']}/runs/{run_id}/report",
+        headers=bridge_headers,
+        json={
+            "agent": "Attacker",
+            "task_id": "999",
+            "status": "done",
+            "summary": "attacker completed foreign work",
+            "files_changed": ["secret.txt"],
+            "tests_run": ["pytest"],
+            "blockers": [],
+            "risks": ["foreign"],
+            "recommended_next_task": "none",
+        },
+    )
+    assert project_scoped_response.status_code == 404
 
     db = SessionLocal()
     try:
@@ -2717,8 +2802,7 @@ def test_project_widget_data_route_stays_read_only_for_preview_widgets(client, b
 
     for instance_id in instance_ids:
         response = client.get(
-            f"/api/widgets/instances/{instance_id}/data",
-            params={"project_id": project_id},
+            f"/api/projects/{project_id}/widgets/instances/{instance_id}/data",
             headers=bridge_headers,
         )
         assert response.status_code == 200, response.text

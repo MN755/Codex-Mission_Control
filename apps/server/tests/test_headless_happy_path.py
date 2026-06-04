@@ -93,6 +93,13 @@ def test_headless_happy_path_acceptance(client) -> None:
     assert "### Waiting on you" in status_payload["fallback_markdown"]
     assert "### Next expected step" in status_payload["fallback_markdown"]
 
+    project_status_summary = client.get(
+        f"/api/projects/{project_id}/orchestrations/{orchestration_id}/status-summary",
+        headers=_bridge_headers(),
+    )
+    assert project_status_summary.status_code == 200, project_status_summary.text
+    assert project_status_summary.json()["message_type"] == status_payload["message_type"]
+
     decisions_response = client.get(
         f"/api/orchestrations/{orchestration_id}/pending-decisions",
         headers=_bridge_headers(),
@@ -131,9 +138,8 @@ def test_headless_happy_path_acceptance(client) -> None:
             continue
         option = decision["options"][0]
         response = client.post(
-            f"/api/decisions/{decision['id']}/answer",
+            f"/api/projects/{project_id}/decisions/{decision['id']}/answer",
             headers=_bridge_headers(),
-            params={"project_id": project_id},
             json={"option_id": option["id"], "selected_text": option["label"]},
         )
         assert response.status_code == 200, response.text
@@ -151,9 +157,8 @@ def test_headless_happy_path_acceptance(client) -> None:
     assert "### Choose one" in approval_payload["fallback_markdown"]
 
     answered = client.post(
-        f"/api/decisions/{approval['id']}/answer",
+        f"/api/projects/{project_id}/decisions/{approval['id']}/answer",
         headers=_bridge_headers(),
-        params={"project_id": project_id},
         json={"option_id": "approve_once", "selected_text": "Approve once"},
     )
     assert answered.status_code == 200, answered.text
@@ -191,6 +196,14 @@ def test_headless_happy_path_acceptance(client) -> None:
     assert "sk-proj-secret-value" not in digest_payload["fallback_markdown"]
     assert "raw_log" not in digest_payload["fallback_markdown"]
 
+    project_digest = client.get(
+        f"/api/projects/{project_id}/orchestrations/{orchestration_id}/event-digest",
+        headers=_bridge_headers(),
+        params={"window": "since_orchestration_start"},
+    )
+    assert project_digest.status_code == 200, project_digest.text
+    assert project_digest.json()["message_type"] == digest_payload["message_type"]
+
     evidence = client.post(
         f"/api/projects/{project_id}/handoff/evidence",
         headers=_bridge_headers(),
@@ -225,6 +238,13 @@ def test_headless_happy_path_acceptance(client) -> None:
     assert "dry-run" in handoff_payload["fallback_markdown"].lower()
     assert "sk-proj-secret-value" not in handoff_payload["fallback_markdown"]
     assert "super-secret-token" not in handoff_payload["fallback_markdown"]
+
+    project_handoff_summary = client.get(
+        f"/api/projects/{project_id}/orchestrations/{orchestration_id}/handoff-summary",
+        headers=_bridge_headers(),
+    )
+    assert project_handoff_summary.status_code == 200, project_handoff_summary.text
+    assert project_handoff_summary.json()["message_type"] == handoff_payload["message_type"]
 
 
 def test_headless_attach_workspace_alias_returns_bridge_fields(client) -> None:

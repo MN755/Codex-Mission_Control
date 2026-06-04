@@ -11715,105 +11715,6 @@ class MissionControlService:
                 ],
             ]
         )
-
-    def build_execution_policy_summary(self, db: Session, project: Project) -> dict[str, Any]:
-        settings = project.settings or self._project_settings_preview(db, project)
-        model_policy = self._preview_model_policy(db, project)
-        tool_routing = self._preview_tool_routing_policies(db, project)
-        sandbox_profiles = self._preview_sandbox_profiles(db, project)
-        validation_recipe = self._preview_validation_recipe(db, project)
-        current_profile_name = "balanced" if settings.sandbox_mode == "workspace-write" else "strict"
-        current_profile = next((entry for entry in sandbox_profiles if entry.name == current_profile_name), sandbox_profiles[0] if sandbox_profiles else None)
-        approval_required_tools = self._dedupe_strings(
-            [tool for entry in tool_routing for tool in list(entry.requires_approval_tools_json or [])]
-        )
-        blocked_tools = self._dedupe_strings(
-            [tool for entry in tool_routing for tool in list(entry.blocked_tools_json or [])]
-        )
-        validation_commands = self._dedupe_strings(
-            [str(step.get("command") or "").strip() for step in list(validation_recipe.steps_json or []) if str(step.get("command") or "").strip()]
-        )
-        return {
-            "project_id": project.id,
-            "project_name": project.name,
-            "provider": normalize_provider(settings.provider),
-            "runner_mode": project.runner_mode or settings.runner_mode or DEFAULT_RUNNER_MODE,
-            "sandbox_mode": settings.sandbox_mode,
-            "approval_policy": settings.approval_policy,
-            "model_policy_name": model_policy.policy_name,
-            "manager_model": model_policy.manager_model,
-            "worker_model_count": len(
-                {
-                    value
-                    for value in [
-                        model_policy.coding_model,
-                        model_policy.docs_model,
-                        model_policy.review_model,
-                        model_policy.test_model,
-                        model_policy.research_model,
-                        model_policy.security_model,
-                    ]
-                    if value
-                }
-            ),
-            "tool_routing_count": len(tool_routing),
-            "approval_required_tool_count": len(approval_required_tools),
-            "approval_required_tools": approval_required_tools,
-            "blocked_tool_count": len(blocked_tools),
-            "blocked_tools": blocked_tools,
-            "sandbox_profile_count": len(sandbox_profiles),
-            "default_sandbox_profile": next((entry.name for entry in sandbox_profiles if entry.is_default), None),
-            "current_sandbox_profile": current_profile.name if current_profile is not None else None,
-            "validation_step_count": len(list(validation_recipe.steps_json or [])),
-            "validation_command_count": len(validation_commands),
-            "validation_commands": validation_commands,
-            "validation_status": validation_recipe.status,
-        }
-
-    def build_coordination_summary(self, db: Session, project: Project) -> dict[str, Any]:
-        tasks = list(db.scalars(select(Task).where(Task.project_id == project.id).order_by(Task.priority.asc(), Task.id.asc())))
-        degraded_notices = self._workspace_degraded_notices_preview(project)
-        current_action = self._derive_current_action_preview(db, project, degraded_notices)
-        overview = self._project_overview(db, project, tasks, current_action)
-        preferences = project.swarm_preferences or self._swarm_preferences(project)
-        contracts = self._preview_agent_contracts(db, project)
-        locks = self._preview_path_locks(db, project)
-        confidence = self._preview_project_confidence(db, project)
-        conflicts = self._preview_conflicts(db, project)
-        review_gates = self._preview_review_gates(
-            db,
-            project,
-            tasks=tasks,
-            overview=overview,
-            testing_depth=preferences.testing_depth,
-            conflicts=conflicts,
-        )
-        decisions = self._preview_decision_records(db, project)
-        active_contracts = [entry for entry in contracts if entry.status == "active"]
-        waiting_locks = [entry for entry in locks if entry.status == "waiting"]
-        active_locks = [entry for entry in locks if entry.status == "active"]
-        unresolved_conflicts = [entry for entry in conflicts if entry.status not in {"resolved", "dismissed"}]
-        low_confidence = [entry for entry in confidence if entry.confidence_score < 40]
-        failed_gates = [entry for entry in review_gates if entry.status == "failed"]
-        pending_gates = [entry for entry in review_gates if entry.required and entry.status == "pending"]
-        decision_types = self._dedupe_strings([entry.decision_type for entry in decisions if entry.decision_type])
-        return {
-            "project_id": project.id,
-            "project_name": project.name,
-            "current_action_type": str(current_action.get("type") or "no_action"),
-            "contract_count": len(contracts),
-            "active_contract_count": len(active_contracts),
-            "waiting_lock_count": len(waiting_locks),
-            "active_lock_count": len(active_locks),
-            "unresolved_conflict_count": len(unresolved_conflicts),
-            "decision_count": len(decisions),
-            "decision_types": decision_types,
-            "low_confidence_count": len(low_confidence),
-            "low_confidence_categories": [entry.category for entry in low_confidence],
-            "failed_gate_count": len(failed_gates),
-            "pending_gate_count": len(pending_gates),
-            "review_gate_count": len(review_gates),
-        }
         recommended_checks = self._dedupe_strings(
             [
                 *list(tooling.get("intake_commands") or [])[:1],
@@ -11869,7 +11770,11 @@ class MissionControlService:
             )
         release_blockers = self._dedupe_strings(
             [
-                *[f"Required review gate not passed: {gate.title} [{gate.status}]" for gate in review_gates if gate.required and gate.status != "passed"],
+                *[
+                    f"Required review gate not passed: {gate.title} [{gate.status}]"
+                    for gate in review_gates
+                    if gate.required and gate.status != "passed"
+                ],
                 *[f"Pending approval: {item['title']}" for item in pending_approvals[:4]],
                 *[f"NVIDIA validation blocker: {item}" for item in list(nvidia_plan.get("blockers") or [])[:4]],
             ]
@@ -11975,6 +11880,105 @@ class MissionControlService:
             "loop_strategy_count": len(loop_strategy),
             "brief_markdown": brief_markdown,
             "generated_at": utc_now(),
+        }
+
+    def build_execution_policy_summary(self, db: Session, project: Project) -> dict[str, Any]:
+        settings = project.settings or self._project_settings_preview(db, project)
+        model_policy = self._preview_model_policy(db, project)
+        tool_routing = self._preview_tool_routing_policies(db, project)
+        sandbox_profiles = self._preview_sandbox_profiles(db, project)
+        validation_recipe = self._preview_validation_recipe(db, project)
+        current_profile_name = "balanced" if settings.sandbox_mode == "workspace-write" else "strict"
+        current_profile = next((entry for entry in sandbox_profiles if entry.name == current_profile_name), sandbox_profiles[0] if sandbox_profiles else None)
+        approval_required_tools = self._dedupe_strings(
+            [tool for entry in tool_routing for tool in list(entry.requires_approval_tools_json or [])]
+        )
+        blocked_tools = self._dedupe_strings(
+            [tool for entry in tool_routing for tool in list(entry.blocked_tools_json or [])]
+        )
+        validation_commands = self._dedupe_strings(
+            [str(step.get("command") or "").strip() for step in list(validation_recipe.steps_json or []) if str(step.get("command") or "").strip()]
+        )
+        return {
+            "project_id": project.id,
+            "project_name": project.name,
+            "provider": normalize_provider(settings.provider),
+            "runner_mode": project.runner_mode or settings.runner_mode or DEFAULT_RUNNER_MODE,
+            "sandbox_mode": settings.sandbox_mode,
+            "approval_policy": settings.approval_policy,
+            "model_policy_name": model_policy.policy_name,
+            "manager_model": model_policy.manager_model,
+            "worker_model_count": len(
+                {
+                    value
+                    for value in [
+                        model_policy.coding_model,
+                        model_policy.docs_model,
+                        model_policy.review_model,
+                        model_policy.test_model,
+                        model_policy.research_model,
+                        model_policy.security_model,
+                    ]
+                    if value
+                }
+            ),
+            "tool_routing_count": len(tool_routing),
+            "approval_required_tool_count": len(approval_required_tools),
+            "approval_required_tools": approval_required_tools,
+            "blocked_tool_count": len(blocked_tools),
+            "blocked_tools": blocked_tools,
+            "sandbox_profile_count": len(sandbox_profiles),
+            "default_sandbox_profile": next((entry.name for entry in sandbox_profiles if entry.is_default), None),
+            "current_sandbox_profile": current_profile.name if current_profile is not None else None,
+            "validation_step_count": len(list(validation_recipe.steps_json or [])),
+            "validation_command_count": len(validation_commands),
+            "validation_commands": validation_commands,
+            "validation_status": validation_recipe.status,
+        }
+
+    def build_coordination_summary(self, db: Session, project: Project) -> dict[str, Any]:
+        tasks = list(db.scalars(select(Task).where(Task.project_id == project.id).order_by(Task.priority.asc(), Task.id.asc())))
+        degraded_notices = self._workspace_degraded_notices_preview(project)
+        current_action = self._derive_current_action_preview(db, project, degraded_notices)
+        overview = self._project_overview(db, project, tasks, current_action)
+        preferences = project.swarm_preferences or self._swarm_preferences(project)
+        contracts = self._preview_agent_contracts(db, project)
+        locks = self._preview_path_locks(db, project)
+        confidence = self._preview_project_confidence(db, project)
+        conflicts = self._preview_conflicts(db, project)
+        review_gates = self._preview_review_gates(
+            db,
+            project,
+            tasks=tasks,
+            overview=overview,
+            testing_depth=preferences.testing_depth,
+            conflicts=conflicts,
+        )
+        decisions = self._preview_decision_records(db, project)
+        active_contracts = [entry for entry in contracts if entry.status == "active"]
+        waiting_locks = [entry for entry in locks if entry.status == "waiting"]
+        active_locks = [entry for entry in locks if entry.status == "active"]
+        unresolved_conflicts = [entry for entry in conflicts if entry.status not in {"resolved", "dismissed"}]
+        low_confidence = [entry for entry in confidence if entry.confidence_score < 40]
+        failed_gates = [entry for entry in review_gates if entry.status == "failed"]
+        pending_gates = [entry for entry in review_gates if entry.required and entry.status == "pending"]
+        decision_types = self._dedupe_strings([entry.decision_type for entry in decisions if entry.decision_type])
+        return {
+            "project_id": project.id,
+            "project_name": project.name,
+            "current_action_type": str(current_action.get("type") or "no_action"),
+            "contract_count": len(contracts),
+            "active_contract_count": len(active_contracts),
+            "waiting_lock_count": len(waiting_locks),
+            "active_lock_count": len(active_locks),
+            "unresolved_conflict_count": len(unresolved_conflicts),
+            "decision_count": len(decisions),
+            "decision_types": decision_types,
+            "low_confidence_count": len(low_confidence),
+            "low_confidence_categories": [entry.category for entry in low_confidence],
+            "failed_gate_count": len(failed_gates),
+            "pending_gate_count": len(pending_gates),
+            "review_gate_count": len(review_gates),
         }
 
     def build_workspace_tooling_status(self, project: Project) -> dict[str, Any]:

@@ -98,10 +98,13 @@ EXPECTED_RESOURCES = [
     "mission-control://preferences/summary",
     "mission-control://subagent-policy",
     "mission-control://subagent-policy/summary",
+    "mission-control://projects/{project_id}",
     "mission-control://projects/{project_id}/integrations",
     "mission-control://projects/{project_id}/integrations/{family}",
     "mission-control://projects/{project_id}/integrations/{family}/actions",
     "mission-control://projects/{project_id}/integrations/{family}/actions/{action_id}/preview",
+    "mission-control://projects/{project_id}/system/status",
+    "mission-control://projects/{project_id}/system/codex-status",
     "mission-control://projects/{project_id}/settings",
     "mission-control://projects/{project_id}/details",
     "mission-control://projects/{project_id}/understanding",
@@ -125,6 +128,7 @@ EXPECTED_RESOURCES = [
     "mission-control://projects/{project_id}/subagent-batches/{batch_id}",
     "mission-control://projects/{project_id}/widgets/summary",
     "mission-control://projects/{project_id}/widgets/instances",
+    "mission-control://projects/{project_id}/widgets/instances/{instance_id}/data",
     "mission-control://projects/{project_id}/workspace",
     "mission-control://projects/{project_id}/workspace-tooling",
     "mission-control://projects/{project_id}/security/policy",
@@ -222,6 +226,95 @@ EXPECTED_PROMPTS = [
     "review_spatial_feature_bundle",
 ]
 
+EXPECTED_PROJECT_SOURCE_HINTS = {
+    "mission-control://projects/{project_id}/orchestrations/{orchestration_id}/status": [
+        "/api/projects/{project_id}/orchestrations/{orchestration_id}/status"
+    ],
+    "mission-control://projects/{project_id}/orchestrations/{orchestration_id}/events": [
+        "/api/projects/{project_id}/orchestrations/{orchestration_id}/events"
+    ],
+    "mission-control://projects/{project_id}/orchestrations/{orchestration_id}": [
+        "/api/projects/{project_id}/orchestrations/{orchestration_id}"
+    ],
+    "mission-control://projects/{project_id}/orchestrations/{orchestration_id}/handoff": [
+        "/api/projects/{project_id}/orchestrations/{orchestration_id}/handoff"
+    ],
+    "mission-control://projects/{project_id}/orchestrations/{orchestration_id}/pending-decisions": [
+        "/api/projects/{project_id}/orchestrations/{orchestration_id}/pending-decisions"
+    ],
+    "mission-control://projects/{project_id}/orchestrations/{orchestration_id}/status-summary": [
+        "/api/projects/{project_id}/orchestrations/{orchestration_id}/status-summary"
+    ],
+    "mission-control://projects/{project_id}/orchestrations/{orchestration_id}/event-digest": [
+        "/api/projects/{project_id}/orchestrations/{orchestration_id}/event-digest"
+    ],
+    "mission-control://projects/{project_id}/orchestrations/{orchestration_id}/handoff-summary": [
+        "/api/projects/{project_id}/orchestrations/{orchestration_id}/handoff-summary"
+    ],
+    "mission-control://projects/{project_id}/status": [
+        "/api/projects/{project_id}",
+        "/api/projects/{project_id}/orchestrations/active",
+        "/api/projects/{project_id}/orchestrations/{orchestration_id}/status",
+    ],
+    "mission-control://projects/{project_id}/pending-decisions": [
+        "/api/projects/{project_id}/orchestrations/{orchestration_id}/pending-decisions",
+        "/api/projects/{project_id}/pending-decisions",
+    ],
+    "mission-control://projects/{project_id}/swarm/plan": [
+        "/api/projects/{project_id}/swarm/plan"
+    ],
+    "mission-control://projects/{project_id}/swarm-plan": [
+        "/api/projects/{project_id}/swarm-plan"
+    ],
+    "mission-control://projects/{project_id}/risks": [
+        "/api/projects/{project_id}/risks"
+    ],
+    "mission-control://projects/{project_id}/risk-register": [
+        "/api/projects/{project_id}/risk-register"
+    ],
+    "mission-control://projects/{project_id}/instincts": [
+        "/api/projects/{project_id}/instincts"
+    ],
+    "mission-control://projects/{project_id}/instincts/preview": [
+        "/api/projects/{project_id}/instincts/preview"
+    ],
+    "mission-control://projects/{project_id}": [
+        "/api/projects/{project_id}"
+    ],
+    "mission-control://projects/{project_id}/details": [
+        "/api/projects/{project_id}/details"
+    ],
+    "mission-control://projects/{project_id}/diagnostics": [
+        "/api/projects/{project_id}/diagnostics/reports",
+        "/api/plugin/health",
+        "/api/projects/{project_id}/orchestrations/active",
+    ],
+    "mission-control://projects/{project_id}/diagnostics/latest-report": [
+        "/api/projects/{project_id}/diagnostics/reports"
+    ],
+    "mission-control://projects/{project_id}/integrations/{family}/actions": [
+        "/api/projects/{project_id}/integrations/{family}/actions"
+    ],
+    "mission-control://projects/{project_id}/nvidia-dynamo": [
+        "/api/projects/{project_id}/nvidia-dynamo"
+    ],
+    "mission-control://projects/{project_id}/nvidia-nim": [
+        "/api/projects/{project_id}/nvidia-nim"
+    ],
+    "mission-control://projects/{project_id}/nvidia-aiq": [
+        "/api/projects/{project_id}/nvidia-aiq"
+    ],
+    "mission-control://projects/{project_id}/nvidia-gpu-diagnostics": [
+        "/api/projects/{project_id}/nvidia-gpu-diagnostics"
+    ],
+    "mission-control://projects/{project_id}/nvidia-local-runtime": [
+        "/api/projects/{project_id}/nvidia-local-runtime"
+    ],
+    "mission-control://projects/{project_id}/nvidia-validation-plan": [
+        "/api/projects/{project_id}/nvidia-validation-plan"
+    ],
+}
+
 
 def _load_json(path: Path) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
@@ -251,6 +344,25 @@ def test_resources_catalog_has_safety_defaults_and_redaction_notes() -> None:
         assert item["redaction"]["omit_fields"]
         assert item["redaction"]["notes"]
         assert item["support_status"]
+
+
+def test_project_scoped_resource_source_hints_use_canonical_project_routes() -> None:
+    catalogs = [
+        _load_json(RESOURCES_CATALOG),
+        _load_json(MIRROR_RESOURCES_CATALOG),
+        _load_json(BUNDLED_RESOURCES_CATALOG),
+        _load_json(BUNDLED_MCP_RESOURCES_CATALOG),
+    ]
+
+    for catalog in catalogs:
+        resources_by_uri = {item["uri_template"]: item for item in catalog["resources"]}
+        for uri, expected_endpoints in EXPECTED_PROJECT_SOURCE_HINTS.items():
+            assert resources_by_uri[uri]["source_hint"]["rest_endpoints"] == expected_endpoints
+        for uri, item in resources_by_uri.items():
+            if not uri.startswith("mission-control://projects/{project_id}/"):
+                continue
+            for endpoint in item.get("source_hint", {}).get("rest_endpoints", []):
+                assert not endpoint.startswith("/api/orchestrations/"), f"{uri} still points at legacy endpoint {endpoint}"
 
 
 def test_repo_local_mirror_plugin_catalog_matches_canonical_resources() -> None:
@@ -343,6 +455,8 @@ def test_docs_explain_resources_prompts_and_headless_boundary() -> None:
     assert "mission-control://system/status" in resources_content
     assert "mission-control://system/auth-state" in resources_content
     assert "mission-control://system/codex-status" in resources_content
+    assert "mission-control://projects/{project_id}/system/status" in resources_content
+    assert "mission-control://projects/{project_id}/system/codex-status" in resources_content
     assert "mission-control://startup/status" in resources_content
     assert "mission-control://dashboard/summary" in resources_content
     assert "mission-control://widgets/catalog" in resources_content
@@ -375,6 +489,7 @@ def test_docs_explain_resources_prompts_and_headless_boundary() -> None:
     assert "mission-control://projects/{project_id}/playbook" in resources_content
     assert "mission-control://projects/{project_id}/playbook/recommendations" in resources_content
     assert "mission-control://projects/{project_id}/context-packs" in resources_content
+    assert "mission-control://projects/{project_id}" in resources_content
     assert "mission-control://projects/{project_id}/agents/reputation" in resources_content
     assert "mission-control://projects/{project_id}/preferences" in resources_content
     assert "mission-control://projects/{project_id}/preferences/summary" in resources_content
@@ -384,6 +499,7 @@ def test_docs_explain_resources_prompts_and_headless_boundary() -> None:
     assert "mission-control://projects/{project_id}/import-safety" in resources_content
     assert "mission-control://projects/{project_id}/widgets/summary" in resources_content
     assert "mission-control://projects/{project_id}/widgets/instances" in resources_content
+    assert "mission-control://projects/{project_id}/widgets/instances/{instance_id}/data" in resources_content
     assert "mission-control://projects/{project_id}/webwright" in resources_content
     assert "mission-control://projects/{project_id}/nvidia/nim" in resources_content
     assert "mission-control://projects/{project_id}/nvidia/aiq" in resources_content

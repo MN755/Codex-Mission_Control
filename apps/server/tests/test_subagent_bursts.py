@@ -172,8 +172,13 @@ def test_subagent_burst_bridge_message_and_use_fewer_flow(client) -> None:
     assert answer.status_code == 200, answer.text
 
     batch = client.get(f"/api/subagents/batches/{batch_id}", headers=_bridge_headers(), params={"project_id": project["id"]}).json()
+    project_scoped_batch = client.get(
+        f"/api/projects/{project['id']}/subagent-batches/{batch_id}",
+        headers=_bridge_headers(),
+    ).json()
     statuses = [spec["status"] for spec in batch["specs"]]
     assert batch["status"] == "approved"
+    assert project_scoped_batch["id"] == batch["id"]
     assert statuses.count("approved") == 3
     assert statuses.count("cancelled") == 2
 
@@ -239,9 +244,8 @@ def test_result_ingestion_completes_batch(client) -> None:
     assert batch["status"] == "approved"
 
     results = client.post(
-        f"/api/subagents/batches/{batch['id']}/results",
+        f"/api/projects/{project['id']}/subagent-batches/{batch['id']}/results",
         headers=_bridge_headers(),
-        params={"project_id": project["id"]},
         json={
             "results": [
                 {"subagent_name": spec["name"], "summary": f"{spec['display_name']} summary", "evidence": ["file.py"], "risks_found": [], "recommendations": ["keep"], "confidence": "medium"}
@@ -273,9 +277,8 @@ def test_result_ingestion_rejects_unapproved_proposed_batch(client) -> None:
     assert batch["status"] == "proposed"
 
     results = client.post(
-        f"/api/subagents/batches/{batch['id']}/results",
+        f"/api/projects/{project['id']}/subagent-batches/{batch['id']}/results",
         headers=_bridge_headers(),
-        params={"project_id": project["id"]},
         json={
             "results": [
                 {"subagent_name": batch["specs"][0]["name"], "summary": "late report", "evidence": ["file.py"], "risks_found": [], "recommendations": ["keep"], "confidence": "medium"}
@@ -315,17 +318,15 @@ def test_result_ingestion_rejects_cancelled_batch(client) -> None:
     decision = next(item for item in decisions if item["decision_type"] == "subagent_burst_approval")
 
     answer = client.post(
-        f"/api/decisions/{decision['id']}/answer",
+        f"/api/projects/{project['id']}/decisions/{decision['id']}/answer",
         headers=_bridge_headers(),
-        params={"project_id": project["id"]},
         json={"option_id": "skip_burst", "selected_text": "Skip burst"},
     )
     assert answer.status_code == 200, answer.text
 
     results = client.post(
-        f"/api/subagents/batches/{batch['id']}/results",
+        f"/api/projects/{project['id']}/subagent-batches/{batch['id']}/results",
         headers=_bridge_headers(),
-        params={"project_id": project["id"]},
         json={
             "results": [
                 {"subagent_name": batch["specs"][0]["name"], "summary": "late report", "evidence": ["file.py"], "risks_found": [], "recommendations": ["keep"], "confidence": "medium"}
