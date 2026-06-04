@@ -1630,6 +1630,9 @@ def test_global_id_routes_require_matching_project_scope(client, bridge_headers)
     wrong_pack = client.get(f"/api/context-packs/{pack_id}", params={"project_id": project_two["id"]})
     assert wrong_pack.status_code == 404
 
+    wrong_project_pack = client.get(f"/api/projects/{project_two['id']}/context-packs/{pack_id}")
+    assert wrong_project_pack.status_code == 404
+
     orchestration = client.post(
         "/api/orchestrations",
         headers=bridge_headers,

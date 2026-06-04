@@ -701,8 +701,9 @@ class MissionControlDaemonClient:
         return self._request("GET", f"/api/projects/{project_id}/context-packs")
 
     def get_context_pack(self, context_pack_id: int, *, project_id: int | None = None) -> dict[str, Any]:
-        params = {"project_id": project_id} if project_id is not None else None
-        return self._request("GET", f"/api/context-packs/{context_pack_id}", params=params)
+        if project_id is not None:
+            return self._request("GET", f"/api/projects/{project_id}/context-packs/{context_pack_id}")
+        return self._request("GET", f"/api/context-packs/{context_pack_id}")
 
     def preview_project_integration_action(self, project_id: int, family: str, action_id: str, *, params: dict[str, Any] | None = None) -> dict[str, Any]:
         return self._request(

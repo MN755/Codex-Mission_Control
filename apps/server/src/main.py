@@ -1460,6 +1460,21 @@ def get_context_pack(
     return ContextPackRead(**pack)
 
 
+@app.get("/api/projects/{project_id}/context-packs/{context_pack_id}", response_model=ContextPackRead)
+def get_project_context_pack(
+    project_id: int,
+    context_pack_id: int,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> ContextPackRead:
+    try:
+        pack = context_pack_service.get_context_pack(db, context_pack_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    _require_project_scope("Context pack", pack.get("project_id"), project_id)
+    return ContextPackRead(**pack)
+
+
 @app.get("/api/projects/{project_id}/risks", response_model=list[RiskRecordRead])
 def get_project_risks(
     project_id: int,

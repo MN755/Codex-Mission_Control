@@ -558,6 +558,7 @@ def test_runtime_and_project_control_routes_require_token(client) -> None:
             f"/api/projects/{project_id}/integrations/source_control/actions/create/preview",
             json={"params": {"title": "x", "body": "y"}},
         ).status_code == 401
+        assert raw_client.get(f"/api/projects/{project_id}/context-packs/1").status_code == 401
         assert raw_client.get(f"/api/projects/{project_id}/nvidia-dynamo").status_code == 401
         assert raw_client.get(f"/api/projects/{project_id}/nvidia-nim").status_code == 401
         assert raw_client.get(f"/api/projects/{project_id}/nvidia-aiq").status_code == 401
@@ -906,7 +907,7 @@ def test_context_pack_routes_return_summary_rollups(client) -> None:
     assert listed_payload[0]["id"] == payload["id"]
     assert listed_payload[0]["section_type_counts"] == payload["section_type_counts"]
 
-    fetched = client.get(f"/api/context-packs/{payload['id']}", params={"project_id": project_id})
+    fetched = client.get(f"/api/projects/{project_id}/context-packs/{payload['id']}")
     assert fetched.status_code == 200, fetched.text
     fetched_payload = fetched.json()
     assert fetched_payload["id"] == payload["id"]

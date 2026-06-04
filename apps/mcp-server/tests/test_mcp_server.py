@@ -4117,8 +4117,8 @@ def test_daemon_client_get_context_pack_passes_project_scope_when_provided(monke
 
     assert seen == {
         "method": "GET",
-        "path": "/api/context-packs/31",
-        "params": {"project_id": 7},
+        "path": "/api/projects/7/context-packs/31",
+        "params": None,
     }
 
 
