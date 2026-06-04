@@ -2354,6 +2354,41 @@ async def answer_pending_decision(
     )
 
 
+@app.post("/api/projects/{project_id}/decisions/{decision_id}/answer", response_model=PendingDecisionAnswerResultRead)
+async def answer_project_pending_decision(
+    project_id: int,
+    decision_id: int,
+    payload: PendingDecisionAnswerRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> PendingDecisionAnswerResultRead:
+    decision = _get_pending_decision_or_404(db, decision_id)
+    _require_project_scope("Pending decision", decision.project_id, project_id)
+    try:
+        updated, next_summary = await bridge_runtime_service.answer_decision(
+            db,
+            decision,
+            option_id=payload.option_id,
+            selected_text=payload.selected_text,
+            free_text=payload.free_text,
+        )
+    except MissionControlError:
+        raise
+    except Exception as exc:
+        raise as_mission_control_error(
+            exc,
+            breakpoint="decision.answer",
+            project_id=decision.project_id,
+            orchestration_id=decision.orchestration_id,
+            safe_details={"decision_id": decision.id, "option_id": payload.option_id},
+        ) from exc
+    return PendingDecisionAnswerResultRead(
+        decision=PendingDecisionRead(**updated),
+        next_status_summary=BridgeMessageRead(**next_summary) if next_summary else None,
+    )
+
+
 @app.get("/api/orchestrations/{orchestration_id}/status-summary", response_model=BridgeMessageRead)
 async def get_orchestration_status_summary(
     orchestration_id: int,

@@ -437,8 +437,7 @@ class MissionControlDaemonClient:
     def answer_decision(self, *, decision_id: int, project_id: int, option_id: str, selected_text: str, free_text: str | None = None) -> dict[str, Any]:
         return self._request(
             "POST",
-            f"/api/decisions/{decision_id}/answer",
-            params={"project_id": project_id},
+            f"/api/projects/{project_id}/decisions/{decision_id}/answer",
             json_body={"option_id": option_id, "selected_text": selected_text, "free_text": free_text},
         )
 

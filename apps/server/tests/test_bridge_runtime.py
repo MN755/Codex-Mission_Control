@@ -240,9 +240,8 @@ def test_pending_decision_bridge_routes_and_answer_flow(client) -> None:
     assert project_scoped_bridge_message.json()["message_type"] == "manager_question"
 
     answer = client.post(
-        f"/api/decisions/{decision['id']}/answer",
+        f"/api/projects/{project['id']}/decisions/{decision['id']}/answer",
         headers=_bridge_headers(),
-        params={"project_id": project["id"]},
         json={"option_id": "preserve", "selected_text": "Preserve it"},
     )
     assert answer.status_code == 200, answer.text
@@ -272,9 +271,8 @@ def test_pending_decision_rejects_invalid_option(client) -> None:
     decisions = client.get(f"/api/projects/{project['id']}/pending-decisions", headers=_bridge_headers()).json()
     decision_id = decisions[0]["id"]
     response = client.post(
-        f"/api/decisions/{decision_id}/answer",
+        f"/api/projects/{project['id']}/decisions/{decision_id}/answer",
         headers=_bridge_headers(),
-        params={"project_id": project["id"]},
         json={"option_id": "reckless", "selected_text": "Reckless path"},
     )
     assert response.status_code == 400

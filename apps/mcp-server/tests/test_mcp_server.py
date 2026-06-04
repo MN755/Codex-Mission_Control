@@ -907,6 +907,29 @@ def test_answer_decision_sends_answer() -> None:
     assert client.calls[0][0] == "answer_decision"
 
 
+def test_daemon_client_answer_decision_uses_project_scoped_route(monkeypatch) -> None:
+    client = MissionControlDaemonClient(base_url="http://127.0.0.1:8010", timeout=0.1)
+    seen: dict[str, object] = {}
+
+    def fake_request(method: str, path: str, **kwargs):
+        seen["method"] = method
+        seen["path"] = path
+        seen["params"] = kwargs.get("params")
+        seen["json_body"] = kwargs.get("json_body")
+        return {}
+
+    monkeypatch.setattr(client, "_request", fake_request)
+
+    client.answer_decision(decision_id=31, project_id=7, option_id="approve_once", selected_text="Approve once")
+
+    assert seen == {
+        "method": "POST",
+        "path": "/api/projects/7/decisions/31/answer",
+        "params": None,
+        "json_body": {"option_id": "approve_once", "selected_text": "Approve once", "free_text": None},
+    }
+
+
 def test_core_orchestration_tools_require_project_scope() -> None:
     server = MissionControlMcpServer(client=FakeClient())
 

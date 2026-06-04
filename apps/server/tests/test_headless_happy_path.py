@@ -138,9 +138,8 @@ def test_headless_happy_path_acceptance(client) -> None:
             continue
         option = decision["options"][0]
         response = client.post(
-            f"/api/decisions/{decision['id']}/answer",
+            f"/api/projects/{project_id}/decisions/{decision['id']}/answer",
             headers=_bridge_headers(),
-            params={"project_id": project_id},
             json={"option_id": option["id"], "selected_text": option["label"]},
         )
         assert response.status_code == 200, response.text
@@ -158,9 +157,8 @@ def test_headless_happy_path_acceptance(client) -> None:
     assert "### Choose one" in approval_payload["fallback_markdown"]
 
     answered = client.post(
-        f"/api/decisions/{approval['id']}/answer",
+        f"/api/projects/{project_id}/decisions/{approval['id']}/answer",
         headers=_bridge_headers(),
-        params={"project_id": project_id},
         json={"option_id": "approve_once", "selected_text": "Approve once"},
     )
     assert answered.status_code == 200, answered.text
