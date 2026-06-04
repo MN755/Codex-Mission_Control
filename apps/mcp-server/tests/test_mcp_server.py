@@ -19,6 +19,7 @@ from mission_control_mcp_server.server import MissionControlMcpServer
 EXPECTED_RESOURCES = {
     "mission-control://projects/{project_id}/orchestrations/{orchestration_id}/status",
     "mission-control://projects/{project_id}/orchestrations/{orchestration_id}/events",
+    "mission-control://projects/{project_id}/orchestrations/active",
     "mission-control://projects/{project_id}/status",
     "mission-control://projects/{project_id}/agents",
     "mission-control://projects/{project_id}/pending-decisions",
@@ -59,8 +60,12 @@ EXPECTED_RESOURCES = {
     "mission-control://tools",
     "mission-control://skills",
     "mission-control://handoffs",
+    "mission-control://health",
     "mission-control://diagnostics/reports",
+    "mission-control://diagnostics/identity",
+    "mission-control://headless/health",
     "mission-control://projects",
+    "mission-control://profile",
     "mission-control://profile/summary",
     "mission-control://preferences",
     "mission-control://preferences/summary",
@@ -1189,6 +1194,29 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
             }
         ],
     )
+    monkeypatch.setattr(client, "get_health", lambda: {"status": "ok"})
+    monkeypatch.setattr(
+        client,
+        "get_diagnostics_identity",
+        lambda: {
+            "service": "mission-control-daemon",
+            "version": "0.3.0",
+            "install_root": "C:/demo/install",
+            "runtime_root": "C:/demo/runtime",
+            "workspace_root": "C:/demo",
+        },
+    )
+    monkeypatch.setattr(
+        client,
+        "get_headless_health",
+        lambda: {
+            "status": "ready",
+            "checks": [{"key": "daemon", "status": "ok"}],
+            "recommended_next_steps": [],
+            "safe_troubleshooting_commands": ["python -m pytest"],
+            "checked_at": "2026-06-03T12:44:30Z",
+        },
+    )
     monkeypatch.setattr(
         client,
         "list_diagnostic_reports",
@@ -1366,6 +1394,55 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
             "has_adapter": True,
             "updated_at": "2026-06-03T12:40:00Z",
             "last_opened_at": "2026-06-03T12:45:00Z",
+        },
+    )
+    monkeypatch.setattr(
+        client,
+        "get_profile",
+        lambda: {
+            "id": 1,
+            "display_name": "Mike",
+            "preferred_provider_choice": "codex",
+            "preferred_start_mode": "new_project",
+            "selected_provider": "codex",
+            "auth_mode": "device_code",
+            "first_run_completed": True,
+            "onboarding_completed": True,
+            "default_runner_mode": "auto",
+            "manager_model": "gpt-5-codex",
+            "default_worker_model": "gpt-5-codex-mini",
+            "sandbox_mode": "workspace-write",
+            "approval_policy": "on-request",
+            "theme": "system",
+            "startup_behavior": "dashboard",
+            "connected_accounts_json": {"github": {"connected": True}},
+            "dashboard_widgets_json": ["recent_projects", "queue"],
+            "tool_permission_overrides_json": {"git push": "ask"},
+            "provider_endpoint": None,
+            "adapter_command": "codex",
+            "adapter_args_json": ["mcp", "serve"],
+            "recent_startup_error_json": None,
+            "created_at": "2026-06-03T11:20:00Z",
+            "updated_at": "2026-06-03T12:40:00Z",
+            "last_opened_at": "2026-06-03T12:45:00Z",
+        },
+    )
+    monkeypatch.setattr(
+        client,
+        "active_project_orchestration",
+        lambda project_id: {
+            "id": 14,
+            "project_id": project_id,
+            "workspace_path": "C:/demo",
+            "source": "codex_plugin",
+            "user_request": "Finish the MCP parity work.",
+            "status": "running",
+            "manager_status": "awaiting_validation",
+            "mode": "delegate",
+            "created_at": "2026-06-03T12:00:00Z",
+            "updated_at": "2026-06-03T12:46:00Z",
+            "completed_at": None,
+            "metadata_json": {"phase": "validation"},
         },
     )
     monkeypatch.setattr(
@@ -2826,6 +2903,10 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
         ],
     )
 
+    health = client.read_resource("mission-control://health")
+    diagnostics_identity = client.read_resource("mission-control://diagnostics/identity")
+    headless_health = client.read_resource("mission-control://headless/health")
+    profile = client.read_resource("mission-control://profile")
     profile_summary = client.read_resource("mission-control://profile/summary")
     global_preferences = client.read_resource("mission-control://preferences")
     global_preference_summary = client.read_resource("mission-control://preferences/summary")
@@ -2877,6 +2958,7 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
     project_understanding = client.read_resource("mission-control://projects/7/understanding")
     interview = client.read_resource("mission-control://projects/7/interview")
     plan = client.read_resource("mission-control://projects/7/plan")
+    active_orchestration = client.read_resource("mission-control://projects/7/orchestrations/active")
     workspace = client.read_resource("mission-control://projects/7/workspace")
     tooling = client.read_resource("mission-control://projects/7/workspace-tooling")
     project_security_policy = client.read_resource("mission-control://projects/7/security/policy")
@@ -2935,6 +3017,12 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
     events = client.read_resource("mission-control://projects/7/events")
     latest_simulation = client.read_resource("mission-control://projects/7/swarm/simulations/latest")
 
+    assert health["status"] == "ok"
+    assert diagnostics_identity["service"] == "mission-control-daemon"
+    assert headless_health["status"] == "ready"
+    assert profile["display_name"] == "Mike"
+    assert profile["provider_endpoint_configured"] is False
+    assert profile["tool_permission_overrides_json"] == {"git push": "ask"}
     assert profile_summary["display_name"] == "Mike"
     assert global_preferences["scope"] == "global"
     assert global_preferences["item_count"] == 1
@@ -3019,6 +3107,9 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
     assert plan["exists"] is True
     assert plan["version"] == 2
     assert plan["summary_json"]["risk_count"] == 2
+    assert active_orchestration["exists"] is True
+    assert active_orchestration["orchestration_id"] == 14
+    assert active_orchestration["manager_status"] == "awaiting_validation"
     assert workspace["git_branch"] == "main"
     assert tooling["validation_commands"] == ["uv run pytest", "ruff check ."]
     assert project_security_policy["project_id"] == 7
@@ -3239,6 +3330,56 @@ def test_daemon_client_project_status_read_passes_project_scope(monkeypatch) -> 
     assert seen == {"project_id": 7, "orchestration_id": 14}
 
 
+def test_daemon_client_active_project_orchestration_remembers_mapping(monkeypatch) -> None:
+    client = MissionControlDaemonClient(base_url="http://127.0.0.1:8010", timeout=0.1)
+    monkeypatch.setattr(
+        client,
+        "_request",
+        lambda method, path, **kwargs: {
+            "id": 14,
+            "project_id": 7,
+            "workspace_path": "C:/demo",
+            "source": "codex_plugin",
+            "user_request": "Check runtime parity.",
+            "status": "running",
+            "manager_status": "active",
+            "mode": "delegate",
+            "created_at": "2026-06-03T12:00:00Z",
+            "updated_at": "2026-06-03T12:10:00Z",
+            "completed_at": None,
+            "metadata_json": {},
+        },
+    )
+
+    payload = client.active_project_orchestration(7)
+
+    assert payload["id"] == 14
+    assert client._orchestration_project_ids[14] == 7
+
+
+def test_daemon_client_active_orchestration_resource_returns_stable_missing_payload(monkeypatch) -> None:
+    client = MissionControlDaemonClient(base_url="http://127.0.0.1:8010", timeout=0.1)
+    monkeypatch.setattr(client, "active_project_orchestration", lambda project_id: None)
+
+    payload = client.read_resource("mission-control://projects/7/orchestrations/active")
+
+    assert payload == {
+        "project_id": 7,
+        "exists": False,
+        "orchestration_id": None,
+        "status": None,
+        "manager_status": None,
+        "mode": None,
+        "source": None,
+        "user_request": None,
+        "workspace_path": None,
+        "metadata_json": {},
+        "created_at": None,
+        "updated_at": None,
+        "completed_at": None,
+    }
+
+
 def test_daemon_client_bridge_auth_protected_reads_include_token(monkeypatch) -> None:
     client = MissionControlDaemonClient(base_url="http://127.0.0.1:8010", timeout=0.1)
     calls: list[tuple[str, str, bool]] = []
@@ -3249,7 +3390,11 @@ def test_daemon_client_bridge_auth_protected_reads_include_token(monkeypatch) ->
 
     monkeypatch.setattr(client, "_request", fake_request)
 
+    client.get_health()
+    client.get_diagnostics_identity()
+    client.get_headless_health()
     client.daemon_status()
+    client.get_profile()
     client.get_project_handoff(7)
     client.get_codebase_map(7)
     client.get_codebase_understanding(7)
@@ -3297,9 +3442,14 @@ def test_daemon_client_bridge_auth_protected_reads_include_token(monkeypatch) ->
     client.get_subagent_batch(7, 51)
     client.list_handoffs()
     client.list_diagnostic_reports()
+    client.active_project_orchestration(7)
 
     assert calls == [
+        ("GET", "/api/health", False),
+        ("GET", "/api/diagnostics/identity", True),
+        ("GET", "/api/headless/health", True),
         ("GET", "/api/daemon/status", True),
+        ("GET", "/api/profile", True),
         ("GET", "/api/projects/7/handoff", True),
         ("GET", "/api/projects/7/codebase-map", True),
         ("GET", "/api/projects/7/codebase-understanding", True),
@@ -3347,6 +3497,7 @@ def test_daemon_client_bridge_auth_protected_reads_include_token(monkeypatch) ->
         ("GET", "/api/subagents/batches/51", True),
         ("GET", "/api/handoffs", True),
         ("GET", "/api/diagnostics/reports", True),
+        ("GET", "/api/projects/7/orchestrations/active", True),
     ]
 
 

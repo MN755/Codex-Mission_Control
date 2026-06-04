@@ -13,6 +13,7 @@ Mission Control resources are read-only context surfaces for Codex chat.
 
 - `mission-control://projects/{project_id}/orchestrations/{orchestration_id}/status`
 - `mission-control://projects/{project_id}/orchestrations/{orchestration_id}/events`
+- `mission-control://projects/{project_id}/orchestrations/active`
 - `mission-control://projects/{project_id}/status`
 - `mission-control://projects/{project_id}/agents`
 - `mission-control://projects/{project_id}/pending-decisions`
@@ -54,8 +55,12 @@ Mission Control resources are read-only context surfaces for Codex chat.
 - `mission-control://tools`
 - `mission-control://skills`
 - `mission-control://handoffs`
+- `mission-control://health`
 - `mission-control://diagnostics/reports`
+- `mission-control://diagnostics/identity`
+- `mission-control://headless/health`
 - `mission-control://projects`
+- `mission-control://profile`
 - `mission-control://profile/summary`
 - `mission-control://preferences`
 - `mission-control://preferences/summary`
@@ -139,6 +144,8 @@ Mission Control resources are read-only context surfaces for Codex chat.
 ## Why These Exist
 
 - status and events support compact progress reporting
+- raw health, diagnostics identity, and headless health resources expose liveness, runtime identity, and packaged bridge health directly before chat starts diagnosing ghosts
+- raw profile and active orchestration resources expose the operator’s actual configured defaults and the current session record instead of making chat reverse-engineer them from summaries
 - pending decisions support approval relay
 - pending questions and pending approvals expose unresolved manager prompts and gated actions without forcing chat to rummage through UI-only queues
 - event digest and handoff summary expose short operational summaries directly, which is a lot less stupid than reconstructing them from raw status and events every time

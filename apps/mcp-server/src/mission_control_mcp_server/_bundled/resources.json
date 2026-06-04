@@ -69,6 +69,38 @@
       }
     },
     {
+      "uri_template": "mission-control://projects/{project_id}/orchestrations/active",
+      "title": "Active orchestration",
+      "summary": "Project-scoped active orchestration session record with current mode, manager status, and user request context.",
+      "support_status": "implemented",
+      "source_hint": {
+        "rest_endpoints": [
+          "/api/projects/{project_id}/orchestrations/active"
+        ]
+      },
+      "default_fields": [
+        "project_id",
+        "exists",
+        "orchestration_id",
+        "status",
+        "manager_status",
+        "mode",
+        "source",
+        "user_request",
+        "workspace_path",
+        "metadata_json"
+      ],
+      "redaction": {
+        "omit_fields": [
+          "bridge_token",
+          "secret_headers",
+          "raw_log",
+          "stack_trace"
+        ],
+        "notes": "Expose one safe orchestration session summary only, or a stable empty payload when no session is active."
+      }
+    },
+    {
       "uri_template": "mission-control://projects/{project_id}/status",
       "title": "Project status",
       "summary": "High-signal project summary combining project state, active orchestration state, and next checkpoint.",
@@ -1162,6 +1194,26 @@
       }
     },
     {
+      "uri_template": "mission-control://health",
+      "title": "Health",
+      "summary": "Minimal public runtime liveness check for the Mission Control backend.",
+      "support_status": "implemented",
+      "source_hint": {
+        "rest_endpoints": [
+          "/api/health"
+        ]
+      },
+      "default_fields": [
+        "status"
+      ],
+      "redaction": {
+        "omit_fields": [
+          "raw_log"
+        ],
+        "notes": "Expose only the liveness status."
+      }
+    },
+    {
       "uri_template": "mission-control://diagnostics/reports",
       "title": "Diagnostic reports",
       "summary": "Global list of recent Mission Control diagnostic reports for operator triage and runtime auditing.",
@@ -1182,6 +1234,57 @@
           "private_paths_outside_workspace"
         ],
         "notes": "Expose compact diagnostic report metadata only, not raw logs or secrets."
+      }
+    },
+    {
+      "uri_template": "mission-control://diagnostics/identity",
+      "title": "Diagnostics identity",
+      "summary": "Runtime identity snapshot for diagnosing which daemon instance, install path, and bridge identity are currently serving requests.",
+      "support_status": "implemented",
+      "source_hint": {
+        "rest_endpoints": [
+          "/api/diagnostics/identity"
+        ]
+      },
+      "default_fields": [
+        "service",
+        "version",
+        "install_root",
+        "runtime_root",
+        "workspace_root"
+      ],
+      "redaction": {
+        "omit_fields": [
+          "secret_values",
+          "raw_log"
+        ],
+        "notes": "Expose daemon identity and safe runtime roots only."
+      }
+    },
+    {
+      "uri_template": "mission-control://headless/health",
+      "title": "Headless health",
+      "summary": "Packaged headless runtime health summary including checks, next steps, and safe troubleshooting commands.",
+      "support_status": "implemented",
+      "source_hint": {
+        "rest_endpoints": [
+          "/api/headless/health"
+        ]
+      },
+      "default_fields": [
+        "status",
+        "checks",
+        "recommended_next_steps",
+        "safe_troubleshooting_commands",
+        "checked_at"
+      ],
+      "redaction": {
+        "omit_fields": [
+          "raw_log",
+          "secret_values",
+          "private_paths_outside_workspace"
+        ],
+        "notes": "Expose health verdicts, checks, and safe troubleshooting guidance only."
       }
     },
     {
@@ -1207,6 +1310,41 @@
           "raw_log"
         ],
         "notes": "Expose project inventory metadata only, not secret-bearing reports or full docs payloads."
+      }
+    },
+    {
+      "uri_template": "mission-control://profile",
+      "title": "Profile",
+      "summary": "Safe raw Mission Control operator profile with defaults, startup posture, model selection, and non-secret UI/runtime preferences.",
+      "support_status": "implemented",
+      "source_hint": {
+        "rest_endpoints": [
+          "/api/profile"
+        ]
+      },
+      "default_fields": [
+        "id",
+        "display_name",
+        "preferred_provider_choice",
+        "preferred_start_mode",
+        "selected_provider",
+        "auth_mode",
+        "default_runner_mode",
+        "manager_model",
+        "default_worker_model",
+        "sandbox_mode",
+        "approval_policy",
+        "theme",
+        "startup_behavior"
+      ],
+      "redaction": {
+        "omit_fields": [
+          "raw_tokens",
+          "secret_values",
+          "provider_endpoint",
+          "private_paths_outside_workspace"
+        ],
+        "notes": "Expose operator defaults and safe runtime preferences only, not credentials or raw endpoint secrets."
       }
     },
     {

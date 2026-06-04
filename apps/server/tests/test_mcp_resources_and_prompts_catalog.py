@@ -36,6 +36,7 @@ DECISION_LEDGER_SKILLS = [
 EXPECTED_RESOURCES = [
     "mission-control://projects/{project_id}/orchestrations/{orchestration_id}/status",
     "mission-control://projects/{project_id}/orchestrations/{orchestration_id}/events",
+    "mission-control://projects/{project_id}/orchestrations/active",
     "mission-control://projects/{project_id}/status",
     "mission-control://projects/{project_id}/agents",
     "mission-control://projects/{project_id}/pending-decisions",
@@ -77,8 +78,12 @@ EXPECTED_RESOURCES = [
     "mission-control://tools",
     "mission-control://skills",
     "mission-control://handoffs",
+    "mission-control://health",
     "mission-control://diagnostics/reports",
+    "mission-control://diagnostics/identity",
+    "mission-control://headless/health",
     "mission-control://projects",
+    "mission-control://profile",
     "mission-control://profile/summary",
     "mission-control://preferences",
     "mission-control://preferences/summary",
@@ -316,8 +321,12 @@ def test_docs_explain_resources_prompts_and_headless_boundary() -> None:
     assert "mission-control://tools" in resources_content
     assert "mission-control://skills" in resources_content
     assert "mission-control://handoffs" in resources_content
+    assert "mission-control://health" in resources_content
     assert "mission-control://diagnostics/reports" in resources_content
+    assert "mission-control://diagnostics/identity" in resources_content
+    assert "mission-control://headless/health" in resources_content
     assert "mission-control://projects" in resources_content
+    assert "mission-control://profile" in resources_content
     assert "mission-control://profile/summary" in resources_content
     assert "mission-control://preferences" in resources_content
     assert "mission-control://preferences/summary" in resources_content
@@ -328,6 +337,7 @@ def test_docs_explain_resources_prompts_and_headless_boundary() -> None:
     assert "mission-control://projects/{project_id}/understanding" in resources_content
     assert "mission-control://projects/{project_id}/interview" in resources_content
     assert "mission-control://projects/{project_id}/plan" in resources_content
+    assert "mission-control://projects/{project_id}/orchestrations/active" in resources_content
     assert "mission-control://projects/{project_id}/playbook" in resources_content
     assert "mission-control://projects/{project_id}/playbook/recommendations" in resources_content
     assert "mission-control://projects/{project_id}/context-packs" in resources_content

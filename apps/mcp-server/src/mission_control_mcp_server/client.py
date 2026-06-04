@@ -364,6 +364,18 @@ class MissionControlDaemonClient:
     def get_project(self, project_id: int) -> dict[str, Any]:
         return self._request("GET", f"/api/projects/{project_id}")
 
+    def get_health(self) -> dict[str, Any]:
+        return self._request("GET", "/api/health", requires_token=False)
+
+    def get_diagnostics_identity(self) -> dict[str, Any]:
+        return self._request("GET", "/api/diagnostics/identity")
+
+    def get_headless_health(self) -> dict[str, Any]:
+        return self._request("GET", "/api/headless/health")
+
+    def get_profile(self) -> dict[str, Any]:
+        return self._request("GET", "/api/profile")
+
     def get_orchestration(self, orchestration_id: int, *, project_id: int | None = None) -> dict[str, Any]:
         resolved_project_id = self._project_id_for_orchestration(orchestration_id, project_id)
         payload = self._request("GET", f"/api/orchestrations/{orchestration_id}", params={"project_id": resolved_project_id})
@@ -372,7 +384,10 @@ class MissionControlDaemonClient:
         return payload
 
     def active_project_orchestration(self, project_id: int) -> dict[str, Any] | None:
-        return self._request("GET", f"/api/projects/{project_id}/orchestrations/active")
+        payload = self._request("GET", f"/api/projects/{project_id}/orchestrations/active")
+        if isinstance(payload, dict):
+            self._remember_orchestration_project(payload.get("id"), payload.get("project_id") or project_id)
+        return payload
 
     def _resolve_orchestration_id(self, *, orchestration_id: int | None = None, project_id: int | None = None, action: str) -> int:
         resolved_id = self._maybe_orchestration_id(orchestration_id=orchestration_id, project_id=project_id)
@@ -1400,6 +1415,68 @@ class MissionControlDaemonClient:
             "updated_at": payload.get("updated_at"),
         }
 
+    def _summarize_profile(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "id": payload.get("id"),
+            "display_name": payload.get("display_name"),
+            "preferred_provider_choice": payload.get("preferred_provider_choice"),
+            "preferred_start_mode": payload.get("preferred_start_mode"),
+            "selected_provider": payload.get("selected_provider"),
+            "auth_mode": payload.get("auth_mode"),
+            "first_run_completed": payload.get("first_run_completed"),
+            "onboarding_completed": payload.get("onboarding_completed"),
+            "default_runner_mode": payload.get("default_runner_mode"),
+            "manager_model": payload.get("manager_model"),
+            "default_worker_model": payload.get("default_worker_model"),
+            "sandbox_mode": payload.get("sandbox_mode"),
+            "approval_policy": payload.get("approval_policy"),
+            "theme": payload.get("theme"),
+            "startup_behavior": payload.get("startup_behavior"),
+            "connected_accounts_json": dict(payload.get("connected_accounts_json") or {}),
+            "dashboard_widgets_json": list(payload.get("dashboard_widgets_json") or [])[:24],
+            "tool_permission_overrides_json": dict(payload.get("tool_permission_overrides_json") or {}),
+            "provider_endpoint_configured": bool(payload.get("provider_endpoint")),
+            "adapter_command": payload.get("adapter_command"),
+            "adapter_args_json": list(payload.get("adapter_args_json") or [])[:12],
+            "recent_startup_error_json": payload.get("recent_startup_error_json"),
+            "created_at": payload.get("created_at"),
+            "updated_at": payload.get("updated_at"),
+            "last_opened_at": payload.get("last_opened_at"),
+        }
+
+    def _summarize_active_orchestration(self, project_id: int, payload: dict[str, Any] | None) -> dict[str, Any]:
+        if not payload:
+            return {
+                "project_id": project_id,
+                "exists": False,
+                "orchestration_id": None,
+                "status": None,
+                "manager_status": None,
+                "mode": None,
+                "source": None,
+                "user_request": None,
+                "workspace_path": None,
+                "metadata_json": {},
+                "created_at": None,
+                "updated_at": None,
+                "completed_at": None,
+            }
+        return {
+            "project_id": project_id,
+            "exists": True,
+            "orchestration_id": payload.get("id"),
+            "status": payload.get("status"),
+            "manager_status": payload.get("manager_status"),
+            "mode": payload.get("mode"),
+            "source": payload.get("source"),
+            "user_request": payload.get("user_request"),
+            "workspace_path": payload.get("workspace_path"),
+            "metadata_json": dict(payload.get("metadata_json") or {}),
+            "created_at": payload.get("created_at"),
+            "updated_at": payload.get("updated_at"),
+            "completed_at": payload.get("completed_at"),
+        }
+
     def _summarize_ml_feature_catalog(self, project_id: int, payload: list[dict[str, Any]]) -> dict[str, Any]:
         features = list(payload or [])
         return {
@@ -2281,8 +2358,14 @@ class MissionControlDaemonClient:
             return self.get_context_pack(int(parts[1]))
         if len(parts) >= 1 and parts[0] == "handoffs":
             return self._summarize_handoffs(self.list_handoffs())
+        if len(parts) >= 1 and parts[0] == "health":
+            return self.get_health()
         if len(parts) >= 2 and parts[0] == "diagnostics" and parts[1] == "reports":
             return self._summarize_diagnostic_reports(self.list_diagnostic_reports())
+        if len(parts) >= 2 and parts[0] == "diagnostics" and parts[1] == "identity":
+            return self.get_diagnostics_identity()
+        if len(parts) >= 2 and parts[0] == "headless" and parts[1] == "health":
+            return self.get_headless_health()
         if len(parts) >= 2 and parts[0] == "integrations":
             kind = parts[1]
             if kind == "catalog":
@@ -2291,6 +2374,8 @@ class MissionControlDaemonClient:
                 return {"connections": self.get_integration_connections()}
             if kind == "health":
                 return self.get_integration_health()
+        if len(parts) == 1 and parts[0] == "profile":
+            return self._summarize_profile(self.get_profile())
         if len(parts) >= 2 and parts[0] == "profile" and parts[1] == "summary":
             return self.get_profile_summary()
         if len(parts) >= 1 and parts[0] == "tools":
@@ -2369,6 +2454,8 @@ class MissionControlDaemonClient:
         if len(parts) >= 3 and parts[0] == "projects":
             project_id = int(parts[1])
             kind = parts[2]
+            if kind == "orchestrations" and len(parts) == 4 and parts[3] == "active":
+                return self._summarize_active_orchestration(project_id, self.active_project_orchestration(project_id))
             if kind == "status":
                 project = self.get_project(project_id)
                 orchestration_id = self._maybe_orchestration_id(project_id=project_id)
