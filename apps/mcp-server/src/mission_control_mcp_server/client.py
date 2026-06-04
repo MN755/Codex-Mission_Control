@@ -2751,6 +2751,8 @@ class MissionControlDaemonClient:
                         self.get_pending_decisions(orchestration_id=orchestration_id, project_id=project_id),
                     )
             if kind == "status":
+                if len(parts) != 3:
+                    raise RuntimeError(f"Unsupported Mission Control resource URI: {uri}")
                 project = self.get_project(project_id)
                 orchestration_id = self._maybe_orchestration_id(project_id=project_id)
                 status = self.get_status(orchestration_id=orchestration_id, project_id=project_id) if orchestration_id is not None else None
@@ -2760,8 +2762,12 @@ class MissionControlDaemonClient:
             if kind == "agents" and len(parts) == 4 and parts[3] == "reputation":
                 return self._summarize_agent_reputation(self.get_agent_reputation(project_id), project_id=project_id)
             if kind == "agents":
+                if len(parts) != 3:
+                    raise RuntimeError(f"Unsupported Mission Control resource URI: {uri}")
                 return self._summarize_agents(project_id, self.get_agents(project_id))
             if kind == "pending-decisions":
+                if len(parts) != 3:
+                    raise RuntimeError(f"Unsupported Mission Control resource URI: {uri}")
                 decisions = self.get_pending_decisions(project_id=project_id)
                 return self._summarize_pending_decisions(project_id, decisions)
             if kind == "questions" and len(parts) == 4 and parts[3] == "pending":
@@ -2781,32 +2787,56 @@ class MissionControlDaemonClient:
                     raise RuntimeError(f"Unsupported Mission Control resource URI: {uri}")
                 return self._summarize_handoff(project_id, self.get_project_handoff(project_id))
             if kind == "codebase-map":
+                if len(parts) != 3:
+                    raise RuntimeError(f"Unsupported Mission Control resource URI: {uri}")
                 codebase_map = self.get_codebase_map(project_id)
                 understanding = self.get_codebase_understanding(project_id)
                 return self._summarize_codebase_map(codebase_map, understanding)
             if kind == "context-packs":
+                if len(parts) != 3:
+                    raise RuntimeError(f"Unsupported Mission Control resource URI: {uri}")
                 return self._summarize_context_packs(project_id, self.get_context_packs(project_id))
             if kind == "scope-creep":
+                if len(parts) != 3:
+                    raise RuntimeError(f"Unsupported Mission Control resource URI: {uri}")
                 return self._summarize_scope_creep(project_id, self.get_scope_creep(project_id))
             if kind == "codebase-understanding":
+                if len(parts) != 3:
+                    raise RuntimeError(f"Unsupported Mission Control resource URI: {uri}")
                 return self.get_codebase_understanding(project_id)
             if kind == "understanding":
+                if len(parts) != 3:
+                    raise RuntimeError(f"Unsupported Mission Control resource URI: {uri}")
                 return self._summarize_project_understanding(project_id, self.get_project_understanding(project_id))
             if kind == "interview":
+                if len(parts) != 3:
+                    raise RuntimeError(f"Unsupported Mission Control resource URI: {uri}")
                 return self._summarize_interview(project_id, self.get_interview(project_id))
             if kind == "plan":
+                if len(parts) != 3:
+                    raise RuntimeError(f"Unsupported Mission Control resource URI: {uri}")
                 return self._summarize_plan(project_id, self.get_plan(project_id))
             if kind == "reservations":
+                if len(parts) != 3:
+                    raise RuntimeError(f"Unsupported Mission Control resource URI: {uri}")
                 return self._summarize_reservations(project_id, self.get_reservations(project_id))
             if kind == "import-safety":
+                if len(parts) != 3:
+                    raise RuntimeError(f"Unsupported Mission Control resource URI: {uri}")
                 return self.get_import_safety(project_id)
             if kind == "diagnostics" and len(parts) == 4 and parts[3] == "latest-report":
                 return self._summarize_latest_diagnostic_report(project_id, self.list_diagnostic_reports(project_id=project_id))
             if kind == "diagnostics":
+                if len(parts) != 3:
+                    raise RuntimeError(f"Unsupported Mission Control resource URI: {uri}")
                 return self._summarize_diagnostics(project_id, self.get_diagnostics(project_id=project_id))
             if kind == "settings":
+                if len(parts) != 3:
+                    raise RuntimeError(f"Unsupported Mission Control resource URI: {uri}")
                 return self.get_project_settings(project_id)
             if kind == "details":
+                if len(parts) != 3:
+                    raise RuntimeError(f"Unsupported Mission Control resource URI: {uri}")
                 return self._summarize_project_details(self.get_project(project_id))
             if kind == "swarm" and len(parts) == 4 and parts[3] == "preferences":
                 return self.get_swarm_preferences(project_id)
