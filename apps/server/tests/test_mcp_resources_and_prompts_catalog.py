@@ -50,6 +50,8 @@ EXPECTED_RESOURCES = [
     "mission-control://integrations/catalog",
     "mission-control://integrations/connections",
     "mission-control://integrations/health",
+    "mission-control://playbooks",
+    "mission-control://playbooks/{playbook_key}",
     "mission-control://profile/summary",
     "mission-control://preferences/summary",
     "mission-control://subagent-policy/summary",
@@ -85,7 +87,9 @@ EXPECTED_RESOURCES = [
     "mission-control://projects/{project_id}/nvidia-validation-plan",
     "mission-control://projects/{project_id}/swarm-plan",
     "mission-control://projects/{project_id}/swarm/simulations/latest",
+    "mission-control://risks/summary",
     "mission-control://projects/{project_id}/risk-register",
+    "mission-control://projects/{project_id}/risks/summary",
     "mission-control://projects/{project_id}/agent-contracts",
     "mission-control://projects/{project_id}/validation-summary",
     "mission-control://projects/{project_id}/validation-coverage/summary",
@@ -231,6 +235,8 @@ def test_docs_explain_resources_prompts_and_headless_boundary() -> None:
     assert "mission-control://projects/{project_id}/recovery-plans/preview" in resources_content
     assert "mission-control://projects/{project_id}/snapshots" in resources_content
     assert "mission-control://projects/{project_id}/snapshots/{snapshot_id}/restore-plan" in resources_content
+    assert "mission-control://playbooks" in resources_content
+    assert "mission-control://playbooks/{playbook_key}" in resources_content
     assert "mission-control://profile/summary" in resources_content
     assert "mission-control://preferences/summary" in resources_content
     assert "mission-control://subagent-policy/summary" in resources_content
@@ -246,6 +252,8 @@ def test_docs_explain_resources_prompts_and_headless_boundary() -> None:
     assert "mission-control://projects/{project_id}/execution-policy/summary" in resources_content
     assert "mission-control://projects/{project_id}/coordination/summary" in resources_content
     assert "mission-control://projects/{project_id}/swarm/simulations/latest" in resources_content
+    assert "mission-control://risks/summary" in resources_content
+    assert "mission-control://projects/{project_id}/risks/summary" in resources_content
     assert "mission-control://projects/{project_id}/validation-coverage/summary" in resources_content
     assert "mission-control://projects/{project_id}/agents-md/status" in resources_content
     assert "mission-control://projects/{project_id}/tensorflow/features" in resources_content

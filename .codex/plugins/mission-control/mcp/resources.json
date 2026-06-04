@@ -456,6 +456,60 @@
       }
     },
     {
+      "uri_template": "mission-control://playbooks",
+      "title": "Playbook catalog",
+      "summary": "Catalog of shipped project playbooks so chat can inspect available execution templates before choosing one.",
+      "support_status": "implemented",
+      "source_hint": {
+        "rest_endpoints": [
+          "/api/playbooks"
+        ]
+      },
+      "default_fields": [
+        "playbooks"
+      ],
+      "redaction": {
+        "omit_fields": [
+          "raw_log",
+          "secret_values",
+          "private_paths_outside_workspace"
+        ],
+        "notes": "Expose playbook metadata only."
+      }
+    },
+    {
+      "uri_template": "mission-control://playbooks/{playbook_key}",
+      "title": "Playbook catalog entry",
+      "summary": "One shipped playbook definition with recommended structure, interview categories, risks, and validation recipe hints.",
+      "support_status": "implemented",
+      "source_hint": {
+        "rest_endpoints": [
+          "/api/playbooks/{playbook_key}"
+        ]
+      },
+      "default_fields": [
+        "id",
+        "key",
+        "name",
+        "description",
+        "suggested_interview_categories_json",
+        "suggested_swarm_mode",
+        "suggested_agent_archetypes_json",
+        "suggested_validation_recipe_json",
+        "common_risks_json",
+        "suggested_docs_json",
+        "typical_structure_json"
+      ],
+      "redaction": {
+        "omit_fields": [
+          "raw_log",
+          "secret_values",
+          "private_paths_outside_workspace"
+        ],
+        "notes": "Expose the structured playbook template only."
+      }
+    },
+    {
       "uri_template": "mission-control://profile/summary",
       "title": "Profile summary",
       "summary": "Compact Mission Control app-profile summary covering provider choice, runner defaults, startup posture, and account readiness.",
@@ -1466,6 +1520,33 @@
       }
     },
     {
+      "uri_template": "mission-control://risks/summary",
+      "title": "Global risk summary",
+      "summary": "Compact cross-project risk posture with total/open counts, severity/status tallies, and top risks.",
+      "support_status": "implemented",
+      "source_hint": {
+        "rest_endpoints": [
+          "/api/risks/summary"
+        ]
+      },
+      "default_fields": [
+        "project_id",
+        "total_count",
+        "open_count",
+        "status_counts",
+        "severity_counts",
+        "top_risks"
+      ],
+      "redaction": {
+        "omit_fields": [
+          "raw_log",
+          "artifact_body",
+          "secret_paths"
+        ],
+        "notes": "Expose compact risk posture only."
+      }
+    },
+    {
       "uri_template": "mission-control://projects/{project_id}/risk-register",
       "title": "Risk register",
       "summary": "Open and recently mitigated project risks summarized for bridge-safe review.",
@@ -1488,6 +1569,33 @@
           "raw_log"
         ],
         "notes": "Return concise risk summaries and status counts only."
+      }
+    },
+    {
+      "uri_template": "mission-control://projects/{project_id}/risks/summary",
+      "title": "Project risk summary",
+      "summary": "Compact project-scoped risk posture with total/open counts, severity/status tallies, and top risks.",
+      "support_status": "implemented",
+      "source_hint": {
+        "rest_endpoints": [
+          "/api/projects/{project_id}/risks/summary"
+        ]
+      },
+      "default_fields": [
+        "project_id",
+        "total_count",
+        "open_count",
+        "status_counts",
+        "severity_counts",
+        "top_risks"
+      ],
+      "redaction": {
+        "omit_fields": [
+          "raw_log",
+          "artifact_body",
+          "secret_paths"
+        ],
+        "notes": "Expose compact project risk posture only."
       }
     },
     {

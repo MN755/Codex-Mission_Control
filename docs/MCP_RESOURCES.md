@@ -27,6 +27,8 @@ Mission Control resources are read-only context surfaces for Codex chat.
 - `mission-control://integrations/catalog`
 - `mission-control://integrations/connections`
 - `mission-control://integrations/health`
+- `mission-control://playbooks`
+- `mission-control://playbooks/{playbook_key}`
 - `mission-control://profile/summary`
 - `mission-control://preferences/summary`
 - `mission-control://subagent-policy/summary`
@@ -62,7 +64,9 @@ Mission Control resources are read-only context surfaces for Codex chat.
 - `mission-control://projects/{project_id}/nvidia-validation-plan`
 - `mission-control://projects/{project_id}/swarm-plan`
 - `mission-control://projects/{project_id}/swarm/simulations/latest`
+- `mission-control://risks/summary`
 - `mission-control://projects/{project_id}/risk-register`
+- `mission-control://projects/{project_id}/risks/summary`
 - `mission-control://projects/{project_id}/agent-contracts`
 - `mission-control://projects/{project_id}/validation-summary`
 - `mission-control://projects/{project_id}/validation-coverage/summary`
@@ -92,10 +96,12 @@ Mission Control resources are read-only context surfaces for Codex chat.
 - recovery plans and recovery plan preview expose persisted rescue options plus current derived candidates before the bridge starts improvising “helpful” chaos
 - snapshots and restore-plan resources expose recovery checkpoints and safe rollback planning without making chat invent git advice from thin air
 - playbook and playbook recommendations expose the current execution template and nearby alternatives so chat can discuss project posture without re-deriving the same pattern match from scratch every time
+- playbook catalog resources expose the shipped playbook library itself so chat can compare templates without already having a project in hand
 - execution policy summary tells the bridge which runner, sandbox, approval, tool-routing, and validation posture is actually in effect before it suggests work that contradicts local policy
 - coordination summary exposes contract, lock, gate, conflict, and decision posture in one compact lane so chat can spot coordination drift before the swarm faceplants
 - latest swarm simulation exposes launch readiness, conflicts, bottlenecks, and approval pressure without requiring a write path or a persisted simulation row first
 - diagnostics, risk register, decision ledger, and path locks support stuck-run debugging without exposing raw internals
+- risk summary resources expose compact global and project-specific risk posture without making chat hand-count statuses from raw records like a raccoon with a spreadsheet
 - validation coverage summary exposes the backend's native read-only gap report directly, which is better than making chat trust a wrapper that guessed from the raw area list
 - agents-md status exposes whether repo-scoped agent instructions exist and where they live before chat pretends they are present or absent from vibes alone
 - the Webwright resource tells the bridge whether the local browser-agent runtime is actually ready or whether the user still has setup work to do

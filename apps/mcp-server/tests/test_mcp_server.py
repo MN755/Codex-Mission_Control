@@ -33,6 +33,8 @@ EXPECTED_RESOURCES = {
     "mission-control://integrations/catalog",
     "mission-control://integrations/connections",
     "mission-control://integrations/health",
+    "mission-control://playbooks",
+    "mission-control://playbooks/{playbook_key}",
     "mission-control://profile/summary",
     "mission-control://preferences/summary",
     "mission-control://subagent-policy/summary",
@@ -68,7 +70,9 @@ EXPECTED_RESOURCES = {
     "mission-control://projects/{project_id}/nvidia-validation-plan",
     "mission-control://projects/{project_id}/swarm-plan",
     "mission-control://projects/{project_id}/swarm/simulations/latest",
+    "mission-control://risks/summary",
     "mission-control://projects/{project_id}/risk-register",
+    "mission-control://projects/{project_id}/risks/summary",
     "mission-control://projects/{project_id}/agent-contracts",
     "mission-control://projects/{project_id}/validation-summary",
     "mission-control://projects/{project_id}/validation-coverage/summary",
@@ -1020,6 +1024,46 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
     )
     monkeypatch.setattr(
         client,
+        "list_playbooks",
+        lambda: [
+            {
+                "id": 1,
+                "key": "ai_local_tool",
+                "name": "AI Local Tool",
+                "description": "Headless local tool workflow.",
+                "suggested_interview_categories_json": ["product goal"],
+                "suggested_swarm_mode": "balanced",
+                "suggested_agent_archetypes_json": ["manager", "reviewer"],
+                "suggested_validation_recipe_json": [{"type": "pytest", "command": "python -m pytest"}],
+                "common_risks_json": ["policy drift"],
+                "suggested_docs_json": ["runbook"],
+                "typical_structure_json": ["apps/server", "plugins"],
+                "created_at": "2026-06-03T11:00:00Z",
+                "updated_at": "2026-06-03T11:30:00Z",
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        client,
+        "get_playbook_catalog_entry",
+        lambda playbook_key: {
+            "id": 1,
+            "key": playbook_key,
+            "name": "AI Local Tool",
+            "description": "Headless local tool workflow.",
+            "suggested_interview_categories_json": ["product goal"],
+            "suggested_swarm_mode": "balanced",
+            "suggested_agent_archetypes_json": ["manager", "reviewer"],
+            "suggested_validation_recipe_json": [{"type": "pytest", "command": "python -m pytest"}],
+            "common_risks_json": ["policy drift"],
+            "suggested_docs_json": ["runbook"],
+            "typical_structure_json": ["apps/server", "plugins"],
+            "created_at": "2026-06-03T11:00:00Z",
+            "updated_at": "2026-06-03T11:30:00Z",
+        },
+    )
+    monkeypatch.setattr(
+        client,
         "get_pending_questions",
         lambda project_id: [
             {
@@ -1401,6 +1445,26 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
     )
     monkeypatch.setattr(
         client,
+        "get_risk_summary",
+        lambda project_id=None: {
+            "project_id": project_id,
+            "total_count": 2 if project_id is not None else 5,
+            "open_count": 1 if project_id is not None else 3,
+            "status_counts": {"open": 1 if project_id is not None else 3, "mitigated": 1 if project_id is not None else 2},
+            "severity_counts": {"medium": 1, "high": 1 if project_id is not None else 2},
+            "top_risks": [
+                {
+                    "title": "Validation drift",
+                    "severity": "high",
+                    "likelihood": "medium",
+                    "status": "open",
+                    "project_id": project_id,
+                }
+            ],
+        },
+    )
+    monkeypatch.setattr(
+        client,
         "get_decision_ledger",
         lambda project_id: [
             {
@@ -1721,6 +1785,9 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
 
     profile_summary = client.read_resource("mission-control://profile/summary")
     global_preference_summary = client.read_resource("mission-control://preferences/summary")
+    playbooks = client.read_resource("mission-control://playbooks")
+    playbook_catalog_entry = client.read_resource("mission-control://playbooks/ai_local_tool")
+    global_risk_summary = client.read_resource("mission-control://risks/summary")
     subagent_policy_summary = client.read_resource("mission-control://subagent-policy/summary")
     pending_questions = client.read_resource("mission-control://projects/7/questions/pending")
     pending_approvals = client.read_resource("mission-control://projects/7/approvals/pending")
@@ -1745,6 +1812,7 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
     playbook_recommendations = client.read_resource("mission-control://projects/7/playbook/recommendations")
     project_preference_summary = client.read_resource("mission-control://projects/7/preferences/summary")
     effective_preferences = client.read_resource("mission-control://projects/7/preferences/effective")
+    project_risk_summary = client.read_resource("mission-control://projects/7/risks/summary")
     agent_contracts = client.read_resource("mission-control://projects/7/agent-contracts")
     validation_summary = client.read_resource("mission-control://projects/7/validation-summary")
     validation_coverage_summary = client.read_resource("mission-control://projects/7/validation-coverage/summary")
@@ -1770,6 +1838,10 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
     assert profile_summary["display_name"] == "Mike"
     assert global_preference_summary["scope"] == "global"
     assert global_preference_summary["item_count"] == 1
+    assert playbooks["playbooks"][0]["key"] == "ai_local_tool"
+    assert playbook_catalog_entry["key"] == "ai_local_tool"
+    assert global_risk_summary["project_id"] is None
+    assert global_risk_summary["open_count"] == 3
     assert subagent_policy_summary["default_mode"] == "limited_write"
     assert pending_questions["question_count"] == 1
     assert pending_questions["questions"][0]["category"] == "scope"
@@ -1811,6 +1883,8 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
     assert project_preference_summary["inherited_count"] == 1
     assert effective_preferences["item_count"] == 2
     assert effective_preferences["items"][1]["inherited"] is True
+    assert project_risk_summary["project_id"] == 7
+    assert project_risk_summary["top_risks"][0]["title"] == "Validation drift"
     assert agent_contracts["contract_count"] == 1
     assert agent_contracts["contracts"][0]["agent_name"] == "Reviewer"
     assert agent_contracts["contracts"][0]["allowed_paths"] == ["apps/server/src", "apps/server/tests"]

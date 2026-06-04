@@ -523,6 +523,12 @@ class MissionControlDaemonClient:
     def get_effective_preferences(self, project_id: int) -> list[dict[str, Any]]:
         return self._request("GET", f"/api/projects/{project_id}/preferences/effective")
 
+    def list_playbooks(self) -> list[dict[str, Any]]:
+        return self._request("GET", "/api/playbooks")
+
+    def get_playbook_catalog_entry(self, playbook_key: str) -> dict[str, Any]:
+        return self._request("GET", f"/api/playbooks/{playbook_key}")
+
     def get_runbook(self, project_id: int) -> dict[str, Any] | None:
         return self._request("GET", f"/api/projects/{project_id}/runbook")
 
@@ -727,6 +733,11 @@ class MissionControlDaemonClient:
 
     def get_risks(self, project_id: int) -> list[dict[str, Any]]:
         return self._request("GET", f"/api/projects/{project_id}/risks")
+
+    def get_risk_summary(self, project_id: int | None = None) -> dict[str, Any]:
+        if project_id is None:
+            return self._request("GET", "/api/risks/summary")
+        return self._request("GET", f"/api/projects/{project_id}/risks/summary")
 
     def get_validation_coverage(self, project_id: int) -> list[dict[str, Any]]:
         return self._request("GET", f"/api/projects/{project_id}/validation-coverage")
@@ -1679,6 +1690,12 @@ class MissionControlDaemonClient:
             return self.get_profile_summary()
         if len(parts) >= 2 and parts[0] == "preferences" and parts[1] == "summary":
             return self.get_global_preference_summary()
+        if len(parts) >= 1 and parts[0] == "playbooks":
+            if len(parts) == 1:
+                return {"playbooks": self.list_playbooks()}
+            return self.get_playbook_catalog_entry(parts[1])
+        if len(parts) >= 2 and parts[0] == "risks" and parts[1] == "summary":
+            return self.get_risk_summary()
         if len(parts) >= 2 and parts[0] == "subagent-policy" and parts[1] == "summary":
             return self.get_subagent_policy_summary()
         if len(parts) >= 5 and parts[0] == "projects" and parts[2] == "orchestrations":
@@ -1743,6 +1760,8 @@ class MissionControlDaemonClient:
                 return self.get_latest_swarm_simulation(project_id)
             if kind == "risk-register":
                 return self._summarize_risks(project_id, self.get_risks(project_id))
+            if kind == "risks" and len(parts) == 4 and parts[3] == "summary":
+                return self.get_risk_summary(project_id)
             if kind == "agent-contracts":
                 return self._summarize_agent_contracts(project_id, self.get_agent_contracts(project_id))
             if kind == "validation-summary":
