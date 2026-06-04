@@ -2605,9 +2605,9 @@ class MissionControlDaemonClient:
         if not uri.startswith("mission-control://"):
             raise RuntimeError("Unsupported Mission Control resource URI.")
         parts = [segment for segment in uri.removeprefix("mission-control://").split("/") if segment]
-        if len(parts) >= 1 and parts[0] == "agent-archetypes":
+        if len(parts) == 1 and parts[0] == "agent-archetypes":
             return self._summarize_agent_archetypes(self.get_agent_archetypes())
-        if len(parts) >= 2 and parts[0] == "capabilities":
+        if len(parts) == 2 and parts[0] == "capabilities":
             if parts[1] == "benchmarks":
                 return self._summarize_capability_benchmarks(self.get_capability_benchmarks())
             if parts[1] == "matrix":
