@@ -45,6 +45,7 @@ EXPECTED_RESOURCES = [
     "mission-control://projects/{project_id}/orchestrations/active",
     "mission-control://projects/{project_id}/status",
     "mission-control://projects/{project_id}/agents",
+    "mission-control://projects/{project_id}/agents/{agent_id}/logs",
     "mission-control://projects/{project_id}/pending-decisions",
     "mission-control://projects/{project_id}/questions/pending",
     "mission-control://projects/{project_id}/approvals/pending",
@@ -294,6 +295,7 @@ def test_docs_explain_resources_prompts_and_headless_boundary() -> None:
     assert "mission-control://projects/{project_id}/orchestrations/{orchestration_id}/status-summary" in resources_content
     assert "mission-control://projects/{project_id}/orchestrations/{orchestration_id}/event-digest" in resources_content
     assert "mission-control://projects/{project_id}/orchestrations/{orchestration_id}/handoff-summary" in resources_content
+    assert "mission-control://projects/{project_id}/agents/{agent_id}/logs" in resources_content
     assert "mission-control://projects/{project_id}/questions/pending" in resources_content
     assert "mission-control://projects/{project_id}/approvals/pending" in resources_content
     assert "mission-control://system/auth-jobs/{job_id}" in resources_content

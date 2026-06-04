@@ -156,6 +156,7 @@
     "mission-control://projects/{project_id}/orchestrations/active",
     "mission-control://projects/{project_id}/status",
     "mission-control://projects/{project_id}/agents",
+    "mission-control://projects/{project_id}/agents/{agent_id}/logs",
     "mission-control://projects/{project_id}/pending-decisions",
     "mission-control://projects/{project_id}/questions/pending",
     "mission-control://projects/{project_id}/approvals/pending",

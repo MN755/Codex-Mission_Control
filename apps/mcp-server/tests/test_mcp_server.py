@@ -28,6 +28,7 @@ EXPECTED_RESOURCES = {
     "mission-control://projects/{project_id}/orchestrations/active",
     "mission-control://projects/{project_id}/status",
     "mission-control://projects/{project_id}/agents",
+    "mission-control://projects/{project_id}/agents/{agent_id}/logs",
     "mission-control://projects/{project_id}/pending-decisions",
     "mission-control://projects/{project_id}/questions/pending",
     "mission-control://projects/{project_id}/approvals/pending",
@@ -1305,6 +1306,15 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
             "preferred_build_command": "python -m build",
             "context_window_hint": 32000,
             "updated_at": "2026-06-03T12:35:00Z",
+        },
+    )
+    monkeypatch.setattr(
+        client,
+        "get_agent_logs",
+        lambda project_id, agent_id: {
+            "agent_id": agent_id,
+            "logs_path": f"C:/demo/runtime/{agent_id}.log",
+            "content": "starting agent\nrunning validation lane\nwaiting for approval",
         },
     )
     monkeypatch.setattr(
@@ -3058,6 +3068,7 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
     pending_questions = client.read_resource("mission-control://projects/7/questions/pending")
     pending_approvals = client.read_resource("mission-control://projects/7/approvals/pending")
     project_status_summary = client.read_resource("mission-control://projects/7/status-summary")
+    agent_logs = client.read_resource("mission-control://projects/7/agents/15/logs")
     event_digest = client.read_resource("mission-control://projects/7/event-digest")
     handoff_summary = client.read_resource("mission-control://projects/7/handoff-summary")
     snapshot = client.read_resource("mission-control://projects/7/operator-snapshot")
@@ -3207,6 +3218,9 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
     assert pending_approvals["approval_count"] == 1
     assert pending_approvals["approvals"][0]["risk_level"] == "medium"
     assert project_status_summary["message_type"] == "status_summary"
+    assert agent_logs["agent_id"] == 15
+    assert agent_logs["line_count"] == 3
+    assert agent_logs["tail_lines"][-1] == "waiting for approval"
     assert event_digest["message_type"] == "event_digest"
     assert handoff_summary["message_type"] == "handoff_ready"
     assert snapshot["project_name"] == "Demo"
@@ -3542,6 +3556,7 @@ def test_daemon_client_bridge_auth_protected_reads_include_token(monkeypatch) ->
     client.get_codebase_understanding(7)
     client.get_import_safety(7)
     client.get_project_settings(7)
+    client.get_agent_logs(7, 15)
     client.get_orchestration(14, project_id=7)
     client.get_status_summary(orchestration_id=14, project_id=7)
     client.get_event_digest(orchestration_id=14, project_id=7)
@@ -3607,6 +3622,7 @@ def test_daemon_client_bridge_auth_protected_reads_include_token(monkeypatch) ->
         ("GET", "/api/projects/7/codebase-understanding", True),
         ("GET", "/api/projects/7/import-safety", True),
         ("GET", "/api/settings", True),
+        ("GET", "/api/agents/15/logs", True),
         ("GET", "/api/orchestrations/14", True),
         ("GET", "/api/orchestrations/14/status-summary", True),
         ("GET", "/api/orchestrations/14/event-digest", True),

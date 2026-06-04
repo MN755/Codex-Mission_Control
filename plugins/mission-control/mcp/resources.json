@@ -329,6 +329,34 @@
       }
     },
     {
+      "uri_template": "mission-control://projects/{project_id}/agents/{agent_id}/logs",
+      "title": "Agent log tail",
+      "summary": "Project-scoped safe tail view of one agent log so chat can inspect recent agent output without exposing the full raw log stream.",
+      "support_status": "implemented",
+      "source_hint": {
+        "rest_endpoints": [
+          "/api/agents/{agent_id}/logs"
+        ]
+      },
+      "default_fields": [
+        "project_id",
+        "agent_id",
+        "logs_path",
+        "line_count",
+        "character_count",
+        "has_content",
+        "tail_lines"
+      ],
+      "redaction": {
+        "omit_fields": [
+          "full_log_content",
+          "stack_trace",
+          "secret_values"
+        ],
+        "notes": "Expose only a short recent tail of agent output, not the full raw log."
+      }
+    },
+    {
       "uri_template": "mission-control://projects/{project_id}/pending-decisions",
       "title": "Pending decisions",
       "summary": "Unified queue of approvals, manager questions, and orchestration decisions that need user input.",

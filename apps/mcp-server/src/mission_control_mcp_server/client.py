@@ -505,6 +505,9 @@ class MissionControlDaemonClient:
     def get_agents(self, project_id: int) -> list[dict[str, Any]]:
         return self._request("GET", f"/api/projects/{project_id}/agents")
 
+    def get_agent_logs(self, project_id: int, agent_id: int) -> dict[str, Any]:
+        return self._request("GET", f"/api/agents/{agent_id}/logs", params={"project_id": project_id})
+
     def get_agent_contracts(self, project_id: int) -> list[dict[str, Any]]:
         return self._request("GET", f"/api/projects/{project_id}/agent-contracts")
 
@@ -1221,6 +1224,21 @@ class MissionControlDaemonClient:
                 }
                 for agent in agents[:12]
             ],
+        }
+
+    def _summarize_agent_logs(self, project_id: int, agent_id: int, payload: dict[str, Any]) -> dict[str, Any]:
+        content = str(payload.get("content") or "")
+        lines = content.splitlines()
+        tail_lines = lines[-20:]
+        return {
+            "project_id": project_id,
+            "agent_id": agent_id,
+            "logs_path": payload.get("logs_path"),
+            "line_count": len(lines),
+            "character_count": len(content),
+            "has_content": bool(content.strip()),
+            "tail_lines": tail_lines,
+            "tail_preview": "\n".join(tail_lines),
         }
 
     def _summarize_agent_contracts(self, project_id: int, contracts: list[dict[str, Any]]) -> dict[str, Any]:
@@ -2511,6 +2529,8 @@ class MissionControlDaemonClient:
                 orchestration_id = self._maybe_orchestration_id(project_id=project_id)
                 status = self.get_status(orchestration_id=orchestration_id, project_id=project_id) if orchestration_id is not None else None
                 return self._summarize_project_status(project, status)
+            if kind == "agents" and len(parts) == 5 and parts[4] == "logs":
+                return self._summarize_agent_logs(project_id, int(parts[3]), self.get_agent_logs(project_id, int(parts[3])))
             if kind == "agents" and len(parts) == 4 and parts[3] == "reputation":
                 return self._summarize_agent_reputation(self.get_agent_reputation(project_id), project_id=project_id)
             if kind == "agents":
