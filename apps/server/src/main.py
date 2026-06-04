@@ -2747,6 +2747,24 @@ def ingest_subagent_batch_results(
     return SubagentBatchRead(**subagent_planner_service.serialize_batch(db, updated))
 
 
+@app.post("/api/projects/{project_id}/subagent-batches/{batch_id}/results", response_model=SubagentBatchRead)
+def ingest_project_subagent_batch_results(
+    project_id: int,
+    batch_id: int,
+    payload: SubagentBatchResultsIngestRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> SubagentBatchRead:
+    batch = _get_subagent_batch_or_404(db, batch_id)
+    _require_project_scope("Subagent batch", batch.project_id, project_id)
+    try:
+        updated = subagent_planner_service.ingest_results(db, batch, payload.model_dump())
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return SubagentBatchRead(**subagent_planner_service.serialize_batch(db, updated))
+
+
 @app.post("/api/projects/{project_id}/subagent-agents/generate", response_model=CustomCodexAgentsGenerateRead)
 def generate_custom_codex_agents(
     project_id: int,

@@ -543,6 +543,7 @@ def test_runtime_and_project_control_routes_require_token(client) -> None:
         assert raw_client.post(f"/api/projects/{project_id}/agents/1/pause").status_code == 401
         assert raw_client.post(f"/api/projects/{project_id}/tasks/1/start").status_code == 401
         assert raw_client.post(f"/api/projects/{project_id}/tasks/1/complete").status_code == 401
+        assert raw_client.post(f"/api/projects/{project_id}/subagent-batches/1/results", json={"results": []}).status_code == 401
         assert raw_client.post(
             f"/api/projects/{project_id}/runs/1/report",
             json={"agent": "x", "task_id": "1", "status": "done", "summary": "x", "files_changed": [], "tests_run": [], "blockers": [], "risks": [], "recommended_next_task": "none"},
