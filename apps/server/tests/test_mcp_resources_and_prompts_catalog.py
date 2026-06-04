@@ -275,6 +275,12 @@ EXPECTED_PROJECT_SOURCE_HINTS = {
     "mission-control://projects/{project_id}/instincts/preview": [
         "/api/projects/{project_id}/instincts/preview"
     ],
+    "mission-control://projects/{project_id}": [
+        "/api/projects/{project_id}"
+    ],
+    "mission-control://projects/{project_id}/details": [
+        "/api/projects/{project_id}/details"
+    ],
 }
 
 

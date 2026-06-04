@@ -1757,7 +1757,7 @@
       "support_status": "implemented",
       "source_hint": {
         "rest_endpoints": [
-          "/api/projects/{project_id}/details"
+          "/api/projects/{project_id}"
         ]
       },
       "default_fields": [
@@ -1936,7 +1936,7 @@
       "support_status": "implemented",
       "source_hint": {
         "rest_endpoints": [
-          "/api/projects/{project_id}"
+          "/api/projects/{project_id}/details"
         ]
       },
       "default_fields": [
