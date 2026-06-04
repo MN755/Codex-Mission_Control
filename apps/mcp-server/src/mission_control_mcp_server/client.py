@@ -2798,6 +2798,10 @@ class MissionControlDaemonClient:
                 return self._summarize_project_details(self.get_project(project_id))
             if kind == "swarm" and len(parts) == 4 and parts[3] == "preferences":
                 return self.get_swarm_preferences(project_id)
+            if kind == "swarm" and len(parts) == 4 and parts[3] == "plan":
+                prefs = self.get_swarm_preferences(project_id)
+                plan = self.get_swarm_plan(project_id)
+                return self._summarize_swarm_plan(project_id, plan, prefs)
             if kind == "swarm" and len(parts) == 4 and parts[3] == "events":
                 return self._summarize_swarm_events(project_id, self.get_swarm_events(project_id))
             if kind == "swarm" and len(parts) == 4 and parts[3] == "simulations":
