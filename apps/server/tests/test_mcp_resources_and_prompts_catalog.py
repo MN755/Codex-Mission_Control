@@ -257,6 +257,24 @@ EXPECTED_PROJECT_SOURCE_HINTS = {
         "/api/projects/{project_id}/orchestrations/{orchestration_id}/pending-decisions",
         "/api/projects/{project_id}/pending-decisions",
     ],
+    "mission-control://projects/{project_id}/swarm/plan": [
+        "/api/projects/{project_id}/swarm/plan"
+    ],
+    "mission-control://projects/{project_id}/swarm-plan": [
+        "/api/projects/{project_id}/swarm-plan"
+    ],
+    "mission-control://projects/{project_id}/risks": [
+        "/api/projects/{project_id}/risks"
+    ],
+    "mission-control://projects/{project_id}/risk-register": [
+        "/api/projects/{project_id}/risk-register"
+    ],
+    "mission-control://projects/{project_id}/instincts": [
+        "/api/projects/{project_id}/instincts"
+    ],
+    "mission-control://projects/{project_id}/instincts/preview": [
+        "/api/projects/{project_id}/instincts/preview"
+    ],
 }
 
 

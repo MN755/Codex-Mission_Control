@@ -3574,7 +3574,7 @@
       "support_status": "implemented",
       "source_hint": {
         "rest_endpoints": [
-          "/api/projects/{project_id}/swarm-plan"
+          "/api/projects/{project_id}/swarm/plan"
         ]
       },
       "default_fields": [
@@ -3605,8 +3605,7 @@
       "support_status": "implemented",
       "source_hint": {
         "rest_endpoints": [
-          "/api/projects/{project_id}/swarm/preferences",
-          "/api/projects/{project_id}/swarm/plan"
+          "/api/projects/{project_id}/swarm-plan"
         ]
       },
       "default_fields": [
@@ -3793,7 +3792,7 @@
       "support_status": "implemented",
       "source_hint": {
         "rest_endpoints": [
-          "/api/projects/{project_id}/risks"
+          "/api/projects/{project_id}/risk-register"
         ]
       },
       "default_fields": [
@@ -3818,7 +3817,7 @@
       "support_status": "implemented",
       "source_hint": {
         "rest_endpoints": [
-          "/api/projects/{project_id}/risk-register"
+          "/api/projects/{project_id}/risks"
         ]
       },
       "default_fields": [
@@ -4082,7 +4081,7 @@
       "support_status": "implemented",
       "source_hint": {
         "rest_endpoints": [
-          "/api/projects/{project_id}/instincts/preview"
+          "/api/projects/{project_id}/instincts"
         ]
       },
       "default_fields": [
@@ -4106,7 +4105,7 @@
       "support_status": "implemented",
       "source_hint": {
         "rest_endpoints": [
-          "/api/projects/{project_id}/instincts"
+          "/api/projects/{project_id}/instincts/preview"
         ]
       },
       "default_fields": [
