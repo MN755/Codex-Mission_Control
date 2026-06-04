@@ -565,6 +565,17 @@ class MissionControlDaemonClient:
     def get_integration_health(self) -> dict[str, Any]:
         return self._request("GET", "/api/integrations/health")
 
+    def get_system_status(self, project_id: int | None = None) -> dict[str, Any]:
+        if project_id is None:
+            return self._request("GET", "/api/system/status")
+        return self._request("GET", "/api/system/status", params={"project_id": project_id})
+
+    def get_startup_status(self) -> dict[str, Any]:
+        return self._request("GET", "/api/startup/status")
+
+    def get_project_widget_summary(self, project_id: int) -> dict[str, Any]:
+        return self._request("GET", f"/api/projects/{project_id}/widgets/summary")
+
     def import_host_integrations(self) -> dict[str, Any]:
         return self._request("POST", "/api/integrations/import-host-state")
 
@@ -1696,6 +1707,10 @@ class MissionControlDaemonClient:
             return self.get_playbook_catalog_entry(parts[1])
         if len(parts) >= 2 and parts[0] == "risks" and parts[1] == "summary":
             return self.get_risk_summary()
+        if len(parts) >= 2 and parts[0] == "system" and parts[1] == "status":
+            return self.get_system_status()
+        if len(parts) >= 2 and parts[0] == "startup" and parts[1] == "status":
+            return self.get_startup_status()
         if len(parts) >= 2 and parts[0] == "subagent-policy" and parts[1] == "summary":
             return self.get_subagent_policy_summary()
         if len(parts) >= 5 and parts[0] == "projects" and parts[2] == "orchestrations":
@@ -1814,6 +1829,8 @@ class MissionControlDaemonClient:
                     return self.get_project_preference_summary(project_id)
                 if len(parts) == 4 and parts[3] == "effective":
                     return self._summarize_effective_preferences(project_id, self.get_effective_preferences(project_id))
+            if kind == "widgets" and len(parts) == 4 and parts[3] == "summary":
+                return self.get_project_widget_summary(project_id)
             if kind == "execution-policy" and len(parts) == 4 and parts[3] == "summary":
                 return self.get_execution_policy_summary(project_id)
             if kind == "coordination" and len(parts) == 4 and parts[3] == "summary":

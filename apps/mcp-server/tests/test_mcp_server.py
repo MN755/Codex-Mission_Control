@@ -35,6 +35,8 @@ EXPECTED_RESOURCES = {
     "mission-control://integrations/health",
     "mission-control://playbooks",
     "mission-control://playbooks/{playbook_key}",
+    "mission-control://system/status",
+    "mission-control://startup/status",
     "mission-control://profile/summary",
     "mission-control://preferences/summary",
     "mission-control://subagent-policy/summary",
@@ -51,6 +53,7 @@ EXPECTED_RESOURCES = {
     "mission-control://projects/{project_id}/playbook/recommendations",
     "mission-control://projects/{project_id}/preferences/summary",
     "mission-control://projects/{project_id}/preferences/effective",
+    "mission-control://projects/{project_id}/widgets/summary",
     "mission-control://projects/{project_id}/workspace-tooling",
     "mission-control://projects/{project_id}/execution-policy/summary",
     "mission-control://projects/{project_id}/coordination/summary",
@@ -1465,6 +1468,138 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
     )
     monkeypatch.setattr(
         client,
+        "get_system_status",
+        lambda project_id=None: {
+            "selected_provider": "codex",
+            "selected_provider_label": "Codex",
+            "cli_detected": True,
+            "cli_path": "C:/Tools/codex.exe",
+            "cli_path_exists": True,
+            "cli_execution_available": True,
+            "cli_version": "1.0.0",
+            "login_status": "authenticated",
+            "auth_mode": "device_auth",
+            "authenticated": True,
+            "runtime_ready": True,
+            "runtime_summary": "Runtime is ready.",
+            "app_server_supported": True,
+            "app_server_handshake_status": "connected",
+            "app_server_transport": "http",
+            "effective_runner_mode": "auto",
+            "dry_run_available": True,
+            "runtime_directory": "C:/Runtime",
+            "diagnostics_directory": "C:/Runtime/diagnostics",
+            "repo_root": "C:/Repo",
+            "launcher_root": "C:/Launcher",
+            "plugin_source_root": "C:/Repo/plugins/mission-control",
+            "backend_host": "127.0.0.1",
+            "backend_port": 8010,
+            "backend_base_url": "http://127.0.0.1:8010",
+            "configured_backend_port": 8010,
+            "backend_binding_source": "config",
+            "frontend_port": 4173,
+            "active_runs": [],
+            "current_settings_summary": None,
+            "selected_manager_model": "gpt-5-codex",
+            "selected_default_worker_model": "gpt-5-codex",
+            "available_models": ["gpt-5-codex"],
+            "model_advisories": [],
+            "provider_statuses": [],
+            "mcp_servers": [],
+            "configured_mcp_servers": [],
+            "mcp_state": {"healthy": True},
+            "configured_plugins": ["mission-control"],
+            "local_skills": ["mission-control"],
+            "current_auth_job": None,
+            "notes": ["Runtime ready."],
+            "startup_summary": None,
+            "app_state_summary": None,
+        },
+    )
+    monkeypatch.setattr(
+        client,
+        "get_startup_status",
+        lambda: {
+            "mode": "normal",
+            "first_run_completed": True,
+            "onboarding_complete": True,
+            "setup_version_completed": "1.3.0",
+            "current_setup_version": "1.3.0",
+            "install_id": "install-demo",
+            "startup_attempt": 1,
+            "max_startup_attempts": 3,
+            "overall_status": "ready",
+            "backend_ready": True,
+            "checks": [
+                {
+                    "name": "backend",
+                    "required": True,
+                    "status": "passed",
+                    "summary": "Backend is reachable.",
+                    "details": {},
+                }
+            ],
+            "recommended_route": "dashboard",
+            "error_code": None,
+            "error_summary": None,
+            "diagnostic_report_path": None,
+            "degraded_reasons": [],
+            "failed_checks": [],
+            "status_source": "fresh",
+            "startup_started_at": "2026-06-03T12:00:00Z",
+            "last_completed_at": "2026-06-03T12:00:01Z",
+            "checked_at": "2026-06-03T12:00:02Z",
+        },
+    )
+    monkeypatch.setattr(
+        client,
+        "get_project_widget_summary",
+        lambda project_id: {
+            "scope": "project",
+            "project_id": project_id,
+            "instances": [
+                {
+                    "id": 3,
+                    "widget_type": "runbook_status",
+                    "title": "Runbook Status",
+                    "scope": "project",
+                    "project_id": project_id,
+                    "area": "sidebar",
+                    "size": "medium",
+                    "position": 0,
+                    "config_json": {},
+                    "created_at": "2026-06-03T12:30:00Z",
+                    "updated_at": "2026-06-03T12:31:00Z",
+                }
+            ],
+            "data": [
+                {
+                    "widget_instance_id": 3,
+                    "widget_type": "runbook_status",
+                    "title": "Runbook Status",
+                    "status": "ready",
+                    "data_json": {"exists": True},
+                    "empty_state": None,
+                    "warnings_json": [],
+                    "updated_at": "2026-06-03T12:31:00Z",
+                }
+            ],
+            "catalog": [
+                {
+                    "widget_type": "runbook_status",
+                    "title": "Runbook Status",
+                    "description": "Shows runbook readiness.",
+                    "scope": "project",
+                    "default_area": "sidebar",
+                    "default_size": "medium",
+                    "supports_multiple_instances": False,
+                    "config_schema_json": {},
+                }
+            ],
+        },
+    )
+    monkeypatch.setattr(
+        client,
         "get_decision_ledger",
         lambda project_id: [
             {
@@ -1788,6 +1923,8 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
     playbooks = client.read_resource("mission-control://playbooks")
     playbook_catalog_entry = client.read_resource("mission-control://playbooks/ai_local_tool")
     global_risk_summary = client.read_resource("mission-control://risks/summary")
+    system_status = client.read_resource("mission-control://system/status")
+    startup_status = client.read_resource("mission-control://startup/status")
     subagent_policy_summary = client.read_resource("mission-control://subagent-policy/summary")
     pending_questions = client.read_resource("mission-control://projects/7/questions/pending")
     pending_approvals = client.read_resource("mission-control://projects/7/approvals/pending")
@@ -1812,6 +1949,7 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
     playbook_recommendations = client.read_resource("mission-control://projects/7/playbook/recommendations")
     project_preference_summary = client.read_resource("mission-control://projects/7/preferences/summary")
     effective_preferences = client.read_resource("mission-control://projects/7/preferences/effective")
+    widget_summary = client.read_resource("mission-control://projects/7/widgets/summary")
     project_risk_summary = client.read_resource("mission-control://projects/7/risks/summary")
     agent_contracts = client.read_resource("mission-control://projects/7/agent-contracts")
     validation_summary = client.read_resource("mission-control://projects/7/validation-summary")
@@ -1842,6 +1980,8 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
     assert playbook_catalog_entry["key"] == "ai_local_tool"
     assert global_risk_summary["project_id"] is None
     assert global_risk_summary["open_count"] == 3
+    assert system_status["runtime_ready"] is True
+    assert startup_status["overall_status"] == "ready"
     assert subagent_policy_summary["default_mode"] == "limited_write"
     assert pending_questions["question_count"] == 1
     assert pending_questions["questions"][0]["category"] == "scope"
@@ -1883,6 +2023,8 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
     assert project_preference_summary["inherited_count"] == 1
     assert effective_preferences["item_count"] == 2
     assert effective_preferences["items"][1]["inherited"] is True
+    assert widget_summary["project_id"] == 7
+    assert widget_summary["instances"][0]["widget_type"] == "runbook_status"
     assert project_risk_summary["project_id"] == 7
     assert project_risk_summary["top_risks"][0]["title"] == "Validation drift"
     assert agent_contracts["contract_count"] == 1

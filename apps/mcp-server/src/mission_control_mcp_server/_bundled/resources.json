@@ -510,6 +510,72 @@
       }
     },
     {
+      "uri_template": "mission-control://system/status",
+      "title": "System status",
+      "summary": "Global runtime and provider readiness surface covering auth posture, CLI availability, backend wiring, MCP state, and active runs.",
+      "support_status": "implemented",
+      "source_hint": {
+        "rest_endpoints": [
+          "/api/system/status"
+        ]
+      },
+      "default_fields": [
+        "selected_provider",
+        "selected_provider_label",
+        "cli_detected",
+        "cli_execution_available",
+        "login_status",
+        "authenticated",
+        "runtime_ready",
+        "runtime_summary",
+        "backend_base_url",
+        "app_server_handshake_status",
+        "effective_runner_mode",
+        "active_runs",
+        "configured_plugins",
+        "notes"
+      ],
+      "redaction": {
+        "omit_fields": [
+          "raw_log",
+          "secret_values",
+          "private_paths_outside_workspace"
+        ],
+        "notes": "Expose readiness and configuration posture only, not secret-bearing auth material."
+      }
+    },
+    {
+      "uri_template": "mission-control://startup/status",
+      "title": "Startup status",
+      "summary": "Current startup-health view with overall status, failed checks, degraded reasons, and recommended route.",
+      "support_status": "implemented",
+      "source_hint": {
+        "rest_endpoints": [
+          "/api/startup/status"
+        ]
+      },
+      "default_fields": [
+        "mode",
+        "first_run_completed",
+        "onboarding_complete",
+        "overall_status",
+        "backend_ready",
+        "recommended_route",
+        "failed_checks",
+        "degraded_reasons",
+        "status_source",
+        "checks"
+      ],
+      "redaction": {
+        "omit_fields": [
+          "raw_log",
+          "secret_values",
+          "private_paths_outside_workspace"
+        ],
+        "notes": "Expose startup checks and readiness only."
+      }
+    },
+    {
       "uri_template": "mission-control://profile/summary",
       "title": "Profile summary",
       "summary": "Compact Mission Control app-profile summary covering provider choice, runner defaults, startup posture, and account readiness.",
@@ -947,6 +1013,32 @@
           "private_paths_outside_workspace"
         ],
         "notes": "Expose effective preference values and inheritance only."
+      }
+    },
+    {
+      "uri_template": "mission-control://projects/{project_id}/widgets/summary",
+      "title": "Project widget summary",
+      "summary": "Project-scoped summary of widget instances, current widget data, and the available widget catalog.",
+      "support_status": "implemented",
+      "source_hint": {
+        "rest_endpoints": [
+          "/api/projects/{project_id}/widgets/summary"
+        ]
+      },
+      "default_fields": [
+        "scope",
+        "project_id",
+        "instances",
+        "data",
+        "catalog"
+      ],
+      "redaction": {
+        "omit_fields": [
+          "raw_log",
+          "secret_values",
+          "private_paths_outside_workspace"
+        ],
+        "notes": "Expose widget presence and summarized data only."
       }
     },
     {
