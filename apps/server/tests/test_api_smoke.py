@@ -503,6 +503,9 @@ def test_runtime_and_project_control_routes_require_token(client) -> None:
         assert raw_client.get(f"/api/projects/{project_id}/orchestrations/1/events").status_code == 401
         assert raw_client.get(f"/api/projects/{project_id}/orchestrations/1/handoff").status_code == 401
         assert raw_client.get(f"/api/projects/{project_id}/orchestrations/1/pending-decisions").status_code == 401
+        assert raw_client.get(f"/api/projects/{project_id}/orchestrations/1/status-summary").status_code == 401
+        assert raw_client.get(f"/api/projects/{project_id}/orchestrations/1/event-digest").status_code == 401
+        assert raw_client.get(f"/api/projects/{project_id}/orchestrations/1/handoff-summary").status_code == 401
         assert raw_client.get(f"/api/projects/{project_id}/swarm/preferences").status_code == 401
         assert raw_client.post(f"/api/projects/{project_id}/swarm/plan").status_code == 401
         assert raw_client.post(f"/api/projects/{project_id}/swarm/spawn").status_code == 401

@@ -2307,6 +2307,20 @@ async def get_orchestration_status_summary(
     return BridgeMessageRead(**(await bridge_runtime_service.get_status_summary(db, project=project, orchestration=session)))
 
 
+@app.get("/api/projects/{project_id}/orchestrations/{orchestration_id}/status-summary", response_model=BridgeMessageRead)
+async def get_project_orchestration_status_summary(
+    project_id: int,
+    orchestration_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> BridgeMessageRead:
+    session = _get_orchestration_or_404(db, orchestration_id)
+    _require_project_scope("Orchestration session", session.project_id, project_id)
+    project = _get_project_or_404(db, session.project_id)
+    return BridgeMessageRead(**(await bridge_runtime_service.get_status_summary(db, project=project, orchestration=session)))
+
+
 @app.get("/api/projects/{project_id}/status-summary", response_model=BridgeMessageRead)
 async def get_project_status_summary(
     project_id: int,
@@ -2323,6 +2337,21 @@ def get_orchestration_event_digest(
     orchestration_id: int,
     request: Request,
     project_id: int = Query(...),
+    window: EventDigestWindow = Query(default="last_15_minutes"),
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> BridgeMessageRead:
+    session = _get_orchestration_or_404(db, orchestration_id)
+    _require_project_scope("Orchestration session", session.project_id, project_id)
+    project = _get_project_or_404(db, session.project_id)
+    return BridgeMessageRead(**bridge_runtime_service.get_event_digest(db, project=project, orchestration=session, window=window))
+
+
+@app.get("/api/projects/{project_id}/orchestrations/{orchestration_id}/event-digest", response_model=BridgeMessageRead)
+def get_project_orchestration_event_digest(
+    project_id: int,
+    orchestration_id: int,
+    request: Request,
     window: EventDigestWindow = Query(default="last_15_minutes"),
     db: Session = Depends(get_db),
     _: None = Depends(_require_bridge_token),
@@ -2350,6 +2379,20 @@ def get_orchestration_handoff_summary(
     orchestration_id: int,
     request: Request,
     project_id: int = Query(...),
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> BridgeMessageRead:
+    session = _get_orchestration_or_404(db, orchestration_id)
+    _require_project_scope("Orchestration session", session.project_id, project_id)
+    project = _get_project_or_404(db, session.project_id)
+    return BridgeMessageRead(**bridge_runtime_service.get_handoff_summary(db, project=project, orchestration=session))
+
+
+@app.get("/api/projects/{project_id}/orchestrations/{orchestration_id}/handoff-summary", response_model=BridgeMessageRead)
+def get_project_orchestration_handoff_summary(
+    project_id: int,
+    orchestration_id: int,
+    request: Request,
     db: Session = Depends(get_db),
     _: None = Depends(_require_bridge_token),
 ) -> BridgeMessageRead:

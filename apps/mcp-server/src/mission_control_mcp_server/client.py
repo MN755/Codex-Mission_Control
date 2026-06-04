@@ -417,7 +417,7 @@ class MissionControlDaemonClient:
         resolved_id = self._maybe_orchestration_id(orchestration_id=orchestration_id, project_id=project_id)
         if resolved_id is not None:
             resolved_project_id = self._project_id_for_orchestration(resolved_id, project_id=project_id)
-            return self._request("GET", f"/api/orchestrations/{resolved_id}/status-summary", params={"project_id": resolved_project_id})
+            return self._request("GET", f"/api/projects/{resolved_project_id}/orchestrations/{resolved_id}/status-summary")
         if project_id is None:
             raise RuntimeError("Mission Control status summary requires an orchestration_id or project_id.")
         return self._request("GET", f"/api/projects/{project_id}/status-summary")
@@ -479,7 +479,7 @@ class MissionControlDaemonClient:
         resolved_id = self._maybe_orchestration_id(orchestration_id=orchestration_id, project_id=project_id)
         if resolved_id is not None:
             resolved_project_id = self._project_id_for_orchestration(resolved_id, project_id=project_id)
-            return self._request("GET", f"/api/orchestrations/{resolved_id}/event-digest", params={"window": window, "project_id": resolved_project_id})
+            return self._request("GET", f"/api/projects/{resolved_project_id}/orchestrations/{resolved_id}/event-digest", params={"window": window})
         if project_id is None:
             raise RuntimeError("Event digest requires an orchestration_id or project_id.")
         return self._request("GET", f"/api/projects/{project_id}/event-digest", params={"window": window})
@@ -488,7 +488,7 @@ class MissionControlDaemonClient:
         resolved_id = self._maybe_orchestration_id(orchestration_id=orchestration_id, project_id=project_id)
         if resolved_id is not None:
             resolved_project_id = self._project_id_for_orchestration(resolved_id, project_id=project_id)
-            return self._request("GET", f"/api/orchestrations/{resolved_id}/handoff-summary", params={"project_id": resolved_project_id})
+            return self._request("GET", f"/api/projects/{resolved_project_id}/orchestrations/{resolved_id}/handoff-summary")
         if project_id is None:
             raise RuntimeError("Handoff summary requires an orchestration_id or project_id.")
         return self._request("GET", f"/api/projects/{project_id}/handoff-summary")
