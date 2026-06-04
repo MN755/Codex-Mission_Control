@@ -1705,6 +1705,8 @@ class MissionControlDaemonClient:
                 return self._summarize_decision_ledger(project_id, self.get_decision_ledger(project_id))
             if kind == "path-locks":
                 return self._summarize_path_locks(project_id, self.get_path_locks(project_id))
+            if kind == "agents-md" and len(parts) == 4 and parts[3] == "status":
+                return self.get_agents_md_status(project_id)
             if kind == "operator-snapshot":
                 return self._summarize_operator_snapshot(project_id, self.get_operator_snapshot(project_id))
             if kind == "instincts":
@@ -1726,6 +1728,8 @@ class MissionControlDaemonClient:
                 if len(parts) == 4 and parts[3] == "summary":
                     return self.get_runbook_summary(project_id)
                 return self._summarize_runbook(project_id, self.get_runbook(project_id))
+            if kind == "safe-mode":
+                return self.get_safe_mode(project_id)
             if kind == "recovery-plans":
                 if len(parts) == 4 and parts[3] == "preview":
                     return self.get_recovery_plans_preview(project_id)

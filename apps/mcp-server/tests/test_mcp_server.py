@@ -39,6 +39,7 @@ EXPECTED_RESOURCES = {
     "mission-control://projects/{project_id}/integrations/{family}",
     "mission-control://projects/{project_id}/runbook",
     "mission-control://projects/{project_id}/runbook/summary",
+    "mission-control://projects/{project_id}/safe-mode",
     "mission-control://projects/{project_id}/recovery-plans",
     "mission-control://projects/{project_id}/recovery-plans/preview",
     "mission-control://projects/{project_id}/snapshots",
@@ -69,6 +70,7 @@ EXPECTED_RESOURCES = {
     "mission-control://projects/{project_id}/validation-summary",
     "mission-control://projects/{project_id}/decision-ledger",
     "mission-control://projects/{project_id}/path-locks",
+    "mission-control://projects/{project_id}/agents-md/status",
     "mission-control://projects/{project_id}/operator-snapshot",
     "mission-control://projects/{project_id}/instincts",
     "mission-control://projects/{project_id}/verification-brief",
@@ -1098,6 +1100,23 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
     )
     monkeypatch.setattr(
         client,
+        "get_safe_mode",
+        lambda project_id: {
+            "project_id": project_id,
+            "enabled": True,
+            "require_all_command_approvals": True,
+            "restrict_to_workspace": True,
+            "bridge_message": {
+                "message_type": "safe_mode",
+                "title": "Mission Control safe mode",
+                "summary": "Safe mode enabled.",
+                "fallback_markdown": "## Safe Mode\n",
+                "user_action_required": False,
+            },
+        },
+    )
+    monkeypatch.setattr(
+        client,
         "get_recovery_plans",
         lambda project_id: [
             {
@@ -1223,6 +1242,18 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
                 },
             }
         ],
+    )
+    monkeypatch.setattr(
+        client,
+        "get_agents_md_status",
+        lambda project_id: {
+            "project_id": project_id,
+            "has_agents_md": True,
+            "status": "ready",
+            "path": ".agents/AGENTS.md",
+            "last_generated_at": "2026-06-03T13:25:00Z",
+            "summary": "Repo-scoped agent instructions are present.",
+        },
     )
     monkeypatch.setattr(
         client,
@@ -1583,6 +1614,7 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
     tooling = client.read_resource("mission-control://projects/7/workspace-tooling")
     runbook = client.read_resource("mission-control://projects/7/runbook")
     runbook_summary = client.read_resource("mission-control://projects/7/runbook/summary")
+    safe_mode = client.read_resource("mission-control://projects/7/safe-mode")
     recovery_plans = client.read_resource("mission-control://projects/7/recovery-plans")
     recovery_plans_preview = client.read_resource("mission-control://projects/7/recovery-plans/preview")
     snapshots = client.read_resource("mission-control://projects/7/snapshots")
@@ -1593,6 +1625,7 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
     decision_ledger = client.read_resource("mission-control://projects/7/decision-ledger")
     execution_policy = client.read_resource("mission-control://projects/7/execution-policy/summary")
     coordination = client.read_resource("mission-control://projects/7/coordination/summary")
+    agents_md_status = client.read_resource("mission-control://projects/7/agents-md/status")
     tensorflow_catalog = client.read_resource("mission-control://projects/7/tensorflow/features")
     tensorflow_bundle = client.read_resource("mission-control://projects/7/tensorflow/features/keras_scaffold")
     pytorch_catalog = client.read_resource("mission-control://projects/7/pytorch/features")
@@ -1633,6 +1666,8 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
     assert runbook["generated_from_handoff_id"] == 3
     assert runbook_summary["section_count"] == 2
     assert runbook_summary["run_commands"] == ["python -m pytest"]
+    assert safe_mode["enabled"] is True
+    assert safe_mode["bridge_message"]["summary"] == "Safe mode enabled."
     assert recovery_plans["recovery_plan_count"] == 1
     assert recovery_plans["plans"][0]["selected_action"] == "rerun_validation"
     assert recovery_plans_preview["suggested_action_count"] == 2
@@ -1654,6 +1689,8 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
     assert execution_policy["approval_required_tools"] == ["git push"]
     assert coordination["decision_count"] == 4
     assert coordination["low_confidence_categories"] == ["validation"]
+    assert agents_md_status["has_agents_md"] is True
+    assert agents_md_status["path"] == ".agents/AGENTS.md"
     assert tensorflow_catalog["feature_count"] == 1
     assert tensorflow_bundle["feature_id"] == "keras_scaffold"
     assert pytorch_catalog["feature_count"] == 1

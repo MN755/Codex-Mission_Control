@@ -56,6 +56,7 @@ EXPECTED_RESOURCES = [
     "mission-control://projects/{project_id}/integrations/{family}",
     "mission-control://projects/{project_id}/runbook",
     "mission-control://projects/{project_id}/runbook/summary",
+    "mission-control://projects/{project_id}/safe-mode",
     "mission-control://projects/{project_id}/recovery-plans",
     "mission-control://projects/{project_id}/recovery-plans/preview",
     "mission-control://projects/{project_id}/snapshots",
@@ -86,6 +87,7 @@ EXPECTED_RESOURCES = [
     "mission-control://projects/{project_id}/validation-summary",
     "mission-control://projects/{project_id}/decision-ledger",
     "mission-control://projects/{project_id}/path-locks",
+    "mission-control://projects/{project_id}/agents-md/status",
     "mission-control://projects/{project_id}/operator-snapshot",
     "mission-control://projects/{project_id}/instincts",
     "mission-control://projects/{project_id}/verification-brief",
@@ -220,6 +222,7 @@ def test_docs_explain_resources_prompts_and_headless_boundary() -> None:
     assert "mission-control://projects/{project_id}/capability-report/{section_key}" in resources_content
     assert "mission-control://projects/{project_id}/runbook" in resources_content
     assert "mission-control://projects/{project_id}/runbook/summary" in resources_content
+    assert "mission-control://projects/{project_id}/safe-mode" in resources_content
     assert "mission-control://projects/{project_id}/recovery-plans" in resources_content
     assert "mission-control://projects/{project_id}/recovery-plans/preview" in resources_content
     assert "mission-control://projects/{project_id}/snapshots" in resources_content
@@ -236,6 +239,7 @@ def test_docs_explain_resources_prompts_and_headless_boundary() -> None:
     assert "mission-control://projects/{project_id}/execution-policy/summary" in resources_content
     assert "mission-control://projects/{project_id}/coordination/summary" in resources_content
     assert "mission-control://projects/{project_id}/swarm/simulations/latest" in resources_content
+    assert "mission-control://projects/{project_id}/agents-md/status" in resources_content
     assert "mission-control://projects/{project_id}/tensorflow/features" in resources_content
     assert "mission-control://projects/{project_id}/tensorflow/features/{feature_id}" in resources_content
     assert "mission-control://projects/{project_id}/pytorch/features" in resources_content

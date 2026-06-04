@@ -633,6 +633,32 @@
       }
     },
     {
+      "uri_template": "mission-control://projects/{project_id}/safe-mode",
+      "title": "Safe mode status",
+      "summary": "Current safe-mode posture showing whether stricter approvals and workspace-only execution guardrails are enabled.",
+      "support_status": "implemented",
+      "source_hint": {
+        "rest_endpoints": [
+          "/api/projects/{project_id}/safe-mode"
+        ]
+      },
+      "default_fields": [
+        "project_id",
+        "enabled",
+        "require_all_command_approvals",
+        "restrict_to_workspace",
+        "bridge_message"
+      ],
+      "redaction": {
+        "omit_fields": [
+          "raw_log",
+          "secret_env",
+          "private_paths_outside_workspace"
+        ],
+        "notes": "Expose the current safe-mode guardrails only, not internal bridge state or raw logs."
+      }
+    },
+    {
       "uri_template": "mission-control://projects/{project_id}/recovery-plans",
       "title": "Recovery plans",
       "summary": "Stored project recovery plans summarized by trigger, status, and selected action.",
@@ -1460,6 +1486,33 @@
           "secret_paths_outside_workspace"
         ],
         "notes": "Expose coordination-safe lock summaries only."
+      }
+    },
+    {
+      "uri_template": "mission-control://projects/{project_id}/agents-md/status",
+      "title": "AGENTS.md status",
+      "summary": "Repo-scoped AGENTS.md detection status so the bridge knows whether project instructions exist and where they live.",
+      "support_status": "implemented",
+      "source_hint": {
+        "rest_endpoints": [
+          "/api/projects/{project_id}/agents-md/status"
+        ]
+      },
+      "default_fields": [
+        "project_id",
+        "has_agents_md",
+        "status",
+        "path",
+        "last_generated_at",
+        "summary"
+      ],
+      "redaction": {
+        "omit_fields": [
+          "raw_log",
+          "secret_env",
+          "private_paths_outside_workspace"
+        ],
+        "notes": "Expose AGENTS.md presence, path, and summary only."
       }
     },
     {

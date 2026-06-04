@@ -33,6 +33,7 @@ Mission Control resources are read-only context surfaces for Codex chat.
 - `mission-control://projects/{project_id}/integrations/{family}`
 - `mission-control://projects/{project_id}/runbook`
 - `mission-control://projects/{project_id}/runbook/summary`
+- `mission-control://projects/{project_id}/safe-mode`
 - `mission-control://projects/{project_id}/recovery-plans`
 - `mission-control://projects/{project_id}/recovery-plans/preview`
 - `mission-control://projects/{project_id}/snapshots`
@@ -63,6 +64,7 @@ Mission Control resources are read-only context surfaces for Codex chat.
 - `mission-control://projects/{project_id}/validation-summary`
 - `mission-control://projects/{project_id}/decision-ledger`
 - `mission-control://projects/{project_id}/path-locks`
+- `mission-control://projects/{project_id}/agents-md/status`
 - `mission-control://projects/{project_id}/operator-snapshot`
 - `mission-control://projects/{project_id}/instincts`
 - `mission-control://projects/{project_id}/verification-brief`
@@ -81,6 +83,7 @@ Mission Control resources are read-only context surfaces for Codex chat.
 - workspace tooling tells the bridge which repo-native helper lanes actually exist for intake, validation, and security before it recommends commands like a clown
 - profile summary and subagent policy summary expose the operator defaults that shape provider choice, approvals, and whether subagent bursts are even allowed before the bridge starts making heroic assumptions
 - runbook and runbook summary expose the current operational guide without forcing chat to scrape widget markdown like an animal
+- safe mode exposes whether Mission Control is currently enforcing the stricter approval and workspace-only guardrails before chat suggests something reckless
 - recovery plans and recovery plan preview expose persisted rescue options plus current derived candidates before the bridge starts improvising “helpful” chaos
 - snapshots and restore-plan resources expose recovery checkpoints and safe rollback planning without making chat invent git advice from thin air
 - playbook and playbook recommendations expose the current execution template and nearby alternatives so chat can discuss project posture without re-deriving the same pattern match from scratch every time
@@ -88,6 +91,7 @@ Mission Control resources are read-only context surfaces for Codex chat.
 - coordination summary exposes contract, lock, gate, conflict, and decision posture in one compact lane so chat can spot coordination drift before the swarm faceplants
 - latest swarm simulation exposes launch readiness, conflicts, bottlenecks, and approval pressure without requiring a write path or a persisted simulation row first
 - diagnostics, risk register, decision ledger, and path locks support stuck-run debugging without exposing raw internals
+- agents-md status exposes whether repo-scoped agent instructions exist and where they live before chat pretends they are present or absent from vibes alone
 - the Webwright resource tells the bridge whether the local browser-agent runtime is actually ready or whether the user still has setup work to do
 - the NVIDIA resources tell the bridge whether GPU-backed inference, deep research, local CUDA tooling, and Prometheus/DCGM telemetry are actually available before Mission Control leans on them
 - `nvidia-gpu-diagnostics` is a merged verdict, not a raw metrics dump
