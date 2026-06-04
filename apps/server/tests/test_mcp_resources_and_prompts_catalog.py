@@ -176,6 +176,7 @@ EXPECTED_RESOURCES = [
     "mission-control://projects/{project_id}/agents-md/status",
     "mission-control://projects/{project_id}/operator-snapshot",
     "mission-control://projects/{project_id}/instincts",
+    "mission-control://projects/{project_id}/instincts/preview",
     "mission-control://projects/{project_id}/verification-brief",
     "mission-control://projects/{project_id}/capability-report",
     "mission-control://projects/{project_id}/capability-report/{section_key}",
