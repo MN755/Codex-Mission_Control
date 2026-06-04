@@ -779,8 +779,23 @@ class MissionControlDaemonClient:
     def get_tool_catalog(self) -> list[dict[str, Any]]:
         return self._request("GET", "/api/tools")
 
+    def get_skills(self) -> list[dict[str, Any]]:
+        return self._request("GET", "/api/skills")
+
     def set_tool_permission(self, tool_id: str, permission_policy: str) -> dict[str, Any]:
         return self._request("PUT", f"/api/tools/{tool_id}/permission", json_body={"permission_policy": permission_policy})
+
+    def get_project_understanding(self, project_id: int) -> dict[str, Any]:
+        return self._request("GET", f"/api/projects/{project_id}/understanding")
+
+    def get_interview(self, project_id: int) -> dict[str, Any] | None:
+        return self._request("GET", f"/api/projects/{project_id}/interview")
+
+    def get_plan(self, project_id: int) -> dict[str, Any] | None:
+        return self._request("GET", f"/api/projects/{project_id}/plan")
+
+    def get_reservations(self, project_id: int) -> list[dict[str, Any]]:
+        return self._request("GET", f"/api/projects/{project_id}/reservations")
 
     def get_swarm_preferences(self, project_id: int) -> dict[str, Any]:
         return self._request("GET", f"/api/projects/{project_id}/swarm/preferences")
@@ -1628,6 +1643,128 @@ class MissionControlDaemonClient:
             "notes": [check.get("summary") for check in payload.get("health_checks", [])[:6] if check.get("summary")],
         }
 
+    def _summarize_skills(self, skills: list[dict[str, Any]]) -> dict[str, Any]:
+        categories = sorted({str(skill.get("category") or "uncategorized") for skill in skills})
+        return {
+            "skill_count": len(skills),
+            "categories": categories,
+            "skills": [
+                {
+                    "name": skill.get("name"),
+                    "label": skill.get("label"),
+                    "category": skill.get("category"),
+                    "status": skill.get("status"),
+                    "summary": self._safe_short(skill.get("summary")),
+                }
+                for skill in skills[:20]
+            ],
+        }
+
+    def _summarize_project_understanding(self, project_id: int, payload: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "project_id": project_id,
+            "summary": payload.get("summary"),
+            "known_fact_count": len(payload.get("known_facts_json") or {}),
+            "unknown_count": len(payload.get("unknowns_json") or {}),
+            "assumption_count": len(payload.get("assumptions_json") or []),
+            "constraint_count": len(payload.get("constraints_json") or []),
+            "confidence_by_category": payload.get("confidence_by_category_json") or {},
+            "known_facts": payload.get("known_facts_json") or {},
+            "unknowns": payload.get("unknowns_json") or {},
+            "assumptions": (payload.get("assumptions_json") or [])[:12],
+            "constraints": (payload.get("constraints_json") or [])[:12],
+            "updated_at": payload.get("updated_at"),
+        }
+
+    def _summarize_interview(self, project_id: int, payload: dict[str, Any] | None) -> dict[str, Any]:
+        if not payload:
+            return {
+                "project_id": project_id,
+                "exists": False,
+                "status": None,
+                "question_budget": 0,
+                "question_count": 0,
+                "questions_answered": 0,
+                "pending_questions": 0,
+                "manager_mode": None,
+                "understanding_summary": None,
+                "questions": [],
+            }
+        return {
+            "project_id": project_id,
+            "exists": True,
+            "id": payload.get("id"),
+            "status": payload.get("status"),
+            "question_budget": payload.get("question_budget"),
+            "question_count": payload.get("question_count"),
+            "questions_asked": payload.get("questions_asked"),
+            "questions_answered": payload.get("questions_answered"),
+            "questions_remaining": payload.get("questions_remaining"),
+            "pending_questions": payload.get("pending_questions"),
+            "manager_mode": payload.get("manager_mode"),
+            "stopped_early": payload.get("stopped_early"),
+            "stop_reason": payload.get("stop_reason"),
+            "understanding_summary": payload.get("understanding_summary"),
+            "assumptions": (payload.get("assumptions") or [])[:12],
+            "constraints": (payload.get("constraints") or [])[:12],
+            "generation_sources": (payload.get("generation_sources") or [])[:8],
+            "questions": [
+                {
+                    "id": question.get("id"),
+                    "index": question.get("index"),
+                    "question": self._safe_short(question.get("question")),
+                    "category": question.get("category"),
+                    "status": question.get("status"),
+                    "impact": question.get("impact"),
+                    "selected_option_id": question.get("selected_option_id"),
+                    "selected_text": question.get("selected_text"),
+                }
+                for question in (payload.get("questions") or [])[:12]
+            ],
+        }
+
+    def _summarize_plan(self, project_id: int, payload: dict[str, Any] | None) -> dict[str, Any]:
+        if not payload:
+            return {
+                "project_id": project_id,
+                "exists": False,
+                "status": None,
+                "version": None,
+                "summary_json": None,
+                "content_markdown": None,
+                "updated_at": None,
+            }
+        return {
+            "project_id": project_id,
+            "exists": True,
+            "id": payload.get("id"),
+            "status": payload.get("status"),
+            "version": payload.get("version"),
+            "summary_json": payload.get("summary_json"),
+            "content_markdown": payload.get("content_markdown"),
+            "created_at": payload.get("created_at"),
+            "updated_at": payload.get("updated_at"),
+        }
+
+    def _summarize_reservations(self, project_id: int, reservations: list[dict[str, Any]]) -> dict[str, Any]:
+        active = [reservation for reservation in reservations if reservation.get("released_at") is None]
+        return {
+            "project_id": project_id,
+            "reservation_count": len(reservations),
+            "active_reservation_count": len(active),
+            "reservations": [
+                {
+                    "id": reservation.get("id"),
+                    "task_id": reservation.get("task_id"),
+                    "agent_id": reservation.get("agent_id"),
+                    "path": reservation.get("path"),
+                    "created_at": reservation.get("created_at"),
+                    "released_at": reservation.get("released_at"),
+                }
+                for reservation in reservations[:16]
+            ],
+        }
+
     def _summarize_swarm_plan(self, project_id: int, plan: dict[str, Any] | None, prefs: dict[str, Any]) -> dict[str, Any]:
         if not plan:
             return {
@@ -1967,6 +2104,8 @@ class MissionControlDaemonClient:
         if len(parts) >= 2 and parts[0] == "widgets" and parts[1] == "catalog":
             scope = parts[2] if len(parts) >= 3 else None
             return {"scope": scope or "all", "catalog": self.get_widget_catalog(scope=scope)}
+        if len(parts) >= 1 and parts[0] == "skills":
+            return self._summarize_skills(self.get_skills())
         if len(parts) >= 2 and parts[0] == "subagent-policy" and parts[1] == "summary":
             return self.get_subagent_policy_summary()
         if len(parts) >= 5 and parts[0] == "projects" and parts[2] == "orchestrations":
@@ -2029,6 +2168,14 @@ class MissionControlDaemonClient:
                 return self._summarize_scope_creep(project_id, self.get_scope_creep(project_id))
             if kind == "codebase-understanding":
                 return self.get_codebase_understanding(project_id)
+            if kind == "understanding":
+                return self._summarize_project_understanding(project_id, self.get_project_understanding(project_id))
+            if kind == "interview":
+                return self._summarize_interview(project_id, self.get_interview(project_id))
+            if kind == "plan":
+                return self._summarize_plan(project_id, self.get_plan(project_id))
+            if kind == "reservations":
+                return self._summarize_reservations(project_id, self.get_reservations(project_id))
             if kind == "import-safety":
                 return self.get_import_safety(project_id)
             if kind == "diagnostics":

@@ -73,6 +73,7 @@ EXPECTED_RESOURCES = [
     "mission-control://widgets/catalog",
     "mission-control://widgets/catalog/{scope}",
     "mission-control://tools",
+    "mission-control://skills",
     "mission-control://handoffs",
     "mission-control://diagnostics/reports",
     "mission-control://profile/summary",
@@ -81,6 +82,9 @@ EXPECTED_RESOURCES = [
     "mission-control://projects/{project_id}/integrations",
     "mission-control://projects/{project_id}/integrations/{family}",
     "mission-control://projects/{project_id}/settings",
+    "mission-control://projects/{project_id}/understanding",
+    "mission-control://projects/{project_id}/interview",
+    "mission-control://projects/{project_id}/plan",
     "mission-control://projects/{project_id}/runbook",
     "mission-control://projects/{project_id}/runbook/summary",
     "mission-control://projects/{project_id}/safe-mode",
@@ -104,6 +108,7 @@ EXPECTED_RESOURCES = [
     "mission-control://projects/{project_id}/manager/messages",
     "mission-control://projects/{project_id}/manager/queue",
     "mission-control://projects/{project_id}/tasks",
+    "mission-control://projects/{project_id}/reservations",
     "mission-control://projects/{project_id}/events",
     "mission-control://projects/{project_id}/execution-policy/summary",
     "mission-control://projects/{project_id}/coordination/summary",
@@ -296,12 +301,16 @@ def test_docs_explain_resources_prompts_and_headless_boundary() -> None:
     assert "mission-control://widgets/catalog" in resources_content
     assert "mission-control://widgets/catalog/{scope}" in resources_content
     assert "mission-control://tools" in resources_content
+    assert "mission-control://skills" in resources_content
     assert "mission-control://handoffs" in resources_content
     assert "mission-control://diagnostics/reports" in resources_content
     assert "mission-control://profile/summary" in resources_content
     assert "mission-control://preferences/summary" in resources_content
     assert "mission-control://subagent-policy/summary" in resources_content
     assert "mission-control://projects/{project_id}/settings" in resources_content
+    assert "mission-control://projects/{project_id}/understanding" in resources_content
+    assert "mission-control://projects/{project_id}/interview" in resources_content
+    assert "mission-control://projects/{project_id}/plan" in resources_content
     assert "mission-control://projects/{project_id}/playbook" in resources_content
     assert "mission-control://projects/{project_id}/playbook/recommendations" in resources_content
     assert "mission-control://projects/{project_id}/context-packs" in resources_content
@@ -325,6 +334,7 @@ def test_docs_explain_resources_prompts_and_headless_boundary() -> None:
     assert "mission-control://projects/{project_id}/manager/messages" in resources_content
     assert "mission-control://projects/{project_id}/manager/queue" in resources_content
     assert "mission-control://projects/{project_id}/tasks" in resources_content
+    assert "mission-control://projects/{project_id}/reservations" in resources_content
     assert "mission-control://projects/{project_id}/events" in resources_content
     assert "mission-control://projects/{project_id}/execution-policy/summary" in resources_content
     assert "mission-control://projects/{project_id}/coordination/summary" in resources_content

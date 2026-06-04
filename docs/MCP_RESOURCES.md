@@ -50,6 +50,7 @@ Mission Control resources are read-only context surfaces for Codex chat.
 - `mission-control://widgets/catalog`
 - `mission-control://widgets/catalog/{scope}`
 - `mission-control://tools`
+- `mission-control://skills`
 - `mission-control://handoffs`
 - `mission-control://diagnostics/reports`
 - `mission-control://profile/summary`
@@ -58,6 +59,9 @@ Mission Control resources are read-only context surfaces for Codex chat.
 - `mission-control://projects/{project_id}/integrations`
 - `mission-control://projects/{project_id}/integrations/{family}`
 - `mission-control://projects/{project_id}/settings`
+- `mission-control://projects/{project_id}/understanding`
+- `mission-control://projects/{project_id}/interview`
+- `mission-control://projects/{project_id}/plan`
 - `mission-control://projects/{project_id}/runbook`
 - `mission-control://projects/{project_id}/runbook/summary`
 - `mission-control://projects/{project_id}/safe-mode`
@@ -81,6 +85,7 @@ Mission Control resources are read-only context surfaces for Codex chat.
 - `mission-control://projects/{project_id}/manager/messages`
 - `mission-control://projects/{project_id}/manager/queue`
 - `mission-control://projects/{project_id}/tasks`
+- `mission-control://projects/{project_id}/reservations`
 - `mission-control://projects/{project_id}/events`
 - `mission-control://projects/{project_id}/execution-policy/summary`
 - `mission-control://projects/{project_id}/coordination/summary`
@@ -132,7 +137,9 @@ Mission Control resources are read-only context surfaces for Codex chat.
 - codebase understanding, import safety, and project settings expose what the daemon thinks it knows about the repo and how cautiously it should import or operate before the bridge starts improvising
 - workspace tooling tells the bridge which repo-native helper lanes actually exist for intake, validation, and security before it recommends commands like a clown
 - tool catalog and swarm preferences expose the safe action surface and collaboration posture directly instead of forcing chat to infer them from unrelated endpoints
+- skill catalog exposes the shipped Mission Control skill lanes directly so chat can see what headless workflows already exist instead of bluffing from prompt names
 - workspace, current action, action backlog, manager messages, manager queue, tasks, events, handoffs, and diagnostic reports expose actual project motion directly instead of forcing chat to reconstruct operator state from scattered endpoint scraps
+- project understanding, interview, plan, and reservations expose the actual planning state machine and claimed-path posture directly instead of making chat infer strategy from downstream task fallout
 - agent archetypes, reputation trends, capability benchmarks, capability matrix, context packs, security policy, audit history, common risks, scope creep signals, and swarm activity surfaces expose planning posture and reusable operating context instead of making users reverse-engineer it from lower-level records
 - profile summary and subagent policy summary expose the operator defaults that shape provider choice, approvals, and whether subagent bursts are even allowed before the bridge starts making heroic assumptions
 - preference summary and effective preference resources expose global defaults, project overrides, and inherited values before the bridge starts making configuration assumptions from thin air
@@ -167,4 +174,4 @@ Mission Control resources are read-only context surfaces for Codex chat.
 
 ## Deliberate Non-Resources
 
-Some backend routes are still real code without MCP exposure, but profile summary, subagent policy summary, handoff evidence preview, recovery plan preview, playbook, latest swarm simulation, and the TensorFlow, PyTorch, and spatial starter catalogs are no longer among them.
+Some backend routes are still real code without MCP exposure, but profile summary, skill catalog, project understanding, interview, plan, reservations, subagent policy summary, handoff evidence preview, recovery plan preview, playbook, latest swarm simulation, and the TensorFlow, PyTorch, and spatial starter catalogs are no longer among them.

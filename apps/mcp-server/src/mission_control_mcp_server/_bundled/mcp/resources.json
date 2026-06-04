@@ -1062,6 +1062,30 @@
       }
     },
     {
+      "uri_template": "mission-control://skills",
+      "title": "Skill catalog",
+      "summary": "Global Mission Control skill catalog summarizing available skill lanes by category and readiness.",
+      "support_status": "implemented",
+      "source_hint": {
+        "rest_endpoints": [
+          "/api/skills"
+        ]
+      },
+      "default_fields": [
+        "skill_count",
+        "categories",
+        "skills"
+      ],
+      "redaction": {
+        "omit_fields": [
+          "raw_log",
+          "secret_values",
+          "private_paths_outside_workspace"
+        ],
+        "notes": "Expose skill metadata and short summaries only, not internal packaging or secret-bearing config."
+      }
+    },
+    {
       "uri_template": "mission-control://handoffs",
       "title": "Handoffs",
       "summary": "Global list of recent project handoffs so operators can review what is ready, blocked, or waiting for evidence.",
@@ -1286,6 +1310,94 @@
           "private_paths_outside_workspace"
         ],
         "notes": "Expose operational policy and preferred commands only, not secrets."
+      }
+    },
+    {
+      "uri_template": "mission-control://projects/{project_id}/understanding",
+      "title": "Project understanding",
+      "summary": "Project-scoped understanding summary with known facts, unknowns, assumptions, constraints, and confidence posture.",
+      "support_status": "implemented",
+      "source_hint": {
+        "rest_endpoints": [
+          "/api/projects/{project_id}/understanding"
+        ]
+      },
+      "default_fields": [
+        "project_id",
+        "summary",
+        "known_fact_count",
+        "unknown_count",
+        "assumption_count",
+        "constraint_count",
+        "confidence_by_category",
+        "updated_at"
+      ],
+      "redaction": {
+        "omit_fields": [
+          "secret_values",
+          "private_paths_outside_workspace",
+          "raw_log"
+        ],
+        "notes": "Expose structured understanding state only, not secret-bearing source artifacts."
+      }
+    },
+    {
+      "uri_template": "mission-control://projects/{project_id}/interview",
+      "title": "Project interview",
+      "summary": "Current project interview session summary with question progress, pending prompts, and understanding guidance.",
+      "support_status": "implemented",
+      "source_hint": {
+        "rest_endpoints": [
+          "/api/projects/{project_id}/interview"
+        ]
+      },
+      "default_fields": [
+        "project_id",
+        "exists",
+        "status",
+        "question_budget",
+        "question_count",
+        "questions_answered",
+        "pending_questions",
+        "manager_mode",
+        "understanding_summary",
+        "questions"
+      ],
+      "redaction": {
+        "omit_fields": [
+          "secret_values",
+          "private_paths_outside_workspace",
+          "raw_log"
+        ],
+        "notes": "Expose concise question progress and safe answers only, not secret-bearing transcripts."
+      }
+    },
+    {
+      "uri_template": "mission-control://projects/{project_id}/plan",
+      "title": "Project plan",
+      "summary": "Current project plan summary with version, status, rendered markdown, and structured milestone metadata.",
+      "support_status": "implemented",
+      "source_hint": {
+        "rest_endpoints": [
+          "/api/projects/{project_id}/plan"
+        ]
+      },
+      "default_fields": [
+        "project_id",
+        "exists",
+        "status",
+        "version",
+        "summary_json",
+        "content_markdown",
+        "updated_at"
+      ],
+      "redaction": {
+        "omit_fields": [
+          "secret_values",
+          "private_paths_outside_workspace",
+          "raw_log"
+        ],
+        "notes": "Expose plan content and structured summary only, not unrelated raw execution artifacts."
       }
     },
     {
@@ -1893,6 +2005,31 @@
           "private_paths_outside_workspace"
         ],
         "notes": "Expose task metadata only, not raw task transcripts."
+      }
+    },
+    {
+      "uri_template": "mission-control://projects/{project_id}/reservations",
+      "title": "Project reservations",
+      "summary": "Current path reservations showing which agents or tasks have claimed workspace paths and which claims are still active.",
+      "support_status": "implemented",
+      "source_hint": {
+        "rest_endpoints": [
+          "/api/projects/{project_id}/reservations"
+        ]
+      },
+      "default_fields": [
+        "project_id",
+        "reservation_count",
+        "active_reservation_count",
+        "reservations"
+      ],
+      "redaction": {
+        "omit_fields": [
+          "secret_values",
+          "private_paths_outside_workspace",
+          "raw_log"
+        ],
+        "notes": "Expose reservation metadata only, not hidden payloads or unrelated workspace internals."
       }
     },
     {

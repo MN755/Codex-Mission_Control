@@ -55,6 +55,7 @@ EXPECTED_RESOURCES = {
     "mission-control://widgets/catalog",
     "mission-control://widgets/catalog/{scope}",
     "mission-control://tools",
+    "mission-control://skills",
     "mission-control://handoffs",
     "mission-control://diagnostics/reports",
     "mission-control://profile/summary",
@@ -63,6 +64,9 @@ EXPECTED_RESOURCES = {
     "mission-control://projects/{project_id}/integrations",
     "mission-control://projects/{project_id}/integrations/{family}",
     "mission-control://projects/{project_id}/settings",
+    "mission-control://projects/{project_id}/understanding",
+    "mission-control://projects/{project_id}/interview",
+    "mission-control://projects/{project_id}/plan",
     "mission-control://projects/{project_id}/runbook",
     "mission-control://projects/{project_id}/runbook/summary",
     "mission-control://projects/{project_id}/safe-mode",
@@ -86,6 +90,7 @@ EXPECTED_RESOURCES = {
     "mission-control://projects/{project_id}/manager/messages",
     "mission-control://projects/{project_id}/manager/queue",
     "mission-control://projects/{project_id}/tasks",
+    "mission-control://projects/{project_id}/reservations",
     "mission-control://projects/{project_id}/events",
     "mission-control://projects/{project_id}/execution-policy/summary",
     "mission-control://projects/{project_id}/coordination/summary",
@@ -2487,6 +2492,112 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
             "metadata_json": {"semantic_backend": "python-ast-graph"},
         },
     )
+    monkeypatch.setattr(
+        client,
+        "get_skills",
+        lambda: [
+            {
+                "name": "mission-control",
+                "label": "Mission Control",
+                "category": "orchestration",
+                "status": "ready",
+                "summary": "Bridge skill for headless orchestration.",
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        client,
+        "get_project_understanding",
+        lambda project_id: {
+            "project_id": project_id,
+            "summary": "Repo is a headless orchestration bridge.",
+            "known_facts_json": {"runtime": "python", "ui_required": False},
+            "unknowns_json": {"deployment_topology": "not fully mapped"},
+            "assumptions_json": ["Dashboard remains optional."],
+            "constraints_json": ["Avoid UI edits unless asked."],
+            "confidence_by_category_json": {"architecture": 0.92, "deployment": 0.41},
+            "updated_at": "2026-06-03T12:00:00Z",
+        },
+    )
+    monkeypatch.setattr(
+        client,
+        "get_interview",
+        lambda project_id: {
+            "id": 4,
+            "project_id": project_id,
+            "question_budget": 6,
+            "questions_asked": 3,
+            "questions_remaining": 3,
+            "questions_generated": 3,
+            "questions_answered": 2,
+            "pending_questions": 1,
+            "generation_budget_remaining": 3,
+            "manager_mode": "guided",
+            "stopped_early": False,
+            "stop_reason": None,
+            "confidence": {"scope": 0.7},
+            "understanding_summary": "Need one more answer on deployment posture.",
+            "known_facts": {"runtime": "python"},
+            "unknowns": {"deployment": "pending"},
+            "assumptions": ["Single daemon instance."],
+            "constraints": ["No dashboard dependency."],
+            "generation_sources": ["manager_generated"],
+            "question_count": 3,
+            "current_index": 2,
+            "status": "active",
+            "questions": [
+                {
+                    "id": 11,
+                    "index": 0,
+                    "question": "Should the daemon support multi-host orchestration?",
+                    "category": "architecture",
+                    "status": "answered",
+                    "impact": "high",
+                    "selected_option_id": "single-host",
+                    "selected_text": "Single host is enough.",
+                },
+                {
+                    "id": 12,
+                    "index": 1,
+                    "question": "Do you need persisted approval history?",
+                    "category": "audit",
+                    "status": "pending",
+                    "impact": "medium",
+                    "selected_option_id": None,
+                    "selected_text": None,
+                },
+            ],
+        },
+    )
+    monkeypatch.setattr(
+        client,
+        "get_plan",
+        lambda project_id: {
+            "id": 8,
+            "project_id": project_id,
+            "version": 2,
+            "content_markdown": "## Manager plan\nShip the MCP bridge cleanup.",
+            "status": "draft",
+            "summary_json": {"milestones": ["Bridge parity", "Validation"], "risk_count": 2},
+            "created_at": "2026-06-03T11:00:00Z",
+            "updated_at": "2026-06-03T12:30:00Z",
+        },
+    )
+    monkeypatch.setattr(
+        client,
+        "get_reservations",
+        lambda project_id: [
+            {
+                "id": 51,
+                "project_id": project_id,
+                "task_id": 3,
+                "agent_id": 9,
+                "path": "apps/server/src/main.py",
+                "created_at": "2026-06-03T12:05:00Z",
+                "released_at": None,
+            }
+        ],
+    )
 
     profile_summary = client.read_resource("mission-control://profile/summary")
     global_preference_summary = client.read_resource("mission-control://preferences/summary")
@@ -2512,6 +2623,7 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
     widget_catalog = client.read_resource("mission-control://widgets/catalog")
     project_widget_catalog = client.read_resource("mission-control://widgets/catalog/project")
     tool_catalog = client.read_resource("mission-control://tools")
+    skills = client.read_resource("mission-control://skills")
     handoffs = client.read_resource("mission-control://handoffs")
     diagnostic_reports = client.read_resource("mission-control://diagnostics/reports")
     subagent_policy_summary = client.read_resource("mission-control://subagent-policy/summary")
@@ -2529,6 +2641,9 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
     codebase_understanding = client.read_resource("mission-control://projects/7/codebase-understanding")
     import_safety = client.read_resource("mission-control://projects/7/import-safety")
     project_settings = client.read_resource("mission-control://projects/7/settings")
+    project_understanding = client.read_resource("mission-control://projects/7/understanding")
+    interview = client.read_resource("mission-control://projects/7/interview")
+    plan = client.read_resource("mission-control://projects/7/plan")
     workspace = client.read_resource("mission-control://projects/7/workspace")
     tooling = client.read_resource("mission-control://projects/7/workspace-tooling")
     project_security_policy = client.read_resource("mission-control://projects/7/security/policy")
@@ -2578,6 +2693,7 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
     project_security_audit = client.read_resource("mission-control://projects/7/security/audit-log")
     scope_creep = client.read_resource("mission-control://projects/7/scope-creep")
     tasks = client.read_resource("mission-control://projects/7/tasks")
+    reservations = client.read_resource("mission-control://projects/7/reservations")
     events = client.read_resource("mission-control://projects/7/events")
     latest_simulation = client.read_resource("mission-control://projects/7/swarm/simulations/latest")
 
@@ -2615,6 +2731,8 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
     assert project_widget_catalog["catalog"][0]["scope"] == "project"
     assert tool_catalog["tool_count"] == 1
     assert tool_catalog["tools"][0]["name"] == "mission_control_attach_workspace"
+    assert skills["skill_count"] == 1
+    assert skills["skills"][0]["name"] == "mission-control"
     assert handoffs["handoff_count"] == 1
     assert handoffs["handoffs"][0]["project_name"] == "Demo"
     assert diagnostic_reports["report_count"] == 1
@@ -2641,6 +2759,14 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
     assert codebase_understanding["recommended_interview_mode"] == "targeted"
     assert import_safety["safe_to_import"] is True
     assert project_settings["preferred_runner_mode"] == "auto"
+    assert project_understanding["summary"] == "Repo is a headless orchestration bridge."
+    assert project_understanding["known_fact_count"] == 2
+    assert interview["exists"] is True
+    assert interview["question_count"] == 3
+    assert interview["questions"][0]["selected_option_id"] == "single-host"
+    assert plan["exists"] is True
+    assert plan["version"] == 2
+    assert plan["summary_json"]["risk_count"] == 2
     assert workspace["git_branch"] == "main"
     assert tooling["validation_commands"] == ["uv run pytest", "ruff check ."]
     assert project_security_policy["project_id"] == 7
@@ -2720,6 +2846,8 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
     assert scope_creep["signal_count"] == 1
     assert scope_creep["signals"][0]["suggested_action"] == "defer"
     assert tasks["task_count"] == 2
+    assert reservations["active_reservation_count"] == 1
+    assert reservations["reservations"][0]["path"] == "apps/server/src/main.py"
     assert events["event_count"] == 1
     assert latest_simulation["simulation_id"] == 17
     assert latest_simulation["persisted"] is False
@@ -2863,6 +2991,10 @@ def test_daemon_client_bridge_auth_protected_reads_include_token(monkeypatch) ->
     client.get_import_safety(7)
     client.get_project_settings(7)
     client.get_tool_catalog()
+    client.get_skills()
+    client.get_project_understanding(7)
+    client.get_interview(7)
+    client.get_plan(7)
     client.get_swarm_preferences(7)
     client.get_swarm_events(7)
     client.get_agent_archetypes()
@@ -2885,6 +3017,7 @@ def test_daemon_client_bridge_auth_protected_reads_include_token(monkeypatch) ->
     client.get_manager_messages(7)
     client.get_manager_queue(7)
     client.get_project_tasks(7)
+    client.get_reservations(7)
     client.get_project_events(7)
     client.list_handoffs()
     client.list_diagnostic_reports()
@@ -2897,6 +3030,10 @@ def test_daemon_client_bridge_auth_protected_reads_include_token(monkeypatch) ->
         ("GET", "/api/projects/7/import-safety", True),
         ("GET", "/api/settings", True),
         ("GET", "/api/tools", True),
+        ("GET", "/api/skills", True),
+        ("GET", "/api/projects/7/understanding", True),
+        ("GET", "/api/projects/7/interview", True),
+        ("GET", "/api/projects/7/plan", True),
         ("GET", "/api/projects/7/swarm/preferences", True),
         ("GET", "/api/projects/7/swarm/events", True),
         ("GET", "/api/agent-archetypes", True),
@@ -2919,6 +3056,7 @@ def test_daemon_client_bridge_auth_protected_reads_include_token(monkeypatch) ->
         ("GET", "/api/projects/7/manager/messages", True),
         ("GET", "/api/projects/7/manager/queue", True),
         ("GET", "/api/projects/7/tasks", True),
+        ("GET", "/api/projects/7/reservations", True),
         ("GET", "/api/projects/7/events", True),
         ("GET", "/api/handoffs", True),
         ("GET", "/api/diagnostics/reports", True),
@@ -2958,6 +3096,43 @@ def test_daemon_client_runbook_resource_returns_stable_missing_payload(monkeypat
         "content_markdown": None,
         "generated_from_handoff_id": None,
         "generated_at": None,
+        "updated_at": None,
+    }
+
+
+def test_daemon_client_interview_resource_returns_stable_missing_payload(monkeypatch) -> None:
+    client = MissionControlDaemonClient(base_url="http://127.0.0.1:8010", timeout=0.1)
+    monkeypatch.setattr(client, "get_interview", lambda project_id: None)
+
+    payload = client.read_resource("mission-control://projects/7/interview")
+
+    assert payload == {
+        "project_id": 7,
+        "exists": False,
+        "status": None,
+        "question_budget": 0,
+        "question_count": 0,
+        "questions_answered": 0,
+        "pending_questions": 0,
+        "manager_mode": None,
+        "understanding_summary": None,
+        "questions": [],
+    }
+
+
+def test_daemon_client_plan_resource_returns_stable_missing_payload(monkeypatch) -> None:
+    client = MissionControlDaemonClient(base_url="http://127.0.0.1:8010", timeout=0.1)
+    monkeypatch.setattr(client, "get_plan", lambda project_id: None)
+
+    payload = client.read_resource("mission-control://projects/7/plan")
+
+    assert payload == {
+        "project_id": 7,
+        "exists": False,
+        "status": None,
+        "version": None,
+        "summary_json": None,
+        "content_markdown": None,
         "updated_at": None,
     }
 
