@@ -62,7 +62,9 @@ EXPECTED_RESOURCES = {
     "mission-control://diagnostics/reports",
     "mission-control://projects",
     "mission-control://profile/summary",
+    "mission-control://preferences",
     "mission-control://preferences/summary",
+    "mission-control://subagent-policy",
     "mission-control://subagent-policy/summary",
     "mission-control://projects/{project_id}/integrations",
     "mission-control://projects/{project_id}/integrations/{family}",
@@ -82,8 +84,11 @@ EXPECTED_RESOURCES = {
     "mission-control://projects/{project_id}/playbook/recommendations",
     "mission-control://projects/{project_id}/context-packs",
     "mission-control://projects/{project_id}/agents/reputation",
+    "mission-control://projects/{project_id}/preferences",
     "mission-control://projects/{project_id}/preferences/summary",
     "mission-control://projects/{project_id}/preferences/effective",
+    "mission-control://projects/{project_id}/subagent-batches",
+    "mission-control://projects/{project_id}/subagent-batches/{batch_id}",
     "mission-control://projects/{project_id}/widgets/summary",
     "mission-control://projects/{project_id}/widgets/instances",
     "mission-control://projects/{project_id}/workspace",
@@ -126,6 +131,7 @@ EXPECTED_RESOURCES = {
     "mission-control://projects/{project_id}/risks/summary",
     "mission-control://projects/{project_id}/agent-contracts",
     "mission-control://projects/{project_id}/validation-summary",
+    "mission-control://projects/{project_id}/validation-coverage",
     "mission-control://projects/{project_id}/validation-coverage/summary",
     "mission-control://projects/{project_id}/decision-ledger",
     "mission-control://projects/{project_id}/path-locks",
@@ -1302,6 +1308,45 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
     )
     monkeypatch.setattr(
         client,
+        "get_project_subagent_batches",
+        lambda project_id: [
+            {
+                "id": 51,
+                "project_id": project_id,
+                "status": "completed",
+                "task_type": "review",
+                "spawn_method": "codex_chat_bridge",
+                "requested_count": 2,
+                "approved_count": 2,
+                "completed_count": 2,
+                "failure_count": 0,
+                "created_at": "2026-06-03T12:46:00Z",
+                "updated_at": "2026-06-03T12:47:00Z",
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        client,
+        "get_subagent_batch",
+        lambda project_id, batch_id: {
+            "id": batch_id,
+            "project_id": project_id,
+            "status": "completed",
+            "task_type": "review",
+            "spawn_method": "codex_chat_bridge",
+            "requested_count": 2,
+            "approved_count": 2,
+            "completed_count": 2,
+            "failure_count": 0,
+            "approvals_required": False,
+            "summary_markdown": "## Batch summary\nTwo review agents completed successfully.",
+            "results": [{"agent_name": "Reviewer A", "status": "completed"}],
+            "created_at": "2026-06-03T12:46:00Z",
+            "updated_at": "2026-06-03T12:47:30Z",
+        },
+    )
+    monkeypatch.setattr(
+        client,
         "get_profile_summary",
         lambda: {
             "id": 1,
@@ -1418,6 +1463,43 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
             "editable_count": 1,
             "inherited_count": 0,
             "project_override_count": 0,
+        },
+    )
+    monkeypatch.setattr(
+        client,
+        "get_preferences",
+        lambda: [
+            {
+                "id": 11,
+                "key": "review_depth",
+                "value_json": "standard",
+                "source": "user",
+                "scope": "global",
+                "project_id": None,
+                "editable": True,
+                "created_at": "2026-06-03T12:20:00Z",
+                "updated_at": "2026-06-03T12:21:00Z",
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        client,
+        "get_subagent_policy",
+        lambda: {
+            "enabled": True,
+            "default_mode": "limited_write",
+            "sandbox_mode": "workspace-write",
+            "max_subagents_per_burst": 4,
+            "max_runtime_seconds": 1800,
+            "allow_file_edits": True,
+            "allow_commands": True,
+            "require_user_approval_above_count": 2,
+            "allowed_task_types_json": ["review", "planning", "failure_diagnosis"],
+            "default_spawn_method": "codex_chat_bridge",
+            "writes_allowed": True,
+            "read_only_default": False,
+            "command_capable": True,
+            "updated_at": "2026-06-03T12:22:00Z",
         },
     )
     monkeypatch.setattr(
@@ -1604,6 +1686,23 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
             "inherited_count": 1,
             "project_override_count": 1,
         },
+    )
+    monkeypatch.setattr(
+        client,
+        "get_project_preferences",
+        lambda project_id: [
+            {
+                "id": 21,
+                "key": "validation_depth",
+                "value_json": "release_grade",
+                "source": "user",
+                "scope": "project",
+                "project_id": project_id,
+                "editable": True,
+                "created_at": "2026-06-03T12:23:00Z",
+                "updated_at": "2026-06-03T12:24:00Z",
+            }
+        ],
     )
     monkeypatch.setattr(
         client,
@@ -1898,6 +1997,26 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
             "gaps": ["recovery"],
             "gap_count": 1,
         },
+    )
+    monkeypatch.setattr(
+        client,
+        "get_validation_coverage",
+        lambda project_id: [
+            {
+                "area": "api",
+                "coverage_status": "passed",
+                "evidence_summary": "Route smoke tests exist.",
+                "coverage_percent": 100,
+                "last_verified_at": "2026-06-03T12:25:00Z",
+            },
+            {
+                "area": "recovery",
+                "coverage_status": "failed",
+                "evidence_summary": "No recovery evidence yet.",
+                "coverage_percent": 0,
+                "last_verified_at": "2026-06-03T12:26:00Z",
+            },
+        ],
     )
     monkeypatch.setattr(
         client,
@@ -2708,6 +2827,7 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
     )
 
     profile_summary = client.read_resource("mission-control://profile/summary")
+    global_preferences = client.read_resource("mission-control://preferences")
     global_preference_summary = client.read_resource("mission-control://preferences/summary")
     agent_archetypes = client.read_resource("mission-control://agent-archetypes")
     global_agent_reputation = client.read_resource("mission-control://agents/reputation")
@@ -2737,6 +2857,7 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
     handoffs = client.read_resource("mission-control://handoffs")
     diagnostic_reports = client.read_resource("mission-control://diagnostics/reports")
     projects = client.read_resource("mission-control://projects")
+    subagent_policy = client.read_resource("mission-control://subagent-policy")
     subagent_policy_summary = client.read_resource("mission-control://subagent-policy/summary")
     pending_questions = client.read_resource("mission-control://projects/7/questions/pending")
     pending_approvals = client.read_resource("mission-control://projects/7/approvals/pending")
@@ -2774,6 +2895,7 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
     playbook_recommendations = client.read_resource("mission-control://projects/7/playbook/recommendations")
     context_packs = client.read_resource("mission-control://projects/7/context-packs")
     project_agent_reputation = client.read_resource("mission-control://projects/7/agents/reputation")
+    project_preferences = client.read_resource("mission-control://projects/7/preferences")
     project_preference_summary = client.read_resource("mission-control://projects/7/preferences/summary")
     effective_preferences = client.read_resource("mission-control://projects/7/preferences/effective")
     widget_summary = client.read_resource("mission-control://projects/7/widgets/summary")
@@ -2781,6 +2903,7 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
     project_risk_summary = client.read_resource("mission-control://projects/7/risks/summary")
     agent_contracts = client.read_resource("mission-control://projects/7/agent-contracts")
     validation_summary = client.read_resource("mission-control://projects/7/validation-summary")
+    validation_coverage = client.read_resource("mission-control://projects/7/validation-coverage")
     validation_coverage_summary = client.read_resource("mission-control://projects/7/validation-coverage/summary")
     decision_ledger = client.read_resource("mission-control://projects/7/decision-ledger")
     execution_policy = client.read_resource("mission-control://projects/7/execution-policy/summary")
@@ -2800,6 +2923,8 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
     local_runtime = client.read_resource("mission-control://projects/7/nvidia-local-runtime")
     validation_plan = client.read_resource("mission-control://projects/7/nvidia-validation-plan")
     swarm_preferences = client.read_resource("mission-control://projects/7/swarm/preferences")
+    subagent_batches = client.read_resource("mission-control://projects/7/subagent-batches")
+    subagent_batch = client.read_resource("mission-control://projects/7/subagent-batches/51")
     swarm_events = client.read_resource("mission-control://projects/7/swarm/events")
     swarm_simulations = client.read_resource("mission-control://projects/7/swarm/simulations")
     global_security_audit = client.read_resource("mission-control://security/audit-log")
@@ -2811,8 +2936,14 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
     latest_simulation = client.read_resource("mission-control://projects/7/swarm/simulations/latest")
 
     assert profile_summary["display_name"] == "Mike"
+    assert global_preferences["scope"] == "global"
+    assert global_preferences["item_count"] == 1
+    assert global_preferences["items"][0]["key"] == "review_depth"
     assert global_preference_summary["scope"] == "global"
     assert global_preference_summary["item_count"] == 1
+    assert subagent_policy["enabled"] is True
+    assert subagent_policy["default_mode"] == "limited_write"
+    assert subagent_policy["allowed_task_types_json"] == ["review", "planning", "failure_diagnosis"]
     assert agent_archetypes["archetype_count"] == 1
     assert agent_archetypes["archetypes"][0]["name"] == "reviewer"
     assert global_agent_reputation["reputation_count"] == 1
@@ -2916,6 +3047,8 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
     assert context_packs["context_packs"][0]["title"] == "Bridge Runtime Pack"
     assert project_agent_reputation["project_id"] == 7
     assert project_agent_reputation["reputations"][0]["archetype"] == "implementer"
+    assert project_preferences["project_id"] == 7
+    assert project_preferences["items"][0]["key"] == "validation_depth"
     assert project_preference_summary["scope"] == "project"
     assert project_preference_summary["inherited_count"] == 1
     assert effective_preferences["item_count"] == 2
@@ -2931,6 +3064,9 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
     assert agent_contracts["contracts"][0]["allowed_paths"] == ["apps/server/src", "apps/server/tests"]
     assert validation_summary["coverage_counts"] == {"passed": 1, "failed": 1}
     assert validation_summary["notable_gaps"] == ["recovery"]
+    assert validation_coverage["project_id"] == 7
+    assert validation_coverage["gap_count"] == 1
+    assert validation_coverage["items"][1]["area"] == "recovery"
     assert validation_coverage_summary["gap_count"] == 1
     assert validation_coverage_summary["items"][0]["area"] == "api"
     assert decision_ledger["decision_count"] == 1
@@ -2958,6 +3094,12 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
     assert local_runtime["repo_mode"] == "cuda_cpp"
     assert validation_plan["status"] == "needs_review"
     assert swarm_preferences["max_agents"] == 4
+    assert subagent_batches["project_id"] == 7
+    assert subagent_batches["batch_count"] == 1
+    assert subagent_batches["batches"][0]["task_type"] == "review"
+    assert subagent_batch["project_id"] == 7
+    assert subagent_batch["batch_id"] == 51
+    assert subagent_batch["results"][0]["agent_name"] == "Reviewer A"
     assert swarm_events["event_count"] == 1
     assert swarm_events["events"][0]["event_type"] == "agent_spawned"
     assert swarm_simulations["simulation_count"] == 1
@@ -3117,6 +3259,8 @@ def test_daemon_client_bridge_auth_protected_reads_include_token(monkeypatch) ->
     client.get_project(7)
     client.get_tool_catalog()
     client.get_skills()
+    client.get_preferences()
+    client.get_subagent_policy()
     client.list_widget_instances()
     client.get_project_widget_instances(7)
     client.get_widget_instance_data(301)
@@ -3132,6 +3276,7 @@ def test_daemon_client_bridge_auth_protected_reads_include_token(monkeypatch) ->
     client.get_capability_matrix()
     client.get_context_packs(7)
     client.get_context_pack(31, project_id=7)
+    client.get_project_preferences(7)
     client.get_common_risks()
     client.get_scope_creep(7)
     client.get_security_policy()
@@ -3139,6 +3284,7 @@ def test_daemon_client_bridge_auth_protected_reads_include_token(monkeypatch) ->
     client.get_security_audit_log()
     client.get_security_audit_log(7)
     client.list_swarm_simulations(7)
+    client.get_validation_coverage(7)
     client.get_project_workspace(7)
     client.get_project_action(7)
     client.list_project_actions(7)
@@ -3147,6 +3293,8 @@ def test_daemon_client_bridge_auth_protected_reads_include_token(monkeypatch) ->
     client.get_project_tasks(7)
     client.get_reservations(7)
     client.get_project_events(7)
+    client.get_project_subagent_batches(7)
+    client.get_subagent_batch(7, 51)
     client.list_handoffs()
     client.list_diagnostic_reports()
 
@@ -3161,6 +3309,8 @@ def test_daemon_client_bridge_auth_protected_reads_include_token(monkeypatch) ->
         ("GET", "/api/projects/7", True),
         ("GET", "/api/tools", True),
         ("GET", "/api/skills", True),
+        ("GET", "/api/preferences", True),
+        ("GET", "/api/subagent-policy", True),
         ("GET", "/api/widgets/instances", True),
         ("GET", "/api/projects/7/widgets/instances", True),
         ("GET", "/api/widgets/instances/301/data", True),
@@ -3176,6 +3326,7 @@ def test_daemon_client_bridge_auth_protected_reads_include_token(monkeypatch) ->
         ("GET", "/api/capabilities/matrix", True),
         ("GET", "/api/projects/7/context-packs", True),
         ("GET", "/api/context-packs/31", True),
+        ("GET", "/api/projects/7/preferences", True),
         ("GET", "/api/risks/common", True),
         ("GET", "/api/projects/7/scope-creep", True),
         ("GET", "/api/security/policy", True),
@@ -3183,6 +3334,7 @@ def test_daemon_client_bridge_auth_protected_reads_include_token(monkeypatch) ->
         ("GET", "/api/security/audit-log", True),
         ("GET", "/api/projects/7/security/audit-log", True),
         ("GET", "/api/projects/7/swarm/simulations", True),
+        ("GET", "/api/projects/7/validation-coverage", True),
         ("GET", "/api/projects/7/workspace", True),
         ("GET", "/api/projects/7/action", True),
         ("GET", "/api/projects/7/actions", True),
@@ -3191,6 +3343,8 @@ def test_daemon_client_bridge_auth_protected_reads_include_token(monkeypatch) ->
         ("GET", "/api/projects/7/tasks", True),
         ("GET", "/api/projects/7/reservations", True),
         ("GET", "/api/projects/7/events", True),
+        ("GET", "/api/projects/7/subagent-batches", True),
+        ("GET", "/api/subagents/batches/51", True),
         ("GET", "/api/handoffs", True),
         ("GET", "/api/diagnostics/reports", True),
     ]

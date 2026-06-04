@@ -57,7 +57,9 @@ Mission Control resources are read-only context surfaces for Codex chat.
 - `mission-control://diagnostics/reports`
 - `mission-control://projects`
 - `mission-control://profile/summary`
+- `mission-control://preferences`
 - `mission-control://preferences/summary`
+- `mission-control://subagent-policy`
 - `mission-control://subagent-policy/summary`
 - `mission-control://projects/{project_id}/integrations`
 - `mission-control://projects/{project_id}/integrations/{family}`
@@ -77,6 +79,7 @@ Mission Control resources are read-only context surfaces for Codex chat.
 - `mission-control://projects/{project_id}/playbook/recommendations`
 - `mission-control://projects/{project_id}/context-packs`
 - `mission-control://projects/{project_id}/agents/reputation`
+- `mission-control://projects/{project_id}/preferences`
 - `mission-control://projects/{project_id}/preferences/summary`
 - `mission-control://projects/{project_id}/preferences/effective`
 - `mission-control://projects/{project_id}/workspace`
@@ -109,6 +112,8 @@ Mission Control resources are read-only context surfaces for Codex chat.
 - `mission-control://projects/{project_id}/nvidia-local-runtime`
 - `mission-control://projects/{project_id}/nvidia-validation-plan`
 - `mission-control://projects/{project_id}/swarm/preferences`
+- `mission-control://projects/{project_id}/subagent-batches`
+- `mission-control://projects/{project_id}/subagent-batches/{batch_id}`
 - `mission-control://projects/{project_id}/swarm-plan`
 - `mission-control://projects/{project_id}/swarm/events`
 - `mission-control://projects/{project_id}/swarm/simulations`
@@ -120,6 +125,7 @@ Mission Control resources are read-only context surfaces for Codex chat.
 - `mission-control://projects/{project_id}/risks/summary`
 - `mission-control://projects/{project_id}/agent-contracts`
 - `mission-control://projects/{project_id}/validation-summary`
+- `mission-control://projects/{project_id}/validation-coverage`
 - `mission-control://projects/{project_id}/validation-coverage/summary`
 - `mission-control://projects/{project_id}/decision-ledger`
 - `mission-control://projects/{project_id}/path-locks`
@@ -148,8 +154,9 @@ Mission Control resources are read-only context surfaces for Codex chat.
 - widget instance resources expose what panes are actually mounted and what one pane is currently showing, which is much less stupid than guessing from the catalog alone
 - project understanding, interview, plan, and reservations expose the actual planning state machine and claimed-path posture directly instead of making chat infer strategy from downstream task fallout
 - agent archetypes, reputation trends, capability benchmarks, capability matrix, context packs, security policy, audit history, common risks, scope creep signals, and swarm activity surfaces expose planning posture and reusable operating context instead of making users reverse-engineer it from lower-level records
-- profile summary and subagent policy summary expose the operator defaults that shape provider choice, approvals, and whether subagent bursts are even allowed before the bridge starts making heroic assumptions
-- preference summary and effective preference resources expose global defaults, project overrides, and inherited values before the bridge starts making configuration assumptions from thin air
+- profile summary and raw subagent policy resources expose the operator defaults and concrete subagent controls that shape provider choice, approvals, and whether subagent bursts are even allowed before the bridge starts making heroic assumptions
+- raw preference inventory plus preference summary and effective preference resources expose global defaults, project overrides, and inherited values before the bridge starts making configuration assumptions from thin air
+- raw validation coverage and subagent batch resources expose itemized test-gap posture and subagent burst progress directly instead of making chat reverse-engineer them from summaries or widget scraps
 - runbook and runbook summary expose the current operational guide without forcing chat to scrape widget markdown like an animal
 - safe mode exposes whether Mission Control is currently enforcing the stricter approval and workspace-only guardrails before chat suggests something reckless
 - recovery plans and recovery plan preview expose persisted rescue options plus current derived candidates before the bridge starts improvising “helpful” chaos
@@ -181,4 +188,4 @@ Mission Control resources are read-only context surfaces for Codex chat.
 
 ## Deliberate Non-Resources
 
-Some backend routes are still real code without MCP exposure, but profile summary, skill catalog, project inventory, project details, widget instances, project understanding, interview, plan, reservations, subagent policy summary, handoff evidence preview, recovery plan preview, playbook, latest swarm simulation, and the TensorFlow, PyTorch, and spatial starter catalogs are no longer among them.
+Some backend routes are still real code without MCP exposure, but profile summary, raw preferences, raw subagent policy, raw validation coverage, subagent batch visibility, skill catalog, project inventory, project details, widget instances, project understanding, interview, plan, reservations, handoff evidence preview, recovery plan preview, playbook, latest swarm simulation, and the TensorFlow, PyTorch, and spatial starter catalogs are no longer among them.

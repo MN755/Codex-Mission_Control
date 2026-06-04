@@ -1244,6 +1244,31 @@
       }
     },
     {
+      "uri_template": "mission-control://preferences",
+      "title": "Global preferences",
+      "summary": "Raw global Mission Control preferences with explicit keys, values, and editability flags.",
+      "support_status": "implemented",
+      "source_hint": {
+        "rest_endpoints": [
+          "/api/preferences"
+        ]
+      },
+      "default_fields": [
+        "scope",
+        "item_count",
+        "editable_count",
+        "items"
+      ],
+      "redaction": {
+        "omit_fields": [
+          "raw_log",
+          "secret_values",
+          "private_paths_outside_workspace"
+        ],
+        "notes": "Expose raw preference keys, values, and editability only."
+      }
+    },
+    {
       "uri_template": "mission-control://preferences/summary",
       "title": "Global preference summary",
       "summary": "Compact summary of global Mission Control preferences, editability, and default operator posture.",
@@ -1268,6 +1293,40 @@
           "private_paths_outside_workspace"
         ],
         "notes": "Expose preference keys, values, and editability only."
+      }
+    },
+    {
+      "uri_template": "mission-control://subagent-policy",
+      "title": "Subagent policy",
+      "summary": "Raw subagent execution policy with mode, sandbox, approval thresholds, and task-type allowances.",
+      "support_status": "implemented",
+      "source_hint": {
+        "rest_endpoints": [
+          "/api/subagent-policy"
+        ]
+      },
+      "default_fields": [
+        "enabled",
+        "default_mode",
+        "sandbox_mode",
+        "max_subagents_per_burst",
+        "max_runtime_seconds",
+        "allow_file_edits",
+        "allow_commands",
+        "require_user_approval_above_count",
+        "allowed_task_types_json",
+        "default_spawn_method",
+        "writes_allowed",
+        "read_only_default",
+        "command_capable"
+      ],
+      "redaction": {
+        "omit_fields": [
+          "raw_logs",
+          "secret_values",
+          "private_paths_outside_workspace"
+        ],
+        "notes": "Expose policy posture and limits only, not raw runner state or sensitive workspace details."
       }
     },
     {
@@ -1799,6 +1858,32 @@
       }
     },
     {
+      "uri_template": "mission-control://projects/{project_id}/preferences",
+      "title": "Project preferences",
+      "summary": "Project-scoped raw preference rows showing explicit overrides without merged inherited defaults.",
+      "support_status": "implemented",
+      "source_hint": {
+        "rest_endpoints": [
+          "/api/projects/{project_id}/preferences"
+        ]
+      },
+      "default_fields": [
+        "scope",
+        "project_id",
+        "item_count",
+        "editable_count",
+        "items"
+      ],
+      "redaction": {
+        "omit_fields": [
+          "raw_log",
+          "secret_values",
+          "private_paths_outside_workspace"
+        ],
+        "notes": "Expose raw project preference overrides and editability only."
+      }
+    },
+    {
       "uri_template": "mission-control://projects/{project_id}/preferences/summary",
       "title": "Project preference summary",
       "summary": "Project-scoped preference summary showing overrides, inherited items, and editability counts.",
@@ -1850,6 +1935,63 @@
           "private_paths_outside_workspace"
         ],
         "notes": "Expose effective preference values and inheritance only."
+      }
+    },
+    {
+      "uri_template": "mission-control://projects/{project_id}/subagent-batches",
+      "title": "Project subagent batches",
+      "summary": "Project-scoped subagent burst inventory with requested, approved, completed, and failed counts.",
+      "support_status": "implemented",
+      "source_hint": {
+        "rest_endpoints": [
+          "/api/projects/{project_id}/subagent-batches"
+        ]
+      },
+      "default_fields": [
+        "project_id",
+        "batch_count",
+        "active_count",
+        "completed_count",
+        "batches"
+      ],
+      "redaction": {
+        "omit_fields": [
+          "raw_log",
+          "secret_values",
+          "private_paths_outside_workspace"
+        ],
+        "notes": "Expose subagent burst posture and counts only."
+      }
+    },
+    {
+      "uri_template": "mission-control://projects/{project_id}/subagent-batches/{batch_id}",
+      "title": "Project subagent batch detail",
+      "summary": "One project-scoped subagent batch with result summaries, approval posture, and completion counts.",
+      "support_status": "implemented",
+      "source_hint": {
+        "rest_endpoints": [
+          "/api/subagents/batches/{batch_id}?project_id={project_id}"
+        ]
+      },
+      "default_fields": [
+        "project_id",
+        "batch_id",
+        "status",
+        "task_type",
+        "requested_count",
+        "approved_count",
+        "completed_count",
+        "failure_count",
+        "approvals_required",
+        "results"
+      ],
+      "redaction": {
+        "omit_fields": [
+          "raw_log",
+          "secret_values",
+          "private_paths_outside_workspace"
+        ],
+        "notes": "Expose one subagent batch summary and result posture only."
       }
     },
     {
@@ -2980,6 +3122,32 @@
           "secret_paths"
         ],
         "notes": "Summarize coverage and missing areas without dumping raw evidence artifacts."
+      }
+    },
+    {
+      "uri_template": "mission-control://projects/{project_id}/validation-coverage",
+      "title": "Validation coverage",
+      "summary": "Project-scoped raw validation coverage areas with status, evidence summary, and percentage coverage.",
+      "support_status": "implemented",
+      "source_hint": {
+        "rest_endpoints": [
+          "/api/projects/{project_id}/validation-coverage"
+        ]
+      },
+      "default_fields": [
+        "project_id",
+        "item_count",
+        "gap_count",
+        "items",
+        "gaps"
+      ],
+      "redaction": {
+        "omit_fields": [
+          "raw_log",
+          "artifact_body",
+          "secret_paths"
+        ],
+        "notes": "Expose validation areas, compact evidence summaries, and gap labels without dumping raw artifacts."
       }
     },
     {

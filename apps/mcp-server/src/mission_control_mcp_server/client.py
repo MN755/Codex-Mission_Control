@@ -554,11 +554,20 @@ class MissionControlDaemonClient:
     def get_profile_summary(self) -> dict[str, Any]:
         return self._request("GET", "/api/profile/summary")
 
+    def get_subagent_policy(self) -> dict[str, Any]:
+        return self._request("GET", "/api/subagent-policy")
+
     def get_subagent_policy_summary(self) -> dict[str, Any]:
         return self._request("GET", "/api/subagent-policy/summary")
 
+    def get_preferences(self) -> list[dict[str, Any]]:
+        return self._request("GET", "/api/preferences")
+
     def get_global_preference_summary(self) -> dict[str, Any]:
         return self._request("GET", "/api/preferences/summary")
+
+    def get_project_preferences(self, project_id: int) -> list[dict[str, Any]]:
+        return self._request("GET", f"/api/projects/{project_id}/preferences")
 
     def get_project_preference_summary(self, project_id: int) -> dict[str, Any]:
         return self._request("GET", f"/api/projects/{project_id}/preferences/summary")
@@ -808,6 +817,12 @@ class MissionControlDaemonClient:
 
     def get_reservations(self, project_id: int) -> list[dict[str, Any]]:
         return self._request("GET", f"/api/projects/{project_id}/reservations")
+
+    def get_project_subagent_batches(self, project_id: int) -> list[dict[str, Any]]:
+        return self._request("GET", f"/api/projects/{project_id}/subagent-batches")
+
+    def get_subagent_batch(self, project_id: int, batch_id: int) -> dict[str, Any]:
+        return self._request("GET", f"/api/subagents/batches/{batch_id}", params={"project_id": project_id})
 
     def get_swarm_preferences(self, project_id: int) -> dict[str, Any]:
         return self._request("GET", f"/api/projects/{project_id}/swarm/preferences")
@@ -1977,6 +1992,114 @@ class MissionControlDaemonClient:
             ],
         }
 
+    def _summarize_preferences(self, items: list[dict[str, Any]], *, project_id: int | None = None) -> dict[str, Any]:
+        return {
+            "scope": "project" if project_id is not None else "global",
+            "project_id": project_id,
+            "item_count": len(items),
+            "editable_count": sum(1 for item in items if item.get("editable")),
+            "items": [
+                {
+                    "id": item.get("id"),
+                    "key": item.get("key"),
+                    "value_json": item.get("value_json"),
+                    "source": item.get("source"),
+                    "scope": item.get("scope"),
+                    "project_id": item.get("project_id"),
+                    "editable": item.get("editable"),
+                    "created_at": item.get("created_at"),
+                    "updated_at": item.get("updated_at"),
+                }
+                for item in items[:24]
+            ],
+        }
+
+    def _summarize_subagent_policy(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "enabled": payload.get("enabled"),
+            "default_mode": payload.get("default_mode"),
+            "sandbox_mode": payload.get("sandbox_mode"),
+            "max_subagents_per_burst": payload.get("max_subagents_per_burst"),
+            "max_runtime_seconds": payload.get("max_runtime_seconds"),
+            "allow_file_edits": payload.get("allow_file_edits"),
+            "allow_commands": payload.get("allow_commands"),
+            "require_user_approval_above_count": payload.get("require_user_approval_above_count"),
+            "allowed_task_types_json": (payload.get("allowed_task_types_json") or [])[:12],
+            "default_spawn_method": payload.get("default_spawn_method"),
+            "writes_allowed": payload.get("writes_allowed"),
+            "read_only_default": payload.get("read_only_default"),
+            "command_capable": payload.get("command_capable"),
+            "updated_at": payload.get("updated_at"),
+        }
+
+    def _summarize_validation_coverage(self, project_id: int, items: list[dict[str, Any]]) -> dict[str, Any]:
+        gaps = [
+            str(item.get("area"))
+            for item in items
+            if str(item.get("coverage_status") or "").lower() not in {"passed", "ok", "covered"}
+            and item.get("area")
+        ]
+        return {
+            "project_id": project_id,
+            "item_count": len(items),
+            "gap_count": len(gaps),
+            "gaps": gaps[:24],
+            "coverage_statuses": sorted({str(item.get("coverage_status") or "unknown") for item in items}),
+            "items": [
+                {
+                    "area": item.get("area"),
+                    "coverage_status": item.get("coverage_status"),
+                    "evidence_summary": item.get("evidence_summary"),
+                    "coverage_percent": item.get("coverage_percent"),
+                    "last_verified_at": item.get("last_verified_at"),
+                }
+                for item in items[:24]
+            ],
+        }
+
+    def _summarize_subagent_batches(self, project_id: int, batches: list[dict[str, Any]]) -> dict[str, Any]:
+        return {
+            "project_id": project_id,
+            "batch_count": len(batches),
+            "active_count": sum(1 for batch in batches if str(batch.get("status") or "").lower() not in {"completed", "failed", "cancelled"}),
+            "completed_count": sum(1 for batch in batches if str(batch.get("status") or "").lower() == "completed"),
+            "statuses": sorted({str(batch.get("status") or "unknown") for batch in batches}),
+            "batches": [
+                {
+                    "id": batch.get("id"),
+                    "status": batch.get("status"),
+                    "task_type": batch.get("task_type"),
+                    "spawn_method": batch.get("spawn_method"),
+                    "requested_count": batch.get("requested_count"),
+                    "approved_count": batch.get("approved_count"),
+                    "completed_count": batch.get("completed_count"),
+                    "failure_count": batch.get("failure_count"),
+                    "created_at": batch.get("created_at"),
+                    "updated_at": batch.get("updated_at"),
+                }
+                for batch in batches[:20]
+            ],
+        }
+
+    def _summarize_subagent_batch(self, project_id: int, payload: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "project_id": project_id,
+            "batch_id": payload.get("id"),
+            "id": payload.get("id"),
+            "status": payload.get("status"),
+            "task_type": payload.get("task_type"),
+            "spawn_method": payload.get("spawn_method"),
+            "requested_count": payload.get("requested_count"),
+            "approved_count": payload.get("approved_count"),
+            "completed_count": payload.get("completed_count"),
+            "failure_count": payload.get("failure_count"),
+            "summary_markdown": payload.get("summary_markdown"),
+            "approvals_required": payload.get("approvals_required"),
+            "results": (payload.get("results") or [])[:20],
+            "created_at": payload.get("created_at"),
+            "updated_at": payload.get("updated_at"),
+        }
+
     def _summarize_widget_instances(self, instances: list[dict[str, Any]], *, project_id: int | None = None) -> dict[str, Any]:
         scope = "project" if project_id is not None else "dashboard"
         return {
@@ -2212,12 +2335,16 @@ class MissionControlDaemonClient:
             if len(parts) == 4 and parts[3] == "data":
                 return self._summarize_widget_instance_data(int(parts[2]), self.get_widget_instance_data(int(parts[2])))
             return self._summarize_widget_instances(self.list_widget_instances())
+        if len(parts) == 1 and parts[0] == "preferences":
+            return self._summarize_preferences(self.get_preferences())
+        if len(parts) >= 1 and parts[0] == "subagent-policy":
+            if len(parts) == 2 and parts[1] == "summary":
+                return self.get_subagent_policy_summary()
+            return self._summarize_subagent_policy(self.get_subagent_policy())
         if len(parts) >= 1 and parts[0] == "skills":
             return self._summarize_skills(self.get_skills())
         if len(parts) == 1 and parts[0] == "projects":
             return self._summarize_projects(self.list_projects())
-        if len(parts) >= 2 and parts[0] == "subagent-policy" and parts[1] == "summary":
-            return self.get_subagent_policy_summary()
         if len(parts) >= 5 and parts[0] == "projects" and parts[2] == "orchestrations":
             project_id = int(parts[1])
             orchestration_id = int(parts[3])
@@ -2378,12 +2505,23 @@ class MissionControlDaemonClient:
                     return {"project_id": project_id, "recommendations": self.get_playbook_recommendations(project_id)}
                 return self.get_playbook(project_id)
             if kind == "preferences":
+                if len(parts) == 3:
+                    return self._summarize_preferences(self.get_project_preferences(project_id), project_id=project_id)
                 if len(parts) == 4 and parts[3] == "summary":
                     return self.get_project_preference_summary(project_id)
                 if len(parts) == 4 and parts[3] == "effective":
                     return self._summarize_effective_preferences(project_id, self.get_effective_preferences(project_id))
+            if kind == "validation-coverage":
+                if len(parts) == 3:
+                    return self._summarize_validation_coverage(project_id, self.get_validation_coverage(project_id))
+                if len(parts) == 4 and parts[3] == "summary":
+                    return self.get_validation_coverage_summary(project_id)
             if kind == "widgets" and len(parts) == 4 and parts[3] == "summary":
                 return self.get_project_widget_summary(project_id)
+            if kind == "subagent-batches":
+                if len(parts) == 4:
+                    return self._summarize_subagent_batch(project_id, self.get_subagent_batch(project_id, int(parts[3])))
+                return self._summarize_subagent_batches(project_id, self.get_project_subagent_batches(project_id))
             if kind == "execution-policy" and len(parts) == 4 and parts[3] == "summary":
                 return self.get_execution_policy_summary(project_id)
             if kind == "coordination" and len(parts) == 4 and parts[3] == "summary":

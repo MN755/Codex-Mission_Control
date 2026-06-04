@@ -80,7 +80,9 @@ EXPECTED_RESOURCES = [
     "mission-control://diagnostics/reports",
     "mission-control://projects",
     "mission-control://profile/summary",
+    "mission-control://preferences",
     "mission-control://preferences/summary",
+    "mission-control://subagent-policy",
     "mission-control://subagent-policy/summary",
     "mission-control://projects/{project_id}/integrations",
     "mission-control://projects/{project_id}/integrations/{family}",
@@ -100,8 +102,11 @@ EXPECTED_RESOURCES = [
     "mission-control://projects/{project_id}/playbook/recommendations",
     "mission-control://projects/{project_id}/context-packs",
     "mission-control://projects/{project_id}/agents/reputation",
+    "mission-control://projects/{project_id}/preferences",
     "mission-control://projects/{project_id}/preferences/summary",
     "mission-control://projects/{project_id}/preferences/effective",
+    "mission-control://projects/{project_id}/subagent-batches",
+    "mission-control://projects/{project_id}/subagent-batches/{batch_id}",
     "mission-control://projects/{project_id}/widgets/summary",
     "mission-control://projects/{project_id}/widgets/instances",
     "mission-control://projects/{project_id}/workspace",
@@ -143,6 +148,7 @@ EXPECTED_RESOURCES = [
     "mission-control://projects/{project_id}/risks/summary",
     "mission-control://projects/{project_id}/agent-contracts",
     "mission-control://projects/{project_id}/validation-summary",
+    "mission-control://projects/{project_id}/validation-coverage",
     "mission-control://projects/{project_id}/validation-coverage/summary",
     "mission-control://projects/{project_id}/decision-ledger",
     "mission-control://projects/{project_id}/path-locks",
@@ -313,7 +319,9 @@ def test_docs_explain_resources_prompts_and_headless_boundary() -> None:
     assert "mission-control://diagnostics/reports" in resources_content
     assert "mission-control://projects" in resources_content
     assert "mission-control://profile/summary" in resources_content
+    assert "mission-control://preferences" in resources_content
     assert "mission-control://preferences/summary" in resources_content
+    assert "mission-control://subagent-policy" in resources_content
     assert "mission-control://subagent-policy/summary" in resources_content
     assert "mission-control://projects/{project_id}/settings" in resources_content
     assert "mission-control://projects/{project_id}/details" in resources_content
@@ -324,6 +332,7 @@ def test_docs_explain_resources_prompts_and_headless_boundary() -> None:
     assert "mission-control://projects/{project_id}/playbook/recommendations" in resources_content
     assert "mission-control://projects/{project_id}/context-packs" in resources_content
     assert "mission-control://projects/{project_id}/agents/reputation" in resources_content
+    assert "mission-control://projects/{project_id}/preferences" in resources_content
     assert "mission-control://projects/{project_id}/preferences/summary" in resources_content
     assert "mission-control://projects/{project_id}/preferences/effective" in resources_content
     assert "mission-control://projects/{project_id}/workspace" in resources_content
@@ -346,6 +355,8 @@ def test_docs_explain_resources_prompts_and_headless_boundary() -> None:
     assert "mission-control://projects/{project_id}/tasks" in resources_content
     assert "mission-control://projects/{project_id}/reservations" in resources_content
     assert "mission-control://projects/{project_id}/events" in resources_content
+    assert "mission-control://projects/{project_id}/subagent-batches" in resources_content
+    assert "mission-control://projects/{project_id}/subagent-batches/{batch_id}" in resources_content
     assert "mission-control://projects/{project_id}/execution-policy/summary" in resources_content
     assert "mission-control://projects/{project_id}/coordination/summary" in resources_content
     assert "mission-control://projects/{project_id}/swarm/events" in resources_content
@@ -356,6 +367,7 @@ def test_docs_explain_resources_prompts_and_headless_boundary() -> None:
     assert "mission-control://security/audit-log" in resources_content
     assert "mission-control://projects/{project_id}/scope-creep" in resources_content
     assert "mission-control://projects/{project_id}/risks/summary" in resources_content
+    assert "mission-control://projects/{project_id}/validation-coverage" in resources_content
     assert "mission-control://projects/{project_id}/validation-coverage/summary" in resources_content
     assert "mission-control://projects/{project_id}/agents-md/status" in resources_content
     assert "mission-control://projects/{project_id}/tensorflow/features" in resources_content
