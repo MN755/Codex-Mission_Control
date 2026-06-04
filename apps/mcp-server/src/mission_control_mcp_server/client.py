@@ -2849,6 +2849,8 @@ class MissionControlDaemonClient:
             if kind == "swarm" and len(parts) == 4 and parts[3] == "simulations":
                 return self._summarize_swarm_simulations(project_id, self.list_swarm_simulations(project_id))
             if kind == "swarm-plan":
+                if len(parts) != 3:
+                    raise RuntimeError(f"Unsupported Mission Control resource URI: {uri}")
                 prefs = self.get_swarm_preferences(project_id)
                 plan = self.get_swarm_plan(project_id)
                 return self._summarize_swarm_plan(project_id, plan, prefs)
@@ -2985,7 +2987,11 @@ class MissionControlDaemonClient:
                 return self.get_project_widget_summary(project_id)
             if kind == "subagent-batches":
                 if len(parts) == 4:
-                    return self._summarize_subagent_batch(project_id, self.get_subagent_batch(project_id, int(parts[3])))
+                    try:
+                        batch_id = int(parts[3])
+                    except ValueError as exc:
+                        raise RuntimeError(f"Unsupported Mission Control resource URI: {uri}") from exc
+                    return self._summarize_subagent_batch(project_id, self.get_subagent_batch(project_id, batch_id))
                 if len(parts) != 3:
                     raise RuntimeError(f"Unsupported Mission Control resource URI: {uri}")
                 return self._summarize_subagent_batches(project_id, self.get_project_subagent_batches(project_id))

@@ -3889,6 +3889,8 @@ def test_daemon_client_rejects_invalid_extra_segments_for_strict_resources() -> 
         "mission-control://projects/7/recovery-plans/preview/extra",
         "mission-control://projects/7/events/extra",
         "mission-control://projects/7/snapshots/61/restore-plan/extra",
+        "mission-control://projects/7/swarm-plan/extra",
+        "mission-control://projects/7/subagent-batches/extra",
         "mission-control://projects/7/subagent-batches/51/extra",
         "mission-control://projects/7/integrations/source_control/actions/extra",
         "mission-control://projects/7/integrations/source_control/actions/create_issue/preview/extra",
