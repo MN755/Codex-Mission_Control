@@ -54,6 +54,8 @@ EXPECTED_RESOURCES = [
     "mission-control://projects/{project_id}/runbook/summary",
     "mission-control://projects/{project_id}/recovery-plans",
     "mission-control://projects/{project_id}/recovery-plans/preview",
+    "mission-control://projects/{project_id}/snapshots",
+    "mission-control://projects/{project_id}/snapshots/{snapshot_id}/restore-plan",
     "mission-control://projects/{project_id}/playbook",
     "mission-control://projects/{project_id}/playbook/recommendations",
     "mission-control://projects/{project_id}/workspace-tooling",
@@ -212,6 +214,8 @@ def test_docs_explain_resources_prompts_and_headless_boundary() -> None:
     assert "mission-control://projects/{project_id}/runbook/summary" in resources_content
     assert "mission-control://projects/{project_id}/recovery-plans" in resources_content
     assert "mission-control://projects/{project_id}/recovery-plans/preview" in resources_content
+    assert "mission-control://projects/{project_id}/snapshots" in resources_content
+    assert "mission-control://projects/{project_id}/snapshots/{snapshot_id}/restore-plan" in resources_content
     assert "mission-control://profile/summary" in resources_content
     assert "mission-control://subagent-policy/summary" in resources_content
     assert "mission-control://projects/{project_id}/playbook" in resources_content

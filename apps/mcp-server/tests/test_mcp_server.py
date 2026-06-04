@@ -37,6 +37,8 @@ EXPECTED_RESOURCES = {
     "mission-control://projects/{project_id}/runbook/summary",
     "mission-control://projects/{project_id}/recovery-plans",
     "mission-control://projects/{project_id}/recovery-plans/preview",
+    "mission-control://projects/{project_id}/snapshots",
+    "mission-control://projects/{project_id}/snapshots/{snapshot_id}/restore-plan",
     "mission-control://projects/{project_id}/playbook",
     "mission-control://projects/{project_id}/playbook/recommendations",
     "mission-control://projects/{project_id}/workspace-tooling",
@@ -1084,6 +1086,38 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
     )
     monkeypatch.setattr(
         client,
+        "list_snapshots",
+        lambda project_id: [
+            {
+                "id": 61,
+                "project_id": project_id,
+                "snapshot_type": "git_commit",
+                "label": "Before risky migration",
+                "description": "Checkpoint before changing task routing.",
+                "status": "available",
+                "git_ref": "abc1234",
+                "created_at": "2026-06-03T13:20:00Z",
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        client,
+        "get_snapshot_restore_plan",
+        lambda project_id, snapshot_id: {
+            "snapshot_id": snapshot_id,
+            "project_id": project_id,
+            "status": "available",
+            "restore_type": "git_commit",
+            "git_ref": "abc1234",
+            "warnings": ["Working tree was dirty when this snapshot was recorded."],
+            "steps": [
+                "Inspect diff against snapshot: git diff abc1234..HEAD",
+                "Only after approval, consider checking out or branching from abc1234.",
+            ],
+        },
+    )
+    monkeypatch.setattr(
+        client,
         "get_playbook",
         lambda project_id: {
             "project_id": project_id,
@@ -1492,6 +1526,8 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
     runbook_summary = client.read_resource("mission-control://projects/7/runbook/summary")
     recovery_plans = client.read_resource("mission-control://projects/7/recovery-plans")
     recovery_plans_preview = client.read_resource("mission-control://projects/7/recovery-plans/preview")
+    snapshots = client.read_resource("mission-control://projects/7/snapshots")
+    restore_plan = client.read_resource("mission-control://projects/7/snapshots/61/restore-plan")
     playbook = client.read_resource("mission-control://projects/7/playbook")
     playbook_recommendations = client.read_resource("mission-control://projects/7/playbook/recommendations")
     agent_contracts = client.read_resource("mission-control://projects/7/agent-contracts")
@@ -1535,6 +1571,10 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
     assert recovery_plans["recovery_plan_count"] == 1
     assert recovery_plans["plans"][0]["selected_action"] == "rerun_validation"
     assert recovery_plans_preview["suggested_action_count"] == 2
+    assert snapshots["snapshot_count"] == 1
+    assert snapshots["snapshots"][0]["label"] == "Before risky migration"
+    assert restore_plan["snapshot_id"] == 61
+    assert restore_plan["git_ref"] == "abc1234"
     assert playbook["playbook_key"] == "existing_repo_fix"
     assert playbook["playbook"]["name"] == "Existing Repo Fix"
     assert playbook_recommendations["project_id"] == 7

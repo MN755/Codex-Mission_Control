@@ -595,6 +595,58 @@
       }
     },
     {
+      "uri_template": "mission-control://projects/{project_id}/snapshots",
+      "title": "Project snapshots",
+      "summary": "Recorded project checkpoints summarized by type, label, availability, and git reference when present.",
+      "support_status": "implemented",
+      "source_hint": {
+        "rest_endpoints": [
+          "/api/projects/{project_id}/snapshots"
+        ]
+      },
+      "default_fields": [
+        "project_id",
+        "snapshot_count",
+        "snapshots"
+      ],
+      "redaction": {
+        "omit_fields": [
+          "raw_log",
+          "secret_values",
+          "private_paths_outside_workspace"
+        ],
+        "notes": "Expose compact snapshot metadata only, not secret-bearing payloads or unrelated local paths."
+      }
+    },
+    {
+      "uri_template": "mission-control://projects/{project_id}/snapshots/{snapshot_id}/restore-plan",
+      "title": "Snapshot restore plan",
+      "summary": "Safe restore guidance for a recorded project snapshot, including warnings and approval-oriented next steps.",
+      "support_status": "implemented",
+      "source_hint": {
+        "rest_endpoints": [
+          "/api/projects/{project_id}/snapshots/{snapshot_id}/restore-plan"
+        ]
+      },
+      "default_fields": [
+        "snapshot_id",
+        "project_id",
+        "status",
+        "restore_type",
+        "git_ref",
+        "warnings",
+        "steps"
+      ],
+      "redaction": {
+        "omit_fields": [
+          "raw_log",
+          "secret_values",
+          "private_paths_outside_workspace"
+        ],
+        "notes": "Expose restore guidance and warnings only, not raw working-tree diffs or unrelated local paths."
+      }
+    },
+    {
       "uri_template": "mission-control://projects/{project_id}/playbook",
       "title": "Project playbook",
       "summary": "Current project playbook selection or suggestion with rationale and the matched playbook payload.",

@@ -31,6 +31,8 @@ Mission Control resources are read-only context surfaces for Codex chat.
 - `mission-control://projects/{project_id}/runbook/summary`
 - `mission-control://projects/{project_id}/recovery-plans`
 - `mission-control://projects/{project_id}/recovery-plans/preview`
+- `mission-control://projects/{project_id}/snapshots`
+- `mission-control://projects/{project_id}/snapshots/{snapshot_id}/restore-plan`
 - `mission-control://projects/{project_id}/playbook`
 - `mission-control://projects/{project_id}/playbook/recommendations`
 - `mission-control://projects/{project_id}/workspace-tooling`
@@ -74,6 +76,7 @@ Mission Control resources are read-only context surfaces for Codex chat.
 - profile summary and subagent policy summary expose the operator defaults that shape provider choice, approvals, and whether subagent bursts are even allowed before the bridge starts making heroic assumptions
 - runbook and runbook summary expose the current operational guide without forcing chat to scrape widget markdown like an animal
 - recovery plans and recovery plan preview expose persisted rescue options plus current derived candidates before the bridge starts improvising “helpful” chaos
+- snapshots and restore-plan resources expose recovery checkpoints and safe rollback planning without making chat invent git advice from thin air
 - playbook and playbook recommendations expose the current execution template and nearby alternatives so chat can discuss project posture without re-deriving the same pattern match from scratch every time
 - execution policy summary tells the bridge which runner, sandbox, approval, tool-routing, and validation posture is actually in effect before it suggests work that contradicts local policy
 - coordination summary exposes contract, lock, gate, conflict, and decision posture in one compact lane so chat can spot coordination drift before the swarm faceplants

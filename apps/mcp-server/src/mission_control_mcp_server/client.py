@@ -1689,6 +1689,10 @@ class MissionControlDaemonClient:
                 if len(parts) == 4 and parts[3] == "preview":
                     return self.get_recovery_plans_preview(project_id)
                 return self._summarize_recovery_plans(project_id, self.get_recovery_plans(project_id))
+            if kind == "snapshots":
+                if len(parts) == 5 and parts[4] == "restore-plan":
+                    return self.get_snapshot_restore_plan(project_id, int(parts[3]))
+                return self._summarize_snapshots(project_id, self.list_snapshots(project_id))
             if kind == "playbook":
                 if len(parts) == 4 and parts[3] == "recommendations":
                     return {"project_id": project_id, "recommendations": self.get_playbook_recommendations(project_id)}
