@@ -30,12 +30,14 @@ Mission Control resources are read-only context surfaces for Codex chat.
 - `mission-control://integrations/connections`
 - `mission-control://integrations/health`
 - `mission-control://agent-archetypes`
+- `mission-control://agents/reputation`
 - `mission-control://capabilities/benchmarks`
 - `mission-control://capabilities/matrix`
 - `mission-control://context-packs/{context_pack_id}`
 - `mission-control://playbooks`
 - `mission-control://playbooks/{playbook_key}`
 - `mission-control://security/policy`
+- `mission-control://security/audit-log`
 - `mission-control://daemon/status`
 - `mission-control://runners/status`
 - `mission-control://plugin/health`
@@ -66,12 +68,14 @@ Mission Control resources are read-only context surfaces for Codex chat.
 - `mission-control://projects/{project_id}/playbook`
 - `mission-control://projects/{project_id}/playbook/recommendations`
 - `mission-control://projects/{project_id}/context-packs`
+- `mission-control://projects/{project_id}/agents/reputation`
 - `mission-control://projects/{project_id}/preferences/summary`
 - `mission-control://projects/{project_id}/preferences/effective`
 - `mission-control://projects/{project_id}/workspace`
 - `mission-control://projects/{project_id}/widgets/summary`
 - `mission-control://projects/{project_id}/workspace-tooling`
 - `mission-control://projects/{project_id}/security/policy`
+- `mission-control://projects/{project_id}/security/audit-log`
 - `mission-control://projects/{project_id}/action`
 - `mission-control://projects/{project_id}/actions`
 - `mission-control://projects/{project_id}/manager/messages`
@@ -96,10 +100,12 @@ Mission Control resources are read-only context surfaces for Codex chat.
 - `mission-control://projects/{project_id}/nvidia-validation-plan`
 - `mission-control://projects/{project_id}/swarm/preferences`
 - `mission-control://projects/{project_id}/swarm-plan`
+- `mission-control://projects/{project_id}/swarm/events`
 - `mission-control://projects/{project_id}/swarm/simulations`
 - `mission-control://projects/{project_id}/swarm/simulations/latest`
 - `mission-control://risks/common`
 - `mission-control://risks/summary`
+- `mission-control://projects/{project_id}/scope-creep`
 - `mission-control://projects/{project_id}/risk-register`
 - `mission-control://projects/{project_id}/risks/summary`
 - `mission-control://projects/{project_id}/agent-contracts`
@@ -127,7 +133,7 @@ Mission Control resources are read-only context surfaces for Codex chat.
 - workspace tooling tells the bridge which repo-native helper lanes actually exist for intake, validation, and security before it recommends commands like a clown
 - tool catalog and swarm preferences expose the safe action surface and collaboration posture directly instead of forcing chat to infer them from unrelated endpoints
 - workspace, current action, action backlog, manager messages, manager queue, tasks, events, handoffs, and diagnostic reports expose actual project motion directly instead of forcing chat to reconstruct operator state from scattered endpoint scraps
-- agent archetypes, capability benchmarks, capability matrix, context packs, security policy, common risks, and swarm simulation history expose planning posture and reusable operating context instead of making users reverse-engineer it from lower-level records
+- agent archetypes, reputation trends, capability benchmarks, capability matrix, context packs, security policy, audit history, common risks, scope creep signals, and swarm activity surfaces expose planning posture and reusable operating context instead of making users reverse-engineer it from lower-level records
 - profile summary and subagent policy summary expose the operator defaults that shape provider choice, approvals, and whether subagent bursts are even allowed before the bridge starts making heroic assumptions
 - preference summary and effective preference resources expose global defaults, project overrides, and inherited values before the bridge starts making configuration assumptions from thin air
 - runbook and runbook summary expose the current operational guide without forcing chat to scrape widget markdown like an animal

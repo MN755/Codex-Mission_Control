@@ -787,3 +787,7 @@ def test_context_pack_routes_return_summary_rollups(client) -> None:
     fetched_payload = fetched.json()
     assert fetched_payload["id"] == payload["id"]
     assert fetched_payload["source_refs"] == payload["source_refs"]
+
+    fetched_without_scope = client.get(f"/api/context-packs/{payload['id']}")
+    assert fetched_without_scope.status_code == 200, fetched_without_scope.text
+    assert fetched_without_scope.json()["id"] == payload["id"]

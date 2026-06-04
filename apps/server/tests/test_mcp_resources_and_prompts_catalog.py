@@ -53,12 +53,14 @@ EXPECTED_RESOURCES = [
     "mission-control://integrations/connections",
     "mission-control://integrations/health",
     "mission-control://agent-archetypes",
+    "mission-control://agents/reputation",
     "mission-control://capabilities/benchmarks",
     "mission-control://capabilities/matrix",
     "mission-control://context-packs/{context_pack_id}",
     "mission-control://playbooks",
     "mission-control://playbooks/{playbook_key}",
     "mission-control://security/policy",
+    "mission-control://security/audit-log",
     "mission-control://daemon/status",
     "mission-control://runners/status",
     "mission-control://plugin/health",
@@ -89,12 +91,14 @@ EXPECTED_RESOURCES = [
     "mission-control://projects/{project_id}/playbook",
     "mission-control://projects/{project_id}/playbook/recommendations",
     "mission-control://projects/{project_id}/context-packs",
+    "mission-control://projects/{project_id}/agents/reputation",
     "mission-control://projects/{project_id}/preferences/summary",
     "mission-control://projects/{project_id}/preferences/effective",
     "mission-control://projects/{project_id}/widgets/summary",
     "mission-control://projects/{project_id}/workspace",
     "mission-control://projects/{project_id}/workspace-tooling",
     "mission-control://projects/{project_id}/security/policy",
+    "mission-control://projects/{project_id}/security/audit-log",
     "mission-control://projects/{project_id}/action",
     "mission-control://projects/{project_id}/actions",
     "mission-control://projects/{project_id}/manager/messages",
@@ -119,10 +123,12 @@ EXPECTED_RESOURCES = [
     "mission-control://projects/{project_id}/nvidia-validation-plan",
     "mission-control://projects/{project_id}/swarm/preferences",
     "mission-control://projects/{project_id}/swarm-plan",
+    "mission-control://projects/{project_id}/swarm/events",
     "mission-control://projects/{project_id}/swarm/simulations",
     "mission-control://projects/{project_id}/swarm/simulations/latest",
     "mission-control://risks/common",
     "mission-control://risks/summary",
+    "mission-control://projects/{project_id}/scope-creep",
     "mission-control://projects/{project_id}/risk-register",
     "mission-control://projects/{project_id}/risks/summary",
     "mission-control://projects/{project_id}/agent-contracts",
@@ -273,6 +279,7 @@ def test_docs_explain_resources_prompts_and_headless_boundary() -> None:
     assert "mission-control://playbooks" in resources_content
     assert "mission-control://playbooks/{playbook_key}" in resources_content
     assert "mission-control://agent-archetypes" in resources_content
+    assert "mission-control://agents/reputation" in resources_content
     assert "mission-control://capabilities/benchmarks" in resources_content
     assert "mission-control://capabilities/matrix" in resources_content
     assert "mission-control://context-packs/{context_pack_id}" in resources_content
@@ -298,6 +305,7 @@ def test_docs_explain_resources_prompts_and_headless_boundary() -> None:
     assert "mission-control://projects/{project_id}/playbook" in resources_content
     assert "mission-control://projects/{project_id}/playbook/recommendations" in resources_content
     assert "mission-control://projects/{project_id}/context-packs" in resources_content
+    assert "mission-control://projects/{project_id}/agents/reputation" in resources_content
     assert "mission-control://projects/{project_id}/preferences/summary" in resources_content
     assert "mission-control://projects/{project_id}/preferences/effective" in resources_content
     assert "mission-control://projects/{project_id}/workspace" in resources_content
@@ -311,6 +319,7 @@ def test_docs_explain_resources_prompts_and_headless_boundary() -> None:
     assert "mission-control://projects/{project_id}/swarm/preferences" in resources_content
     assert "mission-control://projects/{project_id}/workspace-tooling" in resources_content
     assert "mission-control://projects/{project_id}/security/policy" in resources_content
+    assert "mission-control://projects/{project_id}/security/audit-log" in resources_content
     assert "mission-control://projects/{project_id}/action" in resources_content
     assert "mission-control://projects/{project_id}/actions" in resources_content
     assert "mission-control://projects/{project_id}/manager/messages" in resources_content
@@ -319,10 +328,13 @@ def test_docs_explain_resources_prompts_and_headless_boundary() -> None:
     assert "mission-control://projects/{project_id}/events" in resources_content
     assert "mission-control://projects/{project_id}/execution-policy/summary" in resources_content
     assert "mission-control://projects/{project_id}/coordination/summary" in resources_content
+    assert "mission-control://projects/{project_id}/swarm/events" in resources_content
     assert "mission-control://projects/{project_id}/swarm/simulations" in resources_content
     assert "mission-control://projects/{project_id}/swarm/simulations/latest" in resources_content
     assert "mission-control://risks/common" in resources_content
     assert "mission-control://risks/summary" in resources_content
+    assert "mission-control://security/audit-log" in resources_content
+    assert "mission-control://projects/{project_id}/scope-creep" in resources_content
     assert "mission-control://projects/{project_id}/risks/summary" in resources_content
     assert "mission-control://projects/{project_id}/validation-coverage/summary" in resources_content
     assert "mission-control://projects/{project_id}/agents-md/status" in resources_content

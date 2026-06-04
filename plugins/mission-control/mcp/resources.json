@@ -535,6 +535,29 @@
       }
     },
     {
+      "uri_template": "mission-control://agents/reputation",
+      "title": "Agent reputation summary",
+      "summary": "Cross-project agent reputation trends so chat can see which archetypes, providers, and models have earned or lost trust.",
+      "support_status": "implemented",
+      "source_hint": {
+        "rest_endpoints": [
+          "/api/agents/reputation"
+        ]
+      },
+      "default_fields": [
+        "reputation_count",
+        "reputations"
+      ],
+      "redaction": {
+        "omit_fields": [
+          "raw_log",
+          "secret_values",
+          "private_paths_outside_workspace"
+        ],
+        "notes": "Expose reputation summaries only."
+      }
+    },
+    {
       "uri_template": "mission-control://capabilities/benchmarks",
       "title": "Capability benchmarks",
       "summary": "Global benchmark catalog for capability lanes so chat can compare validated performance and evidence coverage.",
@@ -687,6 +710,31 @@
           "private_paths_outside_workspace"
         ],
         "notes": "Expose normalized security posture only."
+      }
+    },
+    {
+      "uri_template": "mission-control://security/audit-log",
+      "title": "Global security audit log",
+      "summary": "Cross-project approval and denial history for risky actions so operators can review the actual safety posture instead of guessing.",
+      "support_status": "implemented",
+      "source_hint": {
+        "rest_endpoints": [
+          "/api/security/audit-log"
+        ]
+      },
+      "default_fields": [
+        "audit_entry_count",
+        "decision_counts",
+        "risk_level_counts",
+        "entries"
+      ],
+      "redaction": {
+        "omit_fields": [
+          "raw_log",
+          "secret_values",
+          "private_paths_outside_workspace"
+        ],
+        "notes": "Expose normalized audit summaries only."
       }
     },
     {
@@ -1503,6 +1551,30 @@
       }
     },
     {
+      "uri_template": "mission-control://projects/{project_id}/agents/reputation",
+      "title": "Project agent reputation summary",
+      "summary": "Project-scoped agent reputation trends so chat can see which archetypes and models have been succeeding or failing on this repo.",
+      "support_status": "implemented",
+      "source_hint": {
+        "rest_endpoints": [
+          "/api/projects/{project_id}/agents/reputation"
+        ]
+      },
+      "default_fields": [
+        "project_id",
+        "reputation_count",
+        "reputations"
+      ],
+      "redaction": {
+        "omit_fields": [
+          "raw_log",
+          "secret_values",
+          "private_paths_outside_workspace"
+        ],
+        "notes": "Expose project reputation summaries only."
+      }
+    },
+    {
       "uri_template": "mission-control://projects/{project_id}/preferences/summary",
       "title": "Project preference summary",
       "summary": "Project-scoped preference summary showing overrides, inherited items, and editability counts.",
@@ -1667,6 +1739,32 @@
           "private_paths_outside_workspace"
         ],
         "notes": "Expose normalized project security posture only."
+      }
+    },
+    {
+      "uri_template": "mission-control://projects/{project_id}/security/audit-log",
+      "title": "Project security audit log",
+      "summary": "Project-scoped approval and denial history for risky actions so chat can review actual operator decisions and audit drift.",
+      "support_status": "implemented",
+      "source_hint": {
+        "rest_endpoints": [
+          "/api/projects/{project_id}/security/audit-log"
+        ]
+      },
+      "default_fields": [
+        "project_id",
+        "audit_entry_count",
+        "decision_counts",
+        "risk_level_counts",
+        "entries"
+      ],
+      "redaction": {
+        "omit_fields": [
+          "raw_log",
+          "secret_values",
+          "private_paths_outside_workspace"
+        ],
+        "notes": "Expose normalized project audit summaries only."
       }
     },
     {
@@ -2353,6 +2451,30 @@
       }
     },
     {
+      "uri_template": "mission-control://projects/{project_id}/swarm/events",
+      "title": "Swarm events",
+      "summary": "Project swarm event history so operators can inspect recent spawn, pause, conflict, and completion signals directly.",
+      "support_status": "implemented",
+      "source_hint": {
+        "rest_endpoints": [
+          "/api/projects/{project_id}/swarm/events"
+        ]
+      },
+      "default_fields": [
+        "project_id",
+        "event_count",
+        "events"
+      ],
+      "redaction": {
+        "omit_fields": [
+          "raw_logs",
+          "secret_paths",
+          "private_paths_outside_workspace"
+        ],
+        "notes": "Expose compact swarm event summaries only."
+      }
+    },
+    {
       "uri_template": "mission-control://projects/{project_id}/swarm/simulations",
       "title": "Swarm simulations",
       "summary": "Project swarm simulation history with compact readiness, approval, and conflict posture for recent launch candidates.",
@@ -2456,6 +2578,32 @@
           "secret_paths"
         ],
         "notes": "Expose compact risk posture only."
+      }
+    },
+    {
+      "uri_template": "mission-control://projects/{project_id}/scope-creep",
+      "title": "Scope creep signals",
+      "summary": "Project scope-creep signals showing pending expansion pressure, severity, and recommended handling before the plan balloons in silence.",
+      "support_status": "implemented",
+      "source_hint": {
+        "rest_endpoints": [
+          "/api/projects/{project_id}/scope-creep"
+        ]
+      },
+      "default_fields": [
+        "project_id",
+        "signal_count",
+        "status_counts",
+        "severity_counts",
+        "signals"
+      ],
+      "redaction": {
+        "omit_fields": [
+          "raw_log",
+          "secret_values",
+          "private_paths_outside_workspace"
+        ],
+        "notes": "Expose summarized scope-change pressure only."
       }
     },
     {

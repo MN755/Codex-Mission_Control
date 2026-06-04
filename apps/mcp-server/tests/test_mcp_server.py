@@ -36,6 +36,7 @@ EXPECTED_RESOURCES = {
     "mission-control://integrations/connections",
     "mission-control://integrations/health",
     "mission-control://agent-archetypes",
+    "mission-control://agents/reputation",
     "mission-control://capabilities/benchmarks",
     "mission-control://capabilities/matrix",
     "mission-control://context-packs/{context_pack_id}",
@@ -72,12 +73,14 @@ EXPECTED_RESOURCES = {
     "mission-control://projects/{project_id}/playbook",
     "mission-control://projects/{project_id}/playbook/recommendations",
     "mission-control://projects/{project_id}/context-packs",
+    "mission-control://projects/{project_id}/agents/reputation",
     "mission-control://projects/{project_id}/preferences/summary",
     "mission-control://projects/{project_id}/preferences/effective",
     "mission-control://projects/{project_id}/widgets/summary",
     "mission-control://projects/{project_id}/workspace",
     "mission-control://projects/{project_id}/workspace-tooling",
     "mission-control://projects/{project_id}/security/policy",
+    "mission-control://projects/{project_id}/security/audit-log",
     "mission-control://projects/{project_id}/action",
     "mission-control://projects/{project_id}/actions",
     "mission-control://projects/{project_id}/manager/messages",
@@ -102,10 +105,13 @@ EXPECTED_RESOURCES = {
     "mission-control://projects/{project_id}/nvidia-validation-plan",
     "mission-control://projects/{project_id}/swarm/preferences",
     "mission-control://projects/{project_id}/swarm-plan",
+    "mission-control://projects/{project_id}/swarm/events",
     "mission-control://projects/{project_id}/swarm/simulations",
     "mission-control://projects/{project_id}/swarm/simulations/latest",
     "mission-control://risks/common",
     "mission-control://risks/summary",
+    "mission-control://security/audit-log",
+    "mission-control://projects/{project_id}/scope-creep",
     "mission-control://projects/{project_id}/risk-register",
     "mission-control://projects/{project_id}/risks/summary",
     "mission-control://projects/{project_id}/agent-contracts",
@@ -1203,6 +1209,22 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
     )
     monkeypatch.setattr(
         client,
+        "get_swarm_events",
+        lambda project_id: [
+            {
+                "id": 501,
+                "project_id": project_id,
+                "swarm_plan_id": 17,
+                "event_type": "agent_spawned",
+                "message": "Spawned reviewer lane after validation gate.",
+                "agent_id": 22,
+                "created_at": "2026-06-03T12:46:00Z",
+                "metadata_json": {"lane": "review"},
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        client,
         "list_swarm_simulations",
         lambda project_id: [
             {
@@ -1266,6 +1288,23 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
                 "name": "reviewer",
                 "description": "Finds regressions and validation gaps.",
                 "default_temperature": 0.1,
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        client,
+        "get_agent_reputation",
+        lambda project_id=None: [
+            {
+                "archetype": "reviewer" if project_id is None else "implementer",
+                "provider": "codex",
+                "model": "gpt-5.5",
+                "total_tasks": 12 if project_id is None else 5,
+                "success_rate": 0.92 if project_id is None else 0.8,
+                "common_failure_modes": ["metadata drift"],
+                "recommended_for": ["catalog alignment"],
+                "avoid_for": [],
+                "confidence": 84 if project_id is None else 61,
             }
         ],
     )
@@ -1374,9 +1413,9 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
     monkeypatch.setattr(
         client,
         "get_context_pack",
-        lambda context_pack_id: {
+        lambda context_pack_id, project_id=None: {
             "id": context_pack_id,
-            "project_id": 7,
+            "project_id": project_id or 7,
             "title": "Bridge Runtime Pack",
             "status": "ready",
             "summary": "Captures runtime routes, manifests, and guard tests.",
@@ -1733,6 +1772,26 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
     )
     monkeypatch.setattr(
         client,
+        "get_security_audit_log",
+        lambda project_id=None: [
+            {
+                "id": 701,
+                "project_id": project_id,
+                "orchestration_id": 14 if project_id is not None else None,
+                "decision_id": 31,
+                "action_type": "git_push",
+                "action_summary": "Push validated MCP catalog updates to main.",
+                "risk_level": "medium",
+                "decision": "approved_once",
+                "decided_by": "user",
+                "reason": "Validated targeted MCP tests passed.",
+                "created_at": "2026-06-03T12:49:00Z",
+                "metadata_json": {"branch": "main"},
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        client,
         "get_agent_contracts",
         lambda project_id: [
             {
@@ -1805,6 +1864,25 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
                 "title": "Metadata drift",
                 "severity": "high",
                 "detail": "Runtime behavior and catalogs disagree unless parity tests stay enforced.",
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        client,
+        "get_scope_creep",
+        lambda project_id: [
+            {
+                "id": 91,
+                "project_id": project_id,
+                "source": "manager",
+                "summary": "Add branch-protection auditing before release.",
+                "severity": "medium",
+                "related_task_id": None,
+                "related_message_id": None,
+                "suggested_action": "defer",
+                "status": "open",
+                "created_at": "2026-06-03T12:48:00Z",
+                "resolved_at": None,
             }
         ],
     )
@@ -2413,6 +2491,7 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
     profile_summary = client.read_resource("mission-control://profile/summary")
     global_preference_summary = client.read_resource("mission-control://preferences/summary")
     agent_archetypes = client.read_resource("mission-control://agent-archetypes")
+    global_agent_reputation = client.read_resource("mission-control://agents/reputation")
     capability_benchmarks = client.read_resource("mission-control://capabilities/benchmarks")
     capability_matrix = client.read_resource("mission-control://capabilities/matrix")
     context_pack = client.read_resource("mission-control://context-packs/31")
@@ -2467,6 +2546,7 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
     playbook = client.read_resource("mission-control://projects/7/playbook")
     playbook_recommendations = client.read_resource("mission-control://projects/7/playbook/recommendations")
     context_packs = client.read_resource("mission-control://projects/7/context-packs")
+    project_agent_reputation = client.read_resource("mission-control://projects/7/agents/reputation")
     project_preference_summary = client.read_resource("mission-control://projects/7/preferences/summary")
     effective_preferences = client.read_resource("mission-control://projects/7/preferences/effective")
     widget_summary = client.read_resource("mission-control://projects/7/widgets/summary")
@@ -2492,7 +2572,11 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
     local_runtime = client.read_resource("mission-control://projects/7/nvidia-local-runtime")
     validation_plan = client.read_resource("mission-control://projects/7/nvidia-validation-plan")
     swarm_preferences = client.read_resource("mission-control://projects/7/swarm/preferences")
+    swarm_events = client.read_resource("mission-control://projects/7/swarm/events")
     swarm_simulations = client.read_resource("mission-control://projects/7/swarm/simulations")
+    global_security_audit = client.read_resource("mission-control://security/audit-log")
+    project_security_audit = client.read_resource("mission-control://projects/7/security/audit-log")
+    scope_creep = client.read_resource("mission-control://projects/7/scope-creep")
     tasks = client.read_resource("mission-control://projects/7/tasks")
     events = client.read_resource("mission-control://projects/7/events")
     latest_simulation = client.read_resource("mission-control://projects/7/swarm/simulations/latest")
@@ -2502,6 +2586,8 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
     assert global_preference_summary["item_count"] == 1
     assert agent_archetypes["archetype_count"] == 1
     assert agent_archetypes["archetypes"][0]["name"] == "reviewer"
+    assert global_agent_reputation["reputation_count"] == 1
+    assert global_agent_reputation["reputations"][0]["archetype"] == "reviewer"
     assert capability_benchmarks["benchmark_count"] == 1
     assert capability_benchmarks["benchmarks"][0]["capability_key"] == "bridge_runtime_reads"
     assert capability_matrix["entry_count"] == 1
@@ -2581,6 +2667,8 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
     assert playbook_recommendations["recommendations"][0]["score"] == 95
     assert context_packs["context_pack_count"] == 1
     assert context_packs["context_packs"][0]["title"] == "Bridge Runtime Pack"
+    assert project_agent_reputation["project_id"] == 7
+    assert project_agent_reputation["reputations"][0]["archetype"] == "implementer"
     assert project_preference_summary["scope"] == "project"
     assert project_preference_summary["inherited_count"] == 1
     assert effective_preferences["item_count"] == 2
@@ -2621,8 +2709,16 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
     assert local_runtime["repo_mode"] == "cuda_cpp"
     assert validation_plan["status"] == "needs_review"
     assert swarm_preferences["max_agents"] == 4
+    assert swarm_events["event_count"] == 1
+    assert swarm_events["events"][0]["event_type"] == "agent_spawned"
     assert swarm_simulations["simulation_count"] == 1
     assert swarm_simulations["simulations"][0]["recommended_agent_count"] == 3
+    assert global_security_audit["audit_entry_count"] == 1
+    assert global_security_audit["entries"][0]["decision"] == "approved_once"
+    assert project_security_audit["project_id"] == 7
+    assert project_security_audit["entries"][0]["project_id"] == 7
+    assert scope_creep["signal_count"] == 1
+    assert scope_creep["signals"][0]["suggested_action"] == "defer"
     assert tasks["task_count"] == 2
     assert events["event_count"] == 1
     assert latest_simulation["simulation_id"] == 17
@@ -2768,14 +2864,20 @@ def test_daemon_client_bridge_auth_protected_reads_include_token(monkeypatch) ->
     client.get_project_settings(7)
     client.get_tool_catalog()
     client.get_swarm_preferences(7)
+    client.get_swarm_events(7)
     client.get_agent_archetypes()
+    client.get_agent_reputation()
+    client.get_agent_reputation(7)
     client.get_capability_benchmarks()
     client.get_capability_matrix()
     client.get_context_packs(7)
-    client.get_context_pack(31)
+    client.get_context_pack(31, project_id=7)
     client.get_common_risks()
+    client.get_scope_creep(7)
     client.get_security_policy()
     client.get_security_policy(7)
+    client.get_security_audit_log()
+    client.get_security_audit_log(7)
     client.list_swarm_simulations(7)
     client.get_project_workspace(7)
     client.get_project_action(7)
@@ -2796,14 +2898,20 @@ def test_daemon_client_bridge_auth_protected_reads_include_token(monkeypatch) ->
         ("GET", "/api/settings", True),
         ("GET", "/api/tools", True),
         ("GET", "/api/projects/7/swarm/preferences", True),
+        ("GET", "/api/projects/7/swarm/events", True),
         ("GET", "/api/agent-archetypes", True),
+        ("GET", "/api/agents/reputation", True),
+        ("GET", "/api/projects/7/agents/reputation", True),
         ("GET", "/api/capabilities/benchmarks", True),
         ("GET", "/api/capabilities/matrix", True),
         ("GET", "/api/projects/7/context-packs", True),
         ("GET", "/api/context-packs/31", True),
         ("GET", "/api/risks/common", True),
+        ("GET", "/api/projects/7/scope-creep", True),
         ("GET", "/api/security/policy", True),
         ("GET", "/api/projects/7/security/policy", True),
+        ("GET", "/api/security/audit-log", True),
+        ("GET", "/api/projects/7/security/audit-log", True),
         ("GET", "/api/projects/7/swarm/simulations", True),
         ("GET", "/api/projects/7/workspace", True),
         ("GET", "/api/projects/7/action", True),
@@ -2815,6 +2923,27 @@ def test_daemon_client_bridge_auth_protected_reads_include_token(monkeypatch) ->
         ("GET", "/api/handoffs", True),
         ("GET", "/api/diagnostics/reports", True),
     ]
+
+
+def test_daemon_client_get_context_pack_passes_project_scope_when_provided(monkeypatch) -> None:
+    client = MissionControlDaemonClient(base_url="http://127.0.0.1:8010", timeout=0.1)
+    seen: dict[str, object] = {}
+
+    def fake_request(method: str, path: str, **kwargs):
+        seen["method"] = method
+        seen["path"] = path
+        seen["params"] = kwargs.get("params")
+        return {}
+
+    monkeypatch.setattr(client, "_request", fake_request)
+
+    client.get_context_pack(31, project_id=7)
+
+    assert seen == {
+        "method": "GET",
+        "path": "/api/context-packs/31",
+        "params": {"project_id": 7},
+    }
 
 
 def test_daemon_client_runbook_resource_returns_stable_missing_payload(monkeypatch) -> None:

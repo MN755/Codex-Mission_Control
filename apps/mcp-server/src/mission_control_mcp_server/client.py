@@ -632,6 +632,11 @@ class MissionControlDaemonClient:
     def get_capability_matrix(self) -> list[dict[str, Any]]:
         return self._request("GET", "/api/capabilities/matrix")
 
+    def get_agent_reputation(self, project_id: int | None = None) -> list[dict[str, Any]]:
+        if project_id is None:
+            return self._request("GET", "/api/agents/reputation")
+        return self._request("GET", f"/api/projects/{project_id}/agents/reputation")
+
     def import_host_integrations(self) -> dict[str, Any]:
         return self._request("POST", "/api/integrations/import-host-state")
 
@@ -644,8 +649,9 @@ class MissionControlDaemonClient:
     def get_context_packs(self, project_id: int) -> list[dict[str, Any]]:
         return self._request("GET", f"/api/projects/{project_id}/context-packs")
 
-    def get_context_pack(self, context_pack_id: int) -> dict[str, Any]:
-        return self._request("GET", f"/api/context-packs/{context_pack_id}")
+    def get_context_pack(self, context_pack_id: int, *, project_id: int | None = None) -> dict[str, Any]:
+        params = {"project_id": project_id} if project_id is not None else None
+        return self._request("GET", f"/api/context-packs/{context_pack_id}", params=params)
 
     def preview_project_integration_action(self, project_id: int, family: str, action_id: str, *, params: dict[str, Any] | None = None) -> dict[str, Any]:
         return self._request(
@@ -801,6 +807,9 @@ class MissionControlDaemonClient:
     def get_swarm_plan(self, project_id: int) -> dict[str, Any] | None:
         return self._request("GET", f"/api/projects/{project_id}/swarm/plan")
 
+    def get_swarm_events(self, project_id: int) -> list[dict[str, Any]]:
+        return self._request("GET", f"/api/projects/{project_id}/swarm/events")
+
     def approve_swarm_plan(self, project_id: int, swarm_plan_id: int) -> dict[str, Any]:
         return self._request("POST", f"/api/projects/{project_id}/swarm/plan/{swarm_plan_id}/approve", json_body={})
 
@@ -814,6 +823,9 @@ class MissionControlDaemonClient:
 
     def get_common_risks(self) -> list[dict[str, Any]]:
         return self._request("GET", "/api/risks/common")
+
+    def get_scope_creep(self, project_id: int) -> list[dict[str, Any]]:
+        return self._request("GET", f"/api/projects/{project_id}/scope-creep")
 
     def get_validation_coverage(self, project_id: int) -> list[dict[str, Any]]:
         return self._request("GET", f"/api/projects/{project_id}/validation-coverage")
@@ -831,6 +843,11 @@ class MissionControlDaemonClient:
         if project_id is None:
             return self._request("GET", "/api/security/policy")
         return self._request("GET", f"/api/projects/{project_id}/security/policy")
+
+    def get_security_audit_log(self, project_id: int | None = None) -> list[dict[str, Any]]:
+        if project_id is None:
+            return self._request("GET", "/api/security/audit-log")
+        return self._request("GET", f"/api/projects/{project_id}/security/audit-log")
 
     def propose_agents_md(self, project_id: int) -> dict[str, Any]:
         return self._request("POST", f"/api/projects/{project_id}/agents-md/propose", json_body={})
@@ -1817,6 +1834,13 @@ class MissionControlDaemonClient:
             "entries": matrix[:40],
         }
 
+    def _summarize_agent_reputation(self, reputations: list[dict[str, Any]], *, project_id: int | None = None) -> dict[str, Any]:
+        return {
+            "project_id": project_id,
+            "reputation_count": len(reputations),
+            "reputations": reputations[:20],
+        }
+
     def _summarize_context_packs(self, project_id: int, packs: list[dict[str, Any]]) -> dict[str, Any]:
         return {
             "project_id": project_id,
@@ -1837,6 +1861,45 @@ class MissionControlDaemonClient:
             "simulations": simulations[:20],
         }
 
+    def _summarize_swarm_events(self, project_id: int, events: list[dict[str, Any]]) -> dict[str, Any]:
+        return {
+            "project_id": project_id,
+            "event_count": len(events),
+            "events": events[:30],
+        }
+
+    def _summarize_scope_creep(self, project_id: int, signals: list[dict[str, Any]]) -> dict[str, Any]:
+        status_counts: dict[str, int] = {}
+        severity_counts: dict[str, int] = {}
+        for signal in signals:
+            status = str(signal.get("status") or "unknown")
+            severity = str(signal.get("severity") or "unknown")
+            status_counts[status] = status_counts.get(status, 0) + 1
+            severity_counts[severity] = severity_counts.get(severity, 0) + 1
+        return {
+            "project_id": project_id,
+            "signal_count": len(signals),
+            "status_counts": status_counts,
+            "severity_counts": severity_counts,
+            "signals": signals[:20],
+        }
+
+    def _summarize_security_audit_log(self, entries: list[dict[str, Any]], *, project_id: int | None = None) -> dict[str, Any]:
+        decision_counts: dict[str, int] = {}
+        risk_counts: dict[str, int] = {}
+        for entry in entries:
+            decision = str(entry.get("decision") or "unknown")
+            risk = str(entry.get("risk_level") or "unknown")
+            decision_counts[decision] = decision_counts.get(decision, 0) + 1
+            risk_counts[risk] = risk_counts.get(risk, 0) + 1
+        return {
+            "project_id": project_id,
+            "audit_entry_count": len(entries),
+            "decision_counts": decision_counts,
+            "risk_level_counts": risk_counts,
+            "entries": entries[:20],
+        }
+
     def read_resource(self, uri: str) -> dict[str, Any]:
         if not uri.startswith("mission-control://"):
             raise RuntimeError("Unsupported Mission Control resource URI.")
@@ -1848,6 +1911,8 @@ class MissionControlDaemonClient:
                 return self._summarize_capability_benchmarks(self.get_capability_benchmarks())
             if parts[1] == "matrix":
                 return self._summarize_capability_matrix(self.get_capability_matrix())
+        if len(parts) >= 2 and parts[0] == "agents" and parts[1] == "reputation":
+            return self._summarize_agent_reputation(self.get_agent_reputation())
         if len(parts) >= 2 and parts[0] == "context-packs":
             return self.get_context_pack(int(parts[1]))
         if len(parts) >= 1 and parts[0] == "handoffs":
@@ -1879,6 +1944,8 @@ class MissionControlDaemonClient:
             return self._summarize_common_risks(self.get_common_risks())
         if len(parts) >= 2 and parts[0] == "security" and parts[1] == "policy":
             return self.get_security_policy()
+        if len(parts) >= 2 and parts[0] == "security" and parts[1] == "audit-log":
+            return self._summarize_security_audit_log(self.get_security_audit_log())
         if len(parts) >= 2 and parts[0] == "system" and parts[1] == "status":
             return self.get_system_status()
         if len(parts) >= 2 and parts[0] == "system" and parts[1] == "auth-state":
@@ -1931,6 +1998,8 @@ class MissionControlDaemonClient:
                 orchestration_id = self._maybe_orchestration_id(project_id=project_id)
                 status = self.get_status(orchestration_id=orchestration_id, project_id=project_id) if orchestration_id is not None else None
                 return self._summarize_project_status(project, status)
+            if kind == "agents" and len(parts) == 4 and parts[3] == "reputation":
+                return self._summarize_agent_reputation(self.get_agent_reputation(project_id), project_id=project_id)
             if kind == "agents":
                 return self._summarize_agents(project_id, self.get_agents(project_id))
             if kind == "pending-decisions":
@@ -1956,6 +2025,8 @@ class MissionControlDaemonClient:
                 return self._summarize_codebase_map(codebase_map, understanding)
             if kind == "context-packs":
                 return self._summarize_context_packs(project_id, self.get_context_packs(project_id))
+            if kind == "scope-creep":
+                return self._summarize_scope_creep(project_id, self.get_scope_creep(project_id))
             if kind == "codebase-understanding":
                 return self.get_codebase_understanding(project_id)
             if kind == "import-safety":
@@ -1966,6 +2037,8 @@ class MissionControlDaemonClient:
                 return self.get_project_settings(project_id)
             if kind == "swarm" and len(parts) == 4 and parts[3] == "preferences":
                 return self.get_swarm_preferences(project_id)
+            if kind == "swarm" and len(parts) == 4 and parts[3] == "events":
+                return self._summarize_swarm_events(project_id, self.get_swarm_events(project_id))
             if kind == "swarm" and len(parts) == 4 and parts[3] == "simulations":
                 return self._summarize_swarm_simulations(project_id, self.list_swarm_simulations(project_id))
             if kind == "swarm-plan":
@@ -1990,6 +2063,8 @@ class MissionControlDaemonClient:
                 return self._summarize_path_locks(project_id, self.get_path_locks(project_id))
             if kind == "security" and len(parts) == 4 and parts[3] == "policy":
                 return self.get_security_policy(project_id)
+            if kind == "security" and len(parts) == 4 and parts[3] == "audit-log":
+                return self._summarize_security_audit_log(self.get_security_audit_log(project_id), project_id=project_id)
             if kind == "agents-md" and len(parts) == 4 and parts[3] == "status":
                 return self.get_agents_md_status(project_id)
             if kind == "operator-snapshot":

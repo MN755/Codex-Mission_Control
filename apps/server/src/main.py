@@ -1402,7 +1402,7 @@ def list_context_packs(
 @app.get("/api/context-packs/{context_pack_id}", response_model=ContextPackRead)
 def get_context_pack(
     context_pack_id: int,
-    project_id: int = Query(...),
+    project_id: int | None = Query(default=None),
     db: Session = Depends(get_db),
     _: None = Depends(_require_bridge_token),
 ) -> ContextPackRead:
@@ -1410,7 +1410,8 @@ def get_context_pack(
         pack = context_pack_service.get_context_pack(db, context_pack_id)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
-    _require_project_scope("Context pack", pack.get("project_id"), project_id)
+    if project_id is not None:
+        _require_project_scope("Context pack", pack.get("project_id"), project_id)
     return ContextPackRead(**pack)
 
 
