@@ -223,6 +223,42 @@ EXPECTED_PROMPTS = [
     "review_spatial_feature_bundle",
 ]
 
+EXPECTED_PROJECT_SOURCE_HINTS = {
+    "mission-control://projects/{project_id}/orchestrations/{orchestration_id}/status": [
+        "/api/projects/{project_id}/orchestrations/{orchestration_id}/status"
+    ],
+    "mission-control://projects/{project_id}/orchestrations/{orchestration_id}/events": [
+        "/api/projects/{project_id}/orchestrations/{orchestration_id}/events"
+    ],
+    "mission-control://projects/{project_id}/orchestrations/{orchestration_id}": [
+        "/api/projects/{project_id}/orchestrations/{orchestration_id}"
+    ],
+    "mission-control://projects/{project_id}/orchestrations/{orchestration_id}/handoff": [
+        "/api/projects/{project_id}/orchestrations/{orchestration_id}/handoff"
+    ],
+    "mission-control://projects/{project_id}/orchestrations/{orchestration_id}/pending-decisions": [
+        "/api/projects/{project_id}/orchestrations/{orchestration_id}/pending-decisions"
+    ],
+    "mission-control://projects/{project_id}/orchestrations/{orchestration_id}/status-summary": [
+        "/api/projects/{project_id}/orchestrations/{orchestration_id}/status-summary"
+    ],
+    "mission-control://projects/{project_id}/orchestrations/{orchestration_id}/event-digest": [
+        "/api/projects/{project_id}/orchestrations/{orchestration_id}/event-digest"
+    ],
+    "mission-control://projects/{project_id}/orchestrations/{orchestration_id}/handoff-summary": [
+        "/api/projects/{project_id}/orchestrations/{orchestration_id}/handoff-summary"
+    ],
+    "mission-control://projects/{project_id}/status": [
+        "/api/projects/{project_id}",
+        "/api/projects/{project_id}/orchestrations/active",
+        "/api/projects/{project_id}/orchestrations/{orchestration_id}/status",
+    ],
+    "mission-control://projects/{project_id}/pending-decisions": [
+        "/api/projects/{project_id}/orchestrations/{orchestration_id}/pending-decisions",
+        "/api/projects/{project_id}/pending-decisions",
+    ],
+}
+
 
 def _load_json(path: Path) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
@@ -252,6 +288,25 @@ def test_resources_catalog_has_safety_defaults_and_redaction_notes() -> None:
         assert item["redaction"]["omit_fields"]
         assert item["redaction"]["notes"]
         assert item["support_status"]
+
+
+def test_project_scoped_resource_source_hints_use_canonical_project_routes() -> None:
+    catalogs = [
+        _load_json(RESOURCES_CATALOG),
+        _load_json(MIRROR_RESOURCES_CATALOG),
+        _load_json(BUNDLED_RESOURCES_CATALOG),
+        _load_json(BUNDLED_MCP_RESOURCES_CATALOG),
+    ]
+
+    for catalog in catalogs:
+        resources_by_uri = {item["uri_template"]: item for item in catalog["resources"]}
+        for uri, expected_endpoints in EXPECTED_PROJECT_SOURCE_HINTS.items():
+            assert resources_by_uri[uri]["source_hint"]["rest_endpoints"] == expected_endpoints
+        for uri, item in resources_by_uri.items():
+            if not uri.startswith("mission-control://projects/{project_id}/"):
+                continue
+            for endpoint in item.get("source_hint", {}).get("rest_endpoints", []):
+                assert not endpoint.startswith("/api/orchestrations/"), f"{uri} still points at legacy endpoint {endpoint}"
 
 
 def test_repo_local_mirror_plugin_catalog_matches_canonical_resources() -> None:
