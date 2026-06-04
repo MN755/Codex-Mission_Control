@@ -1809,6 +1809,37 @@
       }
     },
     {
+      "uri_template": "mission-control://projects/{project_id}/integrations/{family}/actions/{action_id}/preview",
+      "title": "Integration action preview",
+      "summary": "Project-scoped safe preview of one integration action so chat can inspect impact, command shape, and approval posture without executing the action.",
+      "support_status": "implemented",
+      "source_hint": {
+        "rest_endpoints": [
+          "/api/projects/{project_id}/integrations/{family}/actions/{action_id}/preview"
+        ]
+      },
+      "default_fields": [
+        "project_id",
+        "family",
+        "action_id",
+        "title",
+        "summary",
+        "command",
+        "risk_level",
+        "permission_policy",
+        "requires_confirmation",
+        "missing_params"
+      ],
+      "redaction": {
+        "omit_fields": [
+          "secret_values",
+          "raw_token",
+          "full_remote_payload"
+        ],
+        "notes": "Expose the safe preview only, not credentials or execute-time payload details."
+      }
+    },
+    {
       "uri_template": "mission-control://projects/{project_id}/settings",
       "title": "Project settings",
       "summary": "Project-scoped execution and approval settings that shape how Mission Control should operate in the workspace.",

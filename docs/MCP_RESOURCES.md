@@ -77,6 +77,7 @@ Mission Control resources are read-only context surfaces for Codex chat.
 - `mission-control://subagent-policy/summary`
 - `mission-control://projects/{project_id}/integrations`
 - `mission-control://projects/{project_id}/integrations/{family}`
+- `mission-control://projects/{project_id}/integrations/{family}/actions/{action_id}/preview`
 - `mission-control://projects/{project_id}/settings`
 - `mission-control://projects/{project_id}/details`
 - `mission-control://projects/{project_id}/understanding`
@@ -169,7 +170,7 @@ Mission Control resources are read-only context surfaces for Codex chat.
 - tool catalog and swarm preferences expose the safe action surface and collaboration posture directly instead of forcing chat to infer them from unrelated endpoints
 - skill catalog exposes the shipped Mission Control skill lanes directly so chat can see what headless workflows already exist instead of bluffing from prompt names
 - project inventory and project-detail resources expose what workspaces exist and what their current operational posture is before chat starts pretending every repo has already been attached
-- workspace, current action, action backlog, manager messages, manager queue, tasks, events, handoffs, diagnostic reports, and safe agent-log tails expose actual project motion directly instead of forcing chat to reconstruct operator state from scattered endpoint scraps
+- workspace, current action, action backlog, manager messages, manager queue, tasks, events, handoffs, diagnostic reports, safe agent-log tails, and integration action previews expose actual project motion directly instead of forcing chat to reconstruct operator state from scattered endpoint scraps
 - widget instance resources expose what panes are actually mounted and what one pane is currently showing, which is much less stupid than guessing from the catalog alone
 - project understanding, interview, plan, and reservations expose the actual planning state machine and claimed-path posture directly instead of making chat infer strategy from downstream task fallout
 - agent archetypes, reputation trends, capability benchmarks, capability matrix, context packs, security policy, audit history, common risks, scope creep signals, and swarm activity surfaces expose planning posture and reusable operating context instead of making users reverse-engineer it from lower-level records

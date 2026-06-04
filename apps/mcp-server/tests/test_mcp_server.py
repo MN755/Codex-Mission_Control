@@ -82,6 +82,7 @@ EXPECTED_RESOURCES = {
     "mission-control://subagent-policy/summary",
     "mission-control://projects/{project_id}/integrations",
     "mission-control://projects/{project_id}/integrations/{family}",
+    "mission-control://projects/{project_id}/integrations/{family}/actions/{action_id}/preview",
     "mission-control://projects/{project_id}/settings",
     "mission-control://projects/{project_id}/details",
     "mission-control://projects/{project_id}/understanding",
@@ -1306,6 +1307,26 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
             "preferred_build_command": "python -m build",
             "context_window_hint": 32000,
             "updated_at": "2026-06-03T12:35:00Z",
+        },
+    )
+    monkeypatch.setattr(
+        client,
+        "preview_project_integration_action",
+        lambda project_id, family, action_id, params=None: {
+            "family": family,
+            "action_id": action_id,
+            "title": "Create issue",
+            "summary": "Create a work item.",
+            "project_name": "Demo",
+            "workspace_path": "C:/demo",
+            "command": 'gh issue create --title "Demo" --body "Body"',
+            "risk_level": "medium",
+            "permission_policy": "ask_every_time",
+            "preview_supported": True,
+            "mutates_remote_state": True,
+            "requires_confirmation": True,
+            "missing_params": [],
+            "notes": [],
         },
     )
     monkeypatch.setattr(
@@ -3080,6 +3101,7 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
     handoff_evidence_preview = client.read_resource("mission-control://projects/7/handoff/evidence/preview")
     codebase_understanding = client.read_resource("mission-control://projects/7/codebase-understanding")
     import_safety = client.read_resource("mission-control://projects/7/import-safety")
+    integration_action_preview = client.read_resource("mission-control://projects/7/integrations/source_control/actions/create_issue/preview")
     project_settings = client.read_resource("mission-control://projects/7/settings")
     project_details = client.read_resource("mission-control://projects/7/details")
     project_understanding = client.read_resource("mission-control://projects/7/understanding")
@@ -3237,6 +3259,9 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
     assert handoff_evidence_preview["derived_candidate_count"] == 1
     assert codebase_understanding["recommended_interview_mode"] == "targeted"
     assert import_safety["safe_to_import"] is True
+    assert integration_action_preview["family"] == "source_control"
+    assert integration_action_preview["action_id"] == "create_issue"
+    assert integration_action_preview["requires_confirmation"] is True
     assert project_settings["preferred_runner_mode"] == "auto"
     assert project_details["project_name"] == "Demo"
     assert project_details["display_status"] == "needs_review"
@@ -3555,6 +3580,7 @@ def test_daemon_client_bridge_auth_protected_reads_include_token(monkeypatch) ->
     client.get_codebase_map(7)
     client.get_codebase_understanding(7)
     client.get_import_safety(7)
+    client.preview_project_integration_action(7, "source_control", "create_issue")
     client.get_project_settings(7)
     client.get_agent_logs(7, 15)
     client.get_orchestration(14, project_id=7)
@@ -3621,6 +3647,7 @@ def test_daemon_client_bridge_auth_protected_reads_include_token(monkeypatch) ->
         ("GET", "/api/projects/7/codebase-map", True),
         ("GET", "/api/projects/7/codebase-understanding", True),
         ("GET", "/api/projects/7/import-safety", True),
+        ("POST", "/api/projects/7/integrations/source_control/actions/create_issue/preview", True),
         ("GET", "/api/settings", True),
         ("GET", "/api/agents/15/logs", True),
         ("GET", "/api/orchestrations/14", True),

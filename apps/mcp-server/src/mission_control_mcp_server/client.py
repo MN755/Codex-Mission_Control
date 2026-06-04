@@ -305,7 +305,7 @@ class MissionControlDaemonClient:
         return self._request("GET", "/api/daemon/status", requires_token=True)
 
     def plugin_health(self) -> dict[str, Any]:
-        return self._request("GET", "/api/orchestrations/plugin-health", requires_token=True)
+        return self._request("GET", "/api/plugin/health", requires_token=True)
 
     def plugin_health_summary(self) -> dict[str, Any]:
         return self.plugin_health()
@@ -2325,6 +2325,31 @@ class MissionControlDaemonClient:
             "reputations": reputations[:20],
         }
 
+    def _summarize_integration_action_preview(
+        self,
+        project_id: int,
+        family: str,
+        action_id: str,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        return {
+            "project_id": project_id,
+            "family": family,
+            "action_id": action_id,
+            "title": payload.get("title"),
+            "summary": payload.get("summary"),
+            "project_name": payload.get("project_name"),
+            "workspace_path": payload.get("workspace_path"),
+            "command": payload.get("command"),
+            "risk_level": payload.get("risk_level"),
+            "permission_policy": payload.get("permission_policy"),
+            "preview_supported": payload.get("preview_supported"),
+            "mutates_remote_state": payload.get("mutates_remote_state"),
+            "requires_confirmation": payload.get("requires_confirmation"),
+            "missing_params": list(payload.get("missing_params") or [])[:8],
+            "notes": list(payload.get("notes") or [])[:8],
+        }
+
     def _summarize_context_packs(self, project_id: int, packs: list[dict[str, Any]]) -> dict[str, Any]:
         return {
             "project_id": project_id,
@@ -2686,6 +2711,15 @@ class MissionControlDaemonClient:
             if kind == "integrations":
                 if project_id is None:
                     raise ValueError("Project-scoped integration resources require a project id.")
+                if len(parts) == 7 and parts[4] == "actions" and parts[6] == "preview":
+                    family = parts[3]
+                    action_id = parts[5]
+                    return self._summarize_integration_action_preview(
+                        project_id,
+                        family,
+                        action_id,
+                        self.preview_project_integration_action(project_id, family, action_id),
+                    )
                 if len(parts) == 4:
                     return self.get_project_integration_family(project_id, parts[3])
                 return self.get_project_integrations(project_id)
