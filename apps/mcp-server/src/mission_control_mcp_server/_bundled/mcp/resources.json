@@ -3573,6 +3573,32 @@
       }
     },
     {
+      "uri_template": "mission-control://projects/{project_id}/risks",
+      "title": "Project risks",
+      "summary": "Project-scoped risk list with normalized severity, ownership, mitigation, and status details.",
+      "support_status": "implemented",
+      "source_hint": {
+        "rest_endpoints": [
+          "/api/projects/{project_id}/risks"
+        ]
+      },
+      "default_fields": [
+        "project_id",
+        "risk_count",
+        "open_count",
+        "severity_counts",
+        "risks"
+      ],
+      "redaction": {
+        "omit_fields": [
+          "raw_artifact_body",
+          "secret_paths",
+          "raw_log"
+        ],
+        "notes": "Return concise risk summaries and status counts only."
+      }
+    },
+    {
       "uri_template": "mission-control://projects/{project_id}/risks/summary",
       "title": "Project risk summary",
       "summary": "Compact project-scoped risk posture with total/open counts, severity/status tallies, and top risks.",

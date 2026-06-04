@@ -164,6 +164,7 @@ EXPECTED_RESOURCES = [
     "mission-control://risks/summary",
     "mission-control://projects/{project_id}/scope-creep",
     "mission-control://projects/{project_id}/risk-register",
+    "mission-control://projects/{project_id}/risks",
     "mission-control://projects/{project_id}/risks/summary",
     "mission-control://projects/{project_id}/agent-contracts",
     "mission-control://projects/{project_id}/validation-summary",

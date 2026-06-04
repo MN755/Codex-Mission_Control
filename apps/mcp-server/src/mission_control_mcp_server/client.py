@@ -2810,6 +2810,8 @@ class MissionControlDaemonClient:
                 return self.get_latest_swarm_simulation(project_id)
             if kind == "risk-register":
                 return self._summarize_risks(project_id, self.get_risks(project_id))
+            if kind == "risks" and len(parts) == 3:
+                return self._summarize_risks(project_id, self.get_risks(project_id))
             if kind == "risks" and len(parts) == 4 and parts[3] == "summary":
                 return self.get_risk_summary(project_id)
             if kind == "agent-contracts":

@@ -147,6 +147,7 @@ EXPECTED_RESOURCES = {
     "mission-control://security/audit-log",
     "mission-control://projects/{project_id}/scope-creep",
     "mission-control://projects/{project_id}/risk-register",
+    "mission-control://projects/{project_id}/risks",
     "mission-control://projects/{project_id}/risks/summary",
     "mission-control://projects/{project_id}/agent-contracts",
     "mission-control://projects/{project_id}/validation-summary",
@@ -1437,6 +1438,27 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
                 }
             ],
         },
+    )
+    monkeypatch.setattr(
+        client,
+        "get_risks",
+        lambda project_id: [
+            {
+                "id": 41,
+                "project_id": project_id,
+                "title": "Validation drift",
+                "description": "Proof of validation can fall behind code changes.",
+                "severity": "high",
+                "likelihood": "medium",
+                "owner_agent_id": None,
+                "mitigation": "Require named validation evidence before handoff.",
+                "status": "open",
+                "related_task_id": 101,
+                "created_by": "manager",
+                "created_at": "2026-06-03T12:10:00Z",
+                "updated_at": "2026-06-03T12:39:00Z",
+            }
+        ],
     )
     monkeypatch.setattr(
         client,
@@ -3316,6 +3338,7 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
     effective_preferences = client.read_resource("mission-control://projects/7/preferences/effective")
     widget_summary = client.read_resource("mission-control://projects/7/widgets/summary")
     project_widget_instances = client.read_resource("mission-control://projects/7/widgets/instances")
+    project_risks = client.read_resource("mission-control://projects/7/risks")
     project_risk_summary = client.read_resource("mission-control://projects/7/risks/summary")
     agent_contracts = client.read_resource("mission-control://projects/7/agent-contracts")
     validation_summary = client.read_resource("mission-control://projects/7/validation-summary")
@@ -3524,6 +3547,9 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
     assert widget_summary["instances"][0]["widget_type"] == "runbook_status"
     assert project_widget_instances["project_id"] == 7
     assert project_widget_instances["instances"][0]["widget_type"] == "runbook_status"
+    assert project_risks["project_id"] == 7
+    assert project_risks["risk_count"] == 1
+    assert project_risks["open_risks"][0]["title"] == "Validation drift"
     assert project_risk_summary["project_id"] == 7
     assert project_risk_summary["top_risks"][0]["title"] == "Validation drift"
     assert agent_contracts["contract_count"] == 1
