@@ -546,6 +546,12 @@ def test_runtime_and_project_control_routes_require_token(client) -> None:
             f"/api/projects/{project_id}/integrations/source_control/actions/create/preview",
             json={"params": {"title": "x", "body": "y"}},
         ).status_code == 401
+        assert raw_client.get(f"/api/projects/{project_id}/nvidia-dynamo").status_code == 401
+        assert raw_client.get(f"/api/projects/{project_id}/nvidia-nim").status_code == 401
+        assert raw_client.get(f"/api/projects/{project_id}/nvidia-aiq").status_code == 401
+        assert raw_client.get(f"/api/projects/{project_id}/nvidia-gpu-diagnostics").status_code == 401
+        assert raw_client.get(f"/api/projects/{project_id}/nvidia-local-runtime").status_code == 401
+        assert raw_client.get(f"/api/projects/{project_id}/nvidia-validation-plan").status_code == 401
         assert raw_client.get(f"/api/projects/{project_id}/tensorflow/features").status_code == 401
         assert raw_client.get(f"/api/projects/{project_id}/pytorch/features").status_code == 401
         assert raw_client.post(f"/api/projects/{project_id}/codebase/search", json={"pattern": "TODO"}).status_code == 401

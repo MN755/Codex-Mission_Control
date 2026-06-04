@@ -3192,7 +3192,7 @@
       "support_status": "implemented",
       "source_hint": {
         "rest_endpoints": [
-          "/api/projects/{project_id}/nvidia/dynamo"
+          "/api/projects/{project_id}/nvidia-dynamo"
         ]
       },
       "default_fields": [
@@ -3221,7 +3221,7 @@
       "support_status": "implemented",
       "source_hint": {
         "rest_endpoints": [
-          "/api/projects/{project_id}/nvidia/dynamo"
+          "/api/projects/{project_id}/nvidia-dynamo"
         ]
       },
       "default_fields": [
@@ -3250,7 +3250,7 @@
       "support_status": "implemented",
       "source_hint": {
         "rest_endpoints": [
-          "/api/projects/{project_id}/nvidia/nim"
+          "/api/projects/{project_id}/nvidia-nim"
         ]
       },
       "default_fields": [
@@ -3280,7 +3280,7 @@
       "support_status": "implemented",
       "source_hint": {
         "rest_endpoints": [
-          "/api/projects/{project_id}/nvidia/nim"
+          "/api/projects/{project_id}/nvidia-nim"
         ]
       },
       "default_fields": [
@@ -3310,7 +3310,7 @@
       "support_status": "implemented",
       "source_hint": {
         "rest_endpoints": [
-          "/api/projects/{project_id}/nvidia/aiq"
+          "/api/projects/{project_id}/nvidia-aiq"
         ]
       },
       "default_fields": [
@@ -3341,7 +3341,7 @@
       "support_status": "implemented",
       "source_hint": {
         "rest_endpoints": [
-          "/api/projects/{project_id}/nvidia/aiq"
+          "/api/projects/{project_id}/nvidia-aiq"
         ]
       },
       "default_fields": [
@@ -3372,7 +3372,7 @@
       "support_status": "implemented",
       "source_hint": {
         "rest_endpoints": [
-          "/api/projects/{project_id}/nvidia/gpu-diagnostics"
+          "/api/projects/{project_id}/nvidia-gpu-diagnostics"
         ]
       },
       "default_fields": [
@@ -3400,7 +3400,7 @@
       "support_status": "implemented",
       "source_hint": {
         "rest_endpoints": [
-          "/api/projects/{project_id}/nvidia/gpu-diagnostics"
+          "/api/projects/{project_id}/nvidia-gpu-diagnostics"
         ]
       },
       "default_fields": [
@@ -3428,7 +3428,7 @@
       "support_status": "implemented",
       "source_hint": {
         "rest_endpoints": [
-          "/api/projects/{project_id}/nvidia/local-runtime"
+          "/api/projects/{project_id}/nvidia-local-runtime"
         ]
       },
       "default_fields": [
@@ -3458,7 +3458,7 @@
       "support_status": "implemented",
       "source_hint": {
         "rest_endpoints": [
-          "/api/projects/{project_id}/nvidia/local-runtime"
+          "/api/projects/{project_id}/nvidia-local-runtime"
         ]
       },
       "default_fields": [
@@ -3488,7 +3488,7 @@
       "support_status": "implemented",
       "source_hint": {
         "rest_endpoints": [
-          "/api/projects/{project_id}/nvidia/validation-plan"
+          "/api/projects/{project_id}/nvidia-validation-plan"
         ]
       },
       "default_fields": [
@@ -3517,7 +3517,7 @@
       "support_status": "implemented",
       "source_hint": {
         "rest_endpoints": [
-          "/api/projects/{project_id}/nvidia/validation-plan"
+          "/api/projects/{project_id}/nvidia-validation-plan"
         ]
       },
       "default_fields": [

@@ -292,6 +292,24 @@ EXPECTED_PROJECT_SOURCE_HINTS = {
     "mission-control://projects/{project_id}/integrations/{family}/actions": [
         "/api/projects/{project_id}/integrations/{family}/actions"
     ],
+    "mission-control://projects/{project_id}/nvidia-dynamo": [
+        "/api/projects/{project_id}/nvidia-dynamo"
+    ],
+    "mission-control://projects/{project_id}/nvidia-nim": [
+        "/api/projects/{project_id}/nvidia-nim"
+    ],
+    "mission-control://projects/{project_id}/nvidia-aiq": [
+        "/api/projects/{project_id}/nvidia-aiq"
+    ],
+    "mission-control://projects/{project_id}/nvidia-gpu-diagnostics": [
+        "/api/projects/{project_id}/nvidia-gpu-diagnostics"
+    ],
+    "mission-control://projects/{project_id}/nvidia-local-runtime": [
+        "/api/projects/{project_id}/nvidia-local-runtime"
+    ],
+    "mission-control://projects/{project_id}/nvidia-validation-plan": [
+        "/api/projects/{project_id}/nvidia-validation-plan"
+    ],
 }
 
 
