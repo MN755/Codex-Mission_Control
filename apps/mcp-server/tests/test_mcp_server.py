@@ -3835,6 +3835,13 @@ def test_daemon_client_rejects_invalid_extra_segments_for_strict_resources() -> 
         "mission-control://playbooks/ai_local_tool/extra",
         "mission-control://context-packs/31/extra",
         "mission-control://agents/reputation/extra",
+        "mission-control://profile/summary/extra",
+        "mission-control://preferences/summary/extra",
+        "mission-control://subagent-policy/summary/extra",
+        "mission-control://system/status/extra",
+        "mission-control://dashboard/summary/extra",
+        "mission-control://widgets/catalog/project/extra",
+        "mission-control://widgets/instances/extra",
     ):
         try:
             client.read_resource(uri)

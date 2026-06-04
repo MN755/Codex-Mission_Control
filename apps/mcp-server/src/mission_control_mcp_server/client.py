@@ -2640,58 +2640,64 @@ class MissionControlDaemonClient:
                 return self._summarize_integration_health(self.get_integration_health())
         if len(parts) == 1 and parts[0] == "profile":
             return self._summarize_profile(self.get_profile())
-        if len(parts) >= 2 and parts[0] == "profile" and parts[1] == "summary":
+        if len(parts) == 2 and parts[0] == "profile" and parts[1] == "summary":
             return self.get_profile_summary()
         if len(parts) == 1 and parts[0] == "tools":
             tools = self.get_tool_catalog()
             return {"tool_count": len(tools), "tools": tools}
-        if len(parts) >= 2 and parts[0] == "preferences" and parts[1] == "summary":
+        if len(parts) == 2 and parts[0] == "preferences" and parts[1] == "summary":
             return self.get_global_preference_summary()
         if len(parts) >= 1 and parts[0] == "playbooks":
             if len(parts) == 1:
                 return {"playbooks": self.list_playbooks()}
             if len(parts) == 2:
                 return self.get_playbook_catalog_entry(parts[1])
-        if len(parts) >= 2 and parts[0] == "risks" and parts[1] == "summary":
+        if len(parts) == 2 and parts[0] == "risks" and parts[1] == "summary":
             return self.get_risk_summary()
-        if len(parts) >= 2 and parts[0] == "risks" and parts[1] == "common":
+        if len(parts) == 2 and parts[0] == "risks" and parts[1] == "common":
             return self._summarize_common_risks(self.get_common_risks())
-        if len(parts) >= 2 and parts[0] == "security" and parts[1] == "policy":
+        if len(parts) == 2 and parts[0] == "security" and parts[1] == "policy":
             return self.get_security_policy()
-        if len(parts) >= 2 and parts[0] == "security" and parts[1] == "audit-log":
+        if len(parts) == 2 and parts[0] == "security" and parts[1] == "audit-log":
             return self._summarize_security_audit_log(self.get_security_audit_log())
-        if len(parts) >= 2 and parts[0] == "system" and parts[1] == "status":
+        if len(parts) == 2 and parts[0] == "system" and parts[1] == "status":
             return self.get_system_status()
-        if len(parts) >= 2 and parts[0] == "system" and parts[1] == "auth-state":
+        if len(parts) == 2 and parts[0] == "system" and parts[1] == "auth-state":
             return self.get_auth_state()
-        if len(parts) >= 2 and parts[0] == "system" and parts[1] == "codex-status":
+        if len(parts) == 2 and parts[0] == "system" and parts[1] == "codex-status":
             return self.get_codex_status()
-        if len(parts) >= 2 and parts[0] == "startup" and parts[1] == "status":
+        if len(parts) == 2 and parts[0] == "startup" and parts[1] == "status":
             return self.get_startup_status()
-        if len(parts) >= 2 and parts[0] == "daemon" and parts[1] == "status":
+        if len(parts) == 2 and parts[0] == "daemon" and parts[1] == "status":
             return self.daemon_status()
-        if len(parts) >= 2 and parts[0] == "runners" and parts[1] == "status":
+        if len(parts) == 2 and parts[0] == "runners" and parts[1] == "status":
             return self.get_runners_status()
-        if len(parts) >= 2 and parts[0] == "plugin" and parts[1] == "health":
+        if len(parts) == 2 and parts[0] == "plugin" and parts[1] == "health":
             return self.plugin_health_summary()
-        if len(parts) >= 2 and parts[0] == "headless" and parts[1] == "config":
+        if len(parts) == 2 and parts[0] == "headless" and parts[1] == "config":
             return self.get_headless_config()
-        if len(parts) >= 2 and parts[0] == "dashboard" and parts[1] == "summary":
+        if len(parts) == 2 and parts[0] == "dashboard" and parts[1] == "summary":
             return self.get_dashboard_summary()
         if len(parts) >= 2 and parts[0] == "widgets" and parts[1] == "catalog":
-            scope = parts[2] if len(parts) >= 3 else None
+            if len(parts) not in (2, 3):
+                raise RuntimeError(f"Unsupported Mission Control resource URI: {uri}")
+            scope = parts[2] if len(parts) == 3 else None
             return {"scope": scope or "all", "catalog": self.get_widget_catalog(scope=scope)}
         if len(parts) >= 2 and parts[0] == "widgets" and parts[1] == "instances":
             if len(parts) == 4 and parts[3] == "data":
                 return self._summarize_widget_instance_data(int(parts[2]), self.get_widget_instance_data(int(parts[2])))
+            if len(parts) != 2:
+                raise RuntimeError(f"Unsupported Mission Control resource URI: {uri}")
             return self._summarize_widget_instances(self.list_widget_instances())
         if len(parts) == 1 and parts[0] == "preferences":
             return self._summarize_preferences(self.get_preferences())
         if len(parts) >= 1 and parts[0] == "subagent-policy":
             if len(parts) == 2 and parts[1] == "summary":
                 return self.get_subagent_policy_summary()
+            if len(parts) != 1:
+                raise RuntimeError(f"Unsupported Mission Control resource URI: {uri}")
             return self._summarize_subagent_policy(self.get_subagent_policy())
-        if len(parts) >= 1 and parts[0] == "skills":
+        if len(parts) == 1 and parts[0] == "skills":
             return self._summarize_skills(self.get_skills())
         if len(parts) == 1 and parts[0] == "projects":
             return self._summarize_projects(self.list_projects())
