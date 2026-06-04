@@ -2620,17 +2620,17 @@ class MissionControlDaemonClient:
             return self._summarize_handoffs(self.list_handoffs())
         if len(parts) == 1 and parts[0] == "health":
             return self.get_health()
-        if len(parts) >= 2 and parts[0] == "headless" and parts[1] == "diagnostic-summary":
+        if len(parts) == 2 and parts[0] == "headless" and parts[1] == "diagnostic-summary":
             return self.get_headless_diagnostic_summary()
-        if len(parts) >= 2 and parts[0] == "diagnostics" and parts[1] == "reports":
+        if len(parts) == 2 and parts[0] == "diagnostics" and parts[1] == "reports":
             return self._summarize_diagnostic_reports(self.list_diagnostic_reports())
-        if len(parts) >= 2 and parts[0] == "diagnostics" and parts[1] == "identity":
+        if len(parts) == 2 and parts[0] == "diagnostics" and parts[1] == "identity":
             return self.get_diagnostics_identity()
-        if len(parts) >= 2 and parts[0] == "headless" and parts[1] == "health":
+        if len(parts) == 2 and parts[0] == "headless" and parts[1] == "health":
             return self.get_headless_health()
-        if len(parts) >= 3 and parts[0] == "system" and parts[1] == "auth-jobs":
+        if len(parts) == 3 and parts[0] == "system" and parts[1] == "auth-jobs":
             return self.get_auth_job(parts[2])
-        if len(parts) >= 2 and parts[0] == "integrations":
+        if len(parts) == 2 and parts[0] == "integrations":
             kind = parts[1]
             if kind == "catalog":
                 return self._summarize_integration_catalog(self.get_integrations_catalog())
@@ -2729,7 +2729,7 @@ class MissionControlDaemonClient:
             kind = parts[2]
             if kind == "decisions" and len(parts) == 5 and parts[4] == "bridge-message":
                 return self.get_decision_bridge_message(int(parts[3]), project_id=project_id)
-            if kind == "status-summary":
+            if kind == "status-summary" and len(parts) == 3:
                 return self.get_status_summary(project_id=project_id)
             if kind == "orchestrations" and len(parts) == 4 and parts[3] == "active":
                 return self._summarize_active_orchestration(project_id, self.active_project_orchestration(project_id))
@@ -2768,15 +2768,17 @@ class MissionControlDaemonClient:
                 return self._summarize_pending_questions(project_id, self.get_pending_questions(project_id))
             if kind == "approvals" and len(parts) == 4 and parts[3] == "pending":
                 return self._summarize_pending_approvals(project_id, self.get_pending_approvals(project_id))
-            if kind == "event-digest":
+            if kind == "event-digest" and len(parts) == 3:
                 return self.get_event_digest(project_id=project_id)
-            if kind == "handoff-summary":
+            if kind == "handoff-summary" and len(parts) == 3:
                 return self.get_handoff_summary(project_id=project_id)
             if kind == "handoff":
                 if len(parts) == 4 and parts[3] == "evidence":
                     return self._summarize_handoff_evidence(project_id, self.get_handoff_evidence(project_id))
                 if len(parts) == 5 and parts[3] == "evidence" and parts[4] == "preview":
                     return self.get_handoff_evidence_preview(project_id)
+                if len(parts) != 3:
+                    raise RuntimeError(f"Unsupported Mission Control resource URI: {uri}")
                 return self._summarize_handoff(project_id, self.get_project_handoff(project_id))
             if kind == "codebase-map":
                 codebase_map = self.get_codebase_map(project_id)
@@ -2896,6 +2898,8 @@ class MissionControlDaemonClient:
             if kind == "playbook":
                 if len(parts) == 4 and parts[3] == "recommendations":
                     return {"project_id": project_id, "recommendations": self.get_playbook_recommendations(project_id)}
+                if len(parts) != 3:
+                    raise RuntimeError(f"Unsupported Mission Control resource URI: {uri}")
                 return self.get_playbook(project_id)
             if kind == "preferences":
                 if len(parts) == 3:
