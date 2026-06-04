@@ -39,6 +39,10 @@ EXPECTED_RESOURCES = [
     "mission-control://projects/{project_id}/status",
     "mission-control://projects/{project_id}/agents",
     "mission-control://projects/{project_id}/pending-decisions",
+    "mission-control://projects/{project_id}/questions/pending",
+    "mission-control://projects/{project_id}/approvals/pending",
+    "mission-control://projects/{project_id}/event-digest",
+    "mission-control://projects/{project_id}/handoff-summary",
     "mission-control://projects/{project_id}/handoff",
     "mission-control://projects/{project_id}/handoff/evidence",
     "mission-control://projects/{project_id}/handoff/evidence/preview",
@@ -205,6 +209,10 @@ def test_docs_explain_resources_prompts_and_headless_boundary() -> None:
     assert "localhost" in runtime_content.lower()
     assert "mission_control_attach_workspace" in tools_content
     assert "mission-control://projects/{project_id}/decision-ledger" in resources_content
+    assert "mission-control://projects/{project_id}/questions/pending" in resources_content
+    assert "mission-control://projects/{project_id}/approvals/pending" in resources_content
+    assert "mission-control://projects/{project_id}/event-digest" in resources_content
+    assert "mission-control://projects/{project_id}/handoff-summary" in resources_content
     assert "mission-control://projects/{project_id}/handoff/evidence" in resources_content
     assert "mission-control://projects/{project_id}/handoff/evidence/preview" in resources_content
     assert "mission-control://projects/{project_id}/operator-snapshot" in resources_content

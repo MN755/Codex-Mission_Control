@@ -22,6 +22,10 @@ EXPECTED_RESOURCES = {
     "mission-control://projects/{project_id}/status",
     "mission-control://projects/{project_id}/agents",
     "mission-control://projects/{project_id}/pending-decisions",
+    "mission-control://projects/{project_id}/questions/pending",
+    "mission-control://projects/{project_id}/approvals/pending",
+    "mission-control://projects/{project_id}/event-digest",
+    "mission-control://projects/{project_id}/handoff-summary",
     "mission-control://projects/{project_id}/handoff",
     "mission-control://projects/{project_id}/handoff/evidence",
     "mission-control://projects/{project_id}/handoff/evidence/preview",
@@ -984,6 +988,57 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
     )
     monkeypatch.setattr(
         client,
+        "get_pending_questions",
+        lambda project_id: [
+            {
+                "id": 71,
+                "project_id": project_id,
+                "category": "scope",
+                "question": "Should the bridge expose snapshot restore plans?",
+                "impact": "Changes operator-facing recovery guidance.",
+                "status": "pending",
+                "options": [{"id": "yes", "label": "Yes"}, {"id": "later", "label": "Later"}],
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        client,
+        "get_pending_approvals",
+        lambda project_id: [
+            {
+                "id": 81,
+                "project_id": project_id,
+                "kind": "command",
+                "summary": "Approve a guarded git push.",
+                "risk_level": "medium",
+                "status": "pending",
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        client,
+        "get_event_digest",
+        lambda **kwargs: {
+            "message_type": "event_digest",
+            "title": "Mission Control event digest",
+            "summary": "One recent blocker needs attention.",
+            "fallback_markdown": "## Mission Control Event Digest\n",
+            "user_action_required": False,
+        },
+    )
+    monkeypatch.setattr(
+        client,
+        "get_handoff_summary",
+        lambda **kwargs: {
+            "message_type": "handoff_ready",
+            "title": "Mission Control handoff summary",
+            "summary": "Ready for review with one known limitation.",
+            "fallback_markdown": "## Mission Control Handoff Summary\n",
+            "user_action_required": False,
+        },
+    )
+    monkeypatch.setattr(
+        client,
         "get_handoff_evidence",
         lambda project_id: [
             {
@@ -1514,6 +1569,10 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
 
     profile_summary = client.read_resource("mission-control://profile/summary")
     subagent_policy_summary = client.read_resource("mission-control://subagent-policy/summary")
+    pending_questions = client.read_resource("mission-control://projects/7/questions/pending")
+    pending_approvals = client.read_resource("mission-control://projects/7/approvals/pending")
+    event_digest = client.read_resource("mission-control://projects/7/event-digest")
+    handoff_summary = client.read_resource("mission-control://projects/7/handoff-summary")
     snapshot = client.read_resource("mission-control://projects/7/operator-snapshot")
     instincts = client.read_resource("mission-control://projects/7/instincts")
     verification = client.read_resource("mission-control://projects/7/verification-brief")
@@ -1551,6 +1610,12 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
 
     assert profile_summary["display_name"] == "Mike"
     assert subagent_policy_summary["default_mode"] == "limited_write"
+    assert pending_questions["question_count"] == 1
+    assert pending_questions["questions"][0]["category"] == "scope"
+    assert pending_approvals["approval_count"] == 1
+    assert pending_approvals["approvals"][0]["risk_level"] == "medium"
+    assert event_digest["message_type"] == "event_digest"
+    assert handoff_summary["message_type"] == "handoff_ready"
     assert snapshot["project_name"] == "Demo"
     assert snapshot["recommended_next_action"] == "Run the named pytest lane."
     assert instincts["instincts"][0]["key"] == "ship-with-evidence"

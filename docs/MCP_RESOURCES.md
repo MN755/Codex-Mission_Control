@@ -16,6 +16,10 @@ Mission Control resources are read-only context surfaces for Codex chat.
 - `mission-control://projects/{project_id}/status`
 - `mission-control://projects/{project_id}/agents`
 - `mission-control://projects/{project_id}/pending-decisions`
+- `mission-control://projects/{project_id}/questions/pending`
+- `mission-control://projects/{project_id}/approvals/pending`
+- `mission-control://projects/{project_id}/event-digest`
+- `mission-control://projects/{project_id}/handoff-summary`
 - `mission-control://projects/{project_id}/handoff`
 - `mission-control://projects/{project_id}/handoff/evidence`
 - `mission-control://projects/{project_id}/handoff/evidence/preview`
@@ -69,6 +73,8 @@ Mission Control resources are read-only context surfaces for Codex chat.
 
 - status and events support compact progress reporting
 - pending decisions support approval relay
+- pending questions and pending approvals expose unresolved manager prompts and gated actions without forcing chat to rummage through UI-only queues
+- event digest and handoff summary expose short operational summaries directly, which is a lot less stupid than reconstructing them from raw status and events every time
 - handoff supports final bridge summaries
 - handoff evidence and handoff evidence preview expose stored proof plus safe derived candidates without making chat scrape raw agent reports or create rows on read
 - codebase map supports imported repo understanding

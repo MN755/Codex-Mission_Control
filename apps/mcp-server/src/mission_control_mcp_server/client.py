@@ -1015,6 +1015,39 @@ class MissionControlDaemonClient:
             ],
         }
 
+    def _summarize_pending_questions(self, project_id: int, questions: list[dict[str, Any]]) -> dict[str, Any]:
+        return {
+            "project_id": project_id,
+            "question_count": len(questions),
+            "questions": [
+                {
+                    "id": question.get("id"),
+                    "category": question.get("category"),
+                    "question": self._safe_short(question.get("question")),
+                    "impact": self._safe_short(question.get("impact")),
+                    "status": question.get("status"),
+                    "options": list(question.get("options") or [])[:4],
+                }
+                for question in questions[:12]
+            ],
+        }
+
+    def _summarize_pending_approvals(self, project_id: int, approvals: list[dict[str, Any]]) -> dict[str, Any]:
+        return {
+            "project_id": project_id,
+            "approval_count": len(approvals),
+            "approvals": [
+                {
+                    "id": approval.get("id"),
+                    "kind": approval.get("kind"),
+                    "summary": self._safe_short(approval.get("summary")),
+                    "risk_level": approval.get("risk_level"),
+                    "status": approval.get("status"),
+                }
+                for approval in approvals[:12]
+            ],
+        }
+
     def _summarize_decision_ledger(self, project_id: int, decisions: list[dict[str, Any]]) -> dict[str, Any]:
         return {
             "project_id": project_id,
@@ -1636,6 +1669,14 @@ class MissionControlDaemonClient:
             if kind == "pending-decisions":
                 decisions = self.get_pending_decisions(project_id=project_id)
                 return self._summarize_pending_decisions(project_id, decisions)
+            if kind == "questions" and len(parts) == 4 and parts[3] == "pending":
+                return self._summarize_pending_questions(project_id, self.get_pending_questions(project_id))
+            if kind == "approvals" and len(parts) == 4 and parts[3] == "pending":
+                return self._summarize_pending_approvals(project_id, self.get_pending_approvals(project_id))
+            if kind == "event-digest":
+                return self.get_event_digest(project_id=project_id)
+            if kind == "handoff-summary":
+                return self.get_handoff_summary(project_id=project_id)
             if kind == "handoff":
                 if len(parts) == 4 and parts[3] == "evidence":
                     return self._summarize_handoff_evidence(project_id, self.get_handoff_evidence(project_id))

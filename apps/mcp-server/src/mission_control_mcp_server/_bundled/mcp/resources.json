@@ -154,6 +154,103 @@
       }
     },
     {
+      "uri_template": "mission-control://projects/{project_id}/questions/pending",
+      "title": "Pending questions",
+      "summary": "Open manager questions that still need user input, summarized by category, impact, and option set.",
+      "support_status": "implemented",
+      "source_hint": {
+        "rest_endpoints": [
+          "/api/projects/{project_id}/questions/pending"
+        ]
+      },
+      "default_fields": [
+        "project_id",
+        "question_count",
+        "questions"
+      ],
+      "redaction": {
+        "omit_fields": [
+          "secret_values",
+          "raw_log",
+          "private_paths_outside_workspace"
+        ],
+        "notes": "Expose concise question text and safe options only."
+      }
+    },
+    {
+      "uri_template": "mission-control://projects/{project_id}/approvals/pending",
+      "title": "Pending approvals",
+      "summary": "Open approval requests that still need an operator decision, summarized by kind, risk, and status.",
+      "support_status": "implemented",
+      "source_hint": {
+        "rest_endpoints": [
+          "/api/projects/{project_id}/approvals/pending"
+        ]
+      },
+      "default_fields": [
+        "project_id",
+        "approval_count",
+        "approvals"
+      ],
+      "redaction": {
+        "omit_fields": [
+          "secret_values",
+          "raw_log",
+          "raw_command",
+          "private_paths_outside_workspace"
+        ],
+        "notes": "Expose approval summary and risk posture only, not raw command payloads."
+      }
+    },
+    {
+      "uri_template": "mission-control://projects/{project_id}/event-digest",
+      "title": "Event digest",
+      "summary": "Compact recent-event digest for a project without requiring an orchestration-specific lookup.",
+      "support_status": "implemented",
+      "source_hint": {
+        "rest_endpoints": [
+          "/api/projects/{project_id}/event-digest"
+        ]
+      },
+      "default_fields": [
+        "message_type",
+        "title",
+        "summary",
+        "user_action_required"
+      ],
+      "redaction": {
+        "omit_fields": [
+          "raw_log",
+          "private_paths_outside_workspace"
+        ],
+        "notes": "Expose the digest summary only, not raw event internals."
+      }
+    },
+    {
+      "uri_template": "mission-control://projects/{project_id}/handoff-summary",
+      "title": "Handoff summary",
+      "summary": "Compact handoff-readiness summary for the project without requiring a full handoff payload.",
+      "support_status": "implemented",
+      "source_hint": {
+        "rest_endpoints": [
+          "/api/projects/{project_id}/handoff-summary"
+        ]
+      },
+      "default_fields": [
+        "message_type",
+        "title",
+        "summary",
+        "user_action_required"
+      ],
+      "redaction": {
+        "omit_fields": [
+          "raw_log",
+          "private_paths_outside_workspace"
+        ],
+        "notes": "Expose the summary signal only, not raw handoff internals."
+      }
+    },
+    {
       "uri_template": "mission-control://projects/{project_id}/handoff",
       "title": "Project handoff",
       "summary": "Final handoff summary with run guidance, evidence posture, limitations, and dry-run warnings.",
