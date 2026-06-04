@@ -54,8 +54,8 @@ def test_direct_question_answer_rejects_invalid_option(client) -> None:
     question_id = _seed_manager_question(project["id"])
 
     response = client.post(
-        f"/api/questions/{question_id}/answer",
-        json={"project_id": project["id"], "option_id": "bogus", "selected_text": "Bogus"},
+        f"/api/projects/{project['id']}/questions/{question_id}/answer",
+        json={"option_id": "bogus", "selected_text": "Bogus"},
     )
 
     assert response.status_code == 400
@@ -80,13 +80,26 @@ def test_direct_question_answer_canonicalizes_selected_text(client) -> None:
     question_id = _seed_manager_question(project["id"])
 
     response = client.post(
-        f"/api/questions/{question_id}/answer",
-        json={"project_id": project["id"], "option_id": "safe", "selected_text": "Destroy prod"},
+        f"/api/projects/{project['id']}/questions/{question_id}/answer",
+        json={"option_id": "safe", "selected_text": "Destroy prod"},
     )
 
     assert response.status_code == 200, response.text
     assert response.json()["selected_option_id"] == "safe"
     assert response.json()["selected_text"] == "Safe path"
+
+
+def test_project_scoped_question_answer_rejects_mismatched_embedded_project_id(client) -> None:
+    project = _create_project(client, "Direct Question Mismatch", "direct-question-mismatch")
+    question_id = _seed_manager_question(project["id"])
+
+    response = client.post(
+        f"/api/projects/{project['id']}/questions/{question_id}/answer",
+        json={"project_id": project["id"] + 1, "option_id": "safe", "selected_text": "Safe path"},
+    )
+
+    assert response.status_code == 404
+    assert "question not found in this project" in response.json()["detail"].lower()
 
 
 def test_project_action_question_resolve_rejects_invalid_option(client) -> None:

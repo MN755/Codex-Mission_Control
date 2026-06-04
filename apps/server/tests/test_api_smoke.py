@@ -576,6 +576,7 @@ def test_runtime_and_project_control_routes_require_token(client) -> None:
         assert raw_client.get(f"/api/projects/{project_id}/scope-creep").status_code == 401
         assert raw_client.post("/api/scope-creep/1/resolve", params={"project_id": project_id}, json={"status": "accepted"}).status_code == 401
         assert raw_client.post(f"/api/projects/{project_id}/scope-creep/1/resolve", json={"status": "accepted"}).status_code == 401
+        assert raw_client.post(f"/api/projects/{project_id}/questions/1/answer", json={"option_id": "x", "selected_text": "x"}).status_code == 401
         assert raw_client.post(f"/api/projects/{project_id}/questions/1/auto-decide").status_code == 401
         assert raw_client.post(f"/api/projects/{project_id}/decisions/1/answer", json={"option_id": "x", "selected_text": "x"}).status_code == 401
         assert raw_client.post(f"/api/projects/{project_id}/approvals/1/approve-once", json={"project_id": project_id}).status_code == 401

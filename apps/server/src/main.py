@@ -3915,6 +3915,30 @@ def answer_question(
         raise HTTPException(status_code=status_code, detail=str(exc)) from exc
 
 
+@app.post("/api/projects/{project_id}/questions/{question_id}/answer", response_model=ManagerQuestionRead)
+def answer_project_question(
+    project_id: int,
+    question_id: int,
+    payload: ManagerQuestionAnswer,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> ManagerQuestionRead:
+    if payload.project_id is not None and payload.project_id != project_id:
+        raise HTTPException(status_code=404, detail="Question not found in this project")
+    try:
+        question = service.answer_question(
+            db,
+            question_id,
+            option_id=payload.option_id,
+            selected_text=payload.selected_text,
+            project_id=project_id,
+        )
+        return ManagerQuestionRead(**service._serialize_question(question))
+    except ValueError as exc:
+        status_code = 404 if "not found" in str(exc).lower() else 400
+        raise HTTPException(status_code=status_code, detail=str(exc)) from exc
+
+
 @app.post("/api/questions/{question_id}/auto-decide", response_model=ManagerQuestionRead)
 def auto_decide_question(
     question_id: int,

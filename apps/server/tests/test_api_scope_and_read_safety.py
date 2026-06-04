@@ -1676,6 +1676,13 @@ def test_global_id_routes_require_matching_project_scope(client, bridge_headers)
     )
     assert wrong_project_auto_decide.status_code == 404
 
+    wrong_project_answer = client.post(
+        f"/api/projects/{project_two['id']}/questions/{question['id']}/answer",
+        headers=bridge_headers,
+        json={"option_id": "workflow", "selected_text": "Workflow loop"},
+    )
+    assert wrong_project_answer.status_code == 404
+
     paused = client.post(
         f"/api/projects/{project_one['id']}/orchestrations/{orchestration_id}/pause",
         headers=bridge_headers,

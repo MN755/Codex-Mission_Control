@@ -41,8 +41,8 @@ def test_workspace_dry_run_loop_and_action_flow(client) -> None:
 
     question = workspace["pending_question"]
     answer = client.post(
-        f"/api/questions/{question['id']}/answer",
-        json={"project_id": project["id"], "option_id": "workflow", "selected_text": "Workflow loop"},
+        f"/api/projects/{project['id']}/questions/{question['id']}/answer",
+        json={"option_id": "workflow", "selected_text": "Workflow loop"},
     )
     assert answer.status_code == 200
     assert answer.json()["status"] == "answered"
