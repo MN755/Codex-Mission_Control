@@ -283,12 +283,12 @@ EXPECTED_PROJECT_SOURCE_HINTS = {
         "/api/projects/{project_id}/details"
     ],
     "mission-control://projects/{project_id}/diagnostics": [
-        "/api/diagnostics/reports?project_id={project_id}",
+        "/api/projects/{project_id}/diagnostics/reports",
         "/api/plugin/health",
         "/api/projects/{project_id}/orchestrations/active",
     ],
     "mission-control://projects/{project_id}/diagnostics/latest-report": [
-        "/api/diagnostics/reports?project_id={project_id}"
+        "/api/projects/{project_id}/diagnostics/reports"
     ],
     "mission-control://projects/{project_id}/integrations/{family}/actions": [
         "/api/projects/{project_id}/integrations/{family}/actions"

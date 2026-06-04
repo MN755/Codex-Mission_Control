@@ -4159,6 +4159,16 @@ def diagnostics_reports(
     return [DiagnosticReportListItemRead(**item) for item in service.recent_diagnostic_reports(project)]
 
 
+@app.get("/api/projects/{project_id}/diagnostics/reports", response_model=list[DiagnosticReportListItemRead])
+def project_diagnostics_reports(
+    project_id: int,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> list[DiagnosticReportListItemRead]:
+    project = _get_project_or_404(db, project_id)
+    return [DiagnosticReportListItemRead(**item) for item in service.recent_diagnostic_reports(project)]
+
+
 @app.get("/api/integrations/catalog", response_model=list[IntegrationCatalogEntryRead])
 def get_integrations_catalog(
     db: Session = Depends(get_db),

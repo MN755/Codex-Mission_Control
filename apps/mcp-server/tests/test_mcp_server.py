@@ -243,7 +243,7 @@ def test_project_diagnostics_requests_project_scoped_report_history(monkeypatch)
     payload = client.get_diagnostics(project_id=7)
 
     assert payload["recent_reports"] == []
-    assert ("/api/diagnostics/reports", {"params": {"project_id": 7}}) in requested_calls
+    assert ("/api/projects/7/diagnostics/reports", {}) in requested_calls
 
 
 def test_daemon_client_rejects_non_local_spawn(monkeypatch) -> None:
@@ -4126,7 +4126,7 @@ def test_daemon_client_bridge_auth_protected_reads_include_token(monkeypatch) ->
         ("GET", "/api/projects/7/subagent-batches/51", True),
         ("GET", "/api/handoffs", True),
         ("GET", "/api/diagnostics/reports", True),
-        ("GET", "/api/diagnostics/reports", True),
+        ("GET", "/api/projects/7/diagnostics/reports", True),
         ("GET", "/api/projects/7/orchestrations/active", True),
     ]
 

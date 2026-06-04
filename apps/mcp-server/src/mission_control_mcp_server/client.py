@@ -574,8 +574,9 @@ class MissionControlDaemonClient:
         return self._request("GET", "/api/handoffs")
 
     def list_diagnostic_reports(self, project_id: int | None = None) -> list[dict[str, Any]]:
-        params = {"project_id": project_id} if project_id is not None else None
-        return self._request("GET", "/api/diagnostics/reports", params=params)
+        if project_id is not None:
+            return self._request("GET", f"/api/projects/{project_id}/diagnostics/reports")
+        return self._request("GET", "/api/diagnostics/reports")
 
     def get_profile_summary(self) -> dict[str, Any]:
         return self._request("GET", "/api/profile/summary")

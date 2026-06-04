@@ -3131,7 +3131,7 @@
       "support_status": "implemented",
       "source_hint": {
         "rest_endpoints": [
-          "/api/diagnostics/reports?project_id={project_id}",
+          "/api/projects/{project_id}/diagnostics/reports",
           "/api/plugin/health",
           "/api/projects/{project_id}/orchestrations/active"
         ]
@@ -3165,7 +3165,7 @@
       "support_status": "implemented",
       "source_hint": {
         "rest_endpoints": [
-          "/api/diagnostics/reports?project_id={project_id}"
+          "/api/projects/{project_id}/diagnostics/reports"
         ]
       },
       "default_fields": [

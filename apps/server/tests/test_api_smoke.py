@@ -455,6 +455,7 @@ def test_privileged_headless_and_status_routes_require_token() -> None:
         assert raw_client.post("/api/startup/diagnostics", json={"include_support_bundle": True}).status_code == 401
         assert raw_client.post("/api/startup/open-diagnostics-folder").status_code == 401
         assert raw_client.get("/api/diagnostics/reports").status_code == 401
+        assert raw_client.get("/api/projects/1/diagnostics/reports").status_code == 401
 
 
 def test_runtime_and_project_control_routes_require_token(client) -> None:
