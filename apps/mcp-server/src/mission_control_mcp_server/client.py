@@ -2837,6 +2837,8 @@ class MissionControlDaemonClient:
             if kind == "operator-snapshot":
                 return self._summarize_operator_snapshot(project_id, self.get_operator_snapshot(project_id))
             if kind == "instincts":
+                if len(parts) == 4 and parts[3] == "preview":
+                    return self._summarize_instincts_preview(project_id, self.get_instincts_preview(project_id))
                 return self._summarize_instincts_preview(project_id, self.get_instincts_preview(project_id))
             if kind == "verification-brief":
                 return self._summarize_verification_brief(project_id, self.get_verification_brief(project_id))

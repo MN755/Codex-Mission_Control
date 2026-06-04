@@ -3893,6 +3893,30 @@
       }
     },
     {
+      "uri_template": "mission-control://projects/{project_id}/instincts/preview",
+      "title": "Operational instincts preview",
+      "summary": "Derived operational instincts that turn current project state into reusable execution rules.",
+      "support_status": "implemented",
+      "source_hint": {
+        "rest_endpoints": [
+          "/api/projects/{project_id}/instincts/preview"
+        ]
+      },
+      "default_fields": [
+        "project_id",
+        "instinct_count",
+        "instincts"
+      ],
+      "redaction": {
+        "omit_fields": [
+          "internal_reasoning",
+          "secret_paths",
+          "raw_prompt"
+        ],
+        "notes": "Expose concise operational rules and evidence without raw prompt or hidden chain-of-thought."
+      }
+    },
+    {
       "uri_template": "mission-control://projects/{project_id}/verification-brief",
       "title": "Verification brief",
       "summary": "Release- and review-oriented verification brief with checks, blockers, and evidence gaps.",
