@@ -1981,6 +1981,22 @@ def test_project_routes_reject_invalid_related_resource_ids(client) -> None:
     )
     assert invalid_recovery_agent.status_code == 404
 
+    valid_recovery = client.post(
+        f"/api/projects/{project_id}/recovery-plans",
+        json={
+            "trigger_type": "agent_stuck",
+            "trigger_summary": "Scoped recovery plan",
+            "suggested_actions_json": ["ask_user", "pause_project"],
+        },
+    )
+    assert valid_recovery.status_code == 200, valid_recovery.text
+
+    wrong_project_recovery_select = client.post(
+        f"/api/projects/{foreign_project['id']}/recovery-plans/{valid_recovery.json()['id']}/select",
+        json={"action": "ask_user"},
+    )
+    assert wrong_project_recovery_select.status_code == 404
+
 
 def test_context_pack_service_rejects_invalid_or_cross_project_refs(client) -> None:
     project = _create_project(client, "Context Pack Service Scope", "context-pack-service-scope")

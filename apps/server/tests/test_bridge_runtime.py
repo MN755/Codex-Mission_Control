@@ -575,7 +575,15 @@ def test_bridge_support_endpoints_cover_decisions_snapshots_and_recovery(client)
     )
     assert recovery.status_code == 200, recovery.text
     assert recovery.json()["status"] == "proposed"
+    selected_recovery = client.post(
+        f"/api/projects/{project['id']}/recovery-plans/{recovery.json()['id']}/select",
+        headers=_bridge_headers(),
+        json={"action": "ask_user"},
+    )
+    assert selected_recovery.status_code == 200, selected_recovery.text
+    assert selected_recovery.json()["selected_action"] == "ask_user"
 
     recovery_list = client.get(f"/api/projects/{project['id']}/recovery-plans", headers=_bridge_headers())
     assert recovery_list.status_code == 200, recovery_list.text
     assert recovery_list.json()[0]["trigger_type"] == "agent_stuck"
+    assert recovery_list.json()[0]["selected_action"] == "ask_user"

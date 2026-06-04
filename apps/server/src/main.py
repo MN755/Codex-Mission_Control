@@ -3372,6 +3372,24 @@ def select_project_recovery_plan(
     return RecoveryPlanRead.model_validate(plan)
 
 
+@app.post("/api/projects/{project_id}/recovery-plans/{plan_id}/select", response_model=RecoveryPlanRead)
+def select_project_recovery_plan_scoped(
+    project_id: int,
+    plan_id: int,
+    payload: RecoveryPlanSelectRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> RecoveryPlanRead:
+    plan = _get_recovery_plan_or_404(db, plan_id)
+    _require_project_scope("Recovery plan", plan.project_id, project_id)
+    try:
+        plan = service.select_recovery_action(db, plan_id, payload.action)
+    except ValueError as exc:
+        raise HTTPException(status_code=400 if "not found" not in str(exc).lower() else 404, detail=str(exc)) from exc
+    return RecoveryPlanRead.model_validate(plan)
+
+
 @app.post("/api/projects", response_model=ProjectRead)
 def create_project(
     payload: ProjectCreate,
