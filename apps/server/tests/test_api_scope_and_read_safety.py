@@ -1667,6 +1667,12 @@ def test_global_id_routes_require_matching_project_scope(client, bridge_headers)
     )
     assert wrong_auto_decide.status_code == 404
 
+    wrong_project_auto_decide = client.post(
+        f"/api/projects/{project_two['id']}/questions/{question['id']}/auto-decide",
+        headers=bridge_headers,
+    )
+    assert wrong_project_auto_decide.status_code == 404
+
     paused = client.post(
         f"/api/projects/{project_one['id']}/orchestrations/{orchestration_id}/pause",
         headers=bridge_headers,
@@ -2068,6 +2074,12 @@ def test_scope_creep_routes_reject_cross_project_refs_and_resolution(client) -> 
         json={"status": "dismissed"},
     )
     assert wrong_project_resolution.status_code == 404
+
+    wrong_project_resolution_alias = client.post(
+        f"/api/projects/{project['id']}/scope-creep/{signal_id}/resolve",
+        json={"status": "dismissed"},
+    )
+    assert wrong_project_resolution_alias.status_code == 404
 
 
 def test_run_report_requires_matching_project_scope(client, bridge_headers) -> None:

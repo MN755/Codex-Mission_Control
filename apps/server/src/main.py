@@ -1527,6 +1527,21 @@ def update_project_risk(
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
+@app.patch("/api/projects/{project_id}/risks/{risk_id}", response_model=RiskRecordRead)
+def update_project_risk_scoped(
+    project_id: int,
+    risk_id: int,
+    payload: RiskRecordUpdate,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> RiskRecordRead:
+    project = _get_project_or_404(db, project_id)
+    try:
+        return RiskRecordRead.model_validate(risk_service.update_risk(db, project, risk_id, payload.model_dump(exclude_none=True)))
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
 @app.get("/api/projects/{project_id}/risks/summary", response_model=RiskSummaryRead)
 def get_project_risk_summary(
     project_id: int,
@@ -1571,6 +1586,21 @@ def resolve_scope_creep(
     signal_id: int,
     payload: ScopeChangeResolveRequest,
     project_id: int = Query(...),
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> ScopeChangeSignalRead:
+    try:
+        signal = scope_creep_service.resolve(db, signal_id, payload.status, project_id=project_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return ScopeChangeSignalRead.model_validate(signal)
+
+
+@app.post("/api/projects/{project_id}/scope-creep/{signal_id}/resolve", response_model=ScopeChangeSignalRead)
+def resolve_project_scope_creep(
+    project_id: int,
+    signal_id: int,
+    payload: ScopeChangeResolveRequest,
     db: Session = Depends(get_db),
     _: None = Depends(_require_bridge_token),
 ) -> ScopeChangeSignalRead:
@@ -3832,6 +3862,21 @@ def auto_decide_question(
         raise HTTPException(status_code=status_code, detail=str(exc)) from exc
 
 
+@app.post("/api/projects/{project_id}/questions/{question_id}/auto-decide", response_model=ManagerQuestionRead)
+def auto_decide_project_question(
+    project_id: int,
+    question_id: int,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> ManagerQuestionRead:
+    try:
+        question = service.auto_decide_question(db, question_id, project_id=project_id)
+        return ManagerQuestionRead(**service._serialize_question(question))
+    except ValueError as exc:
+        status_code = 400 if "High-impact" in str(exc) or "no selectable options" in str(exc).lower() else 404
+        raise HTTPException(status_code=status_code, detail=str(exc)) from exc
+
+
 @app.get("/api/projects/{project_id}/approvals/pending", response_model=list[ApprovalRequestRead])
 def get_pending_approvals(
     project_id: int,
@@ -3856,6 +3901,23 @@ def approve_once(
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
+@app.post("/api/projects/{project_id}/approvals/{approval_id}/approve-once", response_model=ApprovalRequestRead)
+def approve_once_for_project(
+    project_id: int,
+    approval_id: int,
+    payload: ApprovalResolveRequest,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> ApprovalRequestRead:
+    if payload.project_id != project_id:
+        raise HTTPException(status_code=404, detail="Approval not found in this project")
+    try:
+        approval = service.approve_once(db, approval_id, project_id=project_id)
+        return ApprovalRequestRead(**service._serialize_approval(approval))
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
 @app.post("/api/approvals/{approval_id}/deny", response_model=ApprovalRequestRead)
 def deny_approval(
     approval_id: int,
@@ -3870,6 +3932,23 @@ def deny_approval(
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
+@app.post("/api/projects/{project_id}/approvals/{approval_id}/deny", response_model=ApprovalRequestRead)
+def deny_approval_for_project(
+    project_id: int,
+    approval_id: int,
+    payload: ApprovalResolveRequest,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> ApprovalRequestRead:
+    if payload.project_id != project_id:
+        raise HTTPException(status_code=404, detail="Approval not found in this project")
+    try:
+        approval = service.deny_approval(db, approval_id, project_id=project_id)
+        return ApprovalRequestRead(**service._serialize_approval(approval))
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
 @app.post("/api/approvals/{approval_id}/allow-for-project", response_model=ApprovalRequestRead)
 def allow_approval_for_project(
     approval_id: int,
@@ -3879,6 +3958,24 @@ def allow_approval_for_project(
 ) -> ApprovalRequestRead:
     try:
         approval = service.allow_approval_for_project(db, approval_id, project_id=payload.project_id)
+        return ApprovalRequestRead(**service._serialize_approval(approval))
+    except ValueError as exc:
+        status_code = 400 if "cannot be allowed for the whole project" in str(exc).lower() else 404
+        raise HTTPException(status_code=status_code, detail=str(exc)) from exc
+
+
+@app.post("/api/projects/{project_id}/approvals/{approval_id}/allow-for-project", response_model=ApprovalRequestRead)
+def allow_approval_for_specific_project(
+    project_id: int,
+    approval_id: int,
+    payload: ApprovalResolveRequest,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> ApprovalRequestRead:
+    if payload.project_id != project_id:
+        raise HTTPException(status_code=404, detail="Approval not found in this project")
+    try:
+        approval = service.allow_approval_for_project(db, approval_id, project_id=project_id)
         return ApprovalRequestRead(**service._serialize_approval(approval))
     except ValueError as exc:
         status_code = 400 if "cannot be allowed for the whole project" in str(exc).lower() else 404

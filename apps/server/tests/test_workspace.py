@@ -54,7 +54,7 @@ def test_workspace_dry_run_loop_and_action_flow(client) -> None:
     action = client.get(f"/api/projects/{project['id']}/action").json()
     assert action["type"] == "command_approval"
 
-    approval = client.post(f"/api/approvals/{approvals[0]['id']}/approve-once", json={"project_id": project["id"]})
+    approval = client.post(f"/api/projects/{project['id']}/approvals/{approvals[0]['id']}/approve-once", json={"project_id": project["id"]})
     assert approval.status_code == 200
     assert approval.json()["status"] == "approved_once"
 
@@ -90,7 +90,7 @@ def test_high_impact_question_cannot_auto_decide(client) -> None:
             manager_recommendation="No",
         )
         db.commit()
-        response = client.post(f"/api/questions/{question.id}/auto-decide", params={"project_id": project.id})
+        response = client.post(f"/api/projects/{project.id}/questions/{question.id}/auto-decide")
         assert response.status_code == 400
     finally:
         db.close()
@@ -166,7 +166,7 @@ def test_approval_resolution_is_project_scoped(client) -> None:
         )
         db.commit()
 
-        response = client.post(f"/api/approvals/{approval.id}/approve-once", json={"project_id": project_two.id})
+        response = client.post(f"/api/projects/{project_two.id}/approvals/{approval.id}/approve-once", json={"project_id": project_two.id})
         assert response.status_code == 404
 
         db.refresh(approval)
