@@ -1039,6 +1039,59 @@
       }
     },
     {
+      "uri_template": "mission-control://widgets/instances",
+      "title": "Widget instances",
+      "summary": "Global dashboard widget instance inventory with placement, size, and enabled state for headless operator review.",
+      "support_status": "implemented",
+      "source_hint": {
+        "rest_endpoints": [
+          "/api/widgets/instances"
+        ]
+      },
+      "default_fields": [
+        "scope",
+        "instance_count",
+        "widget_types",
+        "instances"
+      ],
+      "redaction": {
+        "omit_fields": [
+          "raw_log",
+          "secret_values",
+          "private_paths_outside_workspace"
+        ],
+        "notes": "Expose widget placement metadata only, not secret-bearing widget config payloads."
+      }
+    },
+    {
+      "uri_template": "mission-control://widgets/instances/{instance_id}/data",
+      "title": "Widget instance data",
+      "summary": "Compact widget data payload for one instance with warnings, status, and safe top-level data fields.",
+      "support_status": "implemented",
+      "source_hint": {
+        "rest_endpoints": [
+          "/api/widgets/instances/{instance_id}/data"
+        ]
+      },
+      "default_fields": [
+        "widget_instance_id",
+        "widget_type",
+        "title",
+        "status",
+        "warning_count",
+        "data_keys",
+        "updated_at"
+      ],
+      "redaction": {
+        "omit_fields": [
+          "raw_log",
+          "secret_values",
+          "private_paths_outside_workspace"
+        ],
+        "notes": "Expose compact widget data only, not unrelated internal widget execution state."
+      }
+    },
+    {
       "uri_template": "mission-control://tools",
       "title": "Tool catalog",
       "summary": "Global Mission Control tool catalog describing bridge-safe actions and their operational risk levels.",
@@ -1129,6 +1182,31 @@
           "private_paths_outside_workspace"
         ],
         "notes": "Expose compact diagnostic report metadata only, not raw logs or secrets."
+      }
+    },
+    {
+      "uri_template": "mission-control://projects",
+      "title": "Projects",
+      "summary": "Global project inventory with compact status, pinning, milestone, and recent activity signals for headless review.",
+      "support_status": "implemented",
+      "source_hint": {
+        "rest_endpoints": [
+          "/api/projects"
+        ]
+      },
+      "default_fields": [
+        "project_count",
+        "active_project_count",
+        "pinned_project_count",
+        "projects"
+      ],
+      "redaction": {
+        "omit_fields": [
+          "secret_values",
+          "private_paths_outside_workspace",
+          "raw_log"
+        ],
+        "notes": "Expose project inventory metadata only, not secret-bearing reports or full docs payloads."
       }
     },
     {
@@ -1310,6 +1388,40 @@
           "private_paths_outside_workspace"
         ],
         "notes": "Expose operational policy and preferred commands only, not secrets."
+      }
+    },
+    {
+      "uri_template": "mission-control://projects/{project_id}/details",
+      "title": "Project details",
+      "summary": "Compact project metadata record with source, runner, handoff, indexing, and workspace posture fields.",
+      "support_status": "implemented",
+      "source_hint": {
+        "rest_endpoints": [
+          "/api/projects/{project_id}"
+        ]
+      },
+      "default_fields": [
+        "project_id",
+        "project_name",
+        "workspace_path",
+        "status",
+        "display_status",
+        "runner_mode",
+        "manager_mode",
+        "source_type",
+        "scan_status",
+        "write_permission_status",
+        "handoff_status",
+        "latest_milestone",
+        "latest_activity"
+      ],
+      "redaction": {
+        "omit_fields": [
+          "secret_values",
+          "private_paths_outside_workspace",
+          "raw_log"
+        ],
+        "notes": "Expose project metadata only, not hidden artifacts or secret-bearing config."
       }
     },
     {
@@ -1764,6 +1876,32 @@
           "private_paths_outside_workspace"
         ],
         "notes": "Expose widget presence and summarized data only."
+      }
+    },
+    {
+      "uri_template": "mission-control://projects/{project_id}/widgets/instances",
+      "title": "Project widget instances",
+      "summary": "Project-scoped widget instance inventory with placement, size, and enabled state for headless operator review.",
+      "support_status": "implemented",
+      "source_hint": {
+        "rest_endpoints": [
+          "/api/projects/{project_id}/widgets/instances"
+        ]
+      },
+      "default_fields": [
+        "scope",
+        "project_id",
+        "instance_count",
+        "widget_types",
+        "instances"
+      ],
+      "redaction": {
+        "omit_fields": [
+          "raw_log",
+          "secret_values",
+          "private_paths_outside_workspace"
+        ],
+        "notes": "Expose project widget placement metadata only, not secret-bearing widget config payloads."
       }
     },
     {

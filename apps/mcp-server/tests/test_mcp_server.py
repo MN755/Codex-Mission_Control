@@ -54,16 +54,20 @@ EXPECTED_RESOURCES = {
     "mission-control://dashboard/summary",
     "mission-control://widgets/catalog",
     "mission-control://widgets/catalog/{scope}",
+    "mission-control://widgets/instances",
+    "mission-control://widgets/instances/{instance_id}/data",
     "mission-control://tools",
     "mission-control://skills",
     "mission-control://handoffs",
     "mission-control://diagnostics/reports",
+    "mission-control://projects",
     "mission-control://profile/summary",
     "mission-control://preferences/summary",
     "mission-control://subagent-policy/summary",
     "mission-control://projects/{project_id}/integrations",
     "mission-control://projects/{project_id}/integrations/{family}",
     "mission-control://projects/{project_id}/settings",
+    "mission-control://projects/{project_id}/details",
     "mission-control://projects/{project_id}/understanding",
     "mission-control://projects/{project_id}/interview",
     "mission-control://projects/{project_id}/plan",
@@ -81,6 +85,7 @@ EXPECTED_RESOURCES = {
     "mission-control://projects/{project_id}/preferences/summary",
     "mission-control://projects/{project_id}/preferences/effective",
     "mission-control://projects/{project_id}/widgets/summary",
+    "mission-control://projects/{project_id}/widgets/instances",
     "mission-control://projects/{project_id}/workspace",
     "mission-control://projects/{project_id}/workspace-tooling",
     "mission-control://projects/{project_id}/security/policy",
@@ -1012,6 +1017,59 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
             "git_status": "dirty",
             "top_level_entries": ["apps", "plugins", "docs"],
             "updated_at": "2026-06-03T12:39:00Z",
+        },
+    )
+    monkeypatch.setattr(
+        client,
+        "list_projects",
+        lambda: [
+            {
+                "id": 7,
+                "name": "Demo",
+                "slug": "demo",
+                "idea": "Harden the MCP bridge.",
+                "workspace_path": "C:/demo",
+                "status": "active",
+                "display_status": "needs_review",
+                "runner_mode": "auto",
+                "manager_mode": "codex",
+                "pinned": True,
+                "handoff_status": "needs_review",
+                "latest_milestone": "Bridge parity",
+                "latest_activity": "Validation is blocked on evidence capture.",
+                "last_opened_at": "2026-06-03T12:45:00Z",
+                "updated_at": "2026-06-03T12:46:00Z",
+                "archived_at": None,
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        client,
+        "get_project",
+        lambda project_id: {
+            "id": project_id,
+            "name": "Demo",
+            "slug": "demo",
+            "idea": "Harden the MCP bridge.",
+            "workspace_path": "C:/demo",
+            "status": "active",
+            "display_status": "needs_review",
+            "runner_mode": "auto",
+            "manager_mode": "codex",
+            "source_type": "existing_folder",
+            "source_path": "C:/demo",
+            "import_mode": "linked",
+            "scan_status": "completed",
+            "write_permission_status": "write_allowed",
+            "pinned": True,
+            "archived_at": None,
+            "handoff_status": "needs_review",
+            "latest_milestone": "Bridge parity",
+            "latest_activity": "Validation is blocked on evidence capture.",
+            "docs_path": "docs",
+            "created_at": "2026-06-03T11:30:00Z",
+            "updated_at": "2026-06-03T12:46:00Z",
+            "last_opened_at": "2026-06-03T12:45:00Z",
         },
     )
     monkeypatch.setattr(
@@ -2128,6 +2186,56 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
     )
     monkeypatch.setattr(
         client,
+        "list_widget_instances",
+        lambda: [
+            {
+                "id": 301,
+                "scope": "dashboard",
+                "project_id": None,
+                "widget_type": "recent_projects",
+                "area": "dashboard_main",
+                "order_index": 0,
+                "size": "large",
+                "collapsed": False,
+                "enabled": True,
+                "updated_at": "2026-06-03T12:48:00Z",
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        client,
+        "get_project_widget_instances",
+        lambda project_id: [
+            {
+                "id": 302,
+                "scope": "project",
+                "project_id": project_id,
+                "widget_type": "runbook_status",
+                "area": "project_right_sidebar",
+                "order_index": 0,
+                "size": "medium",
+                "collapsed": False,
+                "enabled": True,
+                "updated_at": "2026-06-03T12:49:00Z",
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        client,
+        "get_widget_instance_data",
+        lambda instance_id: {
+            "widget_instance_id": instance_id,
+            "widget_type": "recent_projects",
+            "title": "Recent Projects",
+            "status": "ready",
+            "data_json": {"project_count": 1, "project_names": ["Demo"]},
+            "empty_state": None,
+            "warnings_json": [],
+            "updated_at": "2026-06-03T12:50:00Z",
+        },
+    )
+    monkeypatch.setattr(
+        client,
         "get_project_widget_summary",
         lambda project_id: {
             "scope": "project",
@@ -2622,10 +2730,13 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
     dashboard_summary = client.read_resource("mission-control://dashboard/summary")
     widget_catalog = client.read_resource("mission-control://widgets/catalog")
     project_widget_catalog = client.read_resource("mission-control://widgets/catalog/project")
+    widget_instances = client.read_resource("mission-control://widgets/instances")
+    widget_instance_data = client.read_resource("mission-control://widgets/instances/301/data")
     tool_catalog = client.read_resource("mission-control://tools")
     skills = client.read_resource("mission-control://skills")
     handoffs = client.read_resource("mission-control://handoffs")
     diagnostic_reports = client.read_resource("mission-control://diagnostics/reports")
+    projects = client.read_resource("mission-control://projects")
     subagent_policy_summary = client.read_resource("mission-control://subagent-policy/summary")
     pending_questions = client.read_resource("mission-control://projects/7/questions/pending")
     pending_approvals = client.read_resource("mission-control://projects/7/approvals/pending")
@@ -2641,6 +2752,7 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
     codebase_understanding = client.read_resource("mission-control://projects/7/codebase-understanding")
     import_safety = client.read_resource("mission-control://projects/7/import-safety")
     project_settings = client.read_resource("mission-control://projects/7/settings")
+    project_details = client.read_resource("mission-control://projects/7/details")
     project_understanding = client.read_resource("mission-control://projects/7/understanding")
     interview = client.read_resource("mission-control://projects/7/interview")
     plan = client.read_resource("mission-control://projects/7/plan")
@@ -2665,6 +2777,7 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
     project_preference_summary = client.read_resource("mission-control://projects/7/preferences/summary")
     effective_preferences = client.read_resource("mission-control://projects/7/preferences/effective")
     widget_summary = client.read_resource("mission-control://projects/7/widgets/summary")
+    project_widget_instances = client.read_resource("mission-control://projects/7/widgets/instances")
     project_risk_summary = client.read_resource("mission-control://projects/7/risks/summary")
     agent_contracts = client.read_resource("mission-control://projects/7/agent-contracts")
     validation_summary = client.read_resource("mission-control://projects/7/validation-summary")
@@ -2729,6 +2842,10 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
     assert widget_catalog["catalog"][0]["widget_type"] == "Connected Accounts"
     assert project_widget_catalog["scope"] == "project"
     assert project_widget_catalog["catalog"][0]["scope"] == "project"
+    assert widget_instances["instance_count"] == 1
+    assert widget_instances["instances"][0]["widget_type"] == "recent_projects"
+    assert widget_instance_data["widget_instance_id"] == 301
+    assert widget_instance_data["data_keys"] == ["project_count", "project_names"]
     assert tool_catalog["tool_count"] == 1
     assert tool_catalog["tools"][0]["name"] == "mission_control_attach_workspace"
     assert skills["skill_count"] == 1
@@ -2737,6 +2854,8 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
     assert handoffs["handoffs"][0]["project_name"] == "Demo"
     assert diagnostic_reports["report_count"] == 1
     assert diagnostic_reports["reports"][0]["status"] == "warning"
+    assert projects["project_count"] == 1
+    assert projects["projects"][0]["pinned"] is True
     assert subagent_policy_summary["default_mode"] == "limited_write"
     assert pending_questions["question_count"] == 1
     assert pending_questions["questions"][0]["category"] == "scope"
@@ -2759,6 +2878,8 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
     assert codebase_understanding["recommended_interview_mode"] == "targeted"
     assert import_safety["safe_to_import"] is True
     assert project_settings["preferred_runner_mode"] == "auto"
+    assert project_details["project_name"] == "Demo"
+    assert project_details["display_status"] == "needs_review"
     assert project_understanding["summary"] == "Repo is a headless orchestration bridge."
     assert project_understanding["known_fact_count"] == 2
     assert interview["exists"] is True
@@ -2801,6 +2922,8 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
     assert effective_preferences["items"][1]["inherited"] is True
     assert widget_summary["project_id"] == 7
     assert widget_summary["instances"][0]["widget_type"] == "runbook_status"
+    assert project_widget_instances["project_id"] == 7
+    assert project_widget_instances["instances"][0]["widget_type"] == "runbook_status"
     assert project_risk_summary["project_id"] == 7
     assert project_risk_summary["top_risks"][0]["title"] == "Validation drift"
     assert agent_contracts["contract_count"] == 1
@@ -2990,8 +3113,13 @@ def test_daemon_client_bridge_auth_protected_reads_include_token(monkeypatch) ->
     client.get_codebase_understanding(7)
     client.get_import_safety(7)
     client.get_project_settings(7)
+    client.list_projects()
+    client.get_project(7)
     client.get_tool_catalog()
     client.get_skills()
+    client.list_widget_instances()
+    client.get_project_widget_instances(7)
+    client.get_widget_instance_data(301)
     client.get_project_understanding(7)
     client.get_interview(7)
     client.get_plan(7)
@@ -3029,8 +3157,13 @@ def test_daemon_client_bridge_auth_protected_reads_include_token(monkeypatch) ->
         ("GET", "/api/projects/7/codebase-understanding", True),
         ("GET", "/api/projects/7/import-safety", True),
         ("GET", "/api/settings", True),
+        ("GET", "/api/projects", True),
+        ("GET", "/api/projects/7", True),
         ("GET", "/api/tools", True),
         ("GET", "/api/skills", True),
+        ("GET", "/api/widgets/instances", True),
+        ("GET", "/api/projects/7/widgets/instances", True),
+        ("GET", "/api/widgets/instances/301/data", True),
         ("GET", "/api/projects/7/understanding", True),
         ("GET", "/api/projects/7/interview", True),
         ("GET", "/api/projects/7/plan", True),

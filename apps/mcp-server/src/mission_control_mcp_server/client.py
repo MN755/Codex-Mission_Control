@@ -358,6 +358,9 @@ class MissionControlDaemonClient:
             self._remember_orchestration_project(payload.get("id"), project_id)
         return payload
 
+    def list_projects(self) -> list[dict[str, Any]]:
+        return self._request("GET", "/api/projects")
+
     def get_project(self, project_id: int) -> dict[str, Any]:
         return self._request("GET", f"/api/projects/{project_id}")
 
@@ -619,6 +622,15 @@ class MissionControlDaemonClient:
     def get_widget_catalog(self, scope: str | None = None) -> list[dict[str, Any]]:
         params = {"scope": scope} if scope is not None else {}
         return self._request("GET", "/api/widgets/catalog", params=params)
+
+    def list_widget_instances(self) -> list[dict[str, Any]]:
+        return self._request("GET", "/api/widgets/instances")
+
+    def get_project_widget_instances(self, project_id: int) -> list[dict[str, Any]]:
+        return self._request("GET", f"/api/projects/{project_id}/widgets/instances")
+
+    def get_widget_instance_data(self, instance_id: int) -> dict[str, Any]:
+        return self._request("GET", f"/api/widgets/instances/{instance_id}/data")
 
     def get_project_widget_summary(self, project_id: int) -> dict[str, Any]:
         return self._request("GET", f"/api/projects/{project_id}/widgets/summary")
@@ -1099,6 +1111,59 @@ class MissionControlDaemonClient:
             "manager_status": status.get("manager_status") if status else project.get("latest_activity"),
             "next_expected_action": status.get("next_expected_action") if status else "Attach or start a Mission Control task.",
             "handoff_readiness": status.get("handoff_readiness") if status else project.get("handoff_status"),
+        }
+
+    def _summarize_projects(self, projects: list[dict[str, Any]]) -> dict[str, Any]:
+        active = [project for project in projects if project.get("archived_at") is None]
+        pinned = [project for project in projects if project.get("pinned")]
+        return {
+            "project_count": len(projects),
+            "active_project_count": len(active),
+            "pinned_project_count": len(pinned),
+            "projects": [
+                {
+                    "id": project.get("id"),
+                    "name": project.get("name"),
+                    "status": project.get("status"),
+                    "display_status": project.get("display_status"),
+                    "runner_mode": project.get("runner_mode"),
+                    "manager_mode": project.get("manager_mode"),
+                    "pinned": project.get("pinned", False),
+                    "handoff_status": project.get("handoff_status"),
+                    "latest_milestone": project.get("latest_milestone"),
+                    "latest_activity": project.get("latest_activity"),
+                    "last_opened_at": project.get("last_opened_at"),
+                    "updated_at": project.get("updated_at"),
+                }
+                for project in projects[:20]
+            ],
+        }
+
+    def _summarize_project_details(self, project: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "project_id": project.get("id"),
+            "project_name": project.get("name"),
+            "slug": project.get("slug"),
+            "idea": project.get("idea"),
+            "workspace_path": project.get("workspace_path"),
+            "status": project.get("status"),
+            "display_status": project.get("display_status"),
+            "runner_mode": project.get("runner_mode"),
+            "manager_mode": project.get("manager_mode"),
+            "source_type": project.get("source_type"),
+            "source_path": project.get("source_path"),
+            "import_mode": project.get("import_mode"),
+            "scan_status": project.get("scan_status"),
+            "write_permission_status": project.get("write_permission_status"),
+            "pinned": project.get("pinned", False),
+            "archived_at": project.get("archived_at"),
+            "handoff_status": project.get("handoff_status"),
+            "latest_milestone": project.get("latest_milestone"),
+            "latest_activity": project.get("latest_activity"),
+            "docs_path": project.get("docs_path"),
+            "created_at": project.get("created_at"),
+            "updated_at": project.get("updated_at"),
+            "last_opened_at": project.get("last_opened_at"),
         }
 
     def _summarize_agents(self, project_id: int, agents: list[dict[str, Any]]) -> dict[str, Any]:
@@ -1912,6 +1977,45 @@ class MissionControlDaemonClient:
             ],
         }
 
+    def _summarize_widget_instances(self, instances: list[dict[str, Any]], *, project_id: int | None = None) -> dict[str, Any]:
+        scope = "project" if project_id is not None else "dashboard"
+        return {
+            "scope": scope,
+            "project_id": project_id,
+            "instance_count": len(instances),
+            "widget_types": sorted({str(instance.get("widget_type")) for instance in instances if instance.get("widget_type")}),
+            "instances": [
+                {
+                    "id": instance.get("id"),
+                    "scope": instance.get("scope"),
+                    "project_id": instance.get("project_id"),
+                    "widget_type": instance.get("widget_type"),
+                    "area": instance.get("area"),
+                    "order_index": instance.get("order_index"),
+                    "size": instance.get("size"),
+                    "collapsed": instance.get("collapsed"),
+                    "enabled": instance.get("enabled"),
+                    "updated_at": instance.get("updated_at"),
+                }
+                for instance in instances[:20]
+            ],
+        }
+
+    def _summarize_widget_instance_data(self, instance_id: int, payload: dict[str, Any]) -> dict[str, Any]:
+        data = payload.get("data_json") or {}
+        return {
+            "widget_instance_id": instance_id,
+            "widget_type": payload.get("widget_type"),
+            "title": payload.get("title"),
+            "status": payload.get("status"),
+            "empty_state": payload.get("empty_state"),
+            "warning_count": len(payload.get("warnings_json") or []),
+            "warnings": (payload.get("warnings_json") or [])[:8],
+            "data_keys": sorted(data.keys())[:20],
+            "data_json": data,
+            "updated_at": payload.get("updated_at"),
+        }
+
     def _summarize_project_actions(self, project_id: int, actions: list[dict[str, Any]]) -> dict[str, Any]:
         return {
             "project_id": project_id,
@@ -2104,8 +2208,14 @@ class MissionControlDaemonClient:
         if len(parts) >= 2 and parts[0] == "widgets" and parts[1] == "catalog":
             scope = parts[2] if len(parts) >= 3 else None
             return {"scope": scope or "all", "catalog": self.get_widget_catalog(scope=scope)}
+        if len(parts) >= 2 and parts[0] == "widgets" and parts[1] == "instances":
+            if len(parts) == 4 and parts[3] == "data":
+                return self._summarize_widget_instance_data(int(parts[2]), self.get_widget_instance_data(int(parts[2])))
+            return self._summarize_widget_instances(self.list_widget_instances())
         if len(parts) >= 1 and parts[0] == "skills":
             return self._summarize_skills(self.get_skills())
+        if len(parts) == 1 and parts[0] == "projects":
+            return self._summarize_projects(self.list_projects())
         if len(parts) >= 2 and parts[0] == "subagent-policy" and parts[1] == "summary":
             return self.get_subagent_policy_summary()
         if len(parts) >= 5 and parts[0] == "projects" and parts[2] == "orchestrations":
@@ -2182,6 +2292,8 @@ class MissionControlDaemonClient:
                 return self._summarize_diagnostics(project_id, self.get_diagnostics(project_id=project_id))
             if kind == "settings":
                 return self.get_project_settings(project_id)
+            if kind == "details":
+                return self._summarize_project_details(self.get_project(project_id))
             if kind == "swarm" and len(parts) == 4 and parts[3] == "preferences":
                 return self.get_swarm_preferences(project_id)
             if kind == "swarm" and len(parts) == 4 and parts[3] == "events":
@@ -2241,6 +2353,8 @@ class MissionControlDaemonClient:
                 return self._summarize_manager_messages(project_id, self.get_manager_messages(project_id))
             if kind == "manager" and len(parts) == 4 and parts[3] == "queue":
                 return self.get_manager_queue(project_id)
+            if kind == "widgets" and len(parts) == 4 and parts[3] == "instances":
+                return self._summarize_widget_instances(self.get_project_widget_instances(project_id), project_id=project_id)
             if kind == "runbook":
                 if len(parts) == 4 and parts[3] == "summary":
                     return self.get_runbook_summary(project_id)
