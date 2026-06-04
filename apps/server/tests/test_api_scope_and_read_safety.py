@@ -1750,6 +1750,12 @@ def test_agent_and_task_global_id_routes_require_matching_project_scope(client, 
     )
     assert wrong_agent_start.status_code == 404
 
+    wrong_project_agent_start = client.post(
+        f"/api/projects/{project_two['id']}/agents/{agent_id}/start",
+        headers=bridge_headers,
+    )
+    assert wrong_project_agent_start.status_code == 404
+
     wrong_agent_stop = client.post(
         f"/api/agents/{agent_id}/stop",
         headers=bridge_headers,
@@ -1757,12 +1763,24 @@ def test_agent_and_task_global_id_routes_require_matching_project_scope(client, 
     )
     assert wrong_agent_stop.status_code == 404
 
+    wrong_project_agent_stop = client.post(
+        f"/api/projects/{project_two['id']}/agents/{agent_id}/stop",
+        headers=bridge_headers,
+    )
+    assert wrong_project_agent_stop.status_code == 404
+
     wrong_agent_pause = client.post(
         f"/api/agents/{agent_id}/pause",
         headers=bridge_headers,
         params={"project_id": project_two["id"]},
     )
     assert wrong_agent_pause.status_code == 404
+
+    wrong_project_agent_pause = client.post(
+        f"/api/projects/{project_two['id']}/agents/{agent_id}/pause",
+        headers=bridge_headers,
+    )
+    assert wrong_project_agent_pause.status_code == 404
 
     wrong_agent_logs = client.get(
         f"/api/agents/{agent_id}/logs",
@@ -1784,12 +1802,24 @@ def test_agent_and_task_global_id_routes_require_matching_project_scope(client, 
     )
     assert wrong_task_start.status_code == 404
 
+    wrong_project_task_start = client.post(
+        f"/api/projects/{project_two['id']}/tasks/{task_id}/start",
+        headers=bridge_headers,
+    )
+    assert wrong_project_task_start.status_code == 404
+
     wrong_task_complete = client.post(
         f"/api/tasks/{task_id}/complete",
         headers=bridge_headers,
         params={"project_id": project_two["id"]},
     )
     assert wrong_task_complete.status_code == 404
+
+    wrong_project_task_complete = client.post(
+        f"/api/projects/{project_two['id']}/tasks/{task_id}/complete",
+        headers=bridge_headers,
+    )
+    assert wrong_project_task_complete.status_code == 404
 
 
 def test_project_routes_reject_invalid_related_resource_ids(client) -> None:
@@ -2107,6 +2137,23 @@ def test_run_report_requires_matching_project_scope(client, bridge_headers) -> N
         },
     )
     assert response.status_code == 404
+
+    project_scoped_response = client.post(
+        f"/api/projects/{project_two['id']}/runs/{run_id}/report",
+        headers=bridge_headers,
+        json={
+            "agent": "Attacker",
+            "task_id": "999",
+            "status": "done",
+            "summary": "attacker completed foreign work",
+            "files_changed": ["secret.txt"],
+            "tests_run": ["pytest"],
+            "blockers": [],
+            "risks": ["foreign"],
+            "recommended_next_task": "none",
+        },
+    )
+    assert project_scoped_response.status_code == 404
 
     db = SessionLocal()
     try:

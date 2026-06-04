@@ -4322,6 +4322,31 @@ async def start_agent(
     return AgentActionResponse(ok=False, message="No compatible task is available for this agent.")
 
 
+@app.post("/api/projects/{project_id}/agents/{agent_id}/start", response_model=AgentActionResponse)
+async def start_project_agent(
+    project_id: int,
+    agent_id: int,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> AgentActionResponse:
+    project = _get_project_or_404(db, project_id)
+    agent = _require_project_agent(db, project, agent_id)
+    if project.status == "paused":
+        return AgentActionResponse(ok=False, message="Project is paused. Resume it before starting agents.")
+    if agent.kind != "worker":
+        return AgentActionResponse(ok=False, message="Only worker agents can be started manually.")
+    if service._agent_has_unfinished_run(db, agent.id):
+        return AgentActionResponse(ok=False, message="Agent already has an active unfinished run.")
+    task = service._find_next_safe_task(db, project, agent)
+    if task:
+        run = await service.start_agent_task(db, project, agent, task)
+        return AgentActionResponse(ok=True, message="Agent started.", run_id=run.id)
+    blocked_task = db.scalar(select(Task).where(Task.project_id == project.id, Task.status == "waiting_on_paths").order_by(Task.priority.asc()))
+    if blocked_task:
+        return AgentActionResponse(ok=False, message=f"Agent is waiting on path ownership: {blocked_task.waiting_reason or 'conflicting path reservation.'}")
+    return AgentActionResponse(ok=False, message="No compatible task is available for this agent.")
+
+
 @app.post("/api/agents/{agent_id}/stop", response_model=AgentActionResponse)
 async def stop_agent(
     agent_id: int,
@@ -4335,10 +4360,36 @@ async def stop_agent(
     return AgentActionResponse(ok=True, message="Agent stop requested.")
 
 
+@app.post("/api/projects/{project_id}/agents/{agent_id}/stop", response_model=AgentActionResponse)
+async def stop_project_agent(
+    project_id: int,
+    agent_id: int,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> AgentActionResponse:
+    project = _get_project_or_404(db, project_id)
+    agent = _require_project_agent(db, project, agent_id)
+    await service.stop_agent(db, agent)
+    return AgentActionResponse(ok=True, message="Agent stop requested.")
+
+
 @app.post("/api/agents/{agent_id}/pause", response_model=AgentActionResponse)
 async def pause_agent(
     agent_id: int,
     project_id: int = Query(...),
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> AgentActionResponse:
+    project = _get_project_or_404(db, project_id)
+    agent = _require_project_agent(db, project, agent_id)
+    await service.pause_agent(db, agent)
+    return AgentActionResponse(ok=True, message="Agent paused.")
+
+
+@app.post("/api/projects/{project_id}/agents/{agent_id}/pause", response_model=AgentActionResponse)
+async def pause_project_agent(
+    project_id: int,
+    agent_id: int,
     db: Session = Depends(get_db),
     _: None = Depends(_require_bridge_token),
 ) -> AgentActionResponse:
@@ -4432,10 +4483,60 @@ async def start_task(
     return AgentActionResponse(ok=False, message="No idle worker is available.")
 
 
+@app.post("/api/projects/{project_id}/tasks/{task_id}/start", response_model=AgentActionResponse)
+async def start_project_task(
+    project_id: int,
+    task_id: int,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> AgentActionResponse:
+    project = _get_project_or_404(db, project_id)
+    task = _require_project_task(db, project, task_id)
+    workers = list(db.scalars(select(Agent).where(Agent.project_id == project.id, Agent.kind == "worker")))
+    if not workers:
+        workers = service.initialize_build_roster(db, project)
+        if not workers:
+            return AgentActionResponse(ok=False, message="No worker roster is available yet. Approve the swarm plan or initialize the build roster first.")
+    candidates = sorted(
+        [
+            agent
+            for agent in workers
+            if agent.status in {"idle", "waiting", "done", "stopped"} and service._agent_matches_task(agent, task)
+        ],
+        key=lambda agent: (service._agent_task_match_score(agent, task), -agent.id),
+        reverse=True,
+    )
+    for agent in candidates:
+        if not service._dependencies_met(db, task):
+            return AgentActionResponse(ok=False, message="Task is waiting on dependencies.")
+        if not can_assign_task(agent, task, workers, service._is_git_workspace(project)):
+            continue
+        run = await service.start_agent_task(db, project, agent, task)
+        return AgentActionResponse(ok=True, message="Task started.", run_id=run.id)
+    if candidates:
+        task.status = "waiting_on_paths"
+        task.waiting_reason = task.waiting_reason or "Another agent owns overlapping paths."
+        return AgentActionResponse(ok=False, message=task.waiting_reason)
+    return AgentActionResponse(ok=False, message="No idle worker is available.")
+
+
 @app.post("/api/tasks/{task_id}/complete", response_model=AgentActionResponse)
 async def complete_task(
     task_id: int,
     project_id: int = Query(...),
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> AgentActionResponse:
+    project = _get_project_or_404(db, project_id)
+    task = _require_project_task(db, project, task_id)
+    await service.complete_task_by_user(db, task)
+    return AgentActionResponse(ok=True, message="Task marked done.")
+
+
+@app.post("/api/projects/{project_id}/tasks/{task_id}/complete", response_model=AgentActionResponse)
+async def complete_project_task(
+    project_id: int,
+    task_id: int,
     db: Session = Depends(get_db),
     _: None = Depends(_require_bridge_token),
 ) -> AgentActionResponse:
@@ -4450,6 +4551,23 @@ async def submit_run_report(
     run_id: int,
     payload: RunReportRequest,
     project_id: int = Query(...),
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> ManagerWorkerDecision:
+    project = _get_project_or_404(db, project_id)
+    run = _require_project_run(db, project, run_id)
+    try:
+        return await service.ingest_worker_report(db, run, payload)
+    except ValueError as exc:
+        status_code = 409 if "already recorded" in str(exc).lower() else 400
+        raise HTTPException(status_code=status_code, detail=str(exc)) from exc
+
+
+@app.post("/api/projects/{project_id}/runs/{run_id}/report", response_model=ManagerWorkerDecision)
+async def submit_project_run_report(
+    project_id: int,
+    run_id: int,
+    payload: RunReportRequest,
     db: Session = Depends(get_db),
     _: None = Depends(_require_bridge_token),
 ) -> ManagerWorkerDecision:

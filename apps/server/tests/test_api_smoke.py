@@ -538,6 +538,15 @@ def test_runtime_and_project_control_routes_require_token(client) -> None:
         assert raw_client.get("/api/capabilities/matrix").status_code == 401
         assert raw_client.get("/api/capabilities/benchmarks").status_code == 401
         assert raw_client.get("/api/agents/reputation").status_code == 401
+        assert raw_client.post(f"/api/projects/{project_id}/agents/1/start").status_code == 401
+        assert raw_client.post(f"/api/projects/{project_id}/agents/1/stop").status_code == 401
+        assert raw_client.post(f"/api/projects/{project_id}/agents/1/pause").status_code == 401
+        assert raw_client.post(f"/api/projects/{project_id}/tasks/1/start").status_code == 401
+        assert raw_client.post(f"/api/projects/{project_id}/tasks/1/complete").status_code == 401
+        assert raw_client.post(
+            f"/api/projects/{project_id}/runs/1/report",
+            json={"agent": "x", "task_id": "1", "status": "done", "summary": "x", "files_changed": [], "tests_run": [], "blockers": [], "risks": [], "recommended_next_task": "none"},
+        ).status_code == 401
         assert raw_client.post(f"/api/projects/{project_id}/change-requests", json={"request_text": "Make it better"}).status_code == 401
         assert raw_client.get(f"/api/projects/{project_id}/context-packs").status_code == 401
         assert raw_client.get(f"/api/projects/{project_id}/workspace-tooling").status_code == 401
