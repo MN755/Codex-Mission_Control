@@ -514,6 +514,15 @@ class MissionControlDaemonClient:
     def get_subagent_policy_summary(self) -> dict[str, Any]:
         return self._request("GET", "/api/subagent-policy/summary")
 
+    def get_global_preference_summary(self) -> dict[str, Any]:
+        return self._request("GET", "/api/preferences/summary")
+
+    def get_project_preference_summary(self, project_id: int) -> dict[str, Any]:
+        return self._request("GET", f"/api/projects/{project_id}/preferences/summary")
+
+    def get_effective_preferences(self, project_id: int) -> list[dict[str, Any]]:
+        return self._request("GET", f"/api/projects/{project_id}/preferences/effective")
+
     def get_runbook(self, project_id: int) -> dict[str, Any] | None:
         return self._request("GET", f"/api/projects/{project_id}/runbook")
 
@@ -1631,6 +1640,29 @@ class MissionControlDaemonClient:
         summary["notable_gaps"] = list(payload.get("gaps") or summary["notable_gaps"])[:10]
         return summary
 
+    def _summarize_effective_preferences(self, project_id: int, items: list[dict[str, Any]]) -> dict[str, Any]:
+        return {
+            "project_id": project_id,
+            "item_count": len(items),
+            "editable_count": sum(1 for item in items if item.get("editable")),
+            "inherited_count": sum(1 for item in items if item.get("inherited")),
+            "items": [
+                {
+                    "id": item.get("id"),
+                    "key": item.get("key"),
+                    "value_json": item.get("value_json"),
+                    "source": item.get("source"),
+                    "scope": item.get("scope"),
+                    "project_id": item.get("project_id"),
+                    "editable": item.get("editable"),
+                    "inherited": item.get("inherited", False),
+                    "created_at": item.get("created_at"),
+                    "updated_at": item.get("updated_at"),
+                }
+                for item in items[:24]
+            ],
+        }
+
     def read_resource(self, uri: str) -> dict[str, Any]:
         if not uri.startswith("mission-control://"):
             raise RuntimeError("Unsupported Mission Control resource URI.")
@@ -1645,6 +1677,8 @@ class MissionControlDaemonClient:
                 return self.get_integration_health()
         if len(parts) >= 2 and parts[0] == "profile" and parts[1] == "summary":
             return self.get_profile_summary()
+        if len(parts) >= 2 and parts[0] == "preferences" and parts[1] == "summary":
+            return self.get_global_preference_summary()
         if len(parts) >= 2 and parts[0] == "subagent-policy" and parts[1] == "summary":
             return self.get_subagent_policy_summary()
         if len(parts) >= 5 and parts[0] == "projects" and parts[2] == "orchestrations":
@@ -1756,6 +1790,11 @@ class MissionControlDaemonClient:
                 if len(parts) == 4 and parts[3] == "recommendations":
                     return {"project_id": project_id, "recommendations": self.get_playbook_recommendations(project_id)}
                 return self.get_playbook(project_id)
+            if kind == "preferences":
+                if len(parts) == 4 and parts[3] == "summary":
+                    return self.get_project_preference_summary(project_id)
+                if len(parts) == 4 and parts[3] == "effective":
+                    return self._summarize_effective_preferences(project_id, self.get_effective_preferences(project_id))
             if kind == "execution-policy" and len(parts) == 4 and parts[3] == "summary":
                 return self.get_execution_policy_summary(project_id)
             if kind == "coordination" and len(parts) == 4 and parts[3] == "summary":

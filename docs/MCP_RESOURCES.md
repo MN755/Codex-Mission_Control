@@ -28,6 +28,7 @@ Mission Control resources are read-only context surfaces for Codex chat.
 - `mission-control://integrations/connections`
 - `mission-control://integrations/health`
 - `mission-control://profile/summary`
+- `mission-control://preferences/summary`
 - `mission-control://subagent-policy/summary`
 - `mission-control://projects/{project_id}/integrations`
 - `mission-control://projects/{project_id}/integrations/{family}`
@@ -40,6 +41,8 @@ Mission Control resources are read-only context surfaces for Codex chat.
 - `mission-control://projects/{project_id}/snapshots/{snapshot_id}/restore-plan`
 - `mission-control://projects/{project_id}/playbook`
 - `mission-control://projects/{project_id}/playbook/recommendations`
+- `mission-control://projects/{project_id}/preferences/summary`
+- `mission-control://projects/{project_id}/preferences/effective`
 - `mission-control://projects/{project_id}/workspace-tooling`
 - `mission-control://projects/{project_id}/execution-policy/summary`
 - `mission-control://projects/{project_id}/coordination/summary`
@@ -83,6 +86,7 @@ Mission Control resources are read-only context surfaces for Codex chat.
 - codebase map supports imported repo understanding
 - workspace tooling tells the bridge which repo-native helper lanes actually exist for intake, validation, and security before it recommends commands like a clown
 - profile summary and subagent policy summary expose the operator defaults that shape provider choice, approvals, and whether subagent bursts are even allowed before the bridge starts making heroic assumptions
+- preference summary and effective preference resources expose global defaults, project overrides, and inherited values before the bridge starts making configuration assumptions from thin air
 - runbook and runbook summary expose the current operational guide without forcing chat to scrape widget markdown like an animal
 - safe mode exposes whether Mission Control is currently enforcing the stricter approval and workspace-only guardrails before chat suggests something reckless
 - recovery plans and recovery plan preview expose persisted rescue options plus current derived candidates before the bridge starts improvising “helpful” chaos

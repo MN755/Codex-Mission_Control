@@ -490,6 +490,33 @@
       }
     },
     {
+      "uri_template": "mission-control://preferences/summary",
+      "title": "Global preference summary",
+      "summary": "Compact summary of global Mission Control preferences, editability, and default operator posture.",
+      "support_status": "implemented",
+      "source_hint": {
+        "rest_endpoints": [
+          "/api/preferences/summary"
+        ]
+      },
+      "default_fields": [
+        "scope",
+        "item_count",
+        "editable_count",
+        "inherited_count",
+        "project_override_count",
+        "items"
+      ],
+      "redaction": {
+        "omit_fields": [
+          "raw_log",
+          "secret_values",
+          "private_paths_outside_workspace"
+        ],
+        "notes": "Expose preference keys, values, and editability only."
+      }
+    },
+    {
       "uri_template": "mission-control://subagent-policy/summary",
       "title": "Subagent policy summary",
       "summary": "Compact summary of subagent defaults, approval thresholds, task-type allowances, and write/command posture.",
@@ -812,6 +839,60 @@
           "private_paths_outside_workspace"
         ],
         "notes": "Expose ranked playbook options and rationale only."
+      }
+    },
+    {
+      "uri_template": "mission-control://projects/{project_id}/preferences/summary",
+      "title": "Project preference summary",
+      "summary": "Project-scoped preference summary showing overrides, inherited items, and editability counts.",
+      "support_status": "implemented",
+      "source_hint": {
+        "rest_endpoints": [
+          "/api/projects/{project_id}/preferences/summary"
+        ]
+      },
+      "default_fields": [
+        "scope",
+        "project_id",
+        "item_count",
+        "editable_count",
+        "inherited_count",
+        "project_override_count",
+        "items"
+      ],
+      "redaction": {
+        "omit_fields": [
+          "raw_log",
+          "secret_values",
+          "private_paths_outside_workspace"
+        ],
+        "notes": "Expose project preference posture and overrides only."
+      }
+    },
+    {
+      "uri_template": "mission-control://projects/{project_id}/preferences/effective",
+      "title": "Effective preferences",
+      "summary": "Effective project preferences after merging global defaults and project overrides, including inheritance markers.",
+      "support_status": "implemented",
+      "source_hint": {
+        "rest_endpoints": [
+          "/api/projects/{project_id}/preferences/effective"
+        ]
+      },
+      "default_fields": [
+        "project_id",
+        "item_count",
+        "editable_count",
+        "inherited_count",
+        "items"
+      ],
+      "redaction": {
+        "omit_fields": [
+          "raw_log",
+          "secret_values",
+          "private_paths_outside_workspace"
+        ],
+        "notes": "Expose effective preference values and inheritance only."
       }
     },
     {

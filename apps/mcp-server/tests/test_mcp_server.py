@@ -34,6 +34,7 @@ EXPECTED_RESOURCES = {
     "mission-control://integrations/connections",
     "mission-control://integrations/health",
     "mission-control://profile/summary",
+    "mission-control://preferences/summary",
     "mission-control://subagent-policy/summary",
     "mission-control://projects/{project_id}/integrations",
     "mission-control://projects/{project_id}/integrations/{family}",
@@ -46,6 +47,8 @@ EXPECTED_RESOURCES = {
     "mission-control://projects/{project_id}/snapshots/{snapshot_id}/restore-plan",
     "mission-control://projects/{project_id}/playbook",
     "mission-control://projects/{project_id}/playbook/recommendations",
+    "mission-control://projects/{project_id}/preferences/summary",
+    "mission-control://projects/{project_id}/preferences/effective",
     "mission-control://projects/{project_id}/workspace-tooling",
     "mission-control://projects/{project_id}/execution-policy/summary",
     "mission-control://projects/{project_id}/coordination/summary",
@@ -991,6 +994,32 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
     )
     monkeypatch.setattr(
         client,
+        "get_global_preference_summary",
+        lambda: {
+            "scope": "global",
+            "project_id": None,
+            "items": [
+                {
+                    "id": 11,
+                    "key": "review_depth",
+                    "value_json": "standard",
+                    "source": "user",
+                    "scope": "global",
+                    "project_id": None,
+                    "editable": True,
+                    "inherited": False,
+                    "created_at": "2026-06-03T12:20:00Z",
+                    "updated_at": "2026-06-03T12:21:00Z",
+                }
+            ],
+            "item_count": 1,
+            "editable_count": 1,
+            "inherited_count": 0,
+            "project_override_count": 0,
+        },
+    )
+    monkeypatch.setattr(
+        client,
         "get_pending_questions",
         lambda project_id: [
             {
@@ -1070,6 +1099,74 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
             "derived_candidate_count": 1,
             "generated_at": "2026-06-03T13:05:00Z",
         },
+    )
+    monkeypatch.setattr(
+        client,
+        "get_project_preference_summary",
+        lambda project_id: {
+            "scope": "project",
+            "project_id": project_id,
+            "items": [
+                {
+                    "id": 12,
+                    "key": "review_depth",
+                    "value_json": "strict",
+                    "source": "manager_observed",
+                    "scope": "project",
+                    "project_id": project_id,
+                    "editable": True,
+                    "inherited": False,
+                    "created_at": "2026-06-03T12:22:00Z",
+                    "updated_at": "2026-06-03T12:23:00Z",
+                },
+                {
+                    "id": 13,
+                    "key": "docs_depth",
+                    "value_json": "publishable",
+                    "source": "setup",
+                    "scope": "global",
+                    "project_id": None,
+                    "editable": False,
+                    "inherited": True,
+                    "created_at": "2026-06-03T12:24:00Z",
+                    "updated_at": "2026-06-03T12:25:00Z",
+                },
+            ],
+            "item_count": 2,
+            "editable_count": 1,
+            "inherited_count": 1,
+            "project_override_count": 1,
+        },
+    )
+    monkeypatch.setattr(
+        client,
+        "get_effective_preferences",
+        lambda project_id: [
+            {
+                "id": 12,
+                "key": "review_depth",
+                "value_json": "strict",
+                "source": "manager_observed",
+                "scope": "project",
+                "project_id": project_id,
+                "editable": True,
+                "inherited": False,
+                "created_at": "2026-06-03T12:22:00Z",
+                "updated_at": "2026-06-03T12:23:00Z",
+            },
+            {
+                "id": 13,
+                "key": "docs_depth",
+                "value_json": "publishable",
+                "source": "setup",
+                "scope": "global",
+                "project_id": None,
+                "editable": False,
+                "inherited": True,
+                "created_at": "2026-06-03T12:24:00Z",
+                "updated_at": "2026-06-03T12:25:00Z",
+            },
+        ],
     )
     monkeypatch.setattr(
         client,
@@ -1623,6 +1720,7 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
     )
 
     profile_summary = client.read_resource("mission-control://profile/summary")
+    global_preference_summary = client.read_resource("mission-control://preferences/summary")
     subagent_policy_summary = client.read_resource("mission-control://subagent-policy/summary")
     pending_questions = client.read_resource("mission-control://projects/7/questions/pending")
     pending_approvals = client.read_resource("mission-control://projects/7/approvals/pending")
@@ -1645,6 +1743,8 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
     restore_plan = client.read_resource("mission-control://projects/7/snapshots/61/restore-plan")
     playbook = client.read_resource("mission-control://projects/7/playbook")
     playbook_recommendations = client.read_resource("mission-control://projects/7/playbook/recommendations")
+    project_preference_summary = client.read_resource("mission-control://projects/7/preferences/summary")
+    effective_preferences = client.read_resource("mission-control://projects/7/preferences/effective")
     agent_contracts = client.read_resource("mission-control://projects/7/agent-contracts")
     validation_summary = client.read_resource("mission-control://projects/7/validation-summary")
     validation_coverage_summary = client.read_resource("mission-control://projects/7/validation-coverage/summary")
@@ -1668,6 +1768,8 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
     latest_simulation = client.read_resource("mission-control://projects/7/swarm/simulations/latest")
 
     assert profile_summary["display_name"] == "Mike"
+    assert global_preference_summary["scope"] == "global"
+    assert global_preference_summary["item_count"] == 1
     assert subagent_policy_summary["default_mode"] == "limited_write"
     assert pending_questions["question_count"] == 1
     assert pending_questions["questions"][0]["category"] == "scope"
@@ -1705,6 +1807,10 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
     assert playbook["playbook"]["name"] == "Existing Repo Fix"
     assert playbook_recommendations["project_id"] == 7
     assert playbook_recommendations["recommendations"][0]["score"] == 95
+    assert project_preference_summary["scope"] == "project"
+    assert project_preference_summary["inherited_count"] == 1
+    assert effective_preferences["item_count"] == 2
+    assert effective_preferences["items"][1]["inherited"] is True
     assert agent_contracts["contract_count"] == 1
     assert agent_contracts["contracts"][0]["agent_name"] == "Reviewer"
     assert agent_contracts["contracts"][0]["allowed_paths"] == ["apps/server/src", "apps/server/tests"]

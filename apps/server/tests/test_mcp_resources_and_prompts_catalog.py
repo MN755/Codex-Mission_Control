@@ -51,6 +51,7 @@ EXPECTED_RESOURCES = [
     "mission-control://integrations/connections",
     "mission-control://integrations/health",
     "mission-control://profile/summary",
+    "mission-control://preferences/summary",
     "mission-control://subagent-policy/summary",
     "mission-control://projects/{project_id}/integrations",
     "mission-control://projects/{project_id}/integrations/{family}",
@@ -63,6 +64,8 @@ EXPECTED_RESOURCES = [
     "mission-control://projects/{project_id}/snapshots/{snapshot_id}/restore-plan",
     "mission-control://projects/{project_id}/playbook",
     "mission-control://projects/{project_id}/playbook/recommendations",
+    "mission-control://projects/{project_id}/preferences/summary",
+    "mission-control://projects/{project_id}/preferences/effective",
     "mission-control://projects/{project_id}/workspace-tooling",
     "mission-control://projects/{project_id}/execution-policy/summary",
     "mission-control://projects/{project_id}/coordination/summary",
@@ -229,9 +232,12 @@ def test_docs_explain_resources_prompts_and_headless_boundary() -> None:
     assert "mission-control://projects/{project_id}/snapshots" in resources_content
     assert "mission-control://projects/{project_id}/snapshots/{snapshot_id}/restore-plan" in resources_content
     assert "mission-control://profile/summary" in resources_content
+    assert "mission-control://preferences/summary" in resources_content
     assert "mission-control://subagent-policy/summary" in resources_content
     assert "mission-control://projects/{project_id}/playbook" in resources_content
     assert "mission-control://projects/{project_id}/playbook/recommendations" in resources_content
+    assert "mission-control://projects/{project_id}/preferences/summary" in resources_content
+    assert "mission-control://projects/{project_id}/preferences/effective" in resources_content
     assert "mission-control://projects/{project_id}/webwright" in resources_content
     assert "mission-control://projects/{project_id}/nvidia-nim" in resources_content
     assert "mission-control://projects/{project_id}/nvidia-aiq" in resources_content
