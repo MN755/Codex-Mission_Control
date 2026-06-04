@@ -3360,6 +3360,38 @@
       }
     },
     {
+      "uri_template": "mission-control://projects/{project_id}/swarm/plan",
+      "title": "Swarm plan",
+      "summary": "Current or proposed swarm plan, risk posture, dynamic spawning state, and approval requirements.",
+      "support_status": "implemented",
+      "source_hint": {
+        "rest_endpoints": [
+          "/api/projects/{project_id}/swarm/preferences",
+          "/api/projects/{project_id}/swarm/plan"
+        ]
+      },
+      "default_fields": [
+        "project_id",
+        "mode",
+        "recommended_agent_count",
+        "active_agent_count",
+        "coordination_risk",
+        "path_conflict_risk",
+        "approval_required",
+        "dynamic_spawning_enabled",
+        "strategy_summary"
+      ],
+      "redaction": {
+        "omit_fields": [
+          "full_prompt",
+          "internal_reasoning",
+          "secret_paths",
+          "raw_log"
+        ],
+        "notes": "Expose plan shape and safety posture without chain-of-thought or raw path dumps."
+      }
+    },
+    {
       "uri_template": "mission-control://projects/{project_id}/swarm-plan",
       "title": "Swarm plan",
       "summary": "Current or proposed swarm plan, risk posture, dynamic spawning state, and approval requirements.",
@@ -3562,6 +3594,32 @@
         "risk_count",
         "open_risks",
         "mitigated_risks"
+      ],
+      "redaction": {
+        "omit_fields": [
+          "raw_artifact_body",
+          "secret_paths",
+          "raw_log"
+        ],
+        "notes": "Return concise risk summaries and status counts only."
+      }
+    },
+    {
+      "uri_template": "mission-control://projects/{project_id}/risks",
+      "title": "Project risks",
+      "summary": "Project-scoped risk list with normalized severity, ownership, mitigation, and status details.",
+      "support_status": "implemented",
+      "source_hint": {
+        "rest_endpoints": [
+          "/api/projects/{project_id}/risks"
+        ]
+      },
+      "default_fields": [
+        "project_id",
+        "risk_count",
+        "open_count",
+        "severity_counts",
+        "risks"
       ],
       "redaction": {
         "omit_fields": [

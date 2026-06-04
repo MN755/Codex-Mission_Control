@@ -131,6 +131,7 @@ Mission Control resources are read-only context surfaces for Codex chat.
 - `mission-control://projects/{project_id}/nvidia-local-runtime`
 - `mission-control://projects/{project_id}/nvidia-validation-plan`
 - `mission-control://projects/{project_id}/swarm/preferences`
+- `mission-control://projects/{project_id}/swarm/plan`
 - `mission-control://projects/{project_id}/subagent-batches`
 - `mission-control://projects/{project_id}/subagent-batches/{batch_id}`
 - `mission-control://projects/{project_id}/swarm-plan`
@@ -141,6 +142,7 @@ Mission Control resources are read-only context surfaces for Codex chat.
 - `mission-control://risks/summary`
 - `mission-control://projects/{project_id}/scope-creep`
 - `mission-control://projects/{project_id}/risk-register`
+- `mission-control://projects/{project_id}/risks`
 - `mission-control://projects/{project_id}/risks/summary`
 - `mission-control://projects/{project_id}/agent-contracts`
 - `mission-control://projects/{project_id}/validation-summary`

@@ -138,6 +138,7 @@ EXPECTED_RESOURCES = {
     "mission-control://projects/{project_id}/nvidia-local-runtime",
     "mission-control://projects/{project_id}/nvidia-validation-plan",
     "mission-control://projects/{project_id}/swarm/preferences",
+    "mission-control://projects/{project_id}/swarm/plan",
     "mission-control://projects/{project_id}/swarm-plan",
     "mission-control://projects/{project_id}/swarm/events",
     "mission-control://projects/{project_id}/swarm/simulations",
@@ -147,6 +148,7 @@ EXPECTED_RESOURCES = {
     "mission-control://security/audit-log",
     "mission-control://projects/{project_id}/scope-creep",
     "mission-control://projects/{project_id}/risk-register",
+    "mission-control://projects/{project_id}/risks",
     "mission-control://projects/{project_id}/risks/summary",
     "mission-control://projects/{project_id}/agent-contracts",
     "mission-control://projects/{project_id}/validation-summary",
@@ -1440,6 +1442,27 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
     )
     monkeypatch.setattr(
         client,
+        "get_risks",
+        lambda project_id: [
+            {
+                "id": 41,
+                "project_id": project_id,
+                "title": "Validation drift",
+                "description": "Proof of validation can fall behind code changes.",
+                "severity": "high",
+                "likelihood": "medium",
+                "owner_agent_id": None,
+                "mitigation": "Require named validation evidence before handoff.",
+                "status": "open",
+                "related_task_id": 101,
+                "created_by": "manager",
+                "created_at": "2026-06-03T12:10:00Z",
+                "updated_at": "2026-06-03T12:39:00Z",
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        client,
         "get_project_integration_family",
         lambda project_id, family: {
             "family": family,
@@ -1577,6 +1600,32 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
             "allow_dynamic_spawning": True,
             "allow_parallel_validation": True,
             "updated_at": "2026-06-03T12:38:00Z",
+        },
+    )
+    monkeypatch.setattr(
+        client,
+        "get_swarm_plan",
+        lambda project_id: {
+            "project_id": project_id,
+            "mode": "balanced",
+            "recommended_agent_count": 3,
+            "active_agent_count": 2,
+            "coordination_risk": "medium",
+            "path_conflict_risk": "low",
+            "approval_required": True,
+            "dynamic_spawning_enabled": True,
+            "dynamic_retirement_enabled": False,
+            "expected_bottlenecks_json": ["validation gate pending"],
+            "validation_strategy_json": ["Run validation after merge-ready changes."],
+            "strategy_summary": "Use one reviewer and one implementer before broader fan-out.",
+            "specs": [
+                {
+                    "name": "Reviewer",
+                    "archetype": "reviewer",
+                    "mission": "Verify risk and validation posture.",
+                    "status": "ready",
+                }
+            ],
         },
     )
     monkeypatch.setattr(
@@ -3316,6 +3365,7 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
     effective_preferences = client.read_resource("mission-control://projects/7/preferences/effective")
     widget_summary = client.read_resource("mission-control://projects/7/widgets/summary")
     project_widget_instances = client.read_resource("mission-control://projects/7/widgets/instances")
+    project_risks = client.read_resource("mission-control://projects/7/risks")
     project_risk_summary = client.read_resource("mission-control://projects/7/risks/summary")
     agent_contracts = client.read_resource("mission-control://projects/7/agent-contracts")
     validation_summary = client.read_resource("mission-control://projects/7/validation-summary")
@@ -3339,6 +3389,7 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
     local_runtime = client.read_resource("mission-control://projects/7/nvidia-local-runtime")
     validation_plan = client.read_resource("mission-control://projects/7/nvidia-validation-plan")
     swarm_preferences = client.read_resource("mission-control://projects/7/swarm/preferences")
+    swarm_plan = client.read_resource("mission-control://projects/7/swarm/plan")
     subagent_batches = client.read_resource("mission-control://projects/7/subagent-batches")
     subagent_batch = client.read_resource("mission-control://projects/7/subagent-batches/51")
     swarm_events = client.read_resource("mission-control://projects/7/swarm/events")
@@ -3524,6 +3575,9 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
     assert widget_summary["instances"][0]["widget_type"] == "runbook_status"
     assert project_widget_instances["project_id"] == 7
     assert project_widget_instances["instances"][0]["widget_type"] == "runbook_status"
+    assert project_risks["project_id"] == 7
+    assert project_risks["risk_count"] == 1
+    assert project_risks["open_risks"][0]["title"] == "Validation drift"
     assert project_risk_summary["project_id"] == 7
     assert project_risk_summary["top_risks"][0]["title"] == "Validation drift"
     assert agent_contracts["contract_count"] == 1
@@ -3561,6 +3615,11 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
     assert local_runtime["repo_mode"] == "cuda_cpp"
     assert validation_plan["status"] == "needs_review"
     assert swarm_preferences["max_agents"] == 4
+    assert swarm_plan["project_id"] == 7
+    assert swarm_plan["mode"] == "balanced"
+    assert swarm_plan["recommended_agent_count"] == 3
+    assert swarm_plan["approval_required"] is True
+    assert swarm_plan["specs"][0]["archetype"] == "reviewer"
     assert subagent_batches["project_id"] == 7
     assert subagent_batches["batch_count"] == 1
     assert subagent_batches["batches"][0]["task_type"] == "review"
