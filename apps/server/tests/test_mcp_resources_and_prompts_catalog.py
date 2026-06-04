@@ -281,6 +281,14 @@ EXPECTED_PROJECT_SOURCE_HINTS = {
     "mission-control://projects/{project_id}/details": [
         "/api/projects/{project_id}/details"
     ],
+    "mission-control://projects/{project_id}/diagnostics": [
+        "/api/diagnostics/reports?project_id={project_id}",
+        "/api/plugin/health",
+        "/api/projects/{project_id}/orchestrations/active",
+    ],
+    "mission-control://projects/{project_id}/diagnostics/latest-report": [
+        "/api/diagnostics/reports?project_id={project_id}"
+    ],
 }
 
 
