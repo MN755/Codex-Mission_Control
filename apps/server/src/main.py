@@ -1007,6 +1007,17 @@ def get_swarm_plan(
     return SwarmPlanRead(**payload) if payload else None
 
 
+@app.get("/api/projects/{project_id}/swarm-plan", response_model=SwarmPlanRead | None)
+def get_project_swarm_plan_alias(
+    project_id: int,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> SwarmPlanRead | None:
+    project = _get_project_or_404(db, project_id)
+    payload = service.get_swarm_plan(db, project)
+    return SwarmPlanRead(**payload) if payload else None
+
+
 @app.post("/api/projects/{project_id}/swarm/plan/{swarm_plan_id}/approve", response_model=SwarmPlanRead)
 def approve_swarm_plan(
     project_id: int,
@@ -1449,6 +1460,16 @@ def get_project_risks(
     return [RiskRecordRead.model_validate(item) for item in risk_service.list_risks(db, project)]
 
 
+@app.get("/api/projects/{project_id}/risk-register", response_model=list[RiskRecordRead])
+def get_project_risk_register(
+    project_id: int,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> list[RiskRecordRead]:
+    project = _get_project_or_404(db, project_id)
+    return [RiskRecordRead.model_validate(item) for item in risk_service.list_risks(db, project)]
+
+
 @app.get("/api/risks/common", response_model=list[CommonRiskRead])
 def get_common_risks(
     limit: int = Query(default=8, ge=1, le=25),
@@ -1595,6 +1616,22 @@ def get_validation_coverage(
 
 @app.get("/api/projects/{project_id}/validation-coverage/summary", response_model=ValidationCoverageSummaryRead)
 def get_validation_coverage_summary(
+    project_id: int,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> ValidationCoverageSummaryRead:
+    project = _get_project_or_404(db, project_id)
+    summary = validation_coverage_service.coverage_summary(db, project)
+    return ValidationCoverageSummaryRead(
+        project_id=project.id,
+        items=[ValidationCoverageAreaRead.model_validate(item) for item in summary["items"]],
+        gaps=list(summary["gaps"]),
+        gap_count=len(summary["gaps"]),
+    )
+
+
+@app.get("/api/projects/{project_id}/validation-summary", response_model=ValidationCoverageSummaryRead)
+def get_project_validation_summary_alias(
     project_id: int,
     db: Session = Depends(get_db),
     _: None = Depends(_require_bridge_token),
@@ -2629,6 +2666,16 @@ def get_project_operational_instincts_preview(
     return OperationalInstinctPreviewRead(**service.preview_operational_instincts(db, project))
 
 
+@app.get("/api/projects/{project_id}/instincts", response_model=OperationalInstinctPreviewRead)
+def get_project_operational_instincts(
+    project_id: int,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> OperationalInstinctPreviewRead:
+    project = _get_project_or_404(db, project_id)
+    return OperationalInstinctPreviewRead(**service.preview_operational_instincts(db, project))
+
+
 @app.get("/api/projects/{project_id}/verification-brief", response_model=VerificationBriefRead)
 def get_project_verification_brief(
     project_id: int,
@@ -3126,6 +3173,16 @@ def list_projects(
 
 @app.get("/api/projects/{project_id}", response_model=ProjectRead)
 def get_project(
+    project_id: int,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> ProjectRead:
+    project = _get_project_or_404(db, project_id)
+    return ProjectRead(**service._serialize_project_card(db, project))
+
+
+@app.get("/api/projects/{project_id}/details", response_model=ProjectRead)
+def get_project_details(
     project_id: int,
     db: Session = Depends(get_db),
     _: None = Depends(_require_bridge_token),

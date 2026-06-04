@@ -278,6 +278,10 @@ def test_dry_run_project_flow(client, bridge_headers, monkeypatch) -> None:
     project_id = project["id"]
     assert project["created_by"] == "Morgan"
 
+    details_response = client.get(f"/api/projects/{project_id}/details")
+    assert details_response.status_code == 200
+    assert details_response.json()["id"] == project_id
+
     settings_response = client.get(f"/api/settings?project_id={project_id}")
     assert settings_response.status_code == 200
     assert settings_response.json()["runner_mode"] == "dry_run"
@@ -339,6 +343,26 @@ def test_dry_run_project_flow(client, bridge_headers, monkeypatch) -> None:
     assert "authenticated" in auth_state
     assert "cli_detected" in auth_state
     assert "notes" in auth_state
+
+    swarm_plan_alias = client.get(f"/api/projects/{project_id}/swarm-plan")
+    swarm_plan_canonical = client.get(f"/api/projects/{project_id}/swarm/plan")
+    assert swarm_plan_alias.status_code == 200
+    assert swarm_plan_alias.json() == swarm_plan_canonical.json()
+
+    risk_register = client.get(f"/api/projects/{project_id}/risk-register")
+    risks = client.get(f"/api/projects/{project_id}/risks")
+    assert risk_register.status_code == 200
+    assert risk_register.json() == risks.json()
+
+    validation_summary = client.get(f"/api/projects/{project_id}/validation-summary")
+    validation_coverage_summary = client.get(f"/api/projects/{project_id}/validation-coverage/summary")
+    assert validation_summary.status_code == 200
+    assert validation_summary.json() == validation_coverage_summary.json()
+
+    instincts = client.get(f"/api/projects/{project_id}/instincts")
+    instincts_preview = client.get(f"/api/projects/{project_id}/instincts/preview")
+    assert instincts.status_code == 200
+    assert instincts.json() == instincts_preview.json()
 
     docs_response = client.post(f"/api/projects/{project_id}/docs/generate")
     assert docs_response.status_code == 200
@@ -435,6 +459,11 @@ def test_runtime_and_project_control_routes_require_token(client) -> None:
         assert raw_client.get("/api/dashboard/stream").status_code == 401
         assert raw_client.get("/api/settings", params={"project_id": project_id}).status_code == 401
         assert raw_client.get(f"/api/projects/{project_id}/settings").status_code == 401
+        assert raw_client.get(f"/api/projects/{project_id}/details").status_code == 401
+        assert raw_client.get(f"/api/projects/{project_id}/swarm-plan").status_code == 401
+        assert raw_client.get(f"/api/projects/{project_id}/risk-register").status_code == 401
+        assert raw_client.get(f"/api/projects/{project_id}/validation-summary").status_code == 401
+        assert raw_client.get(f"/api/projects/{project_id}/instincts").status_code == 401
         assert raw_client.get(f"/api/projects/{project_id}/swarm/preferences").status_code == 401
         assert raw_client.post(f"/api/projects/{project_id}/swarm/plan").status_code == 401
         assert raw_client.post(f"/api/projects/{project_id}/swarm/spawn").status_code == 401
