@@ -3851,6 +3851,8 @@ def test_daemon_client_rejects_invalid_extra_segments_for_strict_resources() -> 
         "mission-control://widgets/catalog/project/extra",
         "mission-control://widgets/instances/extra",
         "mission-control://projects/7/status-summary/extra",
+        "mission-control://projects/7/orchestrations/active/extra",
+        "mission-control://projects/7/orchestrations/not-a-number",
         "mission-control://projects/7/status/extra",
         "mission-control://projects/7/agents/15/logs/extra",
         "mission-control://projects/7/event-digest/extra",
