@@ -2951,6 +2951,20 @@ class MissionControlDaemonClient:
                 return self._summarize_spatial_feature_bundle(project_id, self.get_spatial_feature_bundle(project_id, feature_id))
             if kind == "webwright":
                 return self._summarize_webwright_status(project_id, self.get_webwright_status(project_id))
+            if kind == "nvidia" and len(parts) == 4:
+                nvidia_kind = parts[3]
+                if nvidia_kind == "dynamo":
+                    return self._summarize_nvidia_dynamo_status(project_id, self.get_nvidia_dynamo_status(project_id))
+                if nvidia_kind == "nim":
+                    return self._summarize_nvidia_nim_status(project_id, self.get_nvidia_nim_status(project_id))
+                if nvidia_kind == "aiq":
+                    return self._summarize_nvidia_aiq_status(project_id, self.get_nvidia_aiq_status(project_id))
+                if nvidia_kind == "gpu-diagnostics":
+                    return self._summarize_nvidia_gpu_diagnostics(project_id, self.get_nvidia_gpu_diagnostics(project_id))
+                if nvidia_kind == "local-runtime":
+                    return self._summarize_nvidia_local_runtime_status(project_id, self.get_nvidia_local_runtime_status(project_id))
+                if nvidia_kind == "validation-plan":
+                    return self._summarize_nvidia_validation_plan(project_id, self.get_nvidia_validation_plan(project_id))
             if kind == "nvidia-dynamo":
                 return self._summarize_nvidia_dynamo_status(project_id, self.get_nvidia_dynamo_status(project_id))
             if kind == "nvidia-nim":

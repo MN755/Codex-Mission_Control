@@ -3155,6 +3155,35 @@
       }
     },
     {
+      "uri_template": "mission-control://projects/{project_id}/nvidia/dynamo",
+      "title": "NVIDIA Dynamo readiness",
+      "summary": "Project-scoped NVIDIA Dynamo readiness summary for GPU-backed worker inference through an OpenAI-compatible frontend.",
+      "support_status": "implemented",
+      "source_hint": {
+        "rest_endpoints": [
+          "/api/projects/{project_id}/nvidia/dynamo"
+        ]
+      },
+      "default_fields": [
+        "project_id",
+        "project_name",
+        "reachable",
+        "endpoint",
+        "available_models",
+        "summary",
+        "notes"
+      ],
+      "redaction": {
+        "omit_fields": [
+          "authorization",
+          "api_key",
+          "secret_headers",
+          "raw_log"
+        ],
+        "notes": "Return endpoint readiness and model availability only. Do not expose tokens or secret headers."
+      }
+    },
+    {
       "uri_template": "mission-control://projects/{project_id}/nvidia-dynamo",
       "title": "NVIDIA Dynamo readiness",
       "summary": "Project-scoped NVIDIA Dynamo readiness summary for GPU-backed worker inference through an OpenAI-compatible frontend.",
@@ -3170,6 +3199,36 @@
         "reachable",
         "endpoint",
         "available_models",
+        "summary",
+        "notes"
+      ],
+      "redaction": {
+        "omit_fields": [
+          "authorization",
+          "api_key",
+          "secret_headers",
+          "raw_log"
+        ],
+        "notes": "Return endpoint readiness and model availability only. Do not expose tokens or secret headers."
+      }
+    },
+    {
+      "uri_template": "mission-control://projects/{project_id}/nvidia/nim",
+      "title": "NVIDIA NIM readiness",
+      "summary": "Project-scoped NVIDIA NIM readiness summary for hosted or self-hosted GPU-backed worker inference through an OpenAI-compatible frontend.",
+      "support_status": "implemented",
+      "source_hint": {
+        "rest_endpoints": [
+          "/api/projects/{project_id}/nvidia/nim"
+        ]
+      },
+      "default_fields": [
+        "project_id",
+        "project_name",
+        "reachable",
+        "endpoint",
+        "available_models",
+        "runtime_status",
         "summary",
         "notes"
       ],
@@ -3214,6 +3273,37 @@
       }
     },
     {
+      "uri_template": "mission-control://projects/{project_id}/nvidia/aiq",
+      "title": "NVIDIA AI-Q readiness",
+      "summary": "Project-scoped NVIDIA AI-Q readiness summary for deep research delegation and async job execution.",
+      "support_status": "implemented",
+      "source_hint": {
+        "rest_endpoints": [
+          "/api/projects/{project_id}/nvidia/aiq"
+        ]
+      },
+      "default_fields": [
+        "project_id",
+        "project_name",
+        "install_status",
+        "endpoint",
+        "dask_available",
+        "agent_types",
+        "data_sources",
+        "summary",
+        "recommended_fix"
+      ],
+      "redaction": {
+        "omit_fields": [
+          "authorization",
+          "api_key",
+          "raw_log",
+          "job_payload"
+        ],
+        "notes": "Return AI-Q readiness and research-lane metadata only. Do not expose secrets."
+      }
+    },
+    {
       "uri_template": "mission-control://projects/{project_id}/nvidia-aiq",
       "title": "NVIDIA AI-Q readiness",
       "summary": "Project-scoped NVIDIA AI-Q readiness summary for deep research delegation and async job execution.",
@@ -3245,6 +3335,34 @@
       }
     },
     {
+      "uri_template": "mission-control://projects/{project_id}/nvidia/gpu-diagnostics",
+      "title": "NVIDIA GPU diagnostics",
+      "summary": "Project-scoped GPU telemetry summary derived from Prometheus and DCGM exporter metrics.",
+      "support_status": "implemented",
+      "source_hint": {
+        "rest_endpoints": [
+          "/api/projects/{project_id}/nvidia/gpu-diagnostics"
+        ]
+      },
+      "default_fields": [
+        "project_id",
+        "project_name",
+        "status",
+        "summary",
+        "metrics",
+        "alerts",
+        "recommended_fixes"
+      ],
+      "redaction": {
+        "omit_fields": [
+          "raw_metric_series",
+          "secret_headers",
+          "authorization"
+        ],
+        "notes": "Return compact cluster health signals, not raw Prometheus dumps."
+      }
+    },
+    {
       "uri_template": "mission-control://projects/{project_id}/nvidia-gpu-diagnostics",
       "title": "NVIDIA GPU diagnostics",
       "summary": "Project-scoped GPU telemetry summary derived from Prometheus and DCGM exporter metrics.",
@@ -3270,6 +3388,36 @@
           "authorization"
         ],
         "notes": "Return compact cluster health signals, not raw Prometheus dumps."
+      }
+    },
+    {
+      "uri_template": "mission-control://projects/{project_id}/nvidia/local-runtime",
+      "title": "NVIDIA local runtime",
+      "summary": "Project-scoped local CUDA and NVIDIA runtime readiness for build, test, and profile loops.",
+      "support_status": "implemented",
+      "source_hint": {
+        "rest_endpoints": [
+          "/api/projects/{project_id}/nvidia/local-runtime"
+        ]
+      },
+      "default_fields": [
+        "project_id",
+        "project_name",
+        "status",
+        "summary",
+        "detected_tools",
+        "missing_required_tools",
+        "gpu_names",
+        "cuda_release",
+        "recommended_fixes"
+      ],
+      "redaction": {
+        "omit_fields": [
+          "authorization",
+          "raw_log",
+          "secret_env"
+        ],
+        "notes": "Return toolchain readiness, not private shell history or secret environment values."
       }
     },
     {
@@ -3300,6 +3448,35 @@
           "secret_env"
         ],
         "notes": "Return toolchain readiness, not private shell history or secret environment values."
+      }
+    },
+    {
+      "uri_template": "mission-control://projects/{project_id}/nvidia/validation-plan",
+      "title": "NVIDIA validation plan",
+      "summary": "Project-scoped GPU validation loop that combines local runtime readiness, CUDA repo mode, and cluster health.",
+      "support_status": "implemented",
+      "source_hint": {
+        "rest_endpoints": [
+          "/api/projects/{project_id}/nvidia/validation-plan"
+        ]
+      },
+      "default_fields": [
+        "project_id",
+        "project_name",
+        "status",
+        "summary",
+        "steps",
+        "blockers",
+        "repo_mode",
+        "recommended_fixes"
+      ],
+      "redaction": {
+        "omit_fields": [
+          "authorization",
+          "raw_log",
+          "secret_env"
+        ],
+        "notes": "Return validation posture and next actions, not raw logs or secrets."
       }
     },
     {
