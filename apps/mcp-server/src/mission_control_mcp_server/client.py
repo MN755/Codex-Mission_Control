@@ -2615,7 +2615,11 @@ class MissionControlDaemonClient:
         if len(parts) == 2 and parts[0] == "agents" and parts[1] == "reputation":
             return self._summarize_agent_reputation(self.get_agent_reputation())
         if len(parts) == 2 and parts[0] == "context-packs":
-            return self.get_context_pack(int(parts[1]))
+            try:
+                context_pack_id = int(parts[1])
+            except ValueError as exc:
+                raise RuntimeError(f"Unsupported Mission Control resource URI: {uri}") from exc
+            return self.get_context_pack(context_pack_id)
         if len(parts) == 1 and parts[0] == "handoffs":
             return self._summarize_handoffs(self.list_handoffs())
         if len(parts) == 1 and parts[0] == "health":
@@ -2685,7 +2689,11 @@ class MissionControlDaemonClient:
             return {"scope": scope or "all", "catalog": self.get_widget_catalog(scope=scope)}
         if len(parts) >= 2 and parts[0] == "widgets" and parts[1] == "instances":
             if len(parts) == 4 and parts[3] == "data":
-                return self._summarize_widget_instance_data(int(parts[2]), self.get_widget_instance_data(int(parts[2])))
+                try:
+                    instance_id = int(parts[2])
+                except ValueError as exc:
+                    raise RuntimeError(f"Unsupported Mission Control resource URI: {uri}") from exc
+                return self._summarize_widget_instance_data(instance_id, self.get_widget_instance_data(instance_id))
             if len(parts) != 2:
                 raise RuntimeError(f"Unsupported Mission Control resource URI: {uri}")
             return self._summarize_widget_instances(self.list_widget_instances())
@@ -2745,9 +2753,9 @@ class MissionControlDaemonClient:
                 except ValueError as exc:
                     raise RuntimeError(f"Unsupported Mission Control resource URI: {uri}") from exc
                 detail_kind = parts[4]
-                if detail_kind == "status":
+                if detail_kind == "status" and len(parts) == 5:
                     return self._summarize_status(self.get_status(orchestration_id=orchestration_id, project_id=project_id))
-                if detail_kind == "events":
+                if detail_kind == "events" and len(parts) == 5:
                     return self._summarize_events(orchestration_id, self.get_orchestration_events(orchestration_id, project_id=project_id))
             if kind == "decisions" and len(parts) == 5 and parts[4] == "bridge-message":
                 try:
