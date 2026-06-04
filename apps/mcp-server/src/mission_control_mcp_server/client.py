@@ -2702,9 +2702,16 @@ class MissionControlDaemonClient:
         if len(parts) == 1 and parts[0] == "projects":
             return self._summarize_projects(self.list_projects())
         if len(parts) == 2 and parts[0] == "projects":
-            return self._summarize_project_details(self.get_project(int(parts[1])))
+            try:
+                project_id = int(parts[1])
+            except ValueError as exc:
+                raise RuntimeError(f"Unsupported Mission Control resource URI: {uri}") from exc
+            return self._summarize_project_details(self.get_project(project_id))
         if len(parts) >= 3 and parts[0] == "orchestrations":
-            orchestration_id = int(parts[1])
+            try:
+                orchestration_id = int(parts[1])
+            except ValueError as exc:
+                raise RuntimeError(f"Unsupported Mission Control resource URI: {uri}") from exc
             kind = parts[2]
             if kind == "status":
                 raise RuntimeError(
@@ -2717,7 +2724,10 @@ class MissionControlDaemonClient:
                     "`mission-control://projects/{project_id}/orchestrations/{orchestration_id}/events`."
                 )
         if len(parts) >= 3 and parts[0] == "projects":
-            project_id = int(parts[1])
+            try:
+                project_id = int(parts[1])
+            except ValueError as exc:
+                raise RuntimeError(f"Unsupported Mission Control resource URI: {uri}") from exc
             kind = parts[2]
             if kind == "orchestrations" and len(parts) >= 4 and parts[3] == "active":
                 if len(parts) != 4:
@@ -2740,7 +2750,11 @@ class MissionControlDaemonClient:
                 if detail_kind == "events":
                     return self._summarize_events(orchestration_id, self.get_orchestration_events(orchestration_id, project_id=project_id))
             if kind == "decisions" and len(parts) == 5 and parts[4] == "bridge-message":
-                return self.get_decision_bridge_message(int(parts[3]), project_id=project_id)
+                try:
+                    decision_id = int(parts[3])
+                except ValueError as exc:
+                    raise RuntimeError(f"Unsupported Mission Control resource URI: {uri}") from exc
+                return self.get_decision_bridge_message(decision_id, project_id=project_id)
             if kind == "status-summary" and len(parts) == 3:
                 return self.get_status_summary(project_id=project_id)
             if kind == "orchestrations" and len(parts) >= 4:
@@ -2765,7 +2779,11 @@ class MissionControlDaemonClient:
                 status = self.get_status(orchestration_id=orchestration_id, project_id=project_id) if orchestration_id is not None else None
                 return self._summarize_project_status(project, status)
             if kind == "agents" and len(parts) == 5 and parts[4] == "logs":
-                return self._summarize_agent_logs(project_id, int(parts[3]), self.get_agent_logs(project_id, int(parts[3])))
+                try:
+                    agent_id = int(parts[3])
+                except ValueError as exc:
+                    raise RuntimeError(f"Unsupported Mission Control resource URI: {uri}") from exc
+                return self._summarize_agent_logs(project_id, agent_id, self.get_agent_logs(project_id, agent_id))
             if kind == "agents" and len(parts) == 4 and parts[3] == "reputation":
                 return self._summarize_agent_reputation(self.get_agent_reputation(project_id), project_id=project_id)
             if kind == "agents":
@@ -2968,7 +2986,11 @@ class MissionControlDaemonClient:
                 return self._summarize_project_events(project_id, self.get_project_events(project_id))
             if kind == "snapshots":
                 if len(parts) == 5 and parts[4] == "restore-plan":
-                    return self.get_snapshot_restore_plan(project_id, int(parts[3]))
+                    try:
+                        snapshot_id = int(parts[3])
+                    except ValueError as exc:
+                        raise RuntimeError(f"Unsupported Mission Control resource URI: {uri}") from exc
+                    return self.get_snapshot_restore_plan(project_id, snapshot_id)
                 if len(parts) != 3:
                     raise RuntimeError(f"Unsupported Mission Control resource URI: {uri}")
                 return self._summarize_snapshots(project_id, self.list_snapshots(project_id))
