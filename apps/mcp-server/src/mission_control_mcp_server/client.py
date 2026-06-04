@@ -719,8 +719,14 @@ class MissionControlDaemonClient:
     def get_risks(self, project_id: int) -> list[dict[str, Any]]:
         return self._request("GET", f"/api/projects/{project_id}/risks")
 
-    def get_validation_summary(self, project_id: int) -> list[dict[str, Any]]:
+    def get_validation_coverage(self, project_id: int) -> list[dict[str, Any]]:
         return self._request("GET", f"/api/projects/{project_id}/validation-coverage")
+
+    def get_validation_coverage_summary(self, project_id: int) -> dict[str, Any]:
+        return self._request("GET", f"/api/projects/{project_id}/validation-coverage/summary")
+
+    def get_validation_summary(self, project_id: int) -> dict[str, Any]:
+        return self.get_validation_coverage_summary(project_id)
 
     def get_agents_md_status(self, project_id: int) -> dict[str, Any]:
         return self._request("GET", f"/api/projects/{project_id}/agents-md/status")
@@ -1619,6 +1625,12 @@ class MissionControlDaemonClient:
             "notable_gaps": notable_gaps[:10],
         }
 
+    def _summarize_validation_summary(self, project_id: int, payload: dict[str, Any]) -> dict[str, Any]:
+        areas = list(payload.get("items") or [])
+        summary = self._summarize_validation(project_id, areas)
+        summary["notable_gaps"] = list(payload.get("gaps") or summary["notable_gaps"])[:10]
+        return summary
+
     def read_resource(self, uri: str) -> dict[str, Any]:
         if not uri.startswith("mission-control://"):
             raise RuntimeError("Unsupported Mission Control resource URI.")
@@ -1700,7 +1712,9 @@ class MissionControlDaemonClient:
             if kind == "agent-contracts":
                 return self._summarize_agent_contracts(project_id, self.get_agent_contracts(project_id))
             if kind == "validation-summary":
-                return self._summarize_validation(project_id, self.get_validation_summary(project_id))
+                return self._summarize_validation_summary(project_id, self.get_validation_summary(project_id))
+            if kind == "validation-coverage" and len(parts) == 4 and parts[3] == "summary":
+                return self.get_validation_coverage_summary(project_id)
             if kind == "decision-ledger":
                 return self._summarize_decision_ledger(project_id, self.get_decision_ledger(project_id))
             if kind == "path-locks":

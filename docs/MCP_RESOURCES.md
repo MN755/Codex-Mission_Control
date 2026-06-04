@@ -62,6 +62,7 @@ Mission Control resources are read-only context surfaces for Codex chat.
 - `mission-control://projects/{project_id}/risk-register`
 - `mission-control://projects/{project_id}/agent-contracts`
 - `mission-control://projects/{project_id}/validation-summary`
+- `mission-control://projects/{project_id}/validation-coverage/summary`
 - `mission-control://projects/{project_id}/decision-ledger`
 - `mission-control://projects/{project_id}/path-locks`
 - `mission-control://projects/{project_id}/agents-md/status`
@@ -91,6 +92,7 @@ Mission Control resources are read-only context surfaces for Codex chat.
 - coordination summary exposes contract, lock, gate, conflict, and decision posture in one compact lane so chat can spot coordination drift before the swarm faceplants
 - latest swarm simulation exposes launch readiness, conflicts, bottlenecks, and approval pressure without requiring a write path or a persisted simulation row first
 - diagnostics, risk register, decision ledger, and path locks support stuck-run debugging without exposing raw internals
+- validation coverage summary exposes the backend's native read-only gap report directly, which is better than making chat trust a wrapper that guessed from the raw area list
 - agents-md status exposes whether repo-scoped agent instructions exist and where they live before chat pretends they are present or absent from vibes alone
 - the Webwright resource tells the bridge whether the local browser-agent runtime is actually ready or whether the user still has setup work to do
 - the NVIDIA resources tell the bridge whether GPU-backed inference, deep research, local CUDA tooling, and Prometheus/DCGM telemetry are actually available before Mission Control leans on them

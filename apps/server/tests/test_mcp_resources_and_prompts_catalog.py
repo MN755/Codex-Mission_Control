@@ -85,6 +85,7 @@ EXPECTED_RESOURCES = [
     "mission-control://projects/{project_id}/risk-register",
     "mission-control://projects/{project_id}/agent-contracts",
     "mission-control://projects/{project_id}/validation-summary",
+    "mission-control://projects/{project_id}/validation-coverage/summary",
     "mission-control://projects/{project_id}/decision-ledger",
     "mission-control://projects/{project_id}/path-locks",
     "mission-control://projects/{project_id}/agents-md/status",
@@ -239,6 +240,7 @@ def test_docs_explain_resources_prompts_and_headless_boundary() -> None:
     assert "mission-control://projects/{project_id}/execution-policy/summary" in resources_content
     assert "mission-control://projects/{project_id}/coordination/summary" in resources_content
     assert "mission-control://projects/{project_id}/swarm/simulations/latest" in resources_content
+    assert "mission-control://projects/{project_id}/validation-coverage/summary" in resources_content
     assert "mission-control://projects/{project_id}/agents-md/status" in resources_content
     assert "mission-control://projects/{project_id}/tensorflow/features" in resources_content
     assert "mission-control://projects/{project_id}/tensorflow/features/{feature_id}" in resources_content

@@ -201,6 +201,7 @@
     "mission-control://projects/{project_id}/risk-register",
     "mission-control://projects/{project_id}/agent-contracts",
     "mission-control://projects/{project_id}/validation-summary",
+    "mission-control://projects/{project_id}/validation-coverage/summary",
     "mission-control://projects/{project_id}/decision-ledger",
     "mission-control://projects/{project_id}/path-locks",
     "mission-control://projects/{project_id}/agents-md/status",

@@ -68,6 +68,7 @@ EXPECTED_RESOURCES = {
     "mission-control://projects/{project_id}/risk-register",
     "mission-control://projects/{project_id}/agent-contracts",
     "mission-control://projects/{project_id}/validation-summary",
+    "mission-control://projects/{project_id}/validation-coverage/summary",
     "mission-control://projects/{project_id}/decision-ledger",
     "mission-control://projects/{project_id}/path-locks",
     "mission-control://projects/{project_id}/agents-md/status",
@@ -1280,6 +1281,29 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
     )
     monkeypatch.setattr(
         client,
+        "get_validation_coverage_summary",
+        lambda project_id: {
+            "project_id": project_id,
+            "items": [
+                {
+                    "project_id": project_id,
+                    "area": "api",
+                    "coverage_status": "passed",
+                    "evidence_summary": "Named pytest API slice passed.",
+                },
+                {
+                    "project_id": project_id,
+                    "area": "recovery",
+                    "coverage_status": "failed",
+                    "evidence_summary": "Recovery workflow is still missing a validated probe.",
+                },
+            ],
+            "gaps": ["recovery"],
+            "gap_count": 1,
+        },
+    )
+    monkeypatch.setattr(
+        client,
         "get_decision_ledger",
         lambda project_id: [
             {
@@ -1622,6 +1646,8 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
     playbook = client.read_resource("mission-control://projects/7/playbook")
     playbook_recommendations = client.read_resource("mission-control://projects/7/playbook/recommendations")
     agent_contracts = client.read_resource("mission-control://projects/7/agent-contracts")
+    validation_summary = client.read_resource("mission-control://projects/7/validation-summary")
+    validation_coverage_summary = client.read_resource("mission-control://projects/7/validation-coverage/summary")
     decision_ledger = client.read_resource("mission-control://projects/7/decision-ledger")
     execution_policy = client.read_resource("mission-control://projects/7/execution-policy/summary")
     coordination = client.read_resource("mission-control://projects/7/coordination/summary")
@@ -1682,6 +1708,10 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
     assert agent_contracts["contract_count"] == 1
     assert agent_contracts["contracts"][0]["agent_name"] == "Reviewer"
     assert agent_contracts["contracts"][0]["allowed_paths"] == ["apps/server/src", "apps/server/tests"]
+    assert validation_summary["coverage_counts"] == {"passed": 1, "failed": 1}
+    assert validation_summary["notable_gaps"] == ["recovery"]
+    assert validation_coverage_summary["gap_count"] == 1
+    assert validation_coverage_summary["items"][0]["area"] == "api"
     assert decision_ledger["decision_count"] == 1
     assert decision_ledger["recent_decisions"][0]["title"] == "Keep direct pushes temporary"
     assert decision_ledger["recent_decisions"][0]["made_by"] == "operator"

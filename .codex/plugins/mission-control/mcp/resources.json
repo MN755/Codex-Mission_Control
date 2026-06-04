@@ -1440,7 +1440,7 @@
       "support_status": "implemented",
       "source_hint": {
         "rest_endpoints": [
-          "/api/projects/{project_id}/validation-coverage"
+          "/api/projects/{project_id}/validation-coverage/summary"
         ]
       },
       "default_fields": [
@@ -1456,6 +1456,31 @@
           "secret_paths"
         ],
         "notes": "Summarize coverage and missing areas without dumping raw evidence artifacts."
+      }
+    },
+    {
+      "uri_template": "mission-control://projects/{project_id}/validation-coverage/summary",
+      "title": "Validation coverage summary",
+      "summary": "Backend-native read-only validation coverage summary with items, gaps, and gap count.",
+      "support_status": "implemented",
+      "source_hint": {
+        "rest_endpoints": [
+          "/api/projects/{project_id}/validation-coverage/summary"
+        ]
+      },
+      "default_fields": [
+        "project_id",
+        "items",
+        "gaps",
+        "gap_count"
+      ],
+      "redaction": {
+        "omit_fields": [
+          "raw_log",
+          "artifact_body",
+          "secret_paths"
+        ],
+        "notes": "Expose validation areas, evidence summaries, and gap labels without dumping raw artifacts."
       }
     },
     {
