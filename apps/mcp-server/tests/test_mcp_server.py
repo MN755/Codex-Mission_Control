@@ -4099,6 +4099,51 @@ def test_daemon_client_get_context_pack_passes_project_scope_when_provided(monke
     }
 
 
+def test_daemon_client_pause_and_resume_use_project_scoped_routes(monkeypatch) -> None:
+    client = MissionControlDaemonClient(base_url="http://127.0.0.1:8010", timeout=0.1)
+    calls: list[dict[str, object]] = []
+
+    monkeypatch.setattr(
+        client,
+        "_resolve_orchestration_id",
+        lambda **kwargs: 14,
+    )
+    monkeypatch.setattr(
+        client,
+        "_project_id_for_orchestration",
+        lambda orchestration_id, project_id=None: 7,
+    )
+
+    def fake_request(method: str, path: str, **kwargs):
+        calls.append({
+            "method": method,
+            "path": path,
+            "params": kwargs.get("params"),
+            "json_body": kwargs.get("json_body"),
+        })
+        return {}
+
+    monkeypatch.setattr(client, "_request", fake_request)
+
+    client.pause(project_id=7)
+    client.resume(project_id=7)
+
+    assert calls == [
+        {
+            "method": "POST",
+            "path": "/api/projects/7/orchestrations/14/pause",
+            "params": None,
+            "json_body": {},
+        },
+        {
+            "method": "POST",
+            "path": "/api/projects/7/orchestrations/14/resume",
+            "params": None,
+            "json_body": {},
+        },
+    ]
+
+
 def test_daemon_client_runbook_resource_returns_stable_missing_payload(monkeypatch) -> None:
     client = MissionControlDaemonClient(base_url="http://127.0.0.1:8010", timeout=0.1)
     monkeypatch.setattr(client, "get_runbook", lambda project_id: None)

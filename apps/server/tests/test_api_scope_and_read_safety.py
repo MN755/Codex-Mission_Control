@@ -1653,9 +1653,8 @@ def test_global_id_routes_require_matching_project_scope(client, bridge_headers)
     assert wrong_status.status_code == 404
 
     wrong_pause = client.post(
-        f"/api/orchestrations/{orchestration_id}/pause",
+        f"/api/projects/{project_two['id']}/orchestrations/{orchestration_id}/pause",
         headers=bridge_headers,
-        params={"project_id": project_two["id"]},
     )
     assert wrong_pause.status_code == 404
 
@@ -1669,16 +1668,14 @@ def test_global_id_routes_require_matching_project_scope(client, bridge_headers)
     assert wrong_auto_decide.status_code == 404
 
     paused = client.post(
-        f"/api/orchestrations/{orchestration_id}/pause",
+        f"/api/projects/{project_one['id']}/orchestrations/{orchestration_id}/pause",
         headers=bridge_headers,
-        params={"project_id": project_one["id"]},
     )
     assert paused.status_code == 200, paused.text
 
     wrong_resume = client.post(
-        f"/api/orchestrations/{orchestration_id}/resume",
+        f"/api/projects/{project_two['id']}/orchestrations/{orchestration_id}/resume",
         headers=bridge_headers,
-        params={"project_id": project_two["id"]},
     )
     assert wrong_resume.status_code == 404
 

@@ -449,7 +449,7 @@ class MissionControlDaemonClient:
             action="Pause",
         )
         resolved_project_id = self._project_id_for_orchestration(resolved_id, project_id=project_id)
-        return self._request("POST", f"/api/orchestrations/{resolved_id}/pause", params={"project_id": resolved_project_id}, json_body={})
+        return self._request("POST", f"/api/projects/{resolved_project_id}/orchestrations/{resolved_id}/pause", json_body={})
 
     def resume(self, orchestration_id: int | None = None, *, project_id: int | None = None) -> dict[str, Any]:
         resolved_id = self._resolve_orchestration_id(
@@ -458,7 +458,7 @@ class MissionControlDaemonClient:
             action="Resume",
         )
         resolved_project_id = self._project_id_for_orchestration(resolved_id, project_id=project_id)
-        return self._request("POST", f"/api/orchestrations/{resolved_id}/resume", params={"project_id": resolved_project_id}, json_body={})
+        return self._request("POST", f"/api/projects/{resolved_project_id}/orchestrations/{resolved_id}/resume", json_body={})
 
     def get_handoff(self, *, orchestration_id: int | None = None, project_id: int | None = None) -> dict[str, Any]:
         resolved_id = self._resolve_orchestration_id(

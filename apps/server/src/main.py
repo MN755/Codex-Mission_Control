@@ -2124,11 +2124,42 @@ def pause_orchestration(
     return OrchestrationSessionRead(**coordinator._serialize_session(session))
 
 
+@app.post("/api/projects/{project_id}/orchestrations/{orchestration_id}/pause", response_model=OrchestrationSessionRead)
+def pause_project_orchestration(
+    project_id: int,
+    orchestration_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> OrchestrationSessionRead:
+    session = _get_orchestration_or_404(db, orchestration_id)
+    _require_project_scope("Orchestration session", session.project_id, project_id)
+    session = coordinator.pause_orchestration(db, session)
+    return OrchestrationSessionRead(**coordinator._serialize_session(session))
+
+
 @app.post("/api/orchestrations/{orchestration_id}/resume", response_model=OrchestrationSessionRead)
 async def resume_orchestration(
     orchestration_id: int,
     request: Request,
     project_id: int = Query(...),
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> OrchestrationSessionRead:
+    session = _get_orchestration_or_404(db, orchestration_id)
+    _require_project_scope("Orchestration session", session.project_id, project_id)
+    try:
+        session = coordinator.resume_orchestration(db, session)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return OrchestrationSessionRead(**coordinator._serialize_session(session))
+
+
+@app.post("/api/projects/{project_id}/orchestrations/{orchestration_id}/resume", response_model=OrchestrationSessionRead)
+async def resume_project_orchestration(
+    project_id: int,
+    orchestration_id: int,
+    request: Request,
     db: Session = Depends(get_db),
     _: None = Depends(_require_bridge_token),
 ) -> OrchestrationSessionRead:
