@@ -754,6 +754,32 @@ async def system_status(
     )
 
 
+@app.get("/api/projects/{project_id}/system/status", response_model=SystemStatusRead)
+async def project_system_status(
+    project_id: int,
+    provider: str | None = Query(default=None),
+    provider_endpoint: str | None = Query(default=None),
+    adapter_command: str | None = Query(default=None),
+    adapter_arg: list[str] | None = Query(default=None),
+    adapter_args: list[str] | None = Query(default=None),
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> SystemStatusRead:
+    project = _get_project_or_404(db, project_id)
+    return SystemStatusRead(
+        **(
+            await service.get_system_status(
+                db,
+                project,
+                provider_override=provider,
+                provider_endpoint_override=provider_endpoint,
+                adapter_command_override=adapter_command,
+                adapter_args_override=adapter_args if adapter_args is not None else adapter_arg,
+            )
+        )
+    )
+
+
 @app.get("/api/system/auth-state", response_model=AuthStateRead)
 async def auth_state(_: None = Depends(_require_bridge_token)) -> AuthStateRead:
     status = service.auth_state()
@@ -862,6 +888,32 @@ async def codex_status(
     _: None = Depends(_require_bridge_token),
 ) -> CodexStatusRead:
     project = _get_project_or_404(db, project_id) if project_id is not None else None
+    return CodexStatusRead(
+        **(
+            await service.get_system_status(
+                db,
+                project,
+                provider_override=provider,
+                provider_endpoint_override=provider_endpoint,
+                adapter_command_override=adapter_command,
+                adapter_args_override=adapter_args if adapter_args is not None else adapter_arg,
+            )
+        )
+    )
+
+
+@app.get("/api/projects/{project_id}/system/codex-status", response_model=CodexStatusRead)
+async def project_codex_status(
+    project_id: int,
+    provider: str | None = Query(default=None),
+    provider_endpoint: str | None = Query(default=None),
+    adapter_command: str | None = Query(default=None),
+    adapter_arg: list[str] | None = Query(default=None),
+    adapter_args: list[str] | None = Query(default=None),
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> CodexStatusRead:
+    project = _get_project_or_404(db, project_id)
     return CodexStatusRead(
         **(
             await service.get_system_status(

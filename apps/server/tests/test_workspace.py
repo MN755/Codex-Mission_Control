@@ -211,7 +211,7 @@ def test_legacy_project_without_settings_reads_defaults_without_persisting_row(c
     dashboard_response = client.get("/api/dashboard/summary")
     assert dashboard_response.status_code == 200
 
-    system_status_response = client.get(f"/api/system/status?project_id={project_id}", headers=bridge_headers)
+    system_status_response = client.get(f"/api/projects/{project_id}/system/status", headers=bridge_headers)
     assert system_status_response.status_code == 200
 
     db = SessionLocal()

@@ -343,13 +343,18 @@ def test_dry_run_project_flow(client, bridge_headers, monkeypatch) -> None:
     assert updated_project_settings.status_code == 200
     assert updated_project_settings.json()["manager_model"] == "gpt-5.5"
 
-    status = client.get(f"/api/system/status?project_id={project_id}", headers=bridge_headers).json()
+    status = client.get(f"/api/projects/{project_id}/system/status", headers=bridge_headers).json()
     assert "active_runs" in status
     assert status["selected_provider"] == "claude_code"
     assert status["selected_manager_model"] == "gpt-5.5"
     assert status["selected_default_worker_model"] == "gpt-5.4-mini"
     assert "authenticated" in status
     assert "current_auth_job" in status
+
+    codex_status = client.get(f"/api/projects/{project_id}/system/codex-status", headers=bridge_headers).json()
+    assert codex_status["runtime_ready"] is True
+    assert codex_status["selected_provider"] == "claude_code"
+    assert codex_status["selected_manager_model"] == "gpt-5.5"
 
     auth_state = client.get("/api/system/auth-state").json()
     assert "authenticated" in auth_state
@@ -536,6 +541,8 @@ def test_runtime_and_project_control_routes_require_token(client) -> None:
         assert raw_client.get("/api/widgets/catalog/project").status_code == 401
         assert raw_client.get("/api/widgets/instances", params={"scope": "dashboard"}).status_code == 401
         assert raw_client.get("/api/widgets/instances").status_code == 401
+        assert raw_client.get(f"/api/projects/{project_id}/system/status").status_code == 401
+        assert raw_client.get(f"/api/projects/{project_id}/system/codex-status").status_code == 401
         assert raw_client.patch(f"/api/projects/{project_id}/widgets/instances/1", json={"collapsed": True}).status_code == 401
         assert raw_client.delete(f"/api/projects/{project_id}/widgets/instances/1").status_code == 401
         assert raw_client.get(f"/api/projects/{project_id}/widgets/instances/1/data").status_code == 401

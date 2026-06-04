@@ -3990,6 +3990,8 @@ def test_daemon_client_bridge_auth_protected_reads_include_token(monkeypatch) ->
     client.get_headless_health()
     client.get_headless_diagnostic_summary()
     client.daemon_status()
+    client.get_system_status(7)
+    client.get_codex_status(7)
     client.get_profile()
     client.get_auth_job("job-123")
     client.get_widget_catalog()
@@ -4062,6 +4064,8 @@ def test_daemon_client_bridge_auth_protected_reads_include_token(monkeypatch) ->
         ("GET", "/api/headless/health", True),
         ("GET", "/api/headless/diagnostic-summary", True),
         ("GET", "/api/daemon/status", True),
+        ("GET", "/api/projects/7/system/status", True),
+        ("GET", "/api/projects/7/system/codex-status", True),
         ("GET", "/api/profile", True),
         ("GET", "/api/system/auth-jobs/job-123", True),
         ("GET", "/api/widgets/catalog", True),

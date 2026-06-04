@@ -319,8 +319,10 @@ class MissionControlDaemonClient:
     def get_headless_config(self) -> dict[str, Any]:
         return self._request("GET", "/api/headless/config")
 
-    def get_codex_status(self) -> dict[str, Any]:
-        return self._request("GET", "/api/system/codex-status")
+    def get_codex_status(self, project_id: int | None = None) -> dict[str, Any]:
+        if project_id is None:
+            return self._request("GET", "/api/system/codex-status")
+        return self._request("GET", f"/api/projects/{project_id}/system/codex-status")
 
     def attach_workspace(
         self,
@@ -647,7 +649,7 @@ class MissionControlDaemonClient:
     def get_system_status(self, project_id: int | None = None) -> dict[str, Any]:
         if project_id is None:
             return self._request("GET", "/api/system/status")
-        return self._request("GET", "/api/system/status", params={"project_id": project_id})
+        return self._request("GET", f"/api/projects/{project_id}/system/status")
 
     def get_startup_status(self) -> dict[str, Any]:
         return self._request("GET", "/api/startup/status")
