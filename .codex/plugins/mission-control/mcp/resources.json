@@ -576,6 +576,82 @@
       }
     },
     {
+      "uri_template": "mission-control://dashboard/summary",
+      "title": "Dashboard summary",
+      "summary": "Operator dashboard summary covering recent projects, attention items, runner posture, and current widget surface.",
+      "support_status": "implemented",
+      "source_hint": {
+        "rest_endpoints": [
+          "/api/dashboard/summary"
+        ]
+      },
+      "default_fields": [
+        "sidebar_projects",
+        "recent_projects",
+        "archive_count",
+        "attention_items",
+        "runner_status",
+        "widgets",
+        "available_widgets",
+        "widget_instances",
+        "widget_data"
+      ],
+      "redaction": {
+        "omit_fields": [
+          "raw_log",
+          "secret_values",
+          "private_paths_outside_workspace"
+        ],
+        "notes": "Expose operator summary signals only."
+      }
+    },
+    {
+      "uri_template": "mission-control://widgets/catalog",
+      "title": "Widget catalog",
+      "summary": "Available widget catalog across all scopes so chat can inspect the shipped pane surface.",
+      "support_status": "implemented",
+      "source_hint": {
+        "rest_endpoints": [
+          "/api/widgets/catalog"
+        ]
+      },
+      "default_fields": [
+        "scope",
+        "catalog"
+      ],
+      "redaction": {
+        "omit_fields": [
+          "raw_log",
+          "secret_values",
+          "private_paths_outside_workspace"
+        ],
+        "notes": "Expose widget metadata only."
+      }
+    },
+    {
+      "uri_template": "mission-control://widgets/catalog/{scope}",
+      "title": "Scoped widget catalog",
+      "summary": "Available widget catalog filtered to one scope such as dashboard or project.",
+      "support_status": "implemented",
+      "source_hint": {
+        "rest_endpoints": [
+          "/api/widgets/catalog?scope={scope}"
+        ]
+      },
+      "default_fields": [
+        "scope",
+        "catalog"
+      ],
+      "redaction": {
+        "omit_fields": [
+          "raw_log",
+          "secret_values",
+          "private_paths_outside_workspace"
+        ],
+        "notes": "Expose scoped widget metadata only."
+      }
+    },
+    {
       "uri_template": "mission-control://profile/summary",
       "title": "Profile summary",
       "summary": "Compact Mission Control app-profile summary covering provider choice, runner defaults, startup posture, and account readiness.",

@@ -31,6 +31,9 @@ Mission Control resources are read-only context surfaces for Codex chat.
 - `mission-control://playbooks/{playbook_key}`
 - `mission-control://system/status`
 - `mission-control://startup/status`
+- `mission-control://dashboard/summary`
+- `mission-control://widgets/catalog`
+- `mission-control://widgets/catalog/{scope}`
 - `mission-control://profile/summary`
 - `mission-control://preferences/summary`
 - `mission-control://subagent-policy/summary`
@@ -101,6 +104,7 @@ Mission Control resources are read-only context surfaces for Codex chat.
 - playbook and playbook recommendations expose the current execution template and nearby alternatives so chat can discuss project posture without re-deriving the same pattern match from scratch every time
 - playbook catalog resources expose the shipped playbook library itself so chat can compare templates without already having a project in hand
 - system status and startup status expose runtime readiness, auth posture, and startup health directly instead of making chat reverse-engineer the app's boot state from scattered symptoms
+- dashboard summary and widget catalog resources expose what the operator shell already knows about recent projects, attention items, and available panes without forcing chat to infer UI state from unrelated APIs
 - execution policy summary tells the bridge which runner, sandbox, approval, tool-routing, and validation posture is actually in effect before it suggests work that contradicts local policy
 - coordination summary exposes contract, lock, gate, conflict, and decision posture in one compact lane so chat can spot coordination drift before the swarm faceplants
 - latest swarm simulation exposes launch readiness, conflicts, bottlenecks, and approval pressure without requiring a write path or a persisted simulation row first

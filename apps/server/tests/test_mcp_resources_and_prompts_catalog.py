@@ -54,6 +54,9 @@ EXPECTED_RESOURCES = [
     "mission-control://playbooks/{playbook_key}",
     "mission-control://system/status",
     "mission-control://startup/status",
+    "mission-control://dashboard/summary",
+    "mission-control://widgets/catalog",
+    "mission-control://widgets/catalog/{scope}",
     "mission-control://profile/summary",
     "mission-control://preferences/summary",
     "mission-control://subagent-policy/summary",
@@ -242,6 +245,9 @@ def test_docs_explain_resources_prompts_and_headless_boundary() -> None:
     assert "mission-control://playbooks/{playbook_key}" in resources_content
     assert "mission-control://system/status" in resources_content
     assert "mission-control://startup/status" in resources_content
+    assert "mission-control://dashboard/summary" in resources_content
+    assert "mission-control://widgets/catalog" in resources_content
+    assert "mission-control://widgets/catalog/{scope}" in resources_content
     assert "mission-control://profile/summary" in resources_content
     assert "mission-control://preferences/summary" in resources_content
     assert "mission-control://subagent-policy/summary" in resources_content

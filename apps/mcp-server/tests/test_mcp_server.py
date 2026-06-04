@@ -37,6 +37,9 @@ EXPECTED_RESOURCES = {
     "mission-control://playbooks/{playbook_key}",
     "mission-control://system/status",
     "mission-control://startup/status",
+    "mission-control://dashboard/summary",
+    "mission-control://widgets/catalog",
+    "mission-control://widgets/catalog/{scope}",
     "mission-control://profile/summary",
     "mission-control://preferences/summary",
     "mission-control://subagent-policy/summary",
@@ -1553,6 +1556,47 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
     )
     monkeypatch.setattr(
         client,
+        "get_dashboard_summary",
+        lambda: {
+            "sidebar_projects": [{"id": 7, "name": "Demo"}],
+            "recent_projects": [{"id": 7, "name": "Demo"}],
+            "archive_count": 1,
+            "active_builds": [],
+            "attention_items": [{"kind": "risk", "summary": "Validation drift is open."}],
+            "blocked_agents": [],
+            "recent_handoffs": [],
+            "runner_status": {"status": "ready"},
+            "connected_accounts": {"codex": True},
+            "model_defaults": {"manager_model": "gpt-5-codex"},
+            "widgets": ["Connected Accounts"],
+            "available_widgets": ["Connected Accounts", "Needs Attention"],
+            "widget_instances": [],
+            "widget_data": [],
+            "widget_catalog": [],
+        },
+    )
+    monkeypatch.setattr(
+        client,
+        "get_widget_catalog",
+        lambda scope=None: [
+            {
+                "id": 1,
+                "widget_type": "Connected Accounts",
+                "title": "Connected Accounts",
+                "description": "Shows account connections.",
+                "scope": scope or "dashboard",
+                "default_area": "dashboard_main",
+                "default_size": "small",
+                "category": "diagnostics",
+                "requires_project": False,
+                "requires_tool": None,
+                "coming_soon": False,
+                "risk_level": "low",
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        client,
         "get_project_widget_summary",
         lambda project_id: {
             "scope": "project",
@@ -1925,6 +1969,9 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
     global_risk_summary = client.read_resource("mission-control://risks/summary")
     system_status = client.read_resource("mission-control://system/status")
     startup_status = client.read_resource("mission-control://startup/status")
+    dashboard_summary = client.read_resource("mission-control://dashboard/summary")
+    widget_catalog = client.read_resource("mission-control://widgets/catalog")
+    project_widget_catalog = client.read_resource("mission-control://widgets/catalog/project")
     subagent_policy_summary = client.read_resource("mission-control://subagent-policy/summary")
     pending_questions = client.read_resource("mission-control://projects/7/questions/pending")
     pending_approvals = client.read_resource("mission-control://projects/7/approvals/pending")
@@ -1982,6 +2029,11 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
     assert global_risk_summary["open_count"] == 3
     assert system_status["runtime_ready"] is True
     assert startup_status["overall_status"] == "ready"
+    assert dashboard_summary["archive_count"] == 1
+    assert widget_catalog["scope"] == "all"
+    assert widget_catalog["catalog"][0]["widget_type"] == "Connected Accounts"
+    assert project_widget_catalog["scope"] == "project"
+    assert project_widget_catalog["catalog"][0]["scope"] == "project"
     assert subagent_policy_summary["default_mode"] == "limited_write"
     assert pending_questions["question_count"] == 1
     assert pending_questions["questions"][0]["category"] == "scope"

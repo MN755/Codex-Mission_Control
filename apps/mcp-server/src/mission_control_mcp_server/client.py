@@ -573,6 +573,13 @@ class MissionControlDaemonClient:
     def get_startup_status(self) -> dict[str, Any]:
         return self._request("GET", "/api/startup/status")
 
+    def get_dashboard_summary(self) -> dict[str, Any]:
+        return self._request("GET", "/api/dashboard/summary")
+
+    def get_widget_catalog(self, scope: str | None = None) -> list[dict[str, Any]]:
+        params = {"scope": scope} if scope is not None else {}
+        return self._request("GET", "/api/widgets/catalog", params=params)
+
     def get_project_widget_summary(self, project_id: int) -> dict[str, Any]:
         return self._request("GET", f"/api/projects/{project_id}/widgets/summary")
 
@@ -1711,6 +1718,11 @@ class MissionControlDaemonClient:
             return self.get_system_status()
         if len(parts) >= 2 and parts[0] == "startup" and parts[1] == "status":
             return self.get_startup_status()
+        if len(parts) >= 2 and parts[0] == "dashboard" and parts[1] == "summary":
+            return self.get_dashboard_summary()
+        if len(parts) >= 2 and parts[0] == "widgets" and parts[1] == "catalog":
+            scope = parts[2] if len(parts) >= 3 else None
+            return {"scope": scope or "all", "catalog": self.get_widget_catalog(scope=scope)}
         if len(parts) >= 2 and parts[0] == "subagent-policy" and parts[1] == "summary":
             return self.get_subagent_policy_summary()
         if len(parts) >= 5 and parts[0] == "projects" and parts[2] == "orchestrations":
