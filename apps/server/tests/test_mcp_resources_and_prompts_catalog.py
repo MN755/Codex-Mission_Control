@@ -289,6 +289,9 @@ EXPECTED_PROJECT_SOURCE_HINTS = {
     "mission-control://projects/{project_id}/diagnostics/latest-report": [
         "/api/diagnostics/reports?project_id={project_id}"
     ],
+    "mission-control://projects/{project_id}/integrations/{family}/actions": [
+        "/api/projects/{project_id}/integrations/{family}/actions"
+    ],
 }
 
 

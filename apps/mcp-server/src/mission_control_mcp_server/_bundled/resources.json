@@ -1846,7 +1846,7 @@
       "support_status": "implemented",
       "source_hint": {
         "rest_endpoints": [
-          "/api/projects/{project_id}/integrations/{family}"
+          "/api/projects/{project_id}/integrations/{family}/actions"
         ]
       },
       "default_fields": [

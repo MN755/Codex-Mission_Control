@@ -243,6 +243,7 @@ from schemas import (
     IntegrationCatalogEntryRead,
     IntegrationConnectionRead,
     IntegrationHealthRead,
+    ProjectIntegrationActionsRead,
     ProjectIntegrationFamilyRead,
     ProjectIntegrationsRead,
     ToolCatalogItemRead,
@@ -3856,6 +3857,21 @@ def get_project_integration_family(
         return ProjectIntegrationFamilyRead(**service.build_project_integration_family(db, project, family))
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.get("/api/projects/{project_id}/integrations/{family}/actions", response_model=ProjectIntegrationActionsRead)
+def get_project_integration_actions(
+    project_id: int,
+    family: str,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> ProjectIntegrationActionsRead:
+    project = _get_project_or_404(db, project_id)
+    try:
+        payload = service.build_project_integration_family(db, project, family)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return ProjectIntegrationActionsRead(**payload)
 
 
 @app.post("/api/projects/{project_id}/integrations/{family}/actions/{action_id}/preview", response_model=IntegrationActionPreviewRead)

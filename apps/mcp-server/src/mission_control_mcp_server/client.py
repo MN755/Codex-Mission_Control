@@ -695,6 +695,9 @@ class MissionControlDaemonClient:
     def get_project_integration_family(self, project_id: int, family: str) -> dict[str, Any]:
         return self._request("GET", f"/api/projects/{project_id}/integrations/{family}")
 
+    def get_project_integration_actions(self, project_id: int, family: str) -> dict[str, Any]:
+        return self._request("GET", f"/api/projects/{project_id}/integrations/{family}/actions")
+
     def get_context_packs(self, project_id: int) -> list[dict[str, Any]]:
         return self._request("GET", f"/api/projects/{project_id}/context-packs")
 
@@ -3044,7 +3047,7 @@ class MissionControlDaemonClient:
                     return self._summarize_project_integration_actions(
                         project_id,
                         family,
-                        self.get_project_integration_family(project_id, family),
+                        self.get_project_integration_actions(project_id, family),
                     )
                 if len(parts) == 7 and parts[4] == "actions" and parts[6] == "preview":
                     family = parts[3]

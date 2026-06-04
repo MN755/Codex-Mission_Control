@@ -3949,6 +3949,7 @@ def test_daemon_client_bridge_auth_protected_reads_include_token(monkeypatch) ->
     client.get_codebase_map(7)
     client.get_codebase_understanding(7)
     client.get_import_safety(7)
+    client.get_project_integration_actions(7, "source_control")
     client.preview_project_integration_action(7, "source_control", "create_issue")
     client.get_project_settings(7)
     client.get_agent_logs(7, 15)
@@ -4019,6 +4020,7 @@ def test_daemon_client_bridge_auth_protected_reads_include_token(monkeypatch) ->
         ("GET", "/api/projects/7/codebase-map", True),
         ("GET", "/api/projects/7/codebase-understanding", True),
         ("GET", "/api/projects/7/import-safety", True),
+        ("GET", "/api/projects/7/integrations/source_control/actions", True),
         ("POST", "/api/projects/7/integrations/source_control/actions/create_issue/preview", True),
         ("GET", "/api/projects/7/settings", True),
         ("GET", "/api/projects/7/agents/15/logs", True),

@@ -4059,6 +4059,35 @@ class ProjectIntegrationFamilyRead(BaseModel):
     note_count: int = 0
 
 
+class ProjectIntegrationActionsRead(BaseModel):
+    family: str
+    name: str
+    summary: str
+    category: str
+    project_name: str
+    workspace_path: str | None = None
+    status: str
+    connection_status: str = "disconnected"
+    connection_source: str = "mission_control"
+    host_imported: bool = False
+    providers: list[str] = Field(default_factory=list)
+    provider_count: int = 0
+    resolved_provider: str | None = None
+    provider_candidates: list[str] = Field(default_factory=list)
+    provider_candidate_count: int = 0
+    required_permissions: list[str] = Field(default_factory=list)
+    required_permission_count: int = 0
+    available_actions: list[IntegrationActionRead] = Field(default_factory=list)
+    action_count: int = 0
+    available_action_count: int = 0
+    blocked_action_count: int = 0
+    action_status_counts: dict[str, int] = Field(default_factory=dict)
+    risk_level_counts: dict[str, int] = Field(default_factory=dict)
+    permission_policy_counts: dict[str, int] = Field(default_factory=dict)
+    notes: list[str] = Field(default_factory=list)
+    note_count: int = 0
+
+
 class ProjectIntegrationsRead(BaseModel):
     project_id: int
     project_name: str

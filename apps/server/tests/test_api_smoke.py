@@ -538,6 +538,7 @@ def test_runtime_and_project_control_routes_require_token(client) -> None:
         assert raw_client.get(f"/api/projects/{project_id}/workspace-tooling").status_code == 401
         assert raw_client.get(f"/api/projects/{project_id}/integrations").status_code == 401
         assert raw_client.get(f"/api/projects/{project_id}/integrations/source_control").status_code == 401
+        assert raw_client.get(f"/api/projects/{project_id}/integrations/source_control/actions").status_code == 401
         assert raw_client.post(
             f"/api/projects/{project_id}/integrations/source_control/actions/create/preview",
             json={"params": {"title": "x", "body": "y"}},
