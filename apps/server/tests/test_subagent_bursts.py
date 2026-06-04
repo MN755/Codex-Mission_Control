@@ -172,8 +172,13 @@ def test_subagent_burst_bridge_message_and_use_fewer_flow(client) -> None:
     assert answer.status_code == 200, answer.text
 
     batch = client.get(f"/api/subagents/batches/{batch_id}", headers=_bridge_headers(), params={"project_id": project["id"]}).json()
+    project_scoped_batch = client.get(
+        f"/api/projects/{project['id']}/subagent-batches/{batch_id}",
+        headers=_bridge_headers(),
+    ).json()
     statuses = [spec["status"] for spec in batch["specs"]]
     assert batch["status"] == "approved"
+    assert project_scoped_batch["id"] == batch["id"]
     assert statuses.count("approved") == 3
     assert statuses.count("cancelled") == 2
 

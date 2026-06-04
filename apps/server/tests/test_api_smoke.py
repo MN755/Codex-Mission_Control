@@ -282,6 +282,10 @@ def test_dry_run_project_flow(client, bridge_headers, monkeypatch) -> None:
     assert settings_response.status_code == 200
     assert settings_response.json()["runner_mode"] == "dry_run"
 
+    project_settings_response = client.get(f"/api/projects/{project_id}/settings")
+    assert project_settings_response.status_code == 200
+    assert project_settings_response.json()["runner_mode"] == "dry_run"
+
     updated_settings = client.put(
         f"/api/settings?project_id={project_id}",
         json={
@@ -302,6 +306,26 @@ def test_dry_run_project_flow(client, bridge_headers, monkeypatch) -> None:
     assert updated_settings.status_code == 200
     assert updated_settings.json()["manager_model"] == "gpt-5.5"
     assert updated_settings.json()["provider"] == "claude_code"
+
+    updated_project_settings = client.put(
+        f"/api/projects/{project_id}/settings",
+        json={
+            "provider": "claude_code",
+            "manager_model": "gpt-5.5",
+            "default_worker_model": "gpt-5.4-mini",
+            "manager_reasoning_effort": "high",
+            "default_worker_reasoning_effort": "low",
+            "per_role_model_overrides_json": {"Primary implementation": "gpt-5.5-mini"},
+            "per_role_reasoning_overrides_json": {"Primary implementation": "minimal"},
+            "adapter_command": None,
+            "adapter_args_json": [],
+            "runner_mode": "dry_run",
+            "sandbox_mode": "workspace-write",
+            "approval_policy": "on-request",
+        },
+    )
+    assert updated_project_settings.status_code == 200
+    assert updated_project_settings.json()["manager_model"] == "gpt-5.5"
 
     status = client.get(f"/api/system/status?project_id={project_id}", headers=bridge_headers).json()
     assert "active_runs" in status
@@ -410,6 +434,7 @@ def test_runtime_and_project_control_routes_require_token(client) -> None:
         assert raw_client.get("/api/dashboard/summary").status_code == 401
         assert raw_client.get("/api/dashboard/stream").status_code == 401
         assert raw_client.get("/api/settings", params={"project_id": project_id}).status_code == 401
+        assert raw_client.get(f"/api/projects/{project_id}/settings").status_code == 401
         assert raw_client.get(f"/api/projects/{project_id}/swarm/preferences").status_code == 401
         assert raw_client.post(f"/api/projects/{project_id}/swarm/plan").status_code == 401
         assert raw_client.post(f"/api/projects/{project_id}/swarm/spawn").status_code == 401

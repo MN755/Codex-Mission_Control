@@ -1774,6 +1774,12 @@ def test_agent_and_task_global_id_routes_require_matching_project_scope(client, 
     )
     assert wrong_agent_logs.status_code == 404
 
+    wrong_project_agent_logs = client.get(
+        f"/api/projects/{project_two['id']}/agents/{agent_id}/logs",
+        headers=bridge_headers,
+    )
+    assert wrong_project_agent_logs.status_code == 404
+
     wrong_task_start = client.post(
         f"/api/tasks/{task_id}/start",
         headers=bridge_headers,

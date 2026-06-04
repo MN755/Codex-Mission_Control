@@ -432,7 +432,7 @@ class MissionControlDaemonClient:
         return self._request("GET", f"/api/orchestrations/{resolved_id}/pending-decisions", params={"project_id": resolved_project_id})
 
     def get_decision_bridge_message(self, decision_id: int, *, project_id: int) -> dict[str, Any]:
-        return self._request("GET", f"/api/decisions/{decision_id}/bridge-message", params={"project_id": project_id})
+        return self._request("GET", f"/api/projects/{project_id}/decisions/{decision_id}/bridge-message")
 
     def answer_decision(self, *, decision_id: int, project_id: int, option_id: str, selected_text: str, free_text: str | None = None) -> dict[str, Any]:
         return self._request(
@@ -506,7 +506,7 @@ class MissionControlDaemonClient:
         return self._request("GET", f"/api/projects/{project_id}/agents")
 
     def get_agent_logs(self, project_id: int, agent_id: int) -> dict[str, Any]:
-        return self._request("GET", f"/api/agents/{agent_id}/logs", params={"project_id": project_id})
+        return self._request("GET", f"/api/projects/{project_id}/agents/{agent_id}/logs")
 
     def get_agent_contracts(self, project_id: int) -> list[dict[str, Any]]:
         return self._request("GET", f"/api/projects/{project_id}/agent-contracts")
@@ -819,10 +819,10 @@ class MissionControlDaemonClient:
         return self._request("PATCH", f"/api/projects/{project_id}/import-safety", json_body=payload)
 
     def get_project_settings(self, project_id: int) -> dict[str, Any]:
-        return self._request("GET", "/api/settings", params={"project_id": project_id})
+        return self._request("GET", f"/api/projects/{project_id}/settings")
 
     def update_project_settings(self, project_id: int, payload: dict[str, Any]) -> dict[str, Any]:
-        return self._request("PUT", "/api/settings", params={"project_id": project_id}, json_body=payload)
+        return self._request("PUT", f"/api/projects/{project_id}/settings", json_body=payload)
 
     def get_tool_catalog(self) -> list[dict[str, Any]]:
         return self._request("GET", "/api/tools")
@@ -849,7 +849,7 @@ class MissionControlDaemonClient:
         return self._request("GET", f"/api/projects/{project_id}/subagent-batches")
 
     def get_subagent_batch(self, project_id: int, batch_id: int) -> dict[str, Any]:
-        return self._request("GET", f"/api/subagents/batches/{batch_id}", params={"project_id": project_id})
+        return self._request("GET", f"/api/projects/{project_id}/subagent-batches/{batch_id}")
 
     def get_swarm_preferences(self, project_id: int) -> dict[str, Any]:
         return self._request("GET", f"/api/projects/{project_id}/swarm/preferences")

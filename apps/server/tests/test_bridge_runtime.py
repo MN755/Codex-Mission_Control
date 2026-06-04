@@ -232,6 +232,13 @@ def test_pending_decision_bridge_routes_and_answer_flow(client) -> None:
     assert bridge_message.status_code == 200, bridge_message.text
     assert bridge_message.json()["message_type"] == "manager_question"
 
+    project_scoped_bridge_message = client.get(
+        f"/api/projects/{project['id']}/decisions/{decision['id']}/bridge-message",
+        headers=_bridge_headers(),
+    )
+    assert project_scoped_bridge_message.status_code == 200, project_scoped_bridge_message.text
+    assert project_scoped_bridge_message.json()["message_type"] == "manager_question"
+
     answer = client.post(
         f"/api/decisions/{decision['id']}/answer",
         headers=_bridge_headers(),

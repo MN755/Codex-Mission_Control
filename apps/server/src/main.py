@@ -923,10 +923,34 @@ def get_settings(
     return service._project_settings_preview(db, project)
 
 
+@app.get("/api/projects/{project_id}/settings", response_model=ProjectSettingsRead)
+def get_project_settings(
+    project_id: int,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> ProjectSettingsRead:
+    project = _get_project_or_404(db, project_id)
+    return service._project_settings_preview(db, project)
+
+
 @app.put("/api/settings", response_model=ProjectSettingsRead)
 def update_settings(
     payload: ProjectSettingsUpdate,
     project_id: int = Query(...),
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> ProjectSettingsRead:
+    project = _get_project_or_404(db, project_id)
+    try:
+        return service.update_settings(db, project, payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.put("/api/projects/{project_id}/settings", response_model=ProjectSettingsRead)
+def update_project_settings(
+    project_id: int,
+    payload: ProjectSettingsUpdate,
     db: Session = Depends(get_db),
     _: None = Depends(_require_bridge_token),
 ) -> ProjectSettingsRead:
@@ -2108,6 +2132,19 @@ def get_decision_bridge_message(
     return BridgeMessageRead(**bridge_runtime_service.get_bridge_message_for_decision(db, decision))
 
 
+@app.get("/api/projects/{project_id}/decisions/{decision_id}/bridge-message", response_model=BridgeMessageRead)
+def get_project_decision_bridge_message(
+    project_id: int,
+    decision_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> BridgeMessageRead:
+    decision = _get_pending_decision_or_404(db, decision_id)
+    _require_project_scope("Pending decision", decision.project_id, project_id)
+    return BridgeMessageRead(**bridge_runtime_service.get_bridge_message_for_decision(db, decision))
+
+
 @app.post("/api/decisions/{decision_id}/answer", response_model=PendingDecisionAnswerResultRead)
 async def answer_pending_decision(
     decision_id: int,
@@ -2419,6 +2456,19 @@ def get_subagent_batch(
     batch_id: int,
     request: Request,
     project_id: int = Query(...),
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> SubagentBatchRead:
+    batch = _get_subagent_batch_or_404(db, batch_id)
+    _require_project_scope("Subagent batch", batch.project_id, project_id)
+    return SubagentBatchRead(**subagent_planner_service.serialize_batch(db, batch))
+
+
+@app.get("/api/projects/{project_id}/subagent-batches/{batch_id}", response_model=SubagentBatchRead)
+def get_project_subagent_batch(
+    project_id: int,
+    batch_id: int,
+    request: Request,
     db: Session = Depends(get_db),
     _: None = Depends(_require_bridge_token),
 ) -> SubagentBatchRead:
@@ -4020,6 +4070,19 @@ async def pause_agent(
 def get_agent_logs(
     agent_id: int,
     project_id: int = Query(...),
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> LogRead:
+    project = _get_project_or_404(db, project_id)
+    agent = _require_project_agent(db, project, agent_id)
+    path, content = service.read_logs(db, agent)
+    return LogRead(agent_id=agent_id, logs_path=path, content=content)
+
+
+@app.get("/api/projects/{project_id}/agents/{agent_id}/logs", response_model=LogRead)
+def get_project_agent_logs(
+    project_id: int,
+    agent_id: int,
     db: Session = Depends(get_db),
     _: None = Depends(_require_bridge_token),
 ) -> LogRead:

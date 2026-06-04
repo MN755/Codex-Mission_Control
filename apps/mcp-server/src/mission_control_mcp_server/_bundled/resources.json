@@ -335,7 +335,7 @@
       "support_status": "implemented",
       "source_hint": {
         "rest_endpoints": [
-          "/api/agents/{agent_id}/logs"
+          "/api/projects/{project_id}/agents/{agent_id}/logs"
         ]
       },
       "default_fields": [
@@ -1907,7 +1907,7 @@
       "support_status": "implemented",
       "source_hint": {
         "rest_endpoints": [
-          "/api/settings"
+          "/api/projects/{project_id}/settings"
         ]
       },
       "default_fields": [
@@ -2450,7 +2450,7 @@
       "support_status": "implemented",
       "source_hint": {
         "rest_endpoints": [
-          "/api/subagents/batches/{batch_id}?project_id={project_id}"
+          "/api/projects/{project_id}/subagent-batches/{batch_id}"
         ]
       },
       "default_fields": [
@@ -2646,7 +2646,7 @@
       "support_status": "implemented",
       "source_hint": {
         "rest_endpoints": [
-          "/api/decisions/{decision_id}/bridge-message?project_id={project_id}"
+          "/api/projects/{project_id}/decisions/{decision_id}/bridge-message"
         ]
       },
       "default_fields": [
