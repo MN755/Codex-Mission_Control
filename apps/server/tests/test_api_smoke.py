@@ -535,6 +535,7 @@ def test_runtime_and_project_control_routes_require_token(client) -> None:
         assert raw_client.get("/api/widgets/catalog/project").status_code == 401
         assert raw_client.get("/api/widgets/instances", params={"scope": "dashboard"}).status_code == 401
         assert raw_client.get("/api/widgets/instances").status_code == 401
+        assert raw_client.get(f"/api/projects/{project_id}/widgets/instances/1/data").status_code == 401
         assert raw_client.get("/api/capabilities/matrix").status_code == 401
         assert raw_client.get("/api/capabilities/benchmarks").status_code == 401
         assert raw_client.get("/api/agents/reputation").status_code == 401

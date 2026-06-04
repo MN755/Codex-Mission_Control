@@ -2527,6 +2527,35 @@
       }
     },
     {
+      "uri_template": "mission-control://projects/{project_id}/widgets/instances/{instance_id}/data",
+      "title": "Project widget instance data",
+      "summary": "Compact project-scoped widget data payload for one instance with warnings, status, and safe top-level data fields.",
+      "support_status": "implemented",
+      "source_hint": {
+        "rest_endpoints": [
+          "/api/projects/{project_id}/widgets/instances/{instance_id}/data"
+        ]
+      },
+      "default_fields": [
+        "project_id",
+        "widget_instance_id",
+        "widget_type",
+        "title",
+        "status",
+        "warning_count",
+        "data_keys",
+        "updated_at"
+      ],
+      "redaction": {
+        "omit_fields": [
+          "raw_log",
+          "secret_values",
+          "private_paths_outside_workspace"
+        ],
+        "notes": "Expose summarized project widget data only, not secret-bearing widget config payloads."
+      }
+    },
+    {
       "uri_template": "mission-control://projects/{project_id}/workspace",
       "title": "Project workspace",
       "summary": "Project-scoped workspace metadata including git posture and top-level structure for headless operator review.",

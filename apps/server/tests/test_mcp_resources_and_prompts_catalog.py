@@ -126,6 +126,7 @@ EXPECTED_RESOURCES = [
     "mission-control://projects/{project_id}/subagent-batches/{batch_id}",
     "mission-control://projects/{project_id}/widgets/summary",
     "mission-control://projects/{project_id}/widgets/instances",
+    "mission-control://projects/{project_id}/widgets/instances/{instance_id}/data",
     "mission-control://projects/{project_id}/workspace",
     "mission-control://projects/{project_id}/workspace-tooling",
     "mission-control://projects/{project_id}/security/policy",
@@ -494,6 +495,7 @@ def test_docs_explain_resources_prompts_and_headless_boundary() -> None:
     assert "mission-control://projects/{project_id}/import-safety" in resources_content
     assert "mission-control://projects/{project_id}/widgets/summary" in resources_content
     assert "mission-control://projects/{project_id}/widgets/instances" in resources_content
+    assert "mission-control://projects/{project_id}/widgets/instances/{instance_id}/data" in resources_content
     assert "mission-control://projects/{project_id}/webwright" in resources_content
     assert "mission-control://projects/{project_id}/nvidia/nim" in resources_content
     assert "mission-control://projects/{project_id}/nvidia/aiq" in resources_content

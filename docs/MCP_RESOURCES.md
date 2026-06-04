@@ -102,6 +102,7 @@ Mission Control resources are read-only context surfaces for Codex chat.
 - `mission-control://projects/{project_id}/workspace`
 - `mission-control://projects/{project_id}/widgets/summary`
 - `mission-control://projects/{project_id}/widgets/instances`
+- `mission-control://projects/{project_id}/widgets/instances/{instance_id}/data`
 - `mission-control://projects/{project_id}/workspace-tooling`
 - `mission-control://projects/{project_id}/security/policy`
 - `mission-control://projects/{project_id}/security/audit-log`

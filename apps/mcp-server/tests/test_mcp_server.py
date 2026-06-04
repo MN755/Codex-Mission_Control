@@ -108,6 +108,7 @@ EXPECTED_RESOURCES = {
     "mission-control://projects/{project_id}/subagent-batches/{batch_id}",
     "mission-control://projects/{project_id}/widgets/summary",
     "mission-control://projects/{project_id}/widgets/instances",
+    "mission-control://projects/{project_id}/widgets/instances/{instance_id}/data",
     "mission-control://projects/{project_id}/workspace",
     "mission-control://projects/{project_id}/workspace-tooling",
     "mission-control://projects/{project_id}/security/policy",
@@ -2037,6 +2038,26 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
     )
     monkeypatch.setattr(
         client,
+        "get_project_integration_actions",
+        lambda project_id, family: {
+            "project_id": project_id,
+            "family": family,
+            "available_actions": [
+                {
+                    "action_id": "create_issue",
+                    "title": "Create issue",
+                    "status": "ready",
+                    "risk_level": "medium",
+                    "requires_confirmation": True,
+                    "preview_supported": True,
+                    "ready_to_execute": True,
+                    "missing_params": ["title"],
+                }
+            ],
+        },
+    )
+    monkeypatch.setattr(
+        client,
         "get_pending_questions",
         lambda project_id: [
             {
@@ -2814,12 +2835,16 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
     monkeypatch.setattr(
         client,
         "get_widget_instance_data",
-        lambda instance_id: {
+        lambda instance_id, project_id=None: {
             "widget_instance_id": instance_id,
-            "widget_type": "recent_projects",
-            "title": "Recent Projects",
+            "widget_type": "runbook_status" if project_id is not None else "recent_projects",
+            "title": "Runbook Status" if project_id is not None else "Recent Projects",
             "status": "ready",
-            "data_json": {"project_count": 1, "project_names": ["Demo"]},
+            "data_json": (
+                {"runbook_exists": True, "project_id": project_id}
+                if project_id is not None
+                else {"project_count": 1, "project_names": ["Demo"]}
+            ),
             "empty_state": None,
             "warnings_json": [],
             "updated_at": "2026-06-03T12:50:00Z",
@@ -3397,6 +3422,7 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
     effective_preferences = client.read_resource("mission-control://projects/7/preferences/effective")
     widget_summary = client.read_resource("mission-control://projects/7/widgets/summary")
     project_widget_instances = client.read_resource("mission-control://projects/7/widgets/instances")
+    project_widget_instance_data = client.read_resource("mission-control://projects/7/widgets/instances/302/data")
     project_risks = client.read_resource("mission-control://projects/7/risks")
     project_risk_summary = client.read_resource("mission-control://projects/7/risks/summary")
     agent_contracts = client.read_resource("mission-control://projects/7/agent-contracts")
@@ -3610,6 +3636,8 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
     assert widget_summary["instances"][0]["widget_type"] == "runbook_status"
     assert project_widget_instances["project_id"] == 7
     assert project_widget_instances["instances"][0]["widget_type"] == "runbook_status"
+    assert project_widget_instance_data["widget_instance_id"] == 302
+    assert project_widget_instance_data["data_keys"] == ["project_id", "runbook_exists"]
     assert project_risks["project_id"] == 7
     assert project_risks["risk_count"] == 1
     assert project_risks["open_risks"][0]["title"] == "Validation drift"
@@ -3990,6 +4018,7 @@ def test_daemon_client_bridge_auth_protected_reads_include_token(monkeypatch) ->
     client.list_widget_instances()
     client.get_project_widget_instances(7)
     client.get_widget_instance_data(301)
+    client.get_widget_instance_data(302, project_id=7)
     client.get_project_understanding(7)
     client.get_interview(7)
     client.get_plan(7)
@@ -4062,6 +4091,7 @@ def test_daemon_client_bridge_auth_protected_reads_include_token(monkeypatch) ->
         ("GET", "/api/widgets/instances", True),
         ("GET", "/api/projects/7/widgets/instances", True),
         ("GET", "/api/widgets/instances/301/data", True),
+        ("GET", "/api/projects/7/widgets/instances/302/data", True),
         ("GET", "/api/projects/7/understanding", True),
         ("GET", "/api/projects/7/interview", True),
         ("GET", "/api/projects/7/plan", True),
@@ -4073,7 +4103,7 @@ def test_daemon_client_bridge_auth_protected_reads_include_token(monkeypatch) ->
         ("GET", "/api/capabilities/benchmarks", True),
         ("GET", "/api/capabilities/matrix", True),
         ("GET", "/api/projects/7/context-packs", True),
-        ("GET", "/api/context-packs/31", True),
+        ("GET", "/api/projects/7/context-packs/31", True),
         ("GET", "/api/projects/7/preferences", True),
         ("GET", "/api/risks/common", True),
         ("GET", "/api/projects/7/scope-creep", True),

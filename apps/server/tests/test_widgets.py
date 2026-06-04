@@ -282,7 +282,7 @@ def test_repo_intelligence_widget_scans_workspace_safely(client) -> None:
         json={"widget_type": "Repo Intelligence"},
     ).json()
 
-    data = client.get(f"/api/widgets/instances/{instance['id']}/data", params={"project_id": project["id"]}).json()
+    data = client.get(f"/api/projects/{project['id']}/widgets/instances/{instance['id']}/data").json()
     assert data["status"] == "ready"
     assert "TypeScript" in data["data_json"]["languages"]
     assert "React" in data["data_json"]["frameworks"]
@@ -336,12 +336,10 @@ def test_project_widget_data_is_project_scoped_and_emits_project_events(client) 
         db.close()
 
     first_data = client.get(
-        f"/api/widgets/instances/{first_instance['id']}/data",
-        params={"project_id": project_one["id"]},
+        f"/api/projects/{project_one['id']}/widgets/instances/{first_instance['id']}/data",
     ).json()
     second_data = client.get(
-        f"/api/widgets/instances/{second_instance['id']}/data",
-        params={"project_id": project_two["id"]},
+        f"/api/projects/{project_two['id']}/widgets/instances/{second_instance['id']}/data",
     ).json()
     assert first_data["status"] == "ready"
     assert first_data["data_json"]["items"][0]["title"] == "Use local widget grid"
@@ -396,8 +394,7 @@ def test_project_widget_instance_routes_require_matching_project_context(client)
     assert "require project_id" in missing_project.json()["detail"].lower()
 
     wrong_project = client.get(
-        f"/api/widgets/instances/{instance['id']}/data",
-        params={"project_id": project_two["id"]},
+        f"/api/projects/{project_two['id']}/widgets/instances/{instance['id']}/data",
     )
     assert wrong_project.status_code == 404
 

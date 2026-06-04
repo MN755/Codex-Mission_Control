@@ -223,8 +223,7 @@ def test_project_widget_data_route_keeps_import_and_security_widgets_read_only(c
 
     for instance_id in instance_ids:
         response = client.get(
-            f"/api/widgets/instances/{instance_id}/data",
-            params={"project_id": project_id},
+            f"/api/projects/{project_id}/widgets/instances/{instance_id}/data",
             headers=bridge_headers,
         )
         assert response.status_code == 200, response.text
@@ -345,8 +344,7 @@ def test_parallelism_safety_meter_data_is_read_only(client, bridge_headers) -> N
         db.close()
 
     response = client.get(
-        f"/api/widgets/instances/{instance_id}/data",
-        params={"project_id": project_id},
+        f"/api/projects/{project_id}/widgets/instances/{instance_id}/data",
         headers=bridge_headers,
     )
     assert response.status_code == 200, response.text
@@ -559,8 +557,7 @@ def test_swarm_strategy_widget_data_get_does_not_persist_launch_simulations(clie
         db.close()
 
     response = client.get(
-        f"/api/widgets/instances/{instance_id}/data",
-        params={"project_id": project_id},
+        f"/api/projects/{project_id}/widgets/instances/{instance_id}/data",
         headers=bridge_headers,
     )
     assert response.status_code == 200, response.text
@@ -2805,8 +2802,7 @@ def test_project_widget_data_route_stays_read_only_for_preview_widgets(client, b
 
     for instance_id in instance_ids:
         response = client.get(
-            f"/api/widgets/instances/{instance_id}/data",
-            params={"project_id": project_id},
+            f"/api/projects/{project_id}/widgets/instances/{instance_id}/data",
             headers=bridge_headers,
         )
         assert response.status_code == 200, response.text

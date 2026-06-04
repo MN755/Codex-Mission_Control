@@ -1205,6 +1205,21 @@ async def get_widget_instance_data(
         raise HTTPException(status_code=status_code, detail=str(exc)) from exc
 
 
+@app.get("/api/projects/{project_id}/widgets/instances/{instance_id}/data", response_model=WidgetDataResponseRead)
+async def get_project_widget_instance_data(
+    project_id: int,
+    instance_id: int,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> WidgetDataResponseRead:
+    project = _get_project_or_404(db, project_id)
+    try:
+        return WidgetDataResponseRead(**(await service.get_widget_instance_data(db, instance_id, project=project)))
+    except ValueError as exc:
+        status_code = 404 if "not found" in str(exc).lower() else 400
+        raise HTTPException(status_code=status_code, detail=str(exc)) from exc
+
+
 @app.get("/api/projects/{project_id}/widgets/summary", response_model=WidgetSummaryRead)
 async def get_project_widgets_summary(
     project_id: int,

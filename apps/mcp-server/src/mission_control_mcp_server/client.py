@@ -665,7 +665,9 @@ class MissionControlDaemonClient:
     def get_project_widget_instances(self, project_id: int) -> list[dict[str, Any]]:
         return self._request("GET", f"/api/projects/{project_id}/widgets/instances")
 
-    def get_widget_instance_data(self, instance_id: int) -> dict[str, Any]:
+    def get_widget_instance_data(self, instance_id: int, *, project_id: int | None = None) -> dict[str, Any]:
+        if project_id is not None:
+            return self._request("GET", f"/api/projects/{project_id}/widgets/instances/{instance_id}/data")
         return self._request("GET", f"/api/widgets/instances/{instance_id}/data")
 
     def get_project_widget_summary(self, project_id: int) -> dict[str, Any]:
@@ -2971,6 +2973,15 @@ class MissionControlDaemonClient:
                 return self.get_manager_queue(project_id)
             if kind == "widgets" and len(parts) == 4 and parts[3] == "instances":
                 return self._summarize_widget_instances(self.get_project_widget_instances(project_id), project_id=project_id)
+            if kind == "widgets" and len(parts) == 6 and parts[3] == "instances" and parts[5] == "data":
+                try:
+                    instance_id = int(parts[4])
+                except ValueError as exc:
+                    raise RuntimeError(f"Unsupported Mission Control resource URI: {uri}") from exc
+                return self._summarize_widget_instance_data(
+                    instance_id,
+                    self.get_widget_instance_data(instance_id, project_id=project_id),
+                )
             if kind == "runbook":
                 if len(parts) == 4 and parts[3] == "summary":
                     return self.get_runbook_summary(project_id)
