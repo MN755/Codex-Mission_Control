@@ -2855,20 +2855,30 @@ class MissionControlDaemonClient:
             if kind == "swarm" and len(parts) == 5 and parts[3] == "simulations" and parts[4] == "latest":
                 return self.get_latest_swarm_simulation(project_id)
             if kind == "risk-register":
+                if len(parts) != 3:
+                    raise RuntimeError(f"Unsupported Mission Control resource URI: {uri}")
                 return self._summarize_risks(project_id, self.get_risks(project_id))
             if kind == "risks" and len(parts) == 3:
                 return self._summarize_risks(project_id, self.get_risks(project_id))
             if kind == "risks" and len(parts) == 4 and parts[3] == "summary":
                 return self.get_risk_summary(project_id)
             if kind == "agent-contracts":
+                if len(parts) != 3:
+                    raise RuntimeError(f"Unsupported Mission Control resource URI: {uri}")
                 return self._summarize_agent_contracts(project_id, self.get_agent_contracts(project_id))
             if kind == "validation-summary":
+                if len(parts) != 3:
+                    raise RuntimeError(f"Unsupported Mission Control resource URI: {uri}")
                 return self._summarize_validation_summary(project_id, self.get_validation_summary(project_id))
             if kind == "validation-coverage" and len(parts) == 4 and parts[3] == "summary":
                 return self.get_validation_coverage_summary(project_id)
             if kind == "decision-ledger":
+                if len(parts) != 3:
+                    raise RuntimeError(f"Unsupported Mission Control resource URI: {uri}")
                 return self._summarize_decision_ledger(project_id, self.get_decision_ledger(project_id))
             if kind == "path-locks":
+                if len(parts) != 3:
+                    raise RuntimeError(f"Unsupported Mission Control resource URI: {uri}")
                 return self._summarize_path_locks(project_id, self.get_path_locks(project_id))
             if kind == "security" and len(parts) == 4 and parts[3] == "policy":
                 return self.get_security_policy(project_id)
@@ -2877,12 +2887,18 @@ class MissionControlDaemonClient:
             if kind == "agents-md" and len(parts) == 4 and parts[3] == "status":
                 return self.get_agents_md_status(project_id)
             if kind == "operator-snapshot":
+                if len(parts) != 3:
+                    raise RuntimeError(f"Unsupported Mission Control resource URI: {uri}")
                 return self._summarize_operator_snapshot(project_id, self.get_operator_snapshot(project_id))
             if kind == "instincts":
                 if len(parts) == 4 and parts[3] == "preview":
                     return self._summarize_instincts_preview(project_id, self.get_instincts_preview(project_id))
+                if len(parts) != 3:
+                    raise RuntimeError(f"Unsupported Mission Control resource URI: {uri}")
                 return self._summarize_instincts_preview(project_id, self.get_instincts_preview(project_id))
             if kind == "verification-brief":
+                if len(parts) != 3:
+                    raise RuntimeError(f"Unsupported Mission Control resource URI: {uri}")
                 return self._summarize_verification_brief(project_id, self.get_verification_brief(project_id))
             if kind == "capability-report":
                 if len(parts) == 4:
@@ -2892,14 +2908,24 @@ class MissionControlDaemonClient:
                         section_key,
                         self.get_capability_section(project_id, section_key),
                     )
+                if len(parts) != 3:
+                    raise RuntimeError(f"Unsupported Mission Control resource URI: {uri}")
                 return self._summarize_capability_report(project_id, self.get_capability_report(project_id))
             if kind == "workspace":
+                if len(parts) != 3:
+                    raise RuntimeError(f"Unsupported Mission Control resource URI: {uri}")
                 return self.get_project_workspace(project_id)
             if kind == "workspace-tooling":
+                if len(parts) != 3:
+                    raise RuntimeError(f"Unsupported Mission Control resource URI: {uri}")
                 return self._summarize_workspace_tooling(project_id, self.get_workspace_tooling(project_id))
             if kind == "action":
+                if len(parts) != 3:
+                    raise RuntimeError(f"Unsupported Mission Control resource URI: {uri}")
                 return self.get_project_action(project_id)
             if kind == "actions":
+                if len(parts) != 3:
+                    raise RuntimeError(f"Unsupported Mission Control resource URI: {uri}")
                 return self._summarize_project_actions(project_id, self.list_project_actions(project_id))
             if kind == "manager" and len(parts) == 4 and parts[3] == "messages":
                 return self._summarize_manager_messages(project_id, self.get_manager_messages(project_id))
@@ -2910,20 +2936,32 @@ class MissionControlDaemonClient:
             if kind == "runbook":
                 if len(parts) == 4 and parts[3] == "summary":
                     return self.get_runbook_summary(project_id)
+                if len(parts) != 3:
+                    raise RuntimeError(f"Unsupported Mission Control resource URI: {uri}")
                 return self._summarize_runbook(project_id, self.get_runbook(project_id))
             if kind == "safe-mode":
+                if len(parts) != 3:
+                    raise RuntimeError(f"Unsupported Mission Control resource URI: {uri}")
                 return self.get_safe_mode(project_id)
             if kind == "tasks":
+                if len(parts) != 3:
+                    raise RuntimeError(f"Unsupported Mission Control resource URI: {uri}")
                 return self._summarize_tasks(project_id, self.get_project_tasks(project_id))
             if kind == "recovery-plans":
                 if len(parts) == 4 and parts[3] == "preview":
                     return self.get_recovery_plans_preview(project_id)
+                if len(parts) != 3:
+                    raise RuntimeError(f"Unsupported Mission Control resource URI: {uri}")
                 return self._summarize_recovery_plans(project_id, self.get_recovery_plans(project_id))
             if kind == "events":
+                if len(parts) != 3:
+                    raise RuntimeError(f"Unsupported Mission Control resource URI: {uri}")
                 return self._summarize_project_events(project_id, self.get_project_events(project_id))
             if kind == "snapshots":
                 if len(parts) == 5 and parts[4] == "restore-plan":
                     return self.get_snapshot_restore_plan(project_id, int(parts[3]))
+                if len(parts) != 3:
+                    raise RuntimeError(f"Unsupported Mission Control resource URI: {uri}")
                 return self._summarize_snapshots(project_id, self.list_snapshots(project_id))
             if kind == "playbook":
                 if len(parts) == 4 and parts[3] == "recommendations":
@@ -2948,6 +2986,8 @@ class MissionControlDaemonClient:
             if kind == "subagent-batches":
                 if len(parts) == 4:
                     return self._summarize_subagent_batch(project_id, self.get_subagent_batch(project_id, int(parts[3])))
+                if len(parts) != 3:
+                    raise RuntimeError(f"Unsupported Mission Control resource URI: {uri}")
                 return self._summarize_subagent_batches(project_id, self.get_project_subagent_batches(project_id))
             if kind == "execution-policy" and len(parts) == 4 and parts[3] == "summary":
                 return self.get_execution_policy_summary(project_id)
@@ -2977,23 +3017,33 @@ class MissionControlDaemonClient:
                         project_id,
                         self.get_project_integration_family(project_id, parts[3]),
                     )
+                if len(parts) != 3:
+                    raise RuntimeError(f"Unsupported Mission Control resource URI: {uri}")
                 return self._summarize_project_integrations(project_id, self.get_project_integrations(project_id))
             if kind == "tensorflow" and len(parts) >= 4 and parts[3] == "features":
                 if len(parts) == 4:
                     return self._summarize_ml_feature_catalog(project_id, self.get_tensorflow_feature_catalog(project_id))
+                if len(parts) != 5:
+                    raise RuntimeError(f"Unsupported Mission Control resource URI: {uri}")
                 feature_id = parts[4]
                 return self._summarize_ml_feature_bundle(project_id, self.get_tensorflow_feature_bundle(project_id, feature_id))
             if kind == "pytorch" and len(parts) >= 4 and parts[3] == "features":
                 if len(parts) == 4:
                     return self._summarize_ml_feature_catalog(project_id, self.get_pytorch_feature_catalog(project_id))
+                if len(parts) != 5:
+                    raise RuntimeError(f"Unsupported Mission Control resource URI: {uri}")
                 feature_id = parts[4]
                 return self._summarize_ml_feature_bundle(project_id, self.get_pytorch_feature_bundle(project_id, feature_id))
             if kind == "spatial" and len(parts) >= 4 and parts[3] == "features":
                 if len(parts) == 4:
                     return self._summarize_spatial_feature_catalog(project_id, self.get_spatial_feature_catalog(project_id))
+                if len(parts) != 5:
+                    raise RuntimeError(f"Unsupported Mission Control resource URI: {uri}")
                 feature_id = parts[4]
                 return self._summarize_spatial_feature_bundle(project_id, self.get_spatial_feature_bundle(project_id, feature_id))
             if kind == "webwright":
+                if len(parts) != 3:
+                    raise RuntimeError(f"Unsupported Mission Control resource URI: {uri}")
                 return self._summarize_webwright_status(project_id, self.get_webwright_status(project_id))
             if kind == "nvidia" and len(parts) == 4:
                 nvidia_kind = parts[3]
@@ -3010,15 +3060,27 @@ class MissionControlDaemonClient:
                 if nvidia_kind == "validation-plan":
                     return self._summarize_nvidia_validation_plan(project_id, self.get_nvidia_validation_plan(project_id))
             if kind == "nvidia-dynamo":
+                if len(parts) != 3:
+                    raise RuntimeError(f"Unsupported Mission Control resource URI: {uri}")
                 return self._summarize_nvidia_dynamo_status(project_id, self.get_nvidia_dynamo_status(project_id))
             if kind == "nvidia-nim":
+                if len(parts) != 3:
+                    raise RuntimeError(f"Unsupported Mission Control resource URI: {uri}")
                 return self._summarize_nvidia_nim_status(project_id, self.get_nvidia_nim_status(project_id))
             if kind == "nvidia-aiq":
+                if len(parts) != 3:
+                    raise RuntimeError(f"Unsupported Mission Control resource URI: {uri}")
                 return self._summarize_nvidia_aiq_status(project_id, self.get_nvidia_aiq_status(project_id))
             if kind == "nvidia-gpu-diagnostics":
+                if len(parts) != 3:
+                    raise RuntimeError(f"Unsupported Mission Control resource URI: {uri}")
                 return self._summarize_nvidia_gpu_diagnostics(project_id, self.get_nvidia_gpu_diagnostics(project_id))
             if kind == "nvidia-local-runtime":
+                if len(parts) != 3:
+                    raise RuntimeError(f"Unsupported Mission Control resource URI: {uri}")
                 return self._summarize_nvidia_local_runtime_status(project_id, self.get_nvidia_local_runtime_status(project_id))
             if kind == "nvidia-validation-plan":
+                if len(parts) != 3:
+                    raise RuntimeError(f"Unsupported Mission Control resource URI: {uri}")
                 return self._summarize_nvidia_validation_plan(project_id, self.get_nvidia_validation_plan(project_id))
         raise RuntimeError("Unsupported Mission Control resource URI.")
