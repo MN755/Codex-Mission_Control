@@ -61,7 +61,7 @@ def test_sync_codex_bundle_copies_plugin_and_mission_control_skills(tmp_path) ->
 
     (plugin_root / ".codex-plugin" / "plugin.json").parent.mkdir(parents=True, exist_ok=True)
     (plugin_root / ".codex-plugin" / "plugin.json").write_text(
-        json.dumps({"name": "mission-control", "display_name": "Mission Control", "version": "1.3.0-beta.1"}),
+        json.dumps({"name": "mission-control", "display_name": "Mission Control", "version": "1.4.0"}),
         encoding="utf-8",
     )
     (plugin_root / "skills" / "mission-control-install-from-github" / "SKILL.md").parent.mkdir(parents=True, exist_ok=True)
@@ -84,9 +84,9 @@ def test_sync_codex_bundle_copies_plugin_and_mission_control_skills(tmp_path) ->
     assert payload["plugin_display_name"] == "Mission Control"
     assert (codex_home / "plugins" / "mission-control" / ".codex-plugin" / "plugin.json").exists()
     assert (codex_home / "plugins" / "mission-control" / "skills" / "mission-control-install-from-github" / "SKILL.md").exists()
-    assert (codex_home / "plugins" / "cache" / "local" / "mission-control" / "1.3.0-beta.1" / ".codex-plugin" / "plugin.json").exists()
+    assert (codex_home / "plugins" / "cache" / "local" / "mission-control" / "1.4.0" / ".codex-plugin" / "plugin.json").exists()
     assert not (codex_home / "plugins" / "cache" / "local" / "mission-control" / "1.2.0").exists()
-    assert payload["cache_sync"]["plugin_version"] == "1.3.0-beta.1"
+    assert payload["cache_sync"]["plugin_version"] == "1.4.0"
     assert payload["cache_sync"]["stale_versions_removed"] == ["1.2.0"]
     assert (codex_home / "skills" / "mission-control-install-from-github" / "SKILL.md").exists()
     assert (codex_home / "skills" / "mission-control-update" / "SKILL.md").exists()
@@ -135,7 +135,7 @@ def test_sync_codex_bundle_requires_codex_plugin_manifest_before_reporting_ready
 
     plugin_root.mkdir(parents=True, exist_ok=True)
     (plugin_root / "plugin.json").write_text(
-        json.dumps({"name": "mission-control", "display_name": "Mission Control", "version": "1.3.0-beta.1"}),
+        json.dumps({"name": "mission-control", "display_name": "Mission Control", "version": "1.4.0"}),
         encoding="utf-8",
     )
     stale_cache.mkdir(parents=True, exist_ok=True)
@@ -195,7 +195,7 @@ def test_sync_local_plugin_marketplace_requires_codex_plugin_manifest_before_rep
 
     plugin_root.mkdir(parents=True, exist_ok=True)
     (plugin_root / "plugin.json").write_text(
-        json.dumps({"name": "mission-control", "display_name": "Mission Control", "version": "1.3.0-beta.1"}),
+        json.dumps({"name": "mission-control", "display_name": "Mission Control", "version": "1.4.0"}),
         encoding="utf-8",
     )
 

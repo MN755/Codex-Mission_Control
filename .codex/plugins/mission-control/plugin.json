@@ -2,7 +2,7 @@
   "manifest_format": "codex-plugin-v1",
   "name": "mission-control",
   "display_name": "Mission Control",
-  "version": "1.3.0-beta.1",
+  "version": "1.4.0",
   "description": "Repo-local Codex plugin bundle for Mission Control headless orchestration.",
   "status": "ready",
   "notes": [
