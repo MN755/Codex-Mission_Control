@@ -115,6 +115,7 @@ def _fast_swarm_planning(monkeypatch) -> None:
     monkeypatch.setattr(service, "_resolve_manager_model", fake_resolve_manager_model)
     monkeypatch.setattr(service, "_gpu_cluster_health", lambda project: {"status": "healthy", "blocking_reasons": []})
     monkeypatch.setattr(service, "_prime_workspace_context", lambda db, project: None)
+    monkeypatch.setattr("manager.recommended_swarm_max_agents", lambda: 8)
     monkeypatch.setattr("manager.playbook_service.suggest_playbook", lambda db, project, persist=True: {"status": "not_applicable"})
     monkeypatch.setattr("manager.validation_coverage_service.recompute", lambda db, project: [])
     monkeypatch.setattr("manager.planning_intelligence_service.build_context", lambda db, project: {})
