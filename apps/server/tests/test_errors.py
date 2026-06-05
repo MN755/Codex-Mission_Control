@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
+import pytest
+
 from errors import ERROR_REGISTRY, MissionControlError, format_codex_chat_error, format_problem_details, is_valid_error_code, iter_error_definitions
 from plugin_health import mission_control_plugin_health
 from bridge_formatter import format_mission_control_error_message
@@ -47,6 +49,72 @@ def _create_project(client, name: str, workspace_name: str) -> dict:
     )
     assert response.status_code == 200, response.text
     return response.json()
+
+
+@pytest.fixture(autouse=True)
+def _fast_plugin_health_dependencies(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "plugin_health.detect_device_profile",
+        lambda: {
+            "platform_label": "Windows Test Rig",
+            "architecture": "x86_64",
+            "cpu_count": 12,
+            "memory_total_gb": 32,
+            "platform_hints": [],
+        },
+    )
+    monkeypatch.setattr(
+        "plugin_health.detect_performance_profile",
+        lambda: {
+            "resource_tier": "high",
+            "lag_risk": "low",
+            "recommended_swarm_max_agents": 4,
+        },
+    )
+    monkeypatch.setattr(
+        "plugin_health.platform_debug_commands",
+        lambda backend_port=8010: [
+            f"Invoke-WebRequest http://127.0.0.1:{backend_port}/api/health",
+            "python -m pytest apps/server/tests/test_errors.py -q",
+        ],
+    )
+    monkeypatch.setattr("plugin_health.integration_catalog", lambda: [{"family": "source_control"}])
+    monkeypatch.setattr("plugin_health.import_host_state", lambda _accounts: {"host_imports": {}})
+    monkeypatch.setattr(
+        "plugin_health.detect_webwright_status",
+        lambda: {
+            "available": False,
+            "install_status": "missing",
+            "summary": "Webwright is not installed.",
+            "recommended_install_commands": [],
+            "workspace_signals": [],
+            "version": None,
+            "launch_command": None,
+        },
+    )
+    monkeypatch.setattr(
+        "plugin_health.detect_project_nvidia_gpu_diagnostics",
+        lambda workspace_path: {
+            "available": False,
+            "status": "ready",
+            "summary": "GPU cluster health lane is idle.",
+            "workspace_relevant": False,
+            "telemetry_status": "idle",
+            "workspace_summary_status": "idle",
+            "repo_mode_enabled": False,
+            "repo_mode": None,
+            "cluster_usable": None,
+            "pending_pod_count": None,
+            "gpu_memory_saturated": False,
+            "gpu_memory_saturation_pct": None,
+            "likely_failure_source": "unknown",
+            "blocking_reasons": [],
+            "observability_sources": [],
+            "summary_files": [],
+            "recommended_fixes": [],
+            "safe_commands": [],
+        },
+    )
 
 
 def test_error_registry_contains_required_codes_and_unique_entries() -> None:

@@ -5,9 +5,12 @@ import shutil
 import asyncio
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
-from conftest import sample_workspace, wait_for
+from bridge_formatter import format_status_summary_message
+from bridge_messages import bridge_runtime_service
+from conftest import sample_workspace, seed_imported_codebase_records, wait_for
 from main import app
 
 
@@ -39,6 +42,124 @@ def _create_project(client, name: str, workspace_path: str, *, runner_mode: str 
     )
     assert response.status_code == 200, response.text
     return response.json()
+
+
+@pytest.fixture(autouse=True)
+def _fast_orchestration_runtime(monkeypatch) -> None:
+    def fake_initial_scan(db, project, *, depth: str | None = None):
+        return seed_imported_codebase_records(db, project, scan_depth=depth or "standard")
+
+    def fake_targeted_scan(db, project, *, target_paths=None, request_text=None, scan_reason=None):
+        root = Path(project.workspace_path).resolve()
+        indexed_areas: list[str] = []
+        for raw in list(target_paths or []):
+            candidate = (root / str(raw)).resolve()
+            if not candidate.exists() or not candidate.is_relative_to(root):
+                continue
+            indexed_areas.append(candidate.relative_to(root).as_posix())
+        return seed_imported_codebase_records(
+            db,
+            project,
+            indexed_areas=indexed_areas,
+            scan_depth="targeted",
+        )
+
+    from manager import service as manager_service
+    from orchestration import coordinator
+
+    async def fake_status_summary(db, project, orchestration=None):
+        session = orchestration or coordinator.get_active_session_for_project(db, project)
+        pending_count = len(coordinator.list_pending_decisions(db, session)) if session is not None else 0
+        return format_status_summary_message(
+            message_id=f"status-{project.id}-{session.id if session else 'project'}",
+            project_id=project.id,
+            orchestration_id=session.id if session else None,
+            title="Mission Control status",
+            summary="Status: fast bridge test stub.",
+            project_name=project.name,
+            manager_status="Waiting for dry-run command approval." if pending_count else "Ready to continue.",
+            mode="dry_run / deterministic",
+            swarm="not planned",
+            user_action_needed="yes" if pending_count else "no",
+            current_work=["Fast bridge test stub."],
+            waiting_on_you=["Answer the pending decision."] if pending_count else [],
+            next_expected_step="Continue the dry-run flow.",
+            risk_level="medium" if pending_count else None,
+            created_at=session.updated_at if session is not None else project.updated_at,
+            orchestration_status=session.status if session is not None else project.status,
+            current_blockers=[],
+            handoff_readiness=project.handoff_status,
+            active_agent_count=0,
+            model_advisories=[],
+        )
+
+    original_start = coordinator.start_orchestration
+
+    def fast_start_orchestration(
+        db,
+        *,
+        project,
+        source,
+        user_request,
+        orchestration_id=None,
+        mode="unknown",
+        metadata=None,
+        schedule_background_turn=True,
+    ):
+        session = original_start(
+            db,
+            project=project,
+            source=source,
+            user_request=user_request,
+            orchestration_id=orchestration_id,
+            mode=mode,
+            metadata=metadata,
+            schedule_background_turn=False,
+        )
+        manager_service._create_approval(
+            db,
+            project,
+            request_type="command",
+            title="Approve simulated dry-run test command",
+            reason_short="Run a simulated local test command so Mission Control can continue the bridge flow safely.",
+            risk_level="medium",
+            cwd=project.workspace_path,
+            request_payload_json={"command": "python -m pytest", "scope": ["tests/"], "simulated": True},
+        )
+        coordinator.sync_pending_decisions(db, session)
+        coordinator._update_session_status(
+            db,
+            session,
+            status="waiting_for_user",
+            manager_status="Waiting for dry-run command approval.",
+        )
+        coordinator._record_event(db, session, "background_turn_waiting_for_user", {"reason": "fast_test_stub"})
+        return session
+
+    async def fake_interview_context(db, project, session=None) -> dict:
+        return {
+            "project_title": project.name,
+            "raw_idea": project.idea,
+            "workspace_path": project.workspace_path,
+            "docs_path": project.docs_path,
+            "existing_docs_summary": [],
+            "workspace_manifest_summary": {},
+            "settings": {"provider": "codex", "runner_mode": "dry_run"},
+            "available_tools": [],
+            "provider_status": {"selected_provider": "codex", "authenticated": False, "available_models": []},
+            "previous_answers": [],
+            "known_facts": {},
+            "unknowns": {},
+            "assumptions": [],
+            "constraints": [],
+            "confidence_by_category": {},
+        }
+
+    monkeypatch.setattr("imported_codebase.import_service.initial_scan", fake_initial_scan)
+    monkeypatch.setattr("imported_codebase.import_service.targeted_scan", fake_targeted_scan)
+    monkeypatch.setattr(bridge_runtime_service, "get_status_summary", fake_status_summary)
+    monkeypatch.setattr(coordinator, "start_orchestration", fast_start_orchestration)
+    monkeypatch.setattr("manager.service._interview_context_payload", fake_interview_context)
 
 
 def test_daemon_status_reports_runner_inventory(client) -> None:

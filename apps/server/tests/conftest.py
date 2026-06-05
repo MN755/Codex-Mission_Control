@@ -130,3 +130,128 @@ def wait_for(condition, timeout: float = 6.0) -> None:
 def sample_workspace(name: str) -> str:
     return (TEST_ROOT / "workspaces" / name).as_posix()
 
+
+def seed_imported_codebase_records(
+    db,
+    project,
+    *,
+    indexed_areas: list[str] | None = None,
+    unindexed_areas: list[str] | None = None,
+    scan_depth: str = "standard",
+):
+    from models import AgentInstructionsStatus, CodebaseMap, CodebaseUnderstanding, ImportedCodebaseSafety, utc_now
+
+    source_path = project.source_path or project.workspace_path
+    important_folders = sorted({item for item in (indexed_areas or ["src", "tests"]) if item})
+    codebase_map = db.get(CodebaseMap, project.id)
+    if codebase_map is None:
+        codebase_map = CodebaseMap(
+            project_id=project.id,
+            source_path=source_path,
+        )
+        db.add(codebase_map)
+    codebase_map.source_path = source_path
+    codebase_map.languages_json = ["python"]
+    codebase_map.frameworks_json = ["fastapi"] if (Path(source_path) / "apps").exists() else []
+    codebase_map.package_managers_json = ["pip"]
+    codebase_map.build_tools_json = []
+    codebase_map.test_frameworks_json = ["pytest"]
+    codebase_map.entry_points_json = ["src/main.py"] if "src" in important_folders else []
+    codebase_map.build_commands_json = []
+    codebase_map.test_commands_json = ["python -m pytest"]
+    codebase_map.important_folders_json = important_folders
+    codebase_map.docs_json = ["README.md"] if (Path(source_path) / "README.md").exists() else []
+    codebase_map.agent_instructions_json = []
+    codebase_map.config_files_json = []
+    codebase_map.ci_config_json = []
+    codebase_map.deployment_config_json = []
+    codebase_map.git_status_json = {
+        "is_git_repo": False,
+        "dirty_working_tree": False,
+        "dirty_working_tree_known": True,
+        "command_required_for_dirty_check": False,
+    }
+    codebase_map.risk_flags_json = []
+    codebase_map.scan_depth = scan_depth
+    codebase_map.codebase_size = "small"
+    codebase_map.recommended_scan_strategy = "standard_complete"
+    codebase_map.indexed_areas_json = list(indexed_areas or important_folders)
+    codebase_map.unindexed_areas_json = list(unindexed_areas or [])
+    codebase_map.updated_at = utc_now()
+
+    understanding = db.get(CodebaseUnderstanding, project.id)
+    if understanding is None:
+        understanding = CodebaseUnderstanding(project_id=project.id)
+        db.add(understanding)
+    understanding.summary = f"Imported codebase at {source_path}."
+    understanding.architecture_summary = "Fast test stub for imported codebase understanding."
+    understanding.detected_stack_json = ["python"]
+    understanding.likely_run_instructions_json = []
+    understanding.likely_test_instructions_json = ["python -m pytest"]
+    understanding.risk_summary = "No major risks detected by the fast test stub."
+    understanding.missing_context_json = []
+    understanding.suggested_next_steps_json = ["Inspect the failing tests before editing code."]
+    understanding.recommended_interview_mode = "skip"
+    understanding.confidence_by_area_json = {"repo_map": 0.75}
+    understanding.generation_mode = "deterministic_scanner"
+    understanding.updated_at = utc_now()
+
+    agents_status = db.get(AgentInstructionsStatus, project.id)
+    if agents_status is None:
+        agents_status = AgentInstructionsStatus(project_id=project.id)
+        db.add(agents_status)
+    agents_status.has_agents_md = False
+    agents_status.agents_md_path = None
+    agents_status.summary = "No AGENTS.md file detected."
+    agents_status.recommended_action = "none"
+    agents_status.updated_at = utc_now()
+
+    safety = db.get(ImportedCodebaseSafety, project.id)
+    if safety is None:
+        safety = ImportedCodebaseSafety(project_id=project.id)
+        db.add(safety)
+    safety.read_only_scan_completed = True
+    safety.write_permission_status = "read_only"
+    safety.updated_at = utc_now()
+
+    project.scan_status = "completed"
+    project.status = "import_review"
+    project.last_indexed_at = utc_now()
+    project.write_permission_status = "read_only"
+    db.flush()
+    return codebase_map, understanding, agents_status, safety
+
+
+def seed_waiting_dry_run_approval(orchestration_id: int, *, command: str = "python -m pytest") -> None:
+    from db import SessionLocal
+    from manager import service as manager_service
+    from models import Project
+    from orchestration import coordinator
+
+    db = SessionLocal()
+    try:
+        session = coordinator.get_session(db, orchestration_id)
+        project = db.get(Project, session.project_id)
+        assert project is not None
+        manager_service._create_approval(
+            db,
+            project,
+            request_type="command",
+            title="Approve simulated dry-run test command",
+            reason_short="Run a simulated local test command so Mission Control can continue the bridge flow safely.",
+            risk_level="medium",
+            cwd=project.workspace_path,
+            request_payload_json={"command": command, "scope": ["tests/"], "simulated": True},
+        )
+        coordinator.sync_pending_decisions(db, session)
+        coordinator._update_session_status(
+            db,
+            session,
+            status="waiting_for_user",
+            manager_status="Waiting for dry-run command approval.",
+        )
+        coordinator._record_event(db, session, "background_turn_waiting_for_user", {"reason": "fast_test_stub"})
+        db.commit()
+    finally:
+        db.close()
+

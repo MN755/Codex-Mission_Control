@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from conftest import sample_workspace
 from models import Agent, Project, Task
 from prompts import manager_action_prompt, worker_task_prompt
@@ -12,6 +14,43 @@ from workspace_tooling import detect_workspace_tooling
 def _write(path: Path, content: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(content, encoding="utf-8")
+
+
+@pytest.fixture(autouse=True)
+def _fast_spatial3d_dependencies(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "tool_catalog.detect_tensorflow_repo_mode",
+        lambda _root: {"enabled": False, "frameworks": [], "product_workflows": []},
+    )
+    monkeypatch.setattr(
+        "tool_catalog.build_tensorflow_validation_plan",
+        lambda _root: {"summary": "TensorFlow validation is not applicable."},
+    )
+    monkeypatch.setattr(
+        "tool_catalog.detect_pytorch_repo_mode",
+        lambda _root: {"enabled": False, "frameworks": [], "product_workflows": []},
+    )
+    monkeypatch.setattr(
+        "tool_catalog.build_pytorch_validation_plan",
+        lambda _root: {"summary": "PyTorch validation is not applicable."},
+    )
+    monkeypatch.setattr(
+        "tool_catalog.detect_pytorch_runtime_status",
+        lambda _root: {"status": "not_applicable", "summary": "PyTorch runtime is not applicable."},
+    )
+    monkeypatch.setattr(
+        "tool_catalog.detect_webwright_status",
+        lambda: {"available": False, "install_status": "missing", "workspace_signals": [], "summary": "missing"},
+    )
+    monkeypatch.setattr(
+        "tool_catalog.detect_project_nvidia_gpu_diagnostics",
+        lambda _root: {"available": False, "status": "missing", "summary": "missing"},
+    )
+    monkeypatch.setattr("tool_catalog.detect_nvidia_dynamo_status", lambda _root=None: {"reachable": False, "summary": "offline"})
+    monkeypatch.setattr("tool_catalog.detect_nvidia_nim_status", lambda _root=None: {"reachable": False, "summary": "offline"})
+    monkeypatch.setattr("tool_catalog.detect_nvidia_aiq_status", lambda _root=None: {"reachable": False, "summary": "offline"})
+    monkeypatch.setattr("tool_catalog.detect_nvidia_local_runtime_status", lambda _root=None: {"ready": False, "summary": "offline"})
+    monkeypatch.setattr("tool_catalog.build_nvidia_validation_plan", lambda _root: {"summary": "NVIDIA validation is not applicable."})
 
 
 def test_tool_catalog_surfaces_spatial3d_tools_when_repo_signals_exist(monkeypatch) -> None:

@@ -2,13 +2,80 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
+from bridge_formatter import format_status_summary_message
+from bridge_messages import bridge_runtime_service
 from conftest import sample_workspace
+from conftest import seed_imported_codebase_records
 from gpu_support import detect_cuda_repo_mode, summarize_gpu_cluster_health
 
 
 def _write(path: Path, content: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(content, encoding="utf-8")
+
+
+@pytest.fixture(autouse=True)
+def _fast_gpu_runtime(monkeypatch) -> None:
+    from orchestration import coordinator
+
+    def fake_initial_scan(db, project, *, depth: str | None = None):
+        return seed_imported_codebase_records(db, project, scan_depth=depth or "standard")
+
+    async def fake_status_summary(db, project, orchestration=None):
+        session = orchestration or coordinator.get_active_session_for_project(db, project)
+        return format_status_summary_message(
+            message_id=f"status-{project.id}-{session.id if session else 'project'}",
+            project_id=project.id,
+            orchestration_id=session.id if session else None,
+            title="Mission Control status",
+            summary="Status: fast GPU test stub.",
+            project_name=project.name,
+            manager_status="Waiting for dry-run command approval." if session is not None else "Ready to continue.",
+            mode="dry_run / deterministic",
+            swarm="not planned",
+            user_action_needed="yes" if session is not None else "no",
+            current_work=["Fast GPU orchestration test stub."],
+            waiting_on_you=["Answer the pending decision."] if session is not None else [],
+            next_expected_step="Continue the dry-run flow.",
+            risk_level="medium" if session is not None else None,
+            created_at=session.updated_at if session is not None else project.updated_at,
+            orchestration_status=session.status if session is not None else project.status,
+            current_blockers=[],
+            handoff_readiness=project.handoff_status,
+            active_agent_count=0,
+            model_advisories=[],
+        )
+
+    original_start = coordinator.start_orchestration
+
+    def fast_start_orchestration(
+        db,
+        *,
+        project,
+        source,
+        user_request,
+        orchestration_id=None,
+        mode="unknown",
+        metadata=None,
+        schedule_background_turn=True,
+    ):
+        session = original_start(
+            db,
+            project=project,
+            source=source,
+            user_request=user_request,
+            orchestration_id=orchestration_id,
+            mode=mode,
+            metadata=metadata,
+            schedule_background_turn=False,
+        )
+        return session
+
+    monkeypatch.setattr("imported_codebase.import_service.initial_scan", fake_initial_scan)
+    monkeypatch.setattr(bridge_runtime_service, "get_status_summary", fake_status_summary)
+    monkeypatch.setattr(coordinator, "start_orchestration", fast_start_orchestration)
 
 
 def test_detect_cuda_repo_mode_finds_tile_signals_and_commands() -> None:

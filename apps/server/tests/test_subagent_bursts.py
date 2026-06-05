@@ -3,6 +3,10 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+import pytest
+
+from bridge_formatter import format_status_summary_message
+from bridge_messages import bridge_runtime_service
 from sqlalchemy import select
 
 from bridge_formatter import format_pending_decision_message
@@ -33,6 +37,35 @@ def _create_project(client, name: str, workspace_name: str) -> dict:
     )
     assert response.status_code == 200, response.text
     return response.json()
+
+
+@pytest.fixture(autouse=True)
+def _fast_status_summary(monkeypatch) -> None:
+    async def fake_status_summary(db, project, orchestration=None):
+        return format_status_summary_message(
+            message_id=f"status-{project.id}",
+            project_id=project.id,
+            orchestration_id=orchestration.id if orchestration is not None else None,
+            title="Mission Control status",
+            summary="Status: fast subagent burst test stub.",
+            project_name=project.name,
+            manager_status="Ready to continue.",
+            mode="dry_run / deterministic",
+            swarm="not planned",
+            user_action_needed="no",
+            current_work=["Fast subagent burst test stub."],
+            waiting_on_you=[],
+            next_expected_step="Continue.",
+            risk_level=None,
+            created_at=utc_now(),
+            orchestration_status=orchestration.status if orchestration is not None else project.status,
+            current_blockers=[],
+            handoff_readiness=project.handoff_status,
+            active_agent_count=0,
+            model_advisories=[],
+        )
+
+    monkeypatch.setattr(bridge_runtime_service, "get_status_summary", fake_status_summary)
 
 
 def test_default_subagent_policy_is_read_only_and_no_command(client) -> None:

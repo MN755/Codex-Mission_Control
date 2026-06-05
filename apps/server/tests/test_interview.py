@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
+import pytest
+
 from manager import InterviewTurnPayload, InterviewTurnQuestion, InterviewUnderstandingPayload, service
 
 
@@ -51,6 +53,31 @@ def _turn(summary: str, questions: list[InterviewTurnQuestion], *, more_question
         more_questions_needed=more_questions_needed,
         stop_reason=stop_reason,
     )
+
+
+@pytest.fixture(autouse=True)
+def _fast_interview_context(monkeypatch) -> None:
+    async def fake_context(db, project, session=None) -> dict:
+        understanding = service._project_understanding(project)
+        return {
+            "project_title": project.name,
+            "raw_idea": project.idea,
+            "workspace_path": project.workspace_path,
+            "docs_path": project.docs_path,
+            "existing_docs_summary": [],
+            "workspace_manifest_summary": {},
+            "settings": {"provider": "codex", "runner_mode": "dry_run"},
+            "available_tools": [],
+            "provider_status": {"selected_provider": "codex", "authenticated": False, "available_models": []},
+            "previous_answers": [],
+            "known_facts": dict(understanding.known_facts_json or {}),
+            "unknowns": dict(understanding.unknowns_json or {}),
+            "assumptions": list(understanding.assumptions_json or []),
+            "constraints": list(understanding.constraints_json or []),
+            "confidence_by_category": dict(understanding.confidence_by_category_json or {}),
+        }
+
+    monkeypatch.setattr(service, "_interview_context_payload", fake_context)
 
 
 def test_zero_budget_interview_creates_assumptions_and_completes(client) -> None:

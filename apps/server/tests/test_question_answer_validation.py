@@ -3,9 +3,13 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+import pytest
+
+from bridge_formatter import format_status_summary_message
+from bridge_messages import bridge_runtime_service
 from conftest import sample_workspace, wait_for
 from db import SessionLocal
-from models import ManagerQuestion, PendingDecision, Project
+from models import ManagerQuestion, PendingDecision, Project, utc_now
 
 
 def _bridge_headers() -> dict[str, str]:
@@ -47,6 +51,35 @@ def _seed_manager_question(project_id: int, *, question: str = "Which path shoul
         return pending.id
     finally:
         db.close()
+
+
+@pytest.fixture(autouse=True)
+def _fast_status_summary(monkeypatch) -> None:
+    async def fake_status_summary(db, project, orchestration=None):
+        return format_status_summary_message(
+            message_id=f"status-{project.id}",
+            project_id=project.id,
+            orchestration_id=orchestration.id if orchestration is not None else None,
+            title="Mission Control status",
+            summary="Status: fast question-answer test stub.",
+            project_name=project.name,
+            manager_status="Ready to continue.",
+            mode="dry_run / deterministic",
+            swarm="not planned",
+            user_action_needed="no",
+            current_work=["Fast question-answer test stub."],
+            waiting_on_you=[],
+            next_expected_step="Continue.",
+            risk_level=None,
+            created_at=utc_now(),
+            orchestration_status=orchestration.status if orchestration is not None else project.status,
+            current_blockers=[],
+            handoff_readiness=project.handoff_status,
+            active_agent_count=0,
+            model_advisories=[],
+        )
+
+    monkeypatch.setattr(bridge_runtime_service, "get_status_summary", fake_status_summary)
 
 
 def test_direct_question_answer_rejects_invalid_option(client) -> None:

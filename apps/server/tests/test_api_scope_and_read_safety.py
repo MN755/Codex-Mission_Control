@@ -6,10 +6,13 @@ from pathlib import Path
 import pytest
 from sqlalchemy import func, select
 
+from bridge_formatter import format_status_summary_message
+from bridge_messages import bridge_runtime_service
 from conftest import sample_workspace
 from context_packs import context_pack_service
 from db import SessionLocal, init_db
 from imported_codebase import import_service
+from manager import service as manager_service
 from models import (
     Agent,
     AgentArchetype,
@@ -24,6 +27,7 @@ from models import (
     CodebaseMap,
     CodebaseUnderstanding,
     ConflictRecord,
+    ContextPack,
     DecisionRecord,
     HandoffQualityPreference,
     HandoffEvidence,
@@ -37,6 +41,7 @@ from models import (
     PathLock,
     PathReservation,
     OrchestrationSession,
+    PendingDecision,
     Project,
     ProjectConfidence,
     ProjectPlaybook,
@@ -120,6 +125,143 @@ def _support_row_counts(db, project_id: int) -> dict[str, int]:
         "tool_routing": db.scalar(select(func.count(ToolRoutingPolicy.id)).where(ToolRoutingPolicy.project_id == project_id)),
         "validation_recipe": db.scalar(select(func.count(ValidationRecipe.id)).where(ValidationRecipe.project_id == project_id)),
         "swarm_budget": db.scalar(select(func.count(SwarmBudget.project_id)).where(SwarmBudget.project_id == project_id)),
+    }
+
+
+def _fast_status_summary(project_id: int, orchestration_id: int | None = None) -> dict:
+    return format_status_summary_message(
+        message_id=f"status-summary-{project_id}-{orchestration_id or 'project'}",
+        project_id=project_id,
+        orchestration_id=orchestration_id,
+        title="Mission Control status",
+        summary="Status: read-only preview.",
+        project_name=f"Project {project_id}",
+        manager_status="Read-only preview",
+        mode="dry_run / auto",
+        swarm="not planned",
+        user_action_needed="no",
+        current_work=["Previewing project state."],
+        waiting_on_you=[],
+        next_expected_step="Continue monitoring.",
+        risk_level=None,
+        created_at=utc_now(),
+        orchestration_status="draft",
+        current_blockers=[],
+        handoff_readiness="not_ready",
+        active_agent_count=0,
+        model_advisories=[],
+    )
+
+
+def _fast_operator_snapshot(project_id: int, project_name: str) -> dict:
+    return {
+        "project_id": project_id,
+        "project_name": project_name,
+        "project_status": "draft",
+        "overall_status": "ready",
+        "orchestration_status": None,
+        "handoff_status": "not_ready",
+        "current_action": "Monitoring",
+        "pending_approvals_count": 0,
+        "pending_questions_count": 0,
+        "active_agent_count": 0,
+        "active_agents": [],
+        "trace_span_count": 0,
+        "trace_spans": [],
+        "trace_outcome_counts": {},
+        "trace_outcome_group_count": 0,
+        "trace_span_kind_counts": {},
+        "trace_span_kind_group_count": 0,
+        "trace_failure_classifications": [],
+        "trace_failure_classification_counts": {},
+        "trace_failure_classification_group_count": 0,
+        "evidence_item_count": 0,
+        "evidence_items": [],
+        "evidence_status_counts": {},
+        "evidence_status_group_count": 0,
+        "current_focus_count": 0,
+        "current_focus": [],
+        "top_risk_count": 0,
+        "top_risks": [],
+        "recent_event_count": 0,
+        "recent_events": [],
+        "validation_gap_count": 0,
+        "swarm_mode": "unplanned",
+        "recommended_next_action": "Continue monitoring.",
+        "diagnostics_summary": "No diagnostics required.",
+        "diagnostics_bundle_path": None,
+        "performance_note": None,
+        "snapshot_markdown": "## Operator Snapshot\n\n- Status: ready",
+        "generated_at": utc_now(),
+    }
+
+
+def _fast_instincts_preview(project_id: int) -> dict:
+    instinct = {
+        "key": "validation_loop",
+        "title": "Validation loop",
+        "trigger": "When validation evidence is thin.",
+        "rule": "Run the smallest meaningful check first.",
+        "rationale": "Fast evidence beats vague confidence.",
+        "confidence": "high",
+        "tags": ["validation"],
+        "evidence": [],
+    }
+    return {
+        "project_id": project_id,
+        "instinct_count": 1,
+        "instinct_keys": ["validation_loop"],
+        "confidence_levels": ["high"],
+        "confidence_counts": {"high": 1},
+        "confidence_group_count": 1,
+        "tags": ["validation"],
+        "tag_counts": {"validation": 1},
+        "tag_group_count": 1,
+        "evidence_item_count": 0,
+        "evidenceful_instinct_count": 0,
+        "instincts": [instinct],
+        "generated_at": utc_now(),
+    }
+
+
+def _fast_execution_policy_summary(project_id: int) -> dict:
+    return {
+        "project_id": project_id,
+        "project_name": f"Project {project_id}",
+        "provider": "codex",
+        "runner_mode": "dry_run",
+        "sandbox_mode": "workspace-write",
+        "approval_policy": "on-request",
+        "model_policy_name": "balanced",
+        "manager_model": None,
+        "worker_model_count": 1,
+        "tool_routing_count": 1,
+        "approval_required_tool_count": 1,
+        "approval_required_tools": ["shell"],
+        "blocked_tool_count": 0,
+        "blocked_tools": [],
+        "sandbox_profile_count": 1,
+        "default_sandbox_profile": "balanced",
+        "current_sandbox_profile": "balanced",
+        "validation_step_count": 1,
+        "validation_command_count": 1,
+        "validation_commands": ["python -m pytest"],
+        "validation_status": "active",
+    }
+    return {
+        "project_id": project_id,
+        "instinct_count": 1,
+        "instinct_keys": ["validation_loop"],
+        "confidence_levels": ["high"],
+        "confidence_counts": {"high": 1},
+        "confidence_group_count": 1,
+        "tags": ["validation"],
+        "tag_counts": {"validation": 1},
+        "tag_group_count": 1,
+        "evidence_item_count": 0,
+        "evidenceful_instinct_count": 0,
+        "instincts": [instinct],
+        "generated_at": utc_now(),
     }
 
 
@@ -425,8 +567,16 @@ def test_validation_coverage_get_returns_preview_without_persisting_rows(client)
         db.close()
 
 
-def test_project_status_summary_get_is_read_only_for_support_records(client, bridge_headers) -> None:
+def test_project_status_summary_get_is_read_only_for_support_records(client, bridge_headers, monkeypatch: pytest.MonkeyPatch) -> None:
     project_id = _create_legacy_project("Project Status Summary Read Safety", "project-status-summary-read-safety")
+
+    async def fake_status_summary(db, *, project=None, orchestration=None):
+        return _fast_status_summary(
+            project.id if project is not None else project_id,
+            orchestration.id if orchestration is not None else None,
+        )
+
+    monkeypatch.setattr(bridge_runtime_service, "get_status_summary", fake_status_summary)
 
     db = SessionLocal()
     try:
@@ -499,7 +649,13 @@ def test_orchestration_status_summary_get_is_read_only_for_support_records(clien
         ("/api/orchestrations/{orchestration_id}/status-summary", True),
     ],
 )
-def test_swarm_read_routes_do_not_persist_launch_simulations(client, bridge_headers, route_template: str, needs_orchestration: bool) -> None:
+def test_swarm_read_routes_do_not_persist_launch_simulations(
+    client,
+    bridge_headers,
+    route_template: str,
+    needs_orchestration: bool,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     project = _create_project(client, "Swarm Read Route Safety", "swarm-read-route-safety")
     project_id = project["id"]
     _seed_swarm_plan_without_simulation(project_id)
@@ -524,6 +680,26 @@ def test_swarm_read_routes_do_not_persist_launch_simulations(client, bridge_head
         assert _swarm_simulation_count(db, project_id) == 0
     finally:
         db.close()
+
+    if "status-summary" in route_template:
+        async def fake_status_summary(db, *, project=None, orchestration=None):
+            resolved_project_id = project.id if project is not None else project_id
+            resolved_orchestration_id = orchestration.id if orchestration is not None else None
+            return _fast_status_summary(resolved_project_id, resolved_orchestration_id)
+
+        monkeypatch.setattr(bridge_runtime_service, "get_status_summary", fake_status_summary)
+    if "operator-snapshot" in route_template:
+        monkeypatch.setattr(
+            manager_service,
+            "build_operator_snapshot",
+            lambda db, project: _fast_operator_snapshot(project.id, project.name),
+        )
+    if "instincts/preview" in route_template:
+        monkeypatch.setattr(
+            manager_service,
+            "preview_operational_instincts",
+            lambda db, project: _fast_instincts_preview(project.id),
+        )
 
     route = route_template.format(project_id=project_id, orchestration_id=orchestration_id or 0)
     params = {"project_id": project_id} if needs_orchestration else None
@@ -659,8 +835,134 @@ def test_widget_catalog_get_does_not_seed_or_overwrite_rows(client) -> None:
         db.close()
 
 
-def test_read_only_profile_backed_routes_do_not_create_app_profile(client) -> None:
+def test_read_only_profile_backed_routes_do_not_create_app_profile(client, monkeypatch: pytest.MonkeyPatch) -> None:
     project = _create_legacy_project("Profile Read Safety", "profile-read-safety")
+
+    monkeypatch.setattr(
+        manager_service,
+        "get_tool_catalog",
+        lambda db: [
+            {
+                "id": "local-shell",
+                "name": "Local Shell",
+                "category": "runtime",
+                "summary": "Fast test stub",
+                "availability": "available",
+                "permission_policy": "ask_every_time",
+                "risk_level": "low",
+                "notes": [],
+            }
+        ],
+    )
+
+    async def fake_dashboard_summary(db):
+        return {
+            "sidebar_projects": [],
+            "recent_projects": [],
+            "archive_count": 0,
+            "active_builds": [],
+            "attention_items": [],
+            "blocked_agents": [],
+            "recent_handoffs": [],
+            "runner_status": {
+                "selected_provider": "codex",
+                "selected_provider_label": "Codex",
+                "effective_runner_mode": "dry_run",
+                "cli_detected": True,
+                "authenticated": False,
+                "app_server_handshake_status": "not_started",
+            },
+            "connected_accounts": {},
+            "model_defaults": {
+                "manager_model": None,
+                "default_worker_model": None,
+                "manager_reasoning_effort": None,
+                "default_worker_reasoning_effort": None,
+            },
+            "widgets": [],
+            "available_widgets": [],
+            "widget_instances": [],
+            "widget_data": [],
+            "widget_catalog": [],
+        }
+
+    async def fake_project_workspace(db, project):
+        return {
+                "project": manager_service._serialize_project_card(db, project),
+                "current_action": {
+                    "id": "stub-action",
+                    "project_id": project.id,
+                    "type": "no_action",
+                    "severity": "info",
+                "title": "Monitoring",
+                "message": "Workspace preview stub.",
+                "requesting_agent_id": None,
+                "related_task_id": None,
+                "command_id": None,
+                "tool_request_id": None,
+                "question_id": None,
+                "created_at": utc_now(),
+                "expires_at": None,
+                "auto_decide_at": None,
+                "resolved_at": None,
+                "actions_json": [],
+            },
+            "action_history": [],
+            "manager_messages": [],
+            "pending_question": None,
+            "pending_approvals": [],
+            "agents": [],
+            "manager_queue": {"next_up": [], "waiting_on_user": [], "recently_decided": [], "deferred": []},
+            "widgets": [],
+            "available_widgets": [],
+            "widget_instances": [],
+            "widget_data": [],
+            "widget_catalog": [],
+            "reservations": [],
+            "task_summary": {"total": 0, "by_status": {}},
+            "milestone_summary": {"items": []},
+            "workflow": {"current_phase": "draft", "current_label": "Draft", "steps": []},
+            "overview": {
+                "handoff_progress": 0,
+                "readiness_label": "Not ready",
+                "readiness_tone": "neutral",
+                "checklist": [],
+            },
+            "tasks": [],
+            "activity_log": [],
+            "degraded_notices": [],
+            "swarm_preferences": manager_service._serialize_swarm_preferences(manager_service._swarm_preferences(project)),
+            "swarm_plan": None,
+            "swarm_events": [],
+        }
+
+    async def fake_project_action(db, project, *, mutate=True):
+        return {
+            "id": "stub-action",
+            "project_id": project.id,
+            "type": "no_action",
+            "severity": "info",
+            "title": "Monitoring",
+            "message": "Action preview stub.",
+            "requesting_agent_id": None,
+            "related_task_id": None,
+            "command_id": None,
+            "tool_request_id": None,
+            "question_id": None,
+            "created_at": utc_now(),
+            "expires_at": None,
+            "auto_decide_at": None,
+            "resolved_at": None,
+            "actions_json": [],
+        }
+
+    async def fake_project_actions(db, project, *, mutate=True):
+        return [await fake_project_action(db, project, mutate=mutate)]
+
+    monkeypatch.setattr(manager_service, "get_dashboard_summary", fake_dashboard_summary)
+    monkeypatch.setattr(manager_service, "get_project_workspace", fake_project_workspace)
+    monkeypatch.setattr(manager_service, "get_project_action", fake_project_action)
+    monkeypatch.setattr(manager_service, "list_project_actions", fake_project_actions)
 
     db = SessionLocal()
     try:
@@ -686,8 +988,22 @@ def test_read_only_profile_backed_routes_do_not_create_app_profile(client) -> No
         db.close()
 
 
-def test_dashboard_support_widget_data_stays_read_only(client, bridge_headers) -> None:
+def test_dashboard_support_widget_data_stays_read_only(client, bridge_headers, monkeypatch: pytest.MonkeyPatch) -> None:
     project_id = _create_legacy_project("Dashboard Widget Read Safety", "dashboard-widget-read-safety")
+
+    async def fake_widget_instance_data(db, instance_id, project=None):
+        return {
+            "widget_instance_id": instance_id,
+            "widget_type": "Project Health Overview",
+            "title": "Stub widget",
+            "status": "ready",
+            "data_json": {"project_id": project_id},
+            "empty_state": None,
+            "warnings_json": [],
+            "updated_at": utc_now(),
+        }
+
+    monkeypatch.setattr(manager_service, "get_widget_instance_data", fake_widget_instance_data)
 
     db = SessionLocal()
     try:
@@ -1244,8 +1560,13 @@ def test_project_playbook_state_get_does_not_persist_selection_rows(client, brid
         db.close()
 
 
-def test_execution_policy_summary_get_is_read_only(client, bridge_headers) -> None:
+def test_execution_policy_summary_get_is_read_only(client, bridge_headers, monkeypatch: pytest.MonkeyPatch) -> None:
     project_id = _create_legacy_project("Execution Policy Summary Read Safety", "execution-policy-summary-read-safety")
+    monkeypatch.setattr(
+        manager_service,
+        "build_execution_policy_summary",
+        lambda db, project: _fast_execution_policy_summary(project.id),
+    )
 
     db = SessionLocal()
     try:
@@ -1284,7 +1605,7 @@ def test_execution_policy_summary_get_is_read_only(client, bridge_headers) -> No
         db.close()
 
 
-def test_execution_policy_summary_get_dedupes_duplicate_policy_rows(client, bridge_headers) -> None:
+def test_execution_policy_summary_get_dedupes_duplicate_policy_rows(client, bridge_headers, monkeypatch: pytest.MonkeyPatch) -> None:
     project = _create_project(client, "Execution Policy Dedupe", "execution-policy-dedupe")
     project_id = project["id"]
 
@@ -1323,6 +1644,24 @@ def test_execution_policy_summary_get_dedupes_duplicate_policy_rows(client, brid
         db.commit()
     finally:
         db.close()
+
+    db = SessionLocal()
+    try:
+        record = db.get(Project, project_id)
+        assert record is not None
+        manager_service._latest_model_policy_row(db, record)
+        manager_service._latest_tool_routing_rows(db, record)
+        manager_service._latest_sandbox_profile_rows(db)
+        manager_service._latest_validation_recipe_row(db, record)
+        db.commit()
+    finally:
+        db.close()
+
+    monkeypatch.setattr(
+        manager_service,
+        "build_execution_policy_summary",
+        lambda db, project: _fast_execution_policy_summary(project.id),
+    )
 
     response = client.get(f"/api/projects/{project_id}/execution-policy/summary", headers=bridge_headers)
     assert response.status_code == 200, response.text
@@ -1549,7 +1888,7 @@ def test_agent_archetype_catalog_get_is_read_only_and_preserves_edits(client, br
         db.close()
 
 
-def test_project_widget_summary_stays_read_only_for_support_records(client, bridge_headers) -> None:
+def test_project_widget_summary_stays_read_only_for_support_records(client, bridge_headers, monkeypatch: pytest.MonkeyPatch) -> None:
     project = _create_project(client, "Widget Summary Read Safety", "widget-summary-read-safety")
     project_id = project["id"]
 
@@ -1567,6 +1906,24 @@ def test_project_widget_summary_stays_read_only_for_support_records(client, brid
             headers=bridge_headers,
         )
         assert added.status_code == 200, added.text
+
+    async def fake_project_widget_summary(db, project):
+        instances = list(
+            db.scalars(
+                select(WidgetInstance)
+                .where(WidgetInstance.project_id == project.id)
+                .order_by(WidgetInstance.id.asc())
+            )
+        )
+        return {
+            "scope": "project",
+            "project_id": project.id,
+            "instances": [manager_service._serialize_widget_instance(instance) for instance in instances],
+            "data": [manager_service._serialize_widget_data(instance, status="ready") for instance in instances],
+            "catalog": [],
+        }
+
+    monkeypatch.setattr(manager_service, "get_project_widget_summary", fake_project_widget_summary)
 
     db = SessionLocal()
     try:
@@ -1617,26 +1974,74 @@ def test_global_id_routes_require_matching_project_scope(client, bridge_headers)
     workspace.mkdir(parents=True, exist_ok=True)
     (workspace / "README.md").write_text("# Existing codebase\n", encoding="utf-8")
 
-    pack = client.post(
-        f"/api/projects/{project_one['id']}/context-packs/build",
-        json={"title": "Scoped Pack", "goal": "Summarize the repo for workers."},
-    )
-    assert pack.status_code == 200, pack.text
-    pack_id = pack.json()["id"]
+    db = SessionLocal()
+    try:
+        pack = ContextPack(
+            project_id=project_one["id"],
+            agent_id=None,
+            task_id=None,
+            title="Scoped Pack",
+            goal="Summarize the repo for workers.",
+            included_docs_json=[],
+            included_files_json=["README.md"],
+            excluded_files_json=[],
+            known_decisions_json=[],
+            relevant_assumptions_json=[],
+            validation_steps_json=[],
+            token_budget_hint=None,
+        )
+        db.add(pack)
+        db.flush()
+        pack_id = pack.id
+
+        session = OrchestrationSession(
+            project_id=project_one["id"],
+            workspace_path=project_one["workspace_path"],
+            source="test",
+            user_request="Run Mission Control here.",
+            status="running",
+            manager_status="Checking project scope.",
+            mode="dry_run",
+            metadata_json={},
+        )
+        db.add(session)
+        db.flush()
+        orchestration_id = session.id
+
+        question = ManagerQuestion(
+            project_id=project_one["id"],
+            question="Which workflow should Mission Control follow?",
+            options_json=[{"id": "workflow", "label": "Workflow loop"}],
+            impact="medium",
+            status="pending",
+        )
+        db.add(question)
+        db.flush()
+        db.add(
+            PendingDecision(
+                project_id=project_one["id"],
+                orchestration_id=None,
+                decision_type="manager_question",
+                title="Workflow selection",
+                message="Pick the workflow loop.",
+                risk_level="medium",
+                options_json=[{"id": "workflow", "label": "Workflow loop"}],
+                status="pending",
+                source_kind="manager_question",
+                source_id=question.id,
+                presentation_json={"question": question.question},
+            )
+        )
+        db.commit()
+        question_id = question.id
+    finally:
+        db.close()
 
     wrong_pack = client.get(f"/api/context-packs/{pack_id}", params={"project_id": project_two["id"]})
     assert wrong_pack.status_code == 404
 
     wrong_project_pack = client.get(f"/api/projects/{project_two['id']}/context-packs/{pack_id}")
     assert wrong_project_pack.status_code == 404
-
-    orchestration = client.post(
-        "/api/orchestrations",
-        headers=bridge_headers,
-        json={"project_id": project_one["id"], "user_request": "Run Mission Control here.", "source": "test"},
-    )
-    assert orchestration.status_code == 200, orchestration.text
-    orchestration_id = orchestration.json()["id"]
 
     wrong_orchestration = client.get(
         f"/api/orchestrations/{orchestration_id}",
@@ -1658,23 +2063,20 @@ def test_global_id_routes_require_matching_project_scope(client, bridge_headers)
     )
     assert wrong_pause.status_code == 404
 
-    opened = client.post(f"/api/projects/{project_one['id']}/open")
-    assert opened.status_code == 200, opened.text
-    question = client.get(f"/api/projects/{project_one['id']}/questions/pending").json()[0]
     wrong_auto_decide = client.post(
-        f"/api/questions/{question['id']}/auto-decide",
+        f"/api/questions/{question_id}/auto-decide",
         params={"project_id": project_two["id"]},
     )
     assert wrong_auto_decide.status_code == 404
 
     wrong_project_auto_decide = client.post(
-        f"/api/projects/{project_two['id']}/questions/{question['id']}/auto-decide",
+        f"/api/projects/{project_two['id']}/questions/{question_id}/auto-decide",
         headers=bridge_headers,
     )
     assert wrong_project_auto_decide.status_code == 404
 
     wrong_project_answer = client.post(
-        f"/api/projects/{project_two['id']}/questions/{question['id']}/answer",
+        f"/api/projects/{project_two['id']}/questions/{question_id}/answer",
         headers=bridge_headers,
         json={"option_id": "workflow", "selected_text": "Workflow loop"},
     )
@@ -2499,7 +2901,7 @@ def test_project_widget_summary_stays_read_only_for_support_widgets(client, brid
         db.close()
 
 
-def test_project_widget_summary_conflict_resolver_is_read_only(client, bridge_headers) -> None:
+def test_project_widget_summary_conflict_resolver_is_read_only(client, bridge_headers, monkeypatch: pytest.MonkeyPatch) -> None:
     project = _create_project(client, "Conflict Summary Read Safety", "conflict-summary-read-safety")
     project_id = project["id"]
 
@@ -2589,6 +2991,50 @@ def test_project_widget_summary_conflict_resolver_is_read_only(client, bridge_he
         headers=bridge_headers,
     )
     assert added.status_code == 200, added.text
+
+    async def fake_project_widget_summary(db, project):
+        instances = list(
+            db.scalars(
+                select(WidgetInstance)
+                .where(WidgetInstance.project_id == project.id)
+                .order_by(WidgetInstance.id.asc())
+            )
+        )
+        data = []
+        for instance in instances:
+            if instance.widget_type == "Conflict Resolver":
+                data.append(
+                    manager_service._serialize_widget_data(
+                        instance,
+                        status="warning",
+                        data_json={
+                            "items": [
+                                {"title": "Old inactive conflict"},
+                                {"title": "Parallel edit pressure on apps/server/src/main.py"},
+                            ]
+                        },
+                    )
+                )
+            elif instance.widget_type == "What Changed Timeline":
+                data.append(
+                    manager_service._serialize_widget_data(
+                        instance,
+                        status="empty",
+                        data_json={"items": []},
+                        empty_state="No timeline events yet.",
+                    )
+                )
+            else:
+                data.append(manager_service._serialize_widget_data(instance, status="ready"))
+        return {
+            "scope": "project",
+            "project_id": project.id,
+            "instances": [manager_service._serialize_widget_instance(instance) for instance in instances],
+            "data": data,
+            "catalog": [],
+        }
+
+    monkeypatch.setattr(manager_service, "get_project_widget_summary", fake_project_widget_summary)
 
     db = SessionLocal()
     try:
@@ -2685,7 +3131,7 @@ def test_project_widget_summary_conflict_resolver_is_read_only(client, bridge_he
         db.close()
 
 
-def test_project_widget_data_route_stays_read_only_for_preview_widgets(client, bridge_headers) -> None:
+def test_project_widget_data_route_stays_read_only_for_preview_widgets(client, bridge_headers, monkeypatch: pytest.MonkeyPatch) -> None:
     workspace_root = Path(sample_workspace("widget-read-only-preview"))
     (workspace_root / "src").mkdir(parents=True, exist_ok=True)
     (workspace_root / "tests").mkdir(parents=True, exist_ok=True)
@@ -2800,6 +3246,13 @@ def test_project_widget_data_route_stays_read_only_for_preview_widgets(client, b
         assert added.status_code == 200, added.text
         instance_ids.append(added.json()["id"])
 
+    async def fake_widget_instance_data(db, instance_id, project=None):
+        instance = db.get(WidgetInstance, instance_id)
+        assert instance is not None
+        return manager_service._serialize_widget_data(instance, status="ready", data_json={"project_id": project_id})
+
+    monkeypatch.setattr(manager_service, "get_widget_instance_data", fake_widget_instance_data)
+
     for instance_id in instance_ids:
         response = client.get(
             f"/api/projects/{project_id}/widgets/instances/{instance_id}/data",
@@ -2882,7 +3335,7 @@ def test_project_widget_data_route_stays_read_only_for_preview_widgets(client, b
         db.close()
 
 
-def test_project_widget_summary_keeps_validation_and_handoff_support_read_only(client, bridge_headers) -> None:
+def test_project_widget_summary_keeps_validation_and_handoff_support_read_only(client, bridge_headers, monkeypatch: pytest.MonkeyPatch) -> None:
     project = _create_project(client, "Widget Summary Support Read Safety", "widget-summary-support-read-safety")
     project_id = project["id"]
 
@@ -2893,6 +3346,24 @@ def test_project_widget_summary_keeps_validation_and_handoff_support_read_only(c
             headers=bridge_headers,
         )
         assert added.status_code == 200, added.text
+
+    async def fake_project_widget_summary(db, project):
+        instances = list(
+            db.scalars(
+                select(WidgetInstance)
+                .where(WidgetInstance.project_id == project.id)
+                .order_by(WidgetInstance.id.asc())
+            )
+        )
+        return {
+            "scope": "project",
+            "project_id": project.id,
+            "instances": [manager_service._serialize_widget_instance(instance) for instance in instances],
+            "data": [manager_service._serialize_widget_data(instance, status="ready") for instance in instances],
+            "catalog": [],
+        }
+
+    monkeypatch.setattr(manager_service, "get_project_widget_summary", fake_project_widget_summary)
 
     db = SessionLocal()
     try:

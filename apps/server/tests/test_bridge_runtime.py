@@ -6,6 +6,7 @@ from pathlib import Path
 
 from sqlalchemy import select
 
+from bridge_messages import bridge_runtime_service
 from bridge_formatter import (
     format_diagnostic_message,
     format_handoff_message,
@@ -37,6 +38,31 @@ def _create_project(client, name: str, workspace_name: str) -> dict:
     )
     assert response.status_code == 200, response.text
     return response.json()
+
+
+def _stub_status_summary(project_id: int, orchestration_id: int | None = None) -> dict:
+    return format_status_summary_message(
+        message_id=f"status-{project_id}-{orchestration_id or 'project'}",
+        project_id=project_id,
+        orchestration_id=orchestration_id,
+        title="Mission Control status",
+        summary="Status: fast bridge test stub.",
+        project_name=f"Project {project_id}",
+        manager_status="Stub status",
+        mode="dry_run / deterministic",
+        swarm="not planned",
+        user_action_needed="no",
+        current_work=["Fast status preview."],
+        waiting_on_you=[],
+        next_expected_step="Continue.",
+        risk_level=None,
+        created_at=utc_now(),
+        orchestration_status="draft",
+        current_blockers=[],
+        handoff_readiness="not_ready",
+        active_agent_count=0,
+        model_advisories=[],
+    )
 
 
 def test_bridge_formatter_status_summary_shape() -> None:
@@ -196,8 +222,15 @@ def test_headless_diagnostic_summary_route_formats_sections_and_redacts(monkeypa
     assert "super-secret-token" not in payload["fallback_markdown"]
 
 
-def test_pending_decision_bridge_routes_and_answer_flow(client) -> None:
+def test_pending_decision_bridge_routes_and_answer_flow(client, monkeypatch: pytest.MonkeyPatch) -> None:
     project = _create_project(client, "Bridge Decisions", "bridge-decisions")
+
+    async def fake_status_summary(db, *, project=None, orchestration=None):
+        assert project is not None
+        return _stub_status_summary(project.id, orchestration.id if orchestration is not None else None)
+
+    monkeypatch.setattr(bridge_runtime_service, "get_status_summary", fake_status_summary)
+
     db = SessionLocal()
     try:
         record = db.get(Project, project["id"])
@@ -460,8 +493,14 @@ def test_safe_mode_endpoints_return_bridge_message(client) -> None:
     assert fetched.json()["enabled"] is True
 
 
-def test_resume_workspace_reports_found_and_not_found_states(client) -> None:
+def test_resume_workspace_reports_found_and_not_found_states(client, monkeypatch: pytest.MonkeyPatch) -> None:
     project = _create_project(client, "Resume Demo", "resume-demo")
+
+    async def fake_status_summary(db, *, project=None, orchestration=None):
+        assert project is not None
+        return _stub_status_summary(project.id, orchestration.id if orchestration is not None else None)
+
+    monkeypatch.setattr(bridge_runtime_service, "get_status_summary", fake_status_summary)
 
     found = client.post(
         "/api/mission-control/resume-workspace",
@@ -480,7 +519,7 @@ def test_resume_workspace_reports_found_and_not_found_states(client) -> None:
     assert missing.json()["status"] == "not_found"
 
 
-def test_resume_workspace_requires_selection_when_duplicates_exist(client) -> None:
+def test_resume_workspace_requires_selection_when_duplicates_exist(client, monkeypatch: pytest.MonkeyPatch) -> None:
     workspace = Path(sample_workspace("resume-duplicate"))
     workspace.mkdir(parents=True, exist_ok=True)
     payload = {
@@ -495,6 +534,11 @@ def test_resume_workspace_requires_selection_when_duplicates_exist(client) -> No
     assert first.status_code == 200, first.text
     second = client.post("/api/projects", json={**payload, "name": "Resume Duplicate 2"})
     assert second.status_code == 200, second.text
+
+    monkeypatch.setattr(
+        "bridge_messages.coordinator.attach_workspace",
+        lambda db, **kwargs: {"project": first.json(), "orchestration": None},
+    )
 
     response = client.post(
         "/api/mission-control/resume-workspace",

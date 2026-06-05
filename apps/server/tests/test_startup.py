@@ -2,12 +2,165 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 from sqlalchemy import select
 
 import diagnostics
 from db import SessionLocal
 from models import AppProfile
 from startup import startup_service
+
+
+@pytest.fixture(autouse=True)
+def _fast_startup_dependencies(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "startup.detect_codex_status",
+        lambda: {
+            "provider": "codex",
+            "label": "Codex",
+            "cli_detected": True,
+            "cli_path": "codex",
+            "cli_path_exists": True,
+            "cli_execution_available": True,
+            "cli_version": "codex 1.0.0",
+            "login_status": "Logged in using ChatGPT",
+            "auth_mode": "chatgpt",
+            "authenticated": True,
+            "auth_status_detectable": True,
+            "supports_model_override": True,
+            "supports_reasoning_effort": True,
+            "supports_app_server": True,
+            "supports_builtin_auth": True,
+            "available_models": [],
+            "configured_plugins": [],
+            "configured_mcp_servers": [],
+            "local_skills": [],
+            "mcp_servers": [],
+            "mcp_state": {},
+            "notes": [],
+            "app_server_supported": True,
+        },
+    )
+    monkeypatch.setattr(
+        "startup.detect_provider_statuses",
+        lambda selected_provider=None, adapter_command=None, provider_endpoint=None, adapter_args=None: [
+            {
+                "provider": "codex",
+                "label": "Codex",
+                "runtime_ready": True,
+                "runtime_summary": "Codex CLI ready.",
+                "login_status": "Logged in using ChatGPT",
+                "cli_detected": True,
+                "cli_version": "codex 1.0.0",
+                "authenticated": True,
+            },
+            {
+                "provider": "claude_code",
+                "label": "Claude Code",
+                "runtime_ready": False,
+                "runtime_summary": "Claude CLI missing.",
+                "login_status": "Claude CLI missing.",
+                "cli_detected": False,
+                "cli_version": None,
+                "authenticated": False,
+            },
+            {
+                "provider": "ollama",
+                "label": "Ollama",
+                "runtime_ready": True,
+                "runtime_summary": "Ollama endpoint reachable.",
+                "login_status": "Ollama endpoint reachable.",
+                "cli_detected": True,
+                "cli_version": "http://localhost:11434",
+                "authenticated": True,
+            },
+            {
+                "provider": "openai_api",
+                "label": "OpenAI API",
+                "runtime_ready": False,
+                "runtime_summary": "OpenAI API key missing.",
+                "login_status": "OpenAI API key missing.",
+                "cli_detected": False,
+                "cli_version": None,
+                "authenticated": False,
+            },
+            {
+                "provider": "anthropic_api",
+                "label": "Anthropic API",
+                "runtime_ready": False,
+                "runtime_summary": "Anthropic API key missing.",
+                "login_status": "Anthropic API key missing.",
+                "cli_detected": False,
+                "cli_version": None,
+                "authenticated": False,
+            },
+            {
+                "provider": "xai_api",
+                "label": "xAI API",
+                "runtime_ready": False,
+                "runtime_summary": "xAI API key missing.",
+                "login_status": "xAI API key missing.",
+                "cli_detected": False,
+                "cli_version": None,
+                "authenticated": False,
+            },
+            {
+                "provider": "nvidia_dynamo",
+                "label": "NVIDIA Dynamo",
+                "runtime_ready": False,
+                "runtime_summary": "NVIDIA Dynamo frontend is not reachable.",
+                "login_status": "NVIDIA Dynamo frontend is not reachable.",
+                "cli_detected": False,
+                "cli_version": None,
+                "authenticated": False,
+            },
+            {
+                "provider": "nvidia_nim",
+                "label": "NVIDIA NIM",
+                "runtime_ready": False,
+                "runtime_summary": "NVIDIA NIM endpoint is not reachable.",
+                "login_status": "NVIDIA NIM endpoint is not reachable.",
+                "cli_detected": False,
+                "cli_version": None,
+                "authenticated": False,
+            },
+            {
+                "provider": "custom",
+                "label": "Custom Adapter",
+                "runtime_ready": False,
+                "runtime_summary": "Custom adapter is not configured.",
+                "login_status": "Custom adapter is not configured.",
+                "cli_detected": False,
+                "cli_version": None,
+                "authenticated": False,
+            },
+        ],
+    )
+    monkeypatch.setattr(
+        "diagnostics.detect_device_profile",
+        lambda: {
+            "platform_label": "Windows Test Rig",
+            "architecture": "x86_64",
+            "cpu_count": 12,
+            "memory_total_gb": 32,
+            "platform_hints": [],
+        },
+    )
+    monkeypatch.setattr(
+        "diagnostics.detect_performance_profile",
+        lambda: {
+            "resource_tier": "high",
+            "lag_risk": "low",
+            "recommended_swarm_max_agents": 4,
+        },
+    )
+    monkeypatch.setattr(
+        "diagnostics.platform_debug_commands",
+        lambda backend_port=8010: [
+            f"Invoke-WebRequest http://127.0.0.1:{backend_port}/api/health",
+            "python -m pytest apps/server/tests/test_startup.py -q",
+        ],
+    )
 
 
 def test_new_install_routes_to_first_time_setup(client) -> None:

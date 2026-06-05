@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from main import service
 from db import SessionLocal
 from models import (
@@ -21,6 +23,33 @@ from models import (
 )
 
 from conftest import sample_workspace
+
+
+@pytest.fixture(autouse=True)
+def _fast_operator_snapshot_dependencies(monkeypatch) -> None:
+    monkeypatch.setattr(service, "_workspace_degraded_notices_preview", lambda project: [])
+    monkeypatch.setattr(
+        service,
+        "_derive_current_action_preview",
+        lambda db, project, notices: {
+            "type": "blocker",
+            "title": "Restore validation evidence.",
+            "message": "Validation evidence is still missing.",
+        },
+    )
+    monkeypatch.setattr(
+        service,
+        "get_project_health_preview",
+        lambda db, project: {
+            "state": "warning",
+            "top_risks": ["Validation evidence is incomplete."],
+            "reasons": [],
+            "next_action": "Restore validation evidence.",
+        },
+    )
+    monkeypatch.setattr(service, "get_project_handoff_summary", lambda db, project: {"status": "not_ready"})
+    monkeypatch.setattr(service, "recent_diagnostic_reports", lambda project: [])
+    monkeypatch.setattr(service, "get_swarm_plan", lambda db, project: None)
 
 
 def _seed_operator_project() -> int:

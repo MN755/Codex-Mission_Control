@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from context_packs import context_pack_service
 from db import SessionLocal
 from manager import service
@@ -21,6 +23,33 @@ from models import (
 )
 
 from conftest import sample_workspace
+
+
+@pytest.fixture(autouse=True)
+def _fast_capability_report_dependencies(monkeypatch) -> None:
+    monkeypatch.setattr(
+        service,
+        "build_operator_snapshot",
+        lambda db, project: {
+            "project_id": project.id,
+            "project_name": project.name,
+            "current_focus": ["Finish validation evidence capture."],
+            "top_risks": ["Fresh validation evidence is still pending."],
+            "recent_events": ["Validation lane is queued."],
+        },
+    )
+    monkeypatch.setattr(
+        service,
+        "build_verification_brief",
+        lambda db, project: {
+            "project_id": project.id,
+            "readiness": "blocked",
+            "required_checks": ["python -m pytest apps/server/tests/test_capability_report.py -q"],
+            "recommended_checks": ["Capture fresh browser evidence."],
+            "evidence_gaps": ["Fresh validation evidence is still pending."],
+            "release_blockers": ["Validation evidence is still pending."],
+        },
+    )
 
 
 def _seed_capability_project() -> int:

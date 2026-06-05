@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from models import utc_now
 from fastapi.testclient import TestClient
 
 from conftest import sample_workspace, wait_for
@@ -246,6 +247,47 @@ def test_dry_run_project_flow(client, bridge_headers, monkeypatch) -> None:
     monkeypatch.setattr("main.service.auth_state", fake_auth_state)
     monkeypatch.setattr("main.service.start_idle_agents", fake_start_idle_agents)
     monkeypatch.setattr("main.service.approve_plan", fake_approve_plan)
+    monkeypatch.setattr(
+        "main.service.preview_operational_instincts",
+        lambda db, project: {
+            "project_id": project.id,
+            "project_name": project.name,
+            "instinct_count": 2,
+            "instincts": [
+                {
+                    "key": "ship-with-evidence",
+                    "title": "Ship with evidence",
+                    "trigger": "Validation evidence is still missing.",
+                    "rule": "Do not hand off without named validation evidence.",
+                    "rationale": "The manager needs explicit proof before claiming readiness.",
+                    "summary": "Validation evidence is required before handoff.",
+                    "confidence": "high",
+                    "tags": ["validation", "handoff"],
+                    "evidence": ["Named pytest slice exists."],
+                },
+                {
+                    "key": "turn-gaps-into-checks",
+                    "title": "Turn gaps into checks",
+                    "trigger": "A validation gap is recorded.",
+                    "rule": "Convert each validation gap into an explicit follow-up check.",
+                    "rationale": "Named checks are easier to track than vague concerns.",
+                    "summary": "Convert open gaps into explicit validation steps.",
+                    "confidence": "medium",
+                    "tags": ["validation"],
+                    "evidence": [],
+                },
+            ],
+            "confidence_levels": ["high", "medium"],
+            "confidence_counts": {"high": 1, "medium": 1},
+            "confidence_group_count": 2,
+            "tags": ["handoff", "validation"],
+            "tag_counts": {"handoff": 1, "validation": 2},
+            "tag_group_count": 2,
+            "evidence_item_count": 1,
+            "evidenceful_instinct_count": 1,
+            "generated_at": utc_now(),
+        },
+    )
 
     profile_response = client.get("/api/profile", headers=bridge_headers)
     assert profile_response.status_code == 200

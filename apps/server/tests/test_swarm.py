@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from conftest import sample_workspace
 from db import SessionLocal
 from manager import service
@@ -75,6 +77,48 @@ def insert_plan(project_id: int, *, version: int = 1, status: str = "pending_app
         return plan.id
     finally:
         db.close()
+
+
+@pytest.fixture(autouse=True)
+def _fast_swarm_planning(monkeypatch) -> None:
+    async def fake_swarm_context(db, project, preferences) -> dict:
+        return {
+            "project": {
+                "name": project.name,
+                "idea": project.idea,
+                "status": project.status,
+                "workspace_path": project.workspace_path,
+                "docs_path": project.docs_path,
+                "latest_milestone": project.latest_milestone,
+            },
+            "preferences": service._serialize_swarm_preferences(preferences),
+            "settings": {"provider": "codex", "runner_mode": "dry_run"},
+            "understanding": service.get_project_understanding(project),
+            "docs_summary": [],
+            "repo_summary": service._workspace_manifest_summary(project),
+            "gpu_programming": {},
+            "tensorflow_product_mode": {},
+            "pytorch_product_mode": {},
+            "gpu_cluster_health": {"status": "healthy", "blocking_reasons": []},
+            "plan_summary": None,
+            "available_tools": [],
+            "provider_status": {"selected_provider": "codex", "authenticated": False, "available_models": []},
+            "current_agents": [],
+            "open_tasks": [],
+        }
+
+    async def fake_resolve_manager_model(*args, fallback_factory=None, **kwargs):
+        assert fallback_factory is not None
+        return fallback_factory(), "deterministic"
+
+    monkeypatch.setattr(service, "_swarm_context_payload", fake_swarm_context)
+    monkeypatch.setattr(service, "_resolve_manager_model", fake_resolve_manager_model)
+    monkeypatch.setattr(service, "_gpu_cluster_health", lambda project: {"status": "healthy", "blocking_reasons": []})
+    monkeypatch.setattr(service, "_prime_workspace_context", lambda db, project: None)
+    monkeypatch.setattr("manager.playbook_service.suggest_playbook", lambda db, project, persist=True: {"status": "not_applicable"})
+    monkeypatch.setattr("manager.validation_coverage_service.recompute", lambda db, project: [])
+    monkeypatch.setattr("manager.planning_intelligence_service.build_context", lambda db, project: {})
+    monkeypatch.setattr("manager.planning_intelligence_service.recommend_model_policy", lambda db, category: None)
 
 
 def test_make_swarm_spec_tolerates_legacy_toolset_position() -> None:

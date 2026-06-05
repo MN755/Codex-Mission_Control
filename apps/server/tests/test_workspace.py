@@ -2,12 +2,79 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 from sqlalchemy import func, select
 
 from db import SessionLocal, init_db
 from manager import service
 from models import Agent, ChangeRequest, ManagerMessage, Project, ProjectSettings
-from conftest import sample_workspace
+from conftest import sample_workspace, seed_imported_codebase_records
+
+
+@pytest.fixture(autouse=True)
+def _fast_workspace_dependencies(monkeypatch) -> None:
+    def fake_initial_scan(db, project, *, depth: str | None = None):
+        return seed_imported_codebase_records(db, project, scan_depth=depth or "standard")
+
+    async def fake_system_status(db, project=None, **kwargs):
+        return {
+            "selected_provider": "codex",
+            "selected_provider_label": "Codex",
+            "cli_detected": True,
+            "cli_path": "codex",
+            "cli_path_exists": True,
+            "cli_execution_available": True,
+            "cli_version": "codex 1.0.0",
+            "login_status": "Logged in using ChatGPT",
+            "auth_mode": "chatgpt",
+            "authenticated": True,
+            "runtime_ready": True,
+            "runtime_summary": "Codex preview status is available.",
+            "app_server_supported": False,
+            "app_server_handshake_status": "unsupported",
+            "app_server_transport": "unsupported",
+            "effective_runner_mode": "dry_run",
+            "dry_run_available": True,
+            "runtime_directory": "runtime",
+            "repo_root": "repo",
+            "launcher_root": "launcher",
+            "plugin_source_root": "plugins/mission-control",
+            "backend_host": "127.0.0.1",
+            "backend_port": 8010,
+            "backend_base_url": "http://127.0.0.1:8010",
+            "configured_backend_port": 8010,
+            "backend_binding_source": "test",
+            "frontend_port": 5173,
+            "provider_statuses": [],
+            "available_models": [],
+            "active_runs": [],
+            "mcp_servers": [],
+            "configured_mcp_servers": [],
+            "mcp_state": {},
+            "configured_plugins": [],
+            "local_skills": [],
+            "current_auth_job": None,
+            "startup_summary": None,
+            "diagnostics_directory": None,
+            "current_settings_summary": None,
+            "selected_manager_model": None,
+            "selected_default_worker_model": None,
+            "model_advisories": [],
+            "app_state_summary": None,
+            "notes": [],
+        }
+
+    async def empty_items(db, projects=None):
+        return []
+
+    async def fake_widget_summary(db):
+        return {"instances": [], "catalog": [], "data": []}
+
+    monkeypatch.setattr("imported_codebase.import_service.initial_scan", fake_initial_scan)
+    monkeypatch.setattr("manager.service.get_system_status", fake_system_status)
+    monkeypatch.setattr("manager.service._dashboard_active_builds", empty_items)
+    monkeypatch.setattr("manager.service._dashboard_attention_items", empty_items)
+    monkeypatch.setattr("manager.service.get_dashboard_widget_summary", fake_widget_summary)
 
 
 def test_workspace_dry_run_loop_and_action_flow(client) -> None:
