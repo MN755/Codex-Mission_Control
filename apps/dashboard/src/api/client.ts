@@ -71,6 +71,7 @@ import type {
   AgentsMdProposal,
   AgentArchetype,
   AppEvent,
+  AsciiMonitorFrame,
   WidgetDataResponse,
   WidgetDefinition,
   WidgetInstance,
@@ -386,6 +387,8 @@ export const api = {
   pinProject: (projectId: number) => request<Project>(`/api/projects/${projectId}/pin`, { method: "POST" }),
   unpinProject: (projectId: number) => request<Project>(`/api/projects/${projectId}/unpin`, { method: "POST" }),
   getProjectWorkspace: (projectId: number) => request<ProjectWorkspace>(`/api/projects/${projectId}/workspace`),
+  getAsciiMonitor: (projectId: number, orchestrationId?: number | null) =>
+    request<AsciiMonitorFrame>(withQuery(`/api/projects/${projectId}/ascii-monitor`, { orchestration_id: orchestrationId ?? undefined })),
   getProjectAction: (projectId: number) => request<ProjectAction>(`/api/projects/${projectId}/action`),
   getProjectActions: (projectId: number) => request<ProjectAction[]>(`/api/projects/${projectId}/actions`),
   resolveProjectAction: (

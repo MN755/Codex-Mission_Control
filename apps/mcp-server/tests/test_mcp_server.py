@@ -12,6 +12,7 @@ if str(MCP_SERVER_SRC) not in sys.path:
     sys.path.insert(0, str(MCP_SERVER_SRC))
 
 from mission_control_mcp_server import catalog
+from mission_control_mcp_server import client as client_module
 from mission_control_mcp_server.client import MissionControlDaemonClient, _base_url
 from mission_control_mcp_server.server import MissionControlMcpServer
 
@@ -2439,7 +2440,7 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
                 "action_type": "git_push",
                 "action_summary": "Push validated MCP catalog updates to main.",
                 "risk_level": "medium",
-                "decision": "approved_once",
+                "decision": "approved",
                 "decided_by": "user",
                 "reason": "Validated targeted MCP tests passed.",
                 "created_at": "2026-06-03T12:49:00Z",
@@ -3506,6 +3507,8 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
     assert global_risk_summary["project_id"] is None
     assert global_risk_summary["open_count"] == 3
     assert global_security_policy["approval_mode"] == "on-request"
+    assert global_security_audit["audit_entry_count"] == 1
+    assert global_security_audit["entries"][0]["decision"] == "approved"
     assert daemon_status["healthy"] is True
     assert runners_status["runner_count"] == 2
     assert plugin_health["status"] == "ready"
@@ -3606,6 +3609,8 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
     assert workspace["git_branch"] == "main"
     assert tooling["validation_commands"] == ["uv run pytest", "ruff check ."]
     assert project_security_policy["project_id"] == 7
+    assert project_security_audit["audit_entry_count"] == 1
+    assert project_security_audit["entries"][0]["action_type"] == "git_push"
     assert decision_bridge_message["message_type"] == "pending_decision"
     assert project_action["action_id"] == "run_validation"
     assert project_actions["action_count"] == 2
@@ -3701,7 +3706,7 @@ def test_daemon_client_reads_new_operator_resources_without_network(monkeypatch)
     assert swarm_simulations["simulation_count"] == 1
     assert swarm_simulations["simulations"][0]["recommended_agent_count"] == 3
     assert global_security_audit["audit_entry_count"] == 1
-    assert global_security_audit["entries"][0]["decision"] == "approved_once"
+    assert global_security_audit["entries"][0]["decision"] == "approved"
     assert project_security_audit["project_id"] == 7
     assert project_security_audit["entries"][0]["project_id"] == 7
     assert scope_creep["signal_count"] == 1
@@ -3722,12 +3727,14 @@ def test_daemon_client_auto_start_launches_when_health_fails(monkeypatch, tmp_pa
 
     def fake_healthcheck() -> bool:
         attempts["count"] += 1
-        return attempts["count"] > 1
+        return attempts["count"] > 2
 
     launches: list[list[str]] = []
+    launch_envs: list[dict[str, str]] = []
 
     def fake_popen(args, **kwargs):
         launches.append(list(args))
+        launch_envs.append(dict(kwargs["env"]))
         return object()
 
     monkeypatch.setattr(client, "_healthcheck", fake_healthcheck)
@@ -3735,6 +3742,68 @@ def test_daemon_client_auto_start_launches_when_health_fails(monkeypatch, tmp_pa
     monkeypatch.setattr(subprocess, "Popen", fake_popen)
 
     client.ensure_daemon_running()
+
+    assert launches
+    assert launch_envs[0]["MISSION_CONTROL_RUNTIME_ROOT"] == str((tmp_path / "runtime").resolve())
+    assert launch_envs[0]["MISSION_CONTROL_LAUNCHER_DIR"] == str((tmp_path / "launcher").resolve())
+
+
+def test_daemon_client_retries_healthcheck_before_failing_bound_port(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("MISSION_CONTROL_RUNTIME_ROOT", str(tmp_path / "runtime"))
+    monkeypatch.setenv("MISSION_CONTROL_LAUNCHER_DIR", str(tmp_path / "launcher"))
+    client = MissionControlDaemonClient(base_url="http://127.0.0.1:8126", timeout=0.2)
+    attempts = {"count": 0}
+    validations = {"count": 0}
+
+    def fake_healthcheck() -> bool:
+        attempts["count"] += 1
+        return attempts["count"] >= 3
+
+    monkeypatch.setattr(client, "_healthcheck", fake_healthcheck)
+    monkeypatch.setattr(client, "_port_in_use", lambda: True)
+    monkeypatch.setattr(
+        client,
+        "_validate_running_daemon_identity",
+        lambda: validations.__setitem__("count", validations["count"] + 1),
+    )
+
+    client.ensure_daemon_running()
+
+    assert attempts["count"] >= 3
+    assert validations["count"] == 1
+
+
+def test_daemon_client_windows_falls_back_when_breakaway_launch_is_denied(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("MISSION_CONTROL_RUNTIME_ROOT", str(tmp_path / "runtime"))
+    monkeypatch.setenv("MISSION_CONTROL_LAUNCHER_DIR", str(tmp_path / "launcher"))
+    client = MissionControlDaemonClient(base_url="http://127.0.0.1:8125", timeout=0.2)
+    attempts = {"count": 0}
+    popen_calls: list[dict[str, object]] = []
+
+    def fake_healthcheck() -> bool:
+        attempts["count"] += 1
+        return attempts["count"] > 2
+
+    def fake_popen(args, **kwargs):
+        popen_calls.append({"args": list(args), "creationflags": kwargs.get("creationflags", 0)})
+        if len(popen_calls) == 1:
+            raise PermissionError(5, "Access is denied")
+        return object()
+
+    monkeypatch.setattr(client, "_healthcheck", fake_healthcheck)
+    monkeypatch.setattr(client, "_port_in_use", lambda: False)
+    monkeypatch.setattr(client_module.os, "name", "nt")
+    monkeypatch.setattr(subprocess, "DETACHED_PROCESS", 0x00000008, raising=False)
+    monkeypatch.setattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200, raising=False)
+    monkeypatch.setattr(subprocess, "CREATE_NO_WINDOW", 0x08000000, raising=False)
+    monkeypatch.setattr(subprocess, "CREATE_BREAKAWAY_FROM_JOB", 0x01000000, raising=False)
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+
+    client.ensure_daemon_running()
+
+    assert len(popen_calls) == 2
+    assert popen_calls[0]["creationflags"] & subprocess.CREATE_BREAKAWAY_FROM_JOB
+    assert not (popen_calls[1]["creationflags"] & subprocess.CREATE_BREAKAWAY_FROM_JOB)
 
 
 def test_mcp_server_surfaces_integration_tools_and_resources() -> None:
@@ -4311,7 +4380,7 @@ def test_daemon_client_launches_installed_module_when_repo_script_is_unavailable
 
     def fake_healthcheck() -> bool:
         attempts["count"] += 1
-        return attempts["count"] > 1
+        return attempts["count"] > 2
 
     launches: list[list[str]] = []
 

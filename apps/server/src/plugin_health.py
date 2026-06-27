@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 from datetime import datetime, timezone
@@ -151,17 +152,48 @@ def _required_skill_paths(root: Path, skill_names: list[str]) -> list[Path]:
     return [root / skill_name / "SKILL.md" for skill_name in skill_names]
 
 
+def _runtime_root_writable(runtime_root: Path) -> bool:
+    runtime_root.mkdir(parents=True, exist_ok=True)
+    runtime_probe = runtime_root / ".plugin-health.tmp"
+    try:
+        runtime_probe.write_text("ok", encoding="utf-8")
+        runtime_probe.unlink(missing_ok=True)
+        return True
+    except OSError:
+        return False
+
+
+def _sqlite_db_reachable() -> bool:
+    try:
+        with engine.connect() as connection:
+            connection.execute(text("SELECT 1"))
+        return True
+    except Exception:
+        return False
+
+
 async def mission_control_plugin_health() -> dict[str, Any]:
-    codex = detect_codex_status()
-    device_profile = detect_device_profile()
-    performance_profile = detect_performance_profile()
-    identity = daemon_identity_snapshot()
-    metadata = read_daemon_metadata()
-    backend_binding = resolve_backend_binding()
-    dashboard_url = daemon_dashboard_url()
+    (
+        codex,
+        device_profile,
+        performance_profile,
+        identity,
+        metadata,
+        backend_binding,
+        dashboard_url,
+        runner_inventory,
+    ) = await asyncio.gather(
+        asyncio.to_thread(detect_codex_status),
+        asyncio.to_thread(detect_device_profile),
+        asyncio.to_thread(detect_performance_profile),
+        asyncio.to_thread(daemon_identity_snapshot),
+        asyncio.to_thread(read_daemon_metadata),
+        asyncio.to_thread(resolve_backend_binding),
+        asyncio.to_thread(daemon_dashboard_url),
+        service.runners.inventory(),
+    )
     daemon_host = str(backend_binding.get("host") or identity.get("host") or "")
     daemon_port = int(backend_binding.get("port") or identity.get("port") or 0)
-    device_debug_commands = platform_debug_commands(backend_port=daemon_port or 8010)
     identity_mode = str(identity.get("mode") or "unknown")
     daemon_mode = str(backend_binding.get("mode") or identity_mode or "unknown")
     daemon_url = _backend_url(daemon_host, daemon_port, "/api/health") if daemon_host and daemon_port else ""
@@ -171,12 +203,29 @@ async def mission_control_plugin_health() -> dict[str, Any]:
         and identity_mode == "daemon"
         and str(identity.get("repo_root") or "") == str(REPO_ROOT)
     )
-    daemon_ok, daemon_probe = (
-        (True, "in_process_daemon")
-        if in_process_daemon
-        else (_probe_url(daemon_url) if daemon_url else (False, "no_target"))
+    (
+        device_debug_commands,
+        daemon_probe_result,
+        dashboard_probe_result,
+        gpu_health,
+        webwright_status,
+        imported_hosts,
+        integration_families,
+        runtime_writable,
+        db_ready,
+    ) = await asyncio.gather(
+        asyncio.to_thread(platform_debug_commands, backend_port=daemon_port or 8010),
+        asyncio.to_thread(_probe_url, daemon_url) if daemon_url and not in_process_daemon else asyncio.sleep(0, result=(False, "no_target")),
+        asyncio.to_thread(_probe_url, dashboard_url),
+        asyncio.to_thread(detect_project_nvidia_gpu_diagnostics, REPO_ROOT),
+        asyncio.to_thread(detect_webwright_status),
+        asyncio.to_thread(import_host_state, {}),
+        asyncio.to_thread(integration_catalog),
+        asyncio.to_thread(_runtime_root_writable, RUNTIME_ROOT),
+        asyncio.to_thread(_sqlite_db_reachable),
     )
-    dashboard_ok, dashboard_probe = _probe_url(dashboard_url)
+    daemon_ok, daemon_probe = (True, "in_process_daemon") if in_process_daemon else daemon_probe_result
+    dashboard_ok, dashboard_probe = dashboard_probe_result
 
     checks: list[dict[str, Any]] = []
 
@@ -507,7 +556,6 @@ async def mission_control_plugin_health() -> dict[str, Any]:
     )
 
     try:
-        runner_inventory = await service.runners.inventory()
         runner_error = None if runner_inventory else MissionControlError(
             code="MC-RUNNER-NONE-AVAILABLE-001",
             breakpoint="runner.registry_load",
@@ -565,7 +613,6 @@ async def mission_control_plugin_health() -> dict[str, Any]:
             )
         )
 
-    gpu_health = detect_project_nvidia_gpu_diagnostics(REPO_ROOT)
     gpu_check_status = (
         "ready"
         if gpu_health.get("status") == "ready"
@@ -603,7 +650,6 @@ async def mission_control_plugin_health() -> dict[str, Any]:
         )
     )
 
-    webwright_status = detect_webwright_status()
     webwright_check_status = "ready" if webwright_status.get("available") else ("degraded" if webwright_status.get("install_status") == "partial" else "unknown")
     checks.append(
         _check(
@@ -623,36 +669,26 @@ async def mission_control_plugin_health() -> dict[str, Any]:
         )
     )
 
-    imported_hosts = import_host_state({})
     imported_families = sum(len(dict(host or {})) for host in dict(imported_hosts.get("host_imports") or {}).values())
     checks.append(
         _check(
             check_id="integration_spine_catalog",
             label="Cross-host integration spine",
             status="ready",
-            summary=f"Mission Control integration registry exposes {len(integration_catalog())} families and detected {imported_families} host-imported family hints.",
+            summary=f"Mission Control integration registry exposes {len(integration_families)} families and detected {imported_families} host-imported family hints.",
             critical=False,
             commands=["python -m pytest apps/server/tests/test_integrations.py -q"],
             details={
-                "family_count": len(integration_catalog()),
+                "family_count": len(integration_families),
                 "host_imports": dict(imported_hosts.get("host_imports") or {}),
             },
         )
     )
 
-    runtime_root = RUNTIME_ROOT
-    runtime_root.mkdir(parents=True, exist_ok=True)
-    runtime_probe = runtime_root / ".plugin-health.tmp"
-    try:
-        runtime_probe.write_text("ok", encoding="utf-8")
-        runtime_probe.unlink(missing_ok=True)
-        runtime_writable = True
-    except OSError:
-        runtime_writable = False
     runtime_error = None if runtime_writable else MissionControlError(
         code="MC-STORAGE-RUNTIME-WRITE-FAILED-001",
         breakpoint="diagnostics.write_report",
-        safe_details={"runtime_root": str(runtime_root)},
+        safe_details={"runtime_root": str(RUNTIME_ROOT)},
     )
     checks.append(
         _check(
@@ -663,17 +699,11 @@ async def mission_control_plugin_health() -> dict[str, Any]:
             critical=True,
             fix=None if runtime_error is None else runtime_error.recommended_fix,
             commands=[_list_command(".runtime")],
-            details={"runtime_root": str(runtime_root)},
+            details={"runtime_root": str(RUNTIME_ROOT)},
             error=runtime_error,
         )
     )
 
-    try:
-        with engine.connect() as connection:
-            connection.execute(text("SELECT 1"))
-        db_ready = True
-    except Exception:
-        db_ready = False
     db_error = None if db_ready else MissionControlError(
         code="MC-STORAGE-DB-UNAVAILABLE-001",
         breakpoint="bootstrap.health_check",

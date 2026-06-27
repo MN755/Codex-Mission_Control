@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import prompts as prompts_module
+import tensorflow_support
 from conftest import sample_workspace
 from models import Agent, Project, Task
 from prompts import build_prompt_profile, manager_action_prompt, manager_interview_prompt, manager_swarm_prompt, worker_task_prompt
@@ -161,6 +163,91 @@ def test_worker_task_prompt_includes_weak_model_guardrails() -> None:
     assert "Treat the current model as: compact local model." in prompt
     assert "Favor one narrow change at a time" in prompt
     assert "Do not claim a fix, refactor, or validation result unless the output proves it directly." in prompt
+
+
+def test_worker_task_prompt_forbids_progress_chatter_and_markdown_wrapped_results() -> None:
+    project = Project(name="Prompt Demo", idea="Fix a failing function", workspace_path=sample_workspace("prompt-quiet-envelope"), status="building", runner_mode="auto", manager_mode="auto")
+    agent = Agent(project_id=1, name="Worker", role="Implementation", kind="worker", status="idle", workspace_path=project.workspace_path)
+    task = Task(
+        id=4,
+        project_id=1,
+        title="Return only the final structured result",
+        goal="Finish the task and emit a strict completion envelope.",
+        scope="Edit only the smallest owned path and report it cleanly.",
+        agent_role="Implementation",
+        milestone="Milestone 1",
+        allowed_paths_json=["src"],
+        forbidden_paths_json=["docs"],
+        validation_steps_json=["Run the focused test command"],
+        success_criteria_json=["The structured result is machine-readable"],
+        estimated_complexity="small",
+        dependencies_json=[],
+        status="backlog",
+        priority=10,
+    )
+
+    prompt = worker_task_prompt(
+        project,
+        agent,
+        task,
+        docs_path=f"{project.workspace_path}/mission-control",
+        provider="codex",
+        model="gpt-5.4",
+        reasoning_effort="high",
+    )
+
+    lowered = prompt.lower()
+    assert "do not emit progress updates" in lowered
+    assert "only acceptable final output is the completion envelope json object" in lowered
+    assert "do not wrap the final json in markdown fences or surrounding prose" in lowered
+
+
+def test_worker_task_prompt_includes_runtime_tool_path_fallbacks(monkeypatch) -> None:
+    project = Project(name="Prompt Demo", idea="Fix a failing function", workspace_path=sample_workspace("prompt-runtime-tools"), status="building", runner_mode="auto", manager_mode="auto")
+    agent = Agent(project_id=1, name="Worker", role="Implementation", kind="worker", status="idle", workspace_path=project.workspace_path)
+    task = Task(
+        id=9,
+        project_id=1,
+        title="Implement the smallest safe code fix",
+        goal="Correct the failing behavior in the implementation.",
+        scope="Update only the src implementation needed for the fix.",
+        agent_role="Implementation",
+        milestone="Milestone 1",
+        allowed_paths_json=["src"],
+        forbidden_paths_json=["docs"],
+        validation_steps_json=["Run the focused test command"],
+        success_criteria_json=["The expected behavior is restored"],
+        estimated_complexity="small",
+        dependencies_json=[],
+        status="backlog",
+        priority=10,
+    )
+    monkeypatch.setattr(
+        prompts_module.shutil,
+        "which",
+        lambda command: {
+            "git.exe": r"C:\Program Files\Git\cmd\git.exe",
+            "python.exe": r"C:\Users\mike\AppData\Local\Programs\Python\Python310\python.exe",
+            "npm.cmd": r"C:\Program Files\nodejs\npm.cmd",
+            "rg.exe": r"C:\Users\mike\AppData\Local\OpenAI\Codex\bin\rg.exe",
+        }.get(command),
+    )
+
+    prompt = worker_task_prompt(
+        project,
+        agent,
+        task,
+        docs_path=f"{project.workspace_path}/mission-control",
+        provider="codex",
+        model="gpt-5.4",
+        reasoning_effort="high",
+    )
+
+    assert "Runtime tool path fallbacks" in prompt
+    assert r"- git: C:\Program Files\Git\cmd\git.exe" in prompt
+    assert r"- python: C:\Users\mike\AppData\Local\Programs\Python\Python310\python.exe" in prompt
+    assert r"- npm: C:\Program Files\nodejs\npm.cmd" in prompt
+    assert "retry with the matching absolute executable path" in prompt
 
 
 def test_worker_task_prompt_adds_validation_biases_for_non_edit_task() -> None:
@@ -340,6 +427,61 @@ def test_worker_task_prompt_switches_into_tensorflow_product_mode_for_tf_repo() 
     assert "Existing TensorFlow artifacts already in repo:" in prompt
     assert "TensorFlow artifact inspection commands already available:" in prompt
     assert "TensorFlow evidence to capture before claiming success:" in prompt
+
+
+def test_worker_task_prompt_caches_tensorflow_repo_mode_for_same_workspace(monkeypatch) -> None:
+    workspace = Path(sample_workspace("prompt-tf-cache"))
+    workspace.mkdir(parents=True, exist_ok=True)
+    prompts_module._tensorflow_mode_block_for_workspace.cache_clear()
+    calls = {"mode": 0, "validation": 0}
+
+    def fake_detect(_: str) -> dict[str, object]:
+        calls["mode"] += 1
+        return {
+            "enabled": True,
+            "mode": "tensorflow_product",
+            "frameworks": ["TensorFlow"],
+            "product_workflows": [],
+            "important_paths": [],
+            "notebook_paths": [],
+            "config_paths": [],
+            "existing_savedmodel_artifacts": [],
+            "existing_tflite_artifacts": [],
+        }
+
+    def fake_validation(_: str) -> dict[str, object]:
+        calls["validation"] += 1
+        return {"steps": [], "blockers": [], "evidence_targets": [], "recommended_fixes": []}
+
+    monkeypatch.setattr(tensorflow_support, "detect_tensorflow_repo_mode", fake_detect)
+    monkeypatch.setattr(tensorflow_support, "build_tensorflow_validation_plan", fake_validation)
+
+    project = Project(name="Prompt Demo", idea="Cache TensorFlow prompt hints", workspace_path=workspace.as_posix(), status="building", runner_mode="auto", manager_mode="auto")
+    agent = Agent(project_id=1, name="TF Worker", role="ML implementation", kind="worker", status="idle", workspace_path=project.workspace_path)
+    task = Task(
+        id=8,
+        project_id=1,
+        title="Implement the TensorFlow product flow",
+        goal="Build and validate the TensorFlow path honestly.",
+        scope="Touch the training path only.",
+        agent_role="ML implementation",
+        milestone="Milestone 1",
+        allowed_paths_json=["train.py"],
+        forbidden_paths_json=["docs"],
+        validation_steps_json=["Run the focused TensorFlow validation loop"],
+        success_criteria_json=["The TensorFlow path is validated honestly"],
+        estimated_complexity="medium",
+        dependencies_json=[],
+        status="backlog",
+        priority=10,
+    )
+
+    first = worker_task_prompt(project, agent, task, docs_path=f"{project.workspace_path}/mission-control", provider="codex", model="gpt-5.5", reasoning_effort="high")
+    second = worker_task_prompt(project, agent, task, docs_path=f"{project.workspace_path}/mission-control", provider="codex", model="gpt-5.5", reasoning_effort="high")
+
+    assert "TensorFlow product mode:" in first
+    assert first == second
+    assert calls == {"mode": 1, "validation": 1}
 
 
 def test_worker_task_prompt_switches_into_pytorch_product_mode_for_torch_repo() -> None:

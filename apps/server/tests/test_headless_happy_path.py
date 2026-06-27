@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import os
 from pathlib import Path
 
@@ -9,6 +10,7 @@ from bridge_formatter import format_status_summary_message
 from bridge_messages import bridge_runtime_service
 from conftest import sample_workspace, seed_imported_codebase_records, wait_for
 from db import SessionLocal
+from errors import MissionControlError
 from manager import service
 from models import Project, ProjectEvent
 
@@ -122,7 +124,7 @@ def _fast_headless_runtime(monkeypatch) -> None:
 def test_headless_happy_path_acceptance(client) -> None:
     workspace = _prepare_repo_workspace("headless-happy-path")
     attach = client.post(
-        "/api/orchestrations/attach-workspace",
+        "/api/headless/attach-workspace",
         headers=_bridge_headers(),
         json={
             "workspace_path": workspace.as_posix(),
@@ -410,6 +412,16 @@ def test_full_headless_happy_path_approve_flow(client) -> None:
     assert answer_payload["decision"]["status"] == "answered"
     assert answer_payload["next_status_summary"]["user_action_required"] is False
 
+    audit_log = client.get(
+        f"/api/projects/{payload['project']['id']}/security/audit-log",
+        headers=_bridge_headers(),
+    )
+    assert audit_log.status_code == 200, audit_log.text
+    audit_entries = audit_log.json()
+    assert audit_entries
+    assert audit_entries[0]["decision"] == "approved"
+    assert audit_entries[0]["action_type"] == "command_approval"
+
     digest = client.get(
         f"/api/orchestrations/{orchestration_id}/event-digest",
         headers=_bridge_headers(),
@@ -499,9 +511,259 @@ def test_full_headless_happy_path_deny_flow(client) -> None:
     assert answer_payload["decision"]["status"] == "answered"
     assert answer_payload["next_status_summary"]["user_action_required"] is False
 
+    audit_log = client.get(
+        f"/api/projects/{payload['project']['id']}/security/audit-log",
+        headers=_bridge_headers(),
+    )
+    assert audit_log.status_code == 200, audit_log.text
+    audit_entries = audit_log.json()
+    assert audit_entries
+    assert audit_entries[0]["decision"] == "denied"
+    assert audit_entries[0]["action_type"] == "command_approval"
+
     handoff = client.get(f"/api/orchestrations/{orchestration_id}/handoff-summary", headers=_bridge_headers(), params={"project_id": payload["project"]["id"]})
     assert handoff.status_code == 200, handoff.text
     handoff_markdown = handoff.json()["fallback_markdown"].lower()
     assert "dry-run" in handoff_markdown
     assert "not run" in handoff_markdown
     assert "denied" in handoff_markdown or "limitations" in handoff_markdown
+
+
+def test_real_codex_headless_approval_resumes_background_turn_without_dry_run_shortcut(monkeypatch, client) -> None:
+    from orchestration import coordinator
+
+    workspace = _prepare_repo_workspace("headless-real-codex-flow")
+    scheduled: list[tuple[int, str]] = []
+
+    def fake_schedule_background_turn(orchestration_id: int, reason: str) -> None:
+        scheduled.append((orchestration_id, reason))
+
+    monkeypatch.setattr(coordinator, "_schedule_background_turn", fake_schedule_background_turn)
+
+    db = SessionLocal()
+    try:
+        project = service.create_project(
+            db,
+            name="Headless Real Codex",
+            idea="Run a real Codex CLI approval flow.",
+            workspace_path=workspace.as_posix(),
+            provider="codex",
+            runner_mode="auto",
+            manager_mode="auto",
+        )
+        session = coordinator.start_orchestration(
+            db,
+            project=project,
+            source="codex_plugin",
+            user_request="Use Mission Control for this repo with real Codex agents and fix the failing tests.",
+            mode="codex_cli",
+            metadata={"headless_happy_path": True, "simulated": False},
+            schedule_background_turn=False,
+        )
+        service._create_approval(
+            db,
+            project,
+            request_type="command",
+            title="Approve real validation command",
+            reason_short="Run the real pytest validation command before the Codex worker handoff.",
+            risk_level="medium",
+            cwd=project.workspace_path,
+            request_payload_json={"command": "python -m pytest", "scope": ["tests/"]},
+        )
+        pending = coordinator.sync_pending_decisions(db, session)
+        decision = next(item for item in pending if item.decision_type == "command_approval")
+        coordinator._update_session_status(
+            db,
+            session,
+            status="waiting_for_user",
+            manager_status="Codex CLI orchestration is waiting for command approval.",
+        )
+
+        answered_decision, next_summary = asyncio.run(
+            bridge_runtime_service.answer_decision(
+                db,
+                decision,
+                option_id="approve_once",
+                selected_text="Approve once",
+            )
+        )
+        db.commit()
+        db.expire_all()
+
+        refreshed_session = coordinator.get_session(db, session.id)
+        handoff = service.get_project_handoff_summary(db, project)
+        event_types = [event["event_type"] for event in coordinator.list_events(db, refreshed_session)]
+
+        assert answered_decision["status"] == "answered"
+        assert next_summary is not None
+        assert refreshed_session.status == "planning"
+        assert refreshed_session.manager_status == "Decision recorded. Mission Control is continuing the orchestration."
+        assert "dry_run_validation_simulated" not in event_types
+        assert "dry_run_happy_path_completed" not in event_types
+        assert handoff["status"] == "not_ready"
+        assert scheduled == [(session.id, "decision_answered")]
+    finally:
+        db.close()
+
+
+def test_live_headless_start_task_schedules_background_turn_instead_of_running_inline(monkeypatch) -> None:
+    from orchestration import OrchestrationCoordinator, coordinator
+
+    workspace = _prepare_repo_workspace("headless-live-background-start")
+    scheduled: list[tuple[int, str]] = []
+
+    async def fake_resolve_mode(_requested_mode: str) -> str:
+        return "codex_cli"
+
+    async def fake_status_summary(db, project, orchestration=None):
+        raise AssertionError("Live headless starts should use the queued fast summary instead of the full status summary.")
+
+    def fake_schedule_background_turn(orchestration_id: int, reason: str) -> None:
+        scheduled.append((orchestration_id, reason))
+
+    def passthrough_start_orchestration(
+        db,
+        *,
+        project,
+        source,
+        user_request,
+        orchestration_id=None,
+        mode="unknown",
+        metadata=None,
+        schedule_background_turn=True,
+    ):
+        return OrchestrationCoordinator.start_orchestration(
+            coordinator,
+            db,
+            project=project,
+            source=source,
+            user_request=user_request,
+            orchestration_id=orchestration_id,
+            mode=mode,
+            metadata=metadata,
+            schedule_background_turn=schedule_background_turn,
+        )
+
+    monkeypatch.setattr(bridge_runtime_service, "_resolve_orchestration_mode", fake_resolve_mode)
+    monkeypatch.setattr(bridge_runtime_service, "get_status_summary", fake_status_summary)
+    monkeypatch.setattr(coordinator, "_schedule_background_turn", fake_schedule_background_turn)
+    monkeypatch.setattr(coordinator, "start_orchestration", passthrough_start_orchestration)
+
+    db = SessionLocal()
+    try:
+        project = service.create_project(
+            db,
+            name="Headless Live Background Start",
+            idea="Return quickly for live Codex headless starts.",
+            workspace_path=workspace.as_posix(),
+            provider="codex",
+            runner_mode="auto",
+            manager_mode="auto",
+        )
+        result = asyncio.run(
+            bridge_runtime_service.start_headless_task(
+                db,
+                workspace_path=None,
+                project_id=project.id,
+                user_request="Use Mission Control for this repo and implement the next safe feature.",
+                strategy="balanced",
+                mode="codex_cli",
+                interview_mode="skip",
+                attach_policy="reuse_existing",
+            )
+        )
+        db.commit()
+
+        assert result["mode_used"] == "codex_cli"
+        assert result["pending_decisions"] == []
+        assert result["next_action"] == "get_status_summary"
+        assert result["user_action_required"] is False
+        assert result["orchestration"]["status"] == "planning"
+        assert result["status_summary"]["message_type"] == "status_update"
+        assert "queued the first live background turn" in result["status_summary"]["fallback_markdown"].lower()
+        assert scheduled == [(result["orchestration"]["id"], "user_request")]
+    finally:
+        db.close()
+
+
+def test_live_headless_start_task_promotes_imported_repo_out_of_read_only(monkeypatch) -> None:
+    from orchestration import OrchestrationCoordinator, coordinator
+
+    workspace = _prepare_repo_workspace("headless-live-write-promotion")
+    scheduled: list[tuple[int, str]] = []
+
+    async def fake_resolve_mode(_requested_mode: str) -> str:
+        return "codex_cli"
+
+    def fake_schedule_background_turn(orchestration_id: int, reason: str) -> None:
+        scheduled.append((orchestration_id, reason))
+
+    def passthrough_start_orchestration(
+        db,
+        *,
+        project,
+        source,
+        user_request,
+        orchestration_id=None,
+        mode="unknown",
+        metadata=None,
+        schedule_background_turn=True,
+    ):
+        return OrchestrationCoordinator.start_orchestration(
+            coordinator,
+            db,
+            project=project,
+            source=source,
+            user_request=user_request,
+            orchestration_id=orchestration_id,
+            mode=mode,
+            metadata=metadata,
+            schedule_background_turn=schedule_background_turn,
+        )
+
+    monkeypatch.setattr(bridge_runtime_service, "_resolve_orchestration_mode", fake_resolve_mode)
+    monkeypatch.setattr(coordinator, "_schedule_background_turn", fake_schedule_background_turn)
+    monkeypatch.setattr(coordinator, "start_orchestration", passthrough_start_orchestration)
+
+    db = SessionLocal()
+    try:
+        result = asyncio.run(
+            bridge_runtime_service.start_headless_task(
+                db,
+                workspace_path=workspace.as_posix(),
+                project_id=None,
+                user_request="Create a writable live Codex orchestration for this imported repo.",
+                strategy="balanced",
+                mode="codex_cli",
+                interview_mode="skip",
+                attach_policy="reuse_existing",
+            )
+        )
+        db.commit()
+
+        project = db.get(Project, int(result["project"]["id"]))
+        assert project is not None
+        assert project.source_type == "existing_folder"
+        assert project.write_permission_status == "write_allowed"
+        assert project.settings is not None
+        assert project.settings.sandbox_mode == "workspace-write"
+        assert project.settings.approval_policy == "on-request"
+        assert scheduled == [(result["orchestration"]["id"], "user_request")]
+    finally:
+        db.close()
+
+
+def test_explicit_codex_cli_mode_rejects_dry_run_fallback(monkeypatch) -> None:
+    async def fake_inventory() -> list[dict[str, object]]:
+        return [
+            {"runner_type": "dry_run", "availability": True},
+            {"runner_type": "codex_cli", "availability": False},
+        ]
+
+    monkeypatch.setattr(service.runners, "inventory", fake_inventory)
+
+    with pytest.raises(MissionControlError) as excinfo:
+        asyncio.run(bridge_runtime_service._resolve_orchestration_mode("codex_cli"))
+
+    assert excinfo.value.code == "MC-RUNNER-SELECTION-FAILED-001"
+    assert "explicitly requested" in str(excinfo.value.detail).lower()

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import os
 import shutil
 import subprocess
@@ -332,8 +333,28 @@ def test_launcher_scripts_use_configured_launcher_dir() -> None:
     assert 'Assert-LocalHost' in start_script_ps1
     assert 'MISSION_CONTROL_LAUNCHER_CONFIG' in start_daemon_script_ps1
     assert 'MISSION_CONTROL_LAUNCHER_DIR' in start_daemon_script_ps1
+    assert 'Ensure-FrontendBundle' in start_daemon_script_ps1
+    assert 'Test-FrontendHealthy' in start_daemon_script_ps1
+    assert 'MISSION_CONTROL_FRONTEND_DIST' in start_daemon_script_ps1
+    assert 'MISSION_CONTROL_CODEX_HOME' in start_daemon_script_ps1
+    assert 'MISSION_CONTROL_CODEX_PROFILE_ROOT' in start_daemon_script_ps1
+    assert 'MISSION_CONTROL_SOURCE_USERPROFILE' in start_daemon_script_ps1
+    assert 'MISSION_CONTROL_SOURCE_HOME' in start_daemon_script_ps1
+    assert '$env:USERPROFILE = $runtimeCodexProfileRoot' in start_daemon_script_ps1
+    assert 'auth.json' in start_daemon_script_ps1
+    assert 'installation_id' in start_daemon_script_ps1
     assert 'MISSION_CONTROL_LAUNCHER_CONFIG' in start_daemon_script_sh
     assert 'MISSION_CONTROL_LAUNCHER_DIR' in start_daemon_script_sh
+    assert 'build_frontend_if_needed' in start_daemon_script_sh
+    assert 'frontend_check' in start_daemon_script_sh
+    assert 'MISSION_CONTROL_FRONTEND_DIST' in start_daemon_script_sh
+    assert 'MISSION_CONTROL_CODEX_HOME' in start_daemon_script_sh
+    assert 'MISSION_CONTROL_CODEX_PROFILE_ROOT' in start_daemon_script_sh
+    assert 'MISSION_CONTROL_SOURCE_USERPROFILE' in start_daemon_script_sh
+    assert 'MISSION_CONTROL_SOURCE_HOME' in start_daemon_script_sh
+    assert 'export HOME="${RUNTIME_CODEX_PROFILE_ROOT}"' in start_daemon_script_sh
+    assert 'auth.json' in start_daemon_script_sh
+    assert 'installation_id' in start_daemon_script_sh
     assert 'launcherLogDir' in start_daemon_script_sh
     assert 'MISSION_CONTROL_LAUNCHER_CONFIG' in stop_script_sh
     assert 'MISSION_CONTROL_LAUNCHER_DIR' in stop_script_sh
@@ -403,6 +424,84 @@ def test_windows_stop_launcher_script_honors_launcher_overrides(tmp_path, env_na
     assert completed.returncode == 0, completed.stderr
     assert not pid_file.exists(), f"{env_name} override was ignored:\nSTDOUT:\n{completed.stdout}\nSTDERR:\n{completed.stderr}"
     assert "Mission Control processes stopped." in completed.stdout
+
+
+def test_windows_stop_daemon_script_stops_tracked_port_owner_when_commandline_is_unavailable(tmp_path) -> None:
+    powershell = shutil.which("powershell.exe") or shutil.which("pwsh")
+    if not powershell:
+        pytest.skip("PowerShell is required for daemon stop-script behavior coverage.")
+
+    repo_root = tmp_path / "repo"
+    scripts_dir = repo_root / "scripts"
+    launcher_dir = repo_root / ".runtime" / "launcher"
+    scripts_dir.mkdir(parents=True, exist_ok=True)
+    launcher_dir.mkdir(parents=True, exist_ok=True)
+    source_root = Path(__file__).resolve().parents[3]
+    shutil.copy2(source_root / "scripts" / "stop-mission-control-daemon.ps1", scripts_dir / "stop-mission-control-daemon.ps1")
+    (scripts_dir / "mission-control.config.json").write_text('{"host":"127.0.0.1","backendPort":8010,"launcherLogDir":".runtime/launcher"}', encoding="utf-8")
+    metadata_path = launcher_dir / "daemon.json"
+    metadata_path.write_text(
+        json.dumps(
+            {
+                "status": "ok",
+                "mode": "daemon",
+                "host": "127.0.0.1",
+                "port": 8010,
+                "pid": 4321,
+                "repo_root": str(repo_root),
+                "runtime_root": str(repo_root / "apps" / "server" / ".runtime"),
+                "launcher_root": str(launcher_dir),
+            }
+        ),
+        encoding="utf-8",
+    )
+    marker_path = repo_root / "stopped.txt"
+    ps_repo = str(repo_root).replace("'", "''")
+    ps_marker = str(marker_path).replace("'", "''")
+    ps_script = str(scripts_dir / "stop-mission-control-daemon.ps1").replace("'", "''")
+    command = f"""
+function Invoke-WebRequest {{
+  [CmdletBinding()]
+  param($Uri, $UseBasicParsing, $TimeoutSec)
+  throw 'timeout'
+}}
+function netstat {{
+  '  TCP    127.0.0.1:8010         0.0.0.0:0              LISTENING       4321'
+}}
+function Get-Process {{
+  [CmdletBinding()]
+  param([int]$Id)
+  if ($Id -eq 4321) {{
+    return [pscustomobject]@{{ Id = 4321 }}
+  }}
+  return $null
+}}
+function Get-CimInstance {{
+  [CmdletBinding()]
+  param($ClassName, $Filter)
+  throw 'Access denied'
+}}
+function Stop-Process {{
+  [CmdletBinding()]
+  param([int]$Id, [switch]$Force)
+  Set-Content -Path '{ps_marker}' -Value $Id -Encoding UTF8
+}}
+Set-Location '{ps_repo}'
+& '{ps_script}'
+"""
+    completed = subprocess.run(
+        [powershell, "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", command],
+        cwd=str(repo_root),
+        env={**os.environ, "MISSION_CONTROL_LAUNCHER_DIR": str(launcher_dir)},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert marker_path.read_text(encoding="utf-8").lstrip("\ufeff").strip() == "4321"
+    assert not metadata_path.exists()
+    assert "Daemon stopped (PID 4321)." in completed.stdout
 
 
 def test_desktop_app_ignores_fake_site_packages_repo_roots(monkeypatch, tmp_path) -> None:

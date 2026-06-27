@@ -1,15 +1,18 @@
 # Documentation
 
-This directory contains the maintained long-form documentation for Codex Mission Control as a background-running orchestration platform for Codex.
+This directory contains the maintained headless-first documentation for Codex Mission Control.
 
 GitHub's repository navigation is controlled by GitHub. Project-specific documentation is linked from README and maintained in `docs/` and the Wiki.
 
 ## Start here
 
-- [Overview](OVERVIEW.md)
 - [Quick Start](QUICK_START.md)
 - [Background Install](HEADLESS_INSTALL.md)
-- [Codex Chat Mode](CODEX_CHAT_MODE.md)
+- [Headless Happy Path](HEADLESS_HAPPY_PATH.md)
+- [Recursive Improvement](RECURSIVE_IMPROVEMENT.md)
+- [Feature Status](FEATURE_STATUS.md)
+- [Runner Support Matrix](RUNNERS.md)
+- [Terminal Transcript](TERMINAL_TRANSCRIPT.md)
 
 ## Architecture
 
@@ -35,6 +38,7 @@ GitHub's repository navigation is controlled by GitHub. Project-specific documen
 
 - [Autowire Providers](AUTOWIRE_PROVIDERS.md)
 - [Background Health](HEADLESS_HEALTH.md)
+- [Headless Happy Path](HEADLESS_HAPPY_PATH.md)
 - [Webwright](WEBWRIGHT.md)
 - [Mission Control Errors](ERRORS.md)
 - [Error Registry](ERROR_REGISTRY.md)

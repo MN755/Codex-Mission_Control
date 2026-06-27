@@ -12,6 +12,7 @@ from codex_runner.events import parse_json_line
 from config import RUNTIME_LOGS_ROOT
 from prompts import app_server_input_items, worker_task_prompt
 from provider_support import default_label
+from usage_tracking import build_prompt_usage_estimate
 
 
 @dataclass
@@ -75,7 +76,8 @@ class AppServerCodexRunner(BaseCodexRunner):
                     pass
 
     async def start_task(self, context: RunnerContext) -> RunnerHandle:
-        prompt = worker_task_prompt(
+        prompt = await asyncio.to_thread(
+            worker_task_prompt,
             context.project,
             context.agent,
             context.task,
@@ -111,6 +113,7 @@ class AppServerCodexRunner(BaseCodexRunner):
 
     async def _start_turn(self, context: RunnerContext, prompt: str, resume: bool) -> RunnerHandle:
         run_id = f"appsvr-{uuid.uuid4().hex}"
+        initial_usage = build_prompt_usage_estimate(prompt)
         logs_path = RUNTIME_LOGS_ROOT / f"{run_id}.log"
         stdout_path = RUNTIME_LOGS_ROOT / f"{run_id}.stdout.log"
         stderr_path = RUNTIME_LOGS_ROOT / f"{run_id}.stderr.log"
@@ -121,6 +124,7 @@ class AppServerCodexRunner(BaseCodexRunner):
             stdout_path=str(stdout_path),
             stderr_path=str(stderr_path),
             event_log_path=str(event_log_path),
+            initial_usage=initial_usage,
         )
         self.runs[run_id] = state
         process = await asyncio.create_subprocess_exec(
@@ -172,7 +176,7 @@ class AppServerCodexRunner(BaseCodexRunner):
         )
         await send({"method": "initialized", "params": {}})
 
-        workdir = context.agent.workspace_path or context.project.workspace_path
+        workdir = self.effective_workspace_path(context)
         if resume and context.agent.session_ref:
             await send({"method": "thread/resume", "id": 1, "params": {"threadId": context.agent.session_ref, "cwd": workdir}})
         else:

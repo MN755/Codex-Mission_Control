@@ -16,11 +16,13 @@ from bridge_formatter import (
     format_safe_mode_message,
     format_status_summary_message,
 )
+from config import DEFAULT_APPROVAL_POLICY, DEFAULT_SANDBOX
 from errors import MissionControlError
 from imported_codebase import import_service
 from manager import service
 from models import (
     Agent,
+    AgentRun,
     ApprovalRequest,
     EvidenceBasedHandoff,
     ImportedCodebaseSafety,
@@ -38,6 +40,7 @@ from models import (
 )
 from orchestration import ACTIVE_ORCHESTRATION_STATUSES, coordinator
 from plugin_health import mission_control_plugin_health
+from project_settings import get_or_create_project_settings
 from security.path_validation import PathValidationError, resolve_local_path
 from security.redaction import redact_text, redact_value
 from security.service import security_service
@@ -48,6 +51,36 @@ ACTIVE_AGENT_STATUSES = {"starting", "working", "waiting", "needs_review", "bloc
 
 
 class BridgeRuntimeService:
+    @staticmethod
+    def _promote_project_for_live_run(db: Session, project: Project) -> None:
+        if project.source_type != "existing_folder":
+            return
+        settings = get_or_create_project_settings(db, project)
+        if settings.sandbox_mode == "read-only":
+            settings.sandbox_mode = DEFAULT_SANDBOX
+        if settings.approval_policy == "untrusted":
+            settings.approval_policy = DEFAULT_APPROVAL_POLICY
+        if project.write_permission_status == "read_only":
+            project.write_permission_status = "write_allowed"
+        safety = import_service.ensure_safety(db, project, create_if_missing=False)
+        if safety is not None and safety.write_permission_status == "read_only":
+            safety.write_permission_status = "write_allowed"
+            safety.updated_at = utc_now()
+
+    @staticmethod
+    def _audit_decision_for_pending_decision(decision_type: str, option_id: str) -> str | None:
+        if decision_type not in {"command_approval", "tool_approval"}:
+            return None
+        if option_id == "approve_once":
+            return "approved"
+        if option_id in {"deny", "denied"}:
+            return "denied"
+        if option_id in {"allow_for_project", "always_allow_if_safe"}:
+            return "allowed_for_project"
+        if option_id in {"expired", "auto_approved", "blocked"}:
+            return option_id
+        return None
+
     def _error(
         self,
         code: str,
@@ -79,10 +112,67 @@ class BridgeRuntimeService:
         inventory = [dict(item) for item in list(await service.runners.inventory())]
         codex_ready = self._runner_available(inventory, "codex_cli")
         if normalized == "codex_cli":
-            return "codex_cli" if codex_ready else "dry_run"
+            if codex_ready:
+                return "codex_cli"
+            raise self._error(
+                "MC-RUNNER-SELECTION-FAILED-001",
+                detail="Codex CLI was explicitly requested, but no authenticated local Codex runner is available.",
+                breakpoint="runner.select",
+                safe_details={
+                    "requested_mode": normalized,
+                    "available_runners": [
+                        str(item.get("runner_type"))
+                        for item in inventory
+                        if bool(item.get("availability"))
+                    ],
+                },
+            )
         if normalized == "auto":
             return "codex_cli" if codex_ready else "dry_run"
         return "unknown"
+
+    def get_attach_status_summary(
+        self,
+        *,
+        project: Project,
+        attached: dict[str, Any],
+        orchestration: OrchestrationSession | None = None,
+    ) -> dict[str, Any]:
+        attach_outcome = str(attached.get("attach_outcome") or "attached")
+        message = str(attached.get("message") or "Mission Control attached the workspace.")
+        user_action_required = bool(attached.get("user_action_required"))
+        current_work = [message]
+        waiting_on_you: list[str] = []
+        if orchestration is not None and orchestration.manager_status:
+            current_work.append(str(orchestration.manager_status))
+        if user_action_required:
+            waiting_on_you.append("Answer the pending attach or approval decision so Mission Control can continue.")
+        return format_status_summary_message(
+            message_id=f"attach-status-{project.id}-{orchestration.id if orchestration is not None else 'project'}",
+            project_id=project.id,
+            orchestration_id=orchestration.id if orchestration is not None else None,
+            title="Mission Control status",
+            summary=message,
+            project_name=project.name,
+            manager_status=message,
+            mode=f"{attach_outcome} / {project.manager_mode}",
+            swarm="not planned",
+            user_action_needed="yes" if user_action_required else "no",
+            current_work=current_work[:4],
+            waiting_on_you=waiting_on_you,
+            next_expected_step=(
+                "Answer the pending decision before starting the task."
+                if user_action_required
+                else "Start a Mission Control task for this attached workspace."
+            ),
+            risk_level="medium" if user_action_required else None,
+            created_at=utc_now(),
+            orchestration_status=orchestration.status if orchestration is not None else project.status,
+            current_blockers=[message] if user_action_required else [],
+            handoff_readiness=str(project.handoff_status or "not_ready"),
+            active_agent_count=0,
+            model_advisories=[],
+        )
 
     def _latest_project_orchestration(self, db: Session, project: Project) -> OrchestrationSession | None:
         return db.scalar(
@@ -397,6 +487,106 @@ class BridgeRuntimeService:
         db.flush()
         return record
 
+    def _sync_review_task_decision(
+        self,
+        db: Session,
+        project: Project,
+        task: Task,
+        orchestration: OrchestrationSession | None,
+    ) -> PendingDecision:
+        record = self._dedupe_pending_decision_matches(
+            db,
+            source_kind="task_review",
+            source_id=task.id,
+        )
+        options = [
+            {"id": "approve", "label": "Approve", "description": "Mark this reviewed task complete and let Mission Control continue."},
+            {"id": "request_changes", "label": "Request changes", "description": "Send this task back to backlog so Mission Control can route follow-up work."},
+        ]
+        message = f"Task \"{task.title}\" needs review before Mission Control can continue."
+        if record is None:
+            record = PendingDecision(
+                project_id=project.id,
+                orchestration_id=orchestration.id if orchestration else None,
+                decision_type="handoff_review",
+                title=f"Review required: {task.title}",
+                message=message,
+                requesting_agent_id=task.assigned_agent_id,
+                related_task_id=task.id,
+                risk_level="medium",
+                options_json=options,
+                recommended_option="approve",
+                source_kind="task_review",
+                source_id=task.id,
+            )
+            db.add(record)
+        record.project_id = project.id
+        record.orchestration_id = orchestration.id if orchestration else record.orchestration_id
+        record.decision_type = "handoff_review"
+        record.title = f"Review required: {task.title}"
+        record.message = message
+        record.requesting_agent_id = task.assigned_agent_id
+        record.related_task_id = task.id
+        record.risk_level = "medium"
+        record.options_json = options
+        record.recommended_option = "approve"
+        record.status = "pending" if task.status == "needs_review" else "answered"
+        if task.status == "needs_review":
+            record.answered_at = None
+            record.answer_json = None
+        record.presentation_json = {
+            "card_type": "handoff_review",
+            "title": f"Review required: {task.title}",
+            "subtitle": message,
+            "risk_level": "medium",
+            "details": [
+                item
+                for item in [
+                    task.goal or task.scope or None,
+                    f"Role: {task.agent_role}" if task.agent_role else None,
+                    f"Milestone: {task.milestone}" if task.milestone else None,
+                    f"Waiting reason: {task.waiting_reason}" if task.waiting_reason else None,
+                ]
+                if item
+            ],
+            "options": options,
+            "recommended_option": "approve",
+            "fallback_markdown": message,
+        }
+        db.flush()
+        return record
+
+    def _stale_task_review_reason(self, db: Session, decision: PendingDecision) -> str | None:
+        if decision.source_kind != "task_review" and decision.decision_type != "handoff_review":
+            return None
+        task_id = int(decision.source_id or decision.related_task_id or 0)
+        if not task_id:
+            return "review decision no longer references a task"
+        task = db.get(Task, task_id)
+        if task is None:
+            return "review task no longer exists"
+        active_run_id = db.scalar(
+            select(AgentRun.id)
+            .where(AgentRun.task_id == task.id, AgentRun.finished_at.is_(None))
+            .order_by(AgentRun.id.desc())
+            .limit(1)
+        )
+        if active_run_id is not None:
+            return "review task has an active worker run"
+        if task.status != "needs_review":
+            return f"review task is {task.status}, not needs_review"
+        return None
+
+    def _cancel_stale_task_review_decision(self, decision: PendingDecision, reason: str) -> None:
+        decision.status = "cancelled"
+        decision.answered_at = utc_now()
+        decision.answer_json = {
+            "option_id": "cancelled",
+            "selected_text": "Cancelled stale review decision",
+            "free_text": reason,
+            "source": "task_review_reconciliation",
+        }
+
     def sync_pending_decisions(
         self,
         db: Session,
@@ -420,6 +610,13 @@ class BridgeRuntimeService:
                 .order_by(ApprovalRequest.created_at.asc(), ApprovalRequest.id.asc())
             )
         )
+        review_tasks = list(
+            db.scalars(
+                select(Task)
+                .where(Task.project_id == project.id, Task.status == "needs_review")
+                .order_by(Task.created_at.asc(), Task.id.asc())
+            )
+        )
         active_keys: set[tuple[str, int]] = set()
         for question in questions:
             active_keys.add(("manager_question", question.id))
@@ -427,6 +624,9 @@ class BridgeRuntimeService:
         for approval in approvals:
             active_keys.add(("approval_request", approval.id))
             self._sync_approval_decision(db, project, approval, orchestration)
+        for task in review_tasks:
+            active_keys.add(("task_review", task.id))
+            self._sync_review_task_decision(db, project, task, orchestration)
         burst_batches = list(
             db.scalars(
                 select(SubagentBatch)
@@ -447,6 +647,11 @@ class BridgeRuntimeService:
         for decision in existing:
             if decision.source_kind == "attach_workspace":
                 continue
+            if decision.status == "pending":
+                stale_review_reason = self._stale_task_review_reason(db, decision)
+                if stale_review_reason is not None:
+                    self._cancel_stale_task_review_decision(decision, stale_review_reason)
+                    continue
             key = (str(decision.source_kind or ""), int(decision.source_id or 0))
             if key not in active_keys and decision.status == "pending":
                 decision.status = "cancelled"
@@ -602,6 +807,54 @@ class BridgeRuntimeService:
         db.flush()
         return pending
 
+    def _queued_live_status_summary(
+        self,
+        *,
+        project: Project,
+        orchestration: OrchestrationSession,
+        pending: Sequence[dict[str, Any]] | Sequence[PendingDecision],
+    ) -> dict[str, Any]:
+        waiting_lines: list[str] = []
+        for item in pending:
+            if isinstance(item, dict):
+                title = str(item.get("title") or "").strip()
+                message = str(item.get("message") or "").strip()
+            else:
+                title = str(item.title or "").strip()
+                message = str(item.message or "").strip()
+            if not title and not message:
+                continue
+            waiting_lines.append(f"{title}: {message}" if title and message else (title or message))
+        return format_status_summary_message(
+            message_id=f"status-summary-{project.id}-{orchestration.id}",
+            project_id=project.id,
+            orchestration_id=orchestration.id,
+            title="Mission Control status",
+            summary=redact_text((orchestration.manager_status or "Mission Control queued the first live background turn.")[:220]),
+            project_name=project.name,
+            manager_status=orchestration.manager_status or "Mission Control queued the first live background turn.",
+            mode=f"{orchestration.mode} / {project.manager_mode}",
+            swarm="not planned",
+            user_action_needed="yes" if waiting_lines else "no",
+            current_work=[
+                "Mission Control accepted the task and queued the first live background turn.",
+                "Poll status or pending decisions for the next concrete update.",
+            ],
+            waiting_on_you=waiting_lines[:5],
+            next_expected_step=(
+                "Answer the pending Mission Control decision."
+                if waiting_lines
+                else "Mission Control Manager will continue the live background turn and then publish a richer status update."
+            ),
+            risk_level="medium" if waiting_lines else None,
+            created_at=utc_now(),
+            orchestration_status=orchestration.status,
+            current_blockers=[],
+            handoff_readiness=str(project.handoff_status or "not_ready"),
+            active_agent_count=0,
+            model_advisories=[],
+        )
+
     async def start_headless_task(
         self,
         db: Session,
@@ -722,9 +975,12 @@ class BridgeRuntimeService:
             }
 
         resolved_mode = await self._resolve_orchestration_mode(mode)
+        run_initial_turn_inline = resolved_mode == "dry_run"
         project.runner_mode = "dry_run" if resolved_mode == "dry_run" else ("cli" if resolved_mode == "codex_cli" else project.runner_mode)
         if project.settings is not None:
             project.settings.runner_mode = project.runner_mode
+        if not run_initial_turn_inline:
+            self._promote_project_for_live_run(db, project)
         service.open_project(db, project)
         orchestration_payload = self.create_orchestration(
             db,
@@ -738,7 +994,7 @@ class BridgeRuntimeService:
                 "interview_mode": interview_mode,
                 "headless_entrypoint": "start_task",
             },
-            schedule_background_turn=False,
+            schedule_background_turn=not run_initial_turn_inline,
         )
         orchestration = db.get(OrchestrationSession, int(orchestration_payload["id"]))
         if orchestration is None:
@@ -759,19 +1015,10 @@ class BridgeRuntimeService:
                 interview_mode=interview_mode,
                 create_pending_decision=create_pending_decision,
             )
+            status_summary = await self.get_status_summary(db, project=project, orchestration=orchestration)
         else:
-            await coordinator._run_background_turn(orchestration.id, "user_request")
-            db.expire_all()
-            orchestration = db.get(OrchestrationSession, int(orchestration_payload["id"]))
-            if orchestration is None:
-                raise self._error(
-                    "MC-ORCH-START-FAILED-001",
-                    detail="Mission Control lost the orchestration session after the initial background turn.",
-                    breakpoint="orchestration.create",
-                    project_id=project.id,
-                )
             pending = self.get_pending_decisions(db, project=project, orchestration=orchestration)
-        status_summary = await self.get_status_summary(db, project=project, orchestration=orchestration)
+            status_summary = self._queued_live_status_summary(project=project, orchestration=orchestration, pending=pending)
         if attached is not None:
             attached["status_summary_markdown"] = status_summary["fallback_markdown"]
         return {
@@ -801,10 +1048,55 @@ class BridgeRuntimeService:
                 breakpoint="bridge.format_status",
                 orchestration_id=orchestration.id if orchestration is not None else None,
             )
+        settings = service._project_settings_preview(db, project)
+        degraded_notices = await service._workspace_degraded_notices(project, settings)
+        return self._build_status_summary(
+            db,
+            project=project,
+            orchestration=orchestration,
+            degraded_notices=degraded_notices,
+            current_action=service._derive_current_action(db, project, degraded_notices, mutate=True),
+        )
+
+    def get_status_summary_preview(
+        self,
+        db: Session,
+        *,
+        project: Project | None = None,
+        orchestration: OrchestrationSession | None = None,
+    ) -> dict[str, Any]:
+        if orchestration is not None and project is None:
+            project = db.get(Project, orchestration.project_id)
+        if project is None:
+            raise self._error(
+                "MC-BRIDGE-FORMAT-FAILED-001",
+                detail="Project not found for status summary.",
+                breakpoint="bridge.format_status",
+                orchestration_id=orchestration.id if orchestration is not None else None,
+            )
+        degraded_notices = service._workspace_degraded_notices_preview(project)
+        return self._build_status_summary(
+            db,
+            project=project,
+            orchestration=orchestration,
+            degraded_notices=degraded_notices,
+            current_action=service._derive_current_action_preview(
+                db,
+                project,
+                degraded_notices,
+            ),
+        )
+
+    def _build_status_summary(
+        self,
+        db: Session,
+        *,
+        project: Project,
+        orchestration: OrchestrationSession | None,
+        degraded_notices: list[str],
+        current_action: dict[str, Any],
+    ) -> dict[str, Any]:
         pending = self.get_pending_decisions(db, project=project, orchestration=orchestration)
-        current_action = await service.get_project_action(db, project)
-        system_status = await service.get_system_status(db, project)
-        health = service.get_project_health_preview(db, project)
         handoff = service.get_project_handoff_summary(db, project)
         active_agents = list(
             db.scalars(
@@ -831,17 +1123,53 @@ class BridgeRuntimeService:
             elif background_runtime.get("turn_active"):
                 current_work.append("Mission Control is actively running a background manager turn.")
         waiting = [f"{item['title']}: {item['message']}" if item.get("message") else item["title"] for item in pending]
-        blockers = list(dict.fromkeys([*list(current_action.get("message") and [str(current_action["message"])] or []), *list(health.get("reasons") or [])]))
-        model_advisories = [
-            str(item.get("summary") or "").strip()
-            for item in list(system_status.get("model_advisories") or [])
-            if str(item.get("summary") or "").strip()
-        ]
+        handoff_status = str(handoff.get("status") or "not_ready")
+        handoff_missing_evidence = [str(item) for item in list(handoff.get("missing_evidence") or []) if str(item).strip()]
+        handoff_known_limitations = [str(item) for item in list(handoff.get("known_limitations") or []) if str(item).strip()]
+        effective_handoff_readiness = handoff_status if project.status == "handoff_ready" else str(project.handoff_status or "not_ready")
+        handoff_ready_for_review = (
+            project.status == "handoff_ready"
+            and handoff_status in {"needs_review", "ready"}
+            and not background_runtime.get("turn_active")
+        )
+        if handoff_ready_for_review:
+            confidence_level = str(handoff.get("confidence_level") or "low")
+            evidence_level = str(handoff.get("evidence_status") or "missing")
+            manager_status = (
+                "Mission Control generated the latest evidence-backed handoff and is waiting for review."
+                if handoff_status == "needs_review"
+                else "Mission Control completed the latest evidence-backed handoff."
+            )
+            current_work = [
+                manager_status,
+                f"Handoff confidence is {confidence_level} with {evidence_level} evidence.",
+                *handoff_missing_evidence[:2],
+                *handoff_known_limitations[:1],
+            ]
+            if handoff_status == "needs_review" and not waiting:
+                waiting = ["Review the latest evidence-backed handoff and resolve the remaining required gates."]
+        else:
+            manager_status = orchestration.manager_status if orchestration is not None else str(current_action.get("title") or "Monitoring")
+        include_handoff_evidence_blockers = handoff_ready_for_review or project.status == "handoff_ready"
+        blockers = list(
+            dict.fromkeys(
+                [
+                    *(handoff_missing_evidence if include_handoff_evidence_blockers else []),
+                    *list(
+                        current_action.get("type") not in {"no_action", None}
+                        and current_action.get("message")
+                        and [str(current_action["message"])]
+                        or []
+                    ),
+                    *[str(item) for item in degraded_notices if str(item).strip()],
+                ]
+            )
+        )
+        model_advisories: list[str] = []
         swarm_plan = service.get_swarm_plan(db, project)
         swarm_summary = "Not planned"
         if swarm_plan:
             swarm_summary = f"{swarm_plan.get('mode', 'unknown')} / {swarm_plan.get('status', 'unknown')}"
-        manager_status = orchestration.manager_status if orchestration is not None else str(current_action.get("title") or "Monitoring")
         user_action_needed = "yes" if waiting else "no"
         return format_status_summary_message(
             message_id=f"status-summary-{project.id}-{orchestration.id if orchestration else 'project'}",
@@ -856,12 +1184,16 @@ class BridgeRuntimeService:
             user_action_needed=user_action_needed,
             current_work=current_work[:5],
             waiting_on_you=waiting[:5],
-            next_expected_step=str(current_action.get("title") or "Mission Control will continue with the next safe background step."),
+            next_expected_step=(
+                "Review the latest evidence-backed handoff."
+                if handoff_ready_for_review
+                else str(current_action.get("title") or "Mission Control will continue with the next safe background step.")
+            ),
             risk_level="high" if blockers else ("medium" if waiting else None),
             created_at=utc_now(),
-            orchestration_status=orchestration.status if orchestration is not None else project.status,
+            orchestration_status=project.status if handoff_ready_for_review else (orchestration.status if orchestration is not None else project.status),
             current_blockers=blockers[:5],
-            handoff_readiness=str(handoff.get("status") or "not_ready"),
+            handoff_readiness=effective_handoff_readiness,
             active_agent_count=len([agent for agent in active_agents if agent.status in ACTIVE_AGENT_STATUSES]),
             model_advisories=model_advisories[:3],
         )
@@ -1342,6 +1674,83 @@ class BridgeRuntimeService:
                 decision.answered_at = utc_now()
                 decision.answer_json = {"option_id": option_id, "selected_text": selected_text, "free_text": free_text}
                 db.flush()
+        elif decision.source_kind == "task_review" and decision.source_id is not None:
+            task = db.get(Task, decision.source_id)
+            if task is None:
+                raise MissionControlError(
+                    code="MC-REVIEW-TASK-NOT-FOUND-001",
+                    detail="Review task not found.",
+                    breakpoint="decision.answer",
+                    project_id=decision.project_id,
+                    orchestration_id=decision.orchestration_id,
+                )
+            orchestration = db.get(OrchestrationSession, decision.orchestration_id) if decision.orchestration_id is not None else None
+            if option_id == "approve":
+                await service.complete_task_by_user(db, task)
+            elif option_id == "request_changes":
+                project = db.get(Project, task.project_id)
+                if project is None:
+                    raise MissionControlError(
+                        code="MC-REVIEW-TASK-PROJECT-NOT-FOUND-001",
+                        detail="Project not found for review task.",
+                        breakpoint="decision.answer",
+                        project_id=decision.project_id,
+                        orchestration_id=decision.orchestration_id,
+                    )
+                run = db.scalar(
+                    select(AgentRun)
+                    .where(AgentRun.task_id == task.id, AgentRun.finished_at.is_(None))
+                    .order_by(AgentRun.id.desc())
+                )
+                agent = db.get(Agent, task.assigned_agent_id) if task.assigned_agent_id else None
+                if run is not None:
+                    run.status = "stopped"
+                    run.finished_at = utc_now()
+                if agent is not None:
+                    agent.current_task_id = None
+                    agent.current_action = None
+                    if agent.status not in {"done", "retired"}:
+                        agent.status = "waiting"
+                task.status = "backlog"
+                task.assigned_agent_id = None
+                task.waiting_reason = "Review requested changes before Mission Control can continue."
+                service._release_reservations(db, project.id, task_id=task.id, agent_id=agent.id if agent is not None else None)
+                service.events.publish(
+                    db,
+                    project.id,
+                    "task.review_changes_requested",
+                    {"task_id": task.id, "run_id": run.id if run is not None else None},
+                )
+                service._schedule_orchestration_follow_up(db, project, reason="task_review_changes_requested")
+            else:
+                raise MissionControlError(
+                    code="MC-DECISION-INVALID-OPTION-001",
+                    detail="Unsupported review resolution option.",
+                    breakpoint="decision.validate_option",
+                    project_id=decision.project_id,
+                    orchestration_id=decision.orchestration_id,
+                    safe_details={"received_option": option_id},
+                )
+            decision.status = "answered"
+            decision.answered_at = utc_now()
+            decision.answer_json = {"option_id": option_id, "selected_text": selected_text, "free_text": free_text}
+            db.flush()
+            if orchestration is not None:
+                coordinator._record_event(
+                    db,
+                    orchestration,
+                    "pending_decision_answered",
+                    {"decision_id": decision.id, "decision_type": decision.decision_type, "option_id": option_id},
+                )
+                coordinator.sync_pending_decisions(db, orchestration)
+                if orchestration.status != "completed":
+                    coordinator._update_session_status(
+                        db,
+                        orchestration,
+                        status="planning",
+                        manager_status="Decision recorded. Mission Control is continuing the orchestration.",
+                    )
+                    coordinator._schedule_background_turn(orchestration.id, "decision_answered")
         elif decision.source_kind == "subagent_batch" and decision.source_id is not None:
             batch = db.get(SubagentBatch, decision.source_id)
             if batch is None:
@@ -1373,23 +1782,28 @@ class BridgeRuntimeService:
                 "pending_decision_answered",
                 {"decision_id": decision.id, "decision_type": decision.decision_type, "option_id": option_id},
             )
-            security_service.log_audit(
-                db,
-                project=project,
-                orchestration_id=decision.orchestration_id,
-                decision_id=decision.id,
-                action_type=decision.decision_type,
-                action_summary=decision.title,
-                risk_level=decision.risk_level,
-                decision=option_id,
-                decided_by="user",
-                reason=selected_text or option_id,
-                metadata_json={"free_text": free_text},
-            )
+            audit_decision = self._audit_decision_for_pending_decision(decision.decision_type, option_id)
+            if audit_decision is not None:
+                security_service.log_audit(
+                    db,
+                    project=project,
+                    orchestration_id=decision.orchestration_id,
+                    decision_id=decision.id,
+                    action_type=decision.decision_type,
+                    action_summary=decision.title,
+                    risk_level=decision.risk_level,
+                    decision=audit_decision,
+                    decided_by="user",
+                    reason=selected_text or option_id,
+                    metadata_json={"free_text": free_text},
+                )
         orchestration = db.get(OrchestrationSession, decision.orchestration_id) if decision.orchestration_id is not None else None
         if orchestration is not None and project is not None:
             metadata = dict(orchestration.metadata_json or {})
-            if metadata.get("headless_happy_path") and decision.decision_type == "command_approval":
+            dry_run_happy_path = metadata.get("headless_happy_path") and decision.decision_type == "command_approval" and (
+                str(orchestration.mode or "").strip().lower() == "dry_run" or bool(metadata.get("simulated"))
+            )
+            if dry_run_happy_path:
                 coordinator._record_event(
                     db,
                     orchestration,

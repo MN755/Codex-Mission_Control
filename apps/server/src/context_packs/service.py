@@ -146,6 +146,7 @@ class ContextPackService:
         title: str | None = None,
         goal: str | None = None,
         token_budget_hint: int | None = None,
+        persist: bool = True,
     ) -> dict[str, Any]:
         agent = self._resolve_project_agent(db, project, agent_id)
         task = self._resolve_project_task(db, project, task_id)
@@ -205,8 +206,9 @@ class ContextPackService:
             validation_steps_json=validation_steps,
             token_budget_hint=token_budget_hint or max(1200, 400 * max(1, len(included_files))),
         )
-        db.add(pack)
-        db.flush()
+        if persist:
+            db.add(pack)
+            db.flush()
 
         sections: list[ContextPackSection] = []
 
@@ -218,8 +220,9 @@ class ContextPackService:
                 content_markdown=content.strip(),
                 source_refs_json=source_refs,
             )
-            db.add(section)
-            db.flush()
+            if persist:
+                db.add(section)
+                db.flush()
             sections.append(section)
 
         add_section(
@@ -283,7 +286,8 @@ class ContextPackService:
             "\n".join([f"- {item}" for item in validation_steps] + ["- Return a completion report with changed files, tests, blockers, and risks."]),
             [f"task:{task.id}" if task is not None else "task:none"],
         )
-        db.flush()
+        if persist:
+            db.flush()
         return self._serialize_pack(pack, sections)
 
     def list_context_packs(self, db: Session, project: Project) -> list[dict[str, Any]]:

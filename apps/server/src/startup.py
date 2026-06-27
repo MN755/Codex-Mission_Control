@@ -53,6 +53,11 @@ class StartupCoordinator:
             "diagnostic_report_path": None,
             "degraded_reasons": [],
             "failed_checks": [],
+            "selected_provider": normalize_provider(profile.selected_provider),
+            "selected_provider_label": None,
+            "runtime_ready": False,
+            "runtime_summary": None,
+            "runtime_blockers": [],
             "status_source": "fresh",
             "startup_started_at": started_at,
             "last_completed_at": None,
@@ -99,6 +104,28 @@ class StartupCoordinator:
             "custom": {"custom"},
         }
         return mapping.get(normalize_provider(selected_provider), set())
+
+    def _provider_statuses(self, profile: AppProfile) -> list[dict[str, Any]]:
+        return detect_provider_statuses(
+            selected_provider=profile.selected_provider,
+            adapter_command=profile.adapter_command,
+            provider_endpoint=profile.provider_endpoint,
+            adapter_args=list(profile.adapter_args_json or []),
+        )
+
+    @staticmethod
+    def _provider_probe_key(profile: AppProfile) -> tuple[str, str | None, str | None, tuple[str, ...]]:
+        return (
+            normalize_provider(profile.selected_provider),
+            profile.adapter_command,
+            profile.provider_endpoint,
+            tuple(str(item) for item in list(profile.adapter_args_json or [])),
+        )
+
+    @staticmethod
+    def _matching_provider_status(profile: AppProfile, provider_statuses: list[dict[str, Any]]) -> dict[str, Any]:
+        selected = normalize_provider(profile.selected_provider)
+        return next((item for item in provider_statuses if item["provider"] == selected), provider_statuses[0])
 
     def _check_runtime_paths(self) -> dict[str, Any]:
         try:
@@ -222,15 +249,10 @@ class StartupCoordinator:
         )
         return [cli_check, login_check, app_server_check]
 
-    def _provider_optional_checks(self, profile: AppProfile) -> list[dict[str, Any]]:
+    def _provider_optional_checks(self, profile: AppProfile, provider_statuses: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
         selected = normalize_provider(profile.selected_provider)
         checks: list[dict[str, Any]] = self._codex_optional_checks()
-        provider_statuses = detect_provider_statuses(
-            selected_provider=profile.selected_provider,
-            adapter_command=profile.adapter_command,
-            provider_endpoint=profile.provider_endpoint,
-            adapter_args=list(profile.adapter_args_json or []),
-        )
+        provider_statuses = provider_statuses or self._provider_statuses(profile)
         by_provider = {item["provider"]: item for item in provider_statuses}
 
         def provider_status_for(provider_name: str) -> dict[str, Any]:
@@ -309,6 +331,12 @@ class StartupCoordinator:
 
         return checks
 
+    def _provider_optional_checks_cached(self, profile: AppProfile, provider_statuses: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        try:
+            return self._provider_optional_checks(profile, provider_statuses)
+        except TypeError:
+            return self._provider_optional_checks(profile)
+
     def _finalize(self, db: Session, profile: AppProfile, payload: dict[str, Any], *, include_optional_checks: bool) -> dict[str, Any]:
         required_failures = [check for check in payload["checks"] if check["required"] and check["status"] == "failed"]
         selected_provider = normalize_provider(profile.selected_provider)
@@ -373,25 +401,34 @@ class StartupCoordinator:
         db.flush()
         return payload
 
-    def _system_status_snapshot(self, profile: AppProfile) -> dict[str, Any]:
-        provider_statuses = detect_provider_statuses(
-            selected_provider=profile.selected_provider,
-            adapter_command=profile.adapter_command,
-            provider_endpoint=profile.provider_endpoint,
-            adapter_args=list(profile.adapter_args_json or []),
-        )
+    def _system_status_snapshot(self, profile: AppProfile, provider_statuses: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+        provider_statuses = provider_statuses or self._provider_statuses(profile)
         selected = normalize_provider(profile.selected_provider)
-        matching = next((item for item in provider_statuses if item["provider"] == selected), provider_statuses[0])
+        matching = self._matching_provider_status(profile, provider_statuses)
         return {
             "selected_provider": selected,
-            "selected_provider_label": matching["label"],
-            "cli_detected": matching["cli_detected"],
-            "cli_version": matching["cli_version"],
-            "login_status": matching["login_status"],
+            "selected_provider_label": str(matching.get("label") or selected.replace("_", " ").title()),
+            "cli_detected": bool(matching.get("cli_detected")),
+            "cli_version": matching.get("cli_version"),
+            "login_status": str(matching.get("login_status") or matching.get("runtime_summary") or "Runtime status unavailable."),
             "app_server_handshake_status": "not_checked",
             "runtime_ready": bool(matching.get("runtime_ready")),
             "runtime_summary": matching.get("runtime_summary"),
+            "runtime_blockers": list(matching.get("runtime_blockers", [])),
         }
+
+    def _apply_system_status_snapshot(
+        self,
+        payload: dict[str, Any],
+        profile: AppProfile,
+        provider_statuses: list[dict[str, Any]] | None = None,
+    ) -> None:
+        snapshot = self._system_status_snapshot(profile, provider_statuses)
+        payload["selected_provider"] = snapshot["selected_provider"]
+        payload["selected_provider_label"] = snapshot["selected_provider_label"]
+        payload["runtime_ready"] = snapshot["runtime_ready"]
+        payload["runtime_summary"] = snapshot["runtime_summary"]
+        payload["runtime_blockers"] = list(snapshot.get("runtime_blockers") or [])
 
     def get_status(self, db: Session) -> dict[str, Any]:
         attempt = int((self.last_status or {}).get("startup_attempt") or 1)
@@ -400,15 +437,24 @@ class StartupCoordinator:
     def preview_status(self, db: Session, *, attempt_number: int, include_optional_checks: bool = True) -> dict[str, Any]:
         profile = self._preview_profile(db)
         payload = self._base_payload(profile, attempt=attempt_number)
+        provider_statuses = self._provider_statuses(profile)
+        self._apply_system_status_snapshot(payload, profile, provider_statuses)
+        initial_probe_key = self._provider_probe_key(profile)
         settings_check, refreshed_profile = self._check_settings_preview(db)
         profile = refreshed_profile or profile
+        refreshed_provider_statuses = (
+            provider_statuses
+            if refreshed_profile is None or self._provider_probe_key(profile) == initial_probe_key
+            else self._provider_statuses(profile)
+        )
+        self._apply_system_status_snapshot(payload, profile, refreshed_provider_statuses)
         payload["checks"].append(self._check_runtime_paths())
         payload["checks"].append(self._check_database(db))
         payload["checks"].append(settings_check)
         payload["checks"].append(self._check_projects(db))
         payload["checks"].append(self._check_backend_route())
         if include_optional_checks:
-            payload["checks"].extend(self._provider_optional_checks(profile))
+            payload["checks"].extend(self._provider_optional_checks_cached(profile, refreshed_provider_statuses))
         required_failures = [check for check in payload["checks"] if check["required"] and check["status"] == "failed"]
         selected_provider = normalize_provider(profile.selected_provider)
         provider_failure_names = self._selected_provider_failure_names(selected_provider)
@@ -453,15 +499,24 @@ class StartupCoordinator:
     def run_checks(self, db: Session, *, attempt_number: int, include_optional_checks: bool = True) -> dict[str, Any]:
         profile = get_or_create_app_profile(db)
         payload = self._base_payload(profile, attempt=attempt_number)
+        provider_statuses = self._provider_statuses(profile)
+        self._apply_system_status_snapshot(payload, profile, provider_statuses)
+        initial_probe_key = self._provider_probe_key(profile)
         settings_check, refreshed_profile = self._check_settings(db)
         profile = refreshed_profile or profile
+        refreshed_provider_statuses = (
+            provider_statuses
+            if refreshed_profile is None or self._provider_probe_key(profile) == initial_probe_key
+            else self._provider_statuses(profile)
+        )
+        self._apply_system_status_snapshot(payload, profile, refreshed_provider_statuses)
         payload["checks"].append(self._check_runtime_paths())
         payload["checks"].append(self._check_database(db))
         payload["checks"].append(settings_check)
         payload["checks"].append(self._check_projects(db))
         payload["checks"].append(self._check_backend_route())
         if include_optional_checks:
-            payload["checks"].extend(self._provider_optional_checks(profile))
+            payload["checks"].extend(self._provider_optional_checks_cached(profile, refreshed_provider_statuses))
         return self._finalize(db, profile, payload, include_optional_checks=include_optional_checks)
 
     def retry(self, db: Session, *, attempt_number: int, failed_check: str | None, retry_mode: str) -> dict[str, Any]:

@@ -2,32 +2,33 @@
 
 Mission Control should be usable from Codex chat without opening the dashboard at all.
 
-## Scenario
-
-User says:
-
-`Use Mission Control for this repo and fix the failing tests.`
-
-Expected bridge flow:
+## Small Validated Flow
 
 1. Attach the workspace.
-2. Reuse or import the project safely.
-3. Start or resume a background orchestration.
-4. Show a compact status summary in Codex chat.
-5. Surface any pending approval or manager question.
-6. Send the user answer back through the bridge.
-7. Show a compact event digest.
-8. Generate or fetch the evidence-based handoff summary.
+2. Start a task in `dry_run` or a configured runner.
+3. Show a compact status summary in Codex chat.
+4. Surface a pending approval.
+5. Answer it through the bridge.
+6. Show the event digest.
+7. Show the handoff summary.
+8. Show the approval audit log.
+
+Transcript proof:
+
+- [Terminal Transcript](TERMINAL_TRANSCRIPT.md)
 
 ## Primary endpoints
 
 - `POST /api/headless/attach-workspace`
+- `POST /api/orchestrations/attach-workspace`
 - `POST /api/orchestrations`
+- `POST /api/headless/start-task`
 - `GET /api/orchestrations/{orchestration_id}/status-summary`
 - `GET /api/orchestrations/{orchestration_id}/pending-decisions`
 - `POST /api/decisions/{decision_id}/answer`
 - `GET /api/orchestrations/{orchestration_id}/event-digest`
 - `GET /api/orchestrations/{orchestration_id}/handoff-summary`
+- `GET /api/projects/{project_id}/security/audit-log`
 - `POST /api/headless/happy-path-demo`
 
 `/api/orchestrations/attach-workspace` still exists for compatibility, but the headless-first path should use `/api/headless/attach-workspace`.
@@ -42,11 +43,13 @@ It covers:
 
 - attach workspace
 - start orchestration
+- start task through the headless bridge
 - status summary markdown
 - pending command approval formatting
 - answering the decision
 - compact event digest
 - dry-run handoff generation
+- approval audit log
 - redaction of secrets from chat output
 
 ## Deterministic demo route
@@ -75,12 +78,12 @@ It will:
 1. verify the local daemon, or start it if allowed
 2. create a temporary repo-shaped workspace
 3. attach that workspace
-4. switch the project to `dry_run`
-5. start an orchestration
-6. print the chat-native status summary
-7. print and answer one pending decision
-8. print the event digest
-9. generate and print the handoff summary
+4. start a headless `dry_run` task
+5. print the status summary
+6. print and answer one approval
+7. print the event digest
+8. print the handoff summary
+9. print the approval audit log
 
 ## Why this exists
 

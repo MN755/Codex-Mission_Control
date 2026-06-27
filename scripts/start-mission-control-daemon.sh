@@ -5,6 +5,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 CONFIG_PATH="${MISSION_CONTROL_LAUNCHER_CONFIG:-${SCRIPT_DIR}/mission-control.config.json}"
 PYTHON_BIN="${PYTHON_BIN:-python3}"
+FRONTEND_DIR="${REPO_ROOT}/apps/dashboard"
+FRONTEND_DIST="${FRONTEND_DIR}/dist"
+FRONTEND_INDEX="${FRONTEND_DIST}/index.html"
 
 if ! command -v "${PYTHON_BIN}" >/dev/null 2>&1; then
   PYTHON_BIN="python"
@@ -65,6 +68,48 @@ bootstrap_cli_paths() {
   fi
 }
 
+resolve_source_codex_home() {
+  if [[ -n "${CODEX_HOME:-}" ]]; then
+    printf '%s\n' "${CODEX_HOME}"
+    return 0
+  fi
+  printf '%s\n' "${HOME}/.codex"
+}
+
+sync_codex_auth_assets() {
+  local source_home="$1"
+  local target_home="$2"
+  mkdir -p "${target_home}"
+  local copied=()
+  local name
+  for name in auth.json .credentials.json installation_id; do
+    if [[ -f "${source_home}/${name}" ]]; then
+      cp "${source_home}/${name}" "${target_home}/${name}"
+      copied+=("${name}")
+    fi
+  done
+  printf '%s\n' "${copied[*]:-}"
+}
+
+build_frontend_if_needed() {
+  if [[ -f "${FRONTEND_INDEX}" ]]; then
+    return
+  fi
+  if ! command -v npm >/dev/null 2>&1; then
+    echo "npm was not found on PATH, and the dashboard bundle is missing at ${FRONTEND_DIST}." >&2
+    exit 1
+  fi
+  echo "[Mission Control] Dashboard bundle missing. Building frontend..."
+  (
+    cd "${FRONTEND_DIR}"
+    npm run build
+  )
+  if [[ ! -f "${FRONTEND_INDEX}" ]]; then
+    echo "Dashboard frontend build output is missing at ${FRONTEND_INDEX}" >&2
+    exit 1
+  fi
+}
+
 HOST="${MISSION_CONTROL_BACKEND_HOST:-127.0.0.1}"
 PORT="${MISSION_CONTROL_BACKEND_PORT:-8010}"
 CONFIG_LAUNCHER_DIR=".runtime/launcher"
@@ -93,6 +138,9 @@ PY
 fi
 
 LAUNCHER_DIR="${MISSION_CONTROL_LAUNCHER_DIR:-${REPO_ROOT}/${CONFIG_LAUNCHER_DIR}}"
+RUNTIME_ROOT="${MISSION_CONTROL_RUNTIME_ROOT:-${REPO_ROOT}/.runtime}"
+RUNTIME_CODEX_PROFILE_ROOT="${MISSION_CONTROL_CODEX_PROFILE_ROOT:-${RUNTIME_ROOT}/codex-profile}"
+RUNTIME_CODEX_HOME="${MISSION_CONTROL_CODEX_HOME:-${RUNTIME_CODEX_PROFILE_ROOT}/.codex}"
 METADATA_PATH="${LAUNCHER_DIR}/daemon.json"
 STDOUT_PATH="${LAUNCHER_DIR}/daemon.stdout.log"
 STDERR_PATH="${LAUNCHER_DIR}/daemon.stderr.log"
@@ -108,6 +156,7 @@ url_host() {
 
 URL_HOST="$(url_host "${HOST}")"
 HEALTH_URL="http://${URL_HOST}:${PORT}/api/health"
+DASHBOARD_URL="http://${URL_HOST}:${PORT}/dashboard"
 mkdir -p "${LAUNCHER_DIR}"
 
 bootstrap_cli_paths
@@ -115,6 +164,10 @@ CODEX_CLI_PATH="${MISSION_CONTROL_CODEX_PATH:-${CODEX_CLI_PATH:-}}"
 CLAUDE_CLI_PATH="${MISSION_CONTROL_CLAUDE_PATH:-${CLAUDE_CLI_PATH:-}}"
 RESOLVED_CODEX_PATH="$(resolve_cli_path "${CODEX_CLI_PATH}" codex codex.exe codex.cmd || true)"
 RESOLVED_CLAUDE_PATH="$(resolve_cli_path "${CLAUDE_CLI_PATH}" claude claude.cmd claude.exe || true)"
+SOURCE_CODEX_HOME="$(resolve_source_codex_home)"
+SYNCED_CODEX_AUTH_FILES="$(sync_codex_auth_assets "${SOURCE_CODEX_HOME}" "${RUNTIME_CODEX_HOME}")"
+SOURCE_USERPROFILE="${MISSION_CONTROL_SOURCE_USERPROFILE:-${USERPROFILE:-${HOME}}}"
+SOURCE_HOME="${MISSION_CONTROL_SOURCE_HOME:-${HOME:-${SOURCE_USERPROFILE}}}"
 
 cat >"${LAUNCH_LOG_PATH}" <<EOF
 generated_at=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
@@ -124,6 +177,10 @@ backend_port=${PORT}
 python_bin=${PYTHON_BIN}
 server_script=${REPO_ROOT}/apps/server/src/mission_control_daemon.py
 codex_cli_path=${RESOLVED_CODEX_PATH}
+codex_source_home=${SOURCE_CODEX_HOME}
+codex_profile_root=${RUNTIME_CODEX_PROFILE_ROOT}
+codex_home=${RUNTIME_CODEX_HOME}
+codex_auth_files=${SYNCED_CODEX_AUTH_FILES}
 claude_cli_path=${RESOLVED_CLAUDE_PATH}
 stdout_path=${STDOUT_PATH}
 stderr_path=${STDERR_PATH}
@@ -135,6 +192,20 @@ import sys, urllib.request
 try:
     with urllib.request.urlopen(sys.argv[1], timeout=2) as response:
         ok = response.status == 200 and b'"status"' in response.read()
+except Exception:
+    ok = False
+sys.exit(0 if ok else 1)
+PY
+}
+
+frontend_check() {
+  "${PYTHON_BIN}" - <<'PY' "${1}"
+import sys
+from urllib.request import urlopen
+
+try:
+    with urlopen(sys.argv[1], timeout=2) as response:
+        ok = response.status == 200
 except Exception:
     ok = False
 sys.exit(0 if ok else 1)
@@ -168,6 +239,14 @@ PY
 
 if health_check "${HEALTH_URL}"; then
   if identity_matches; then
+    build_frontend_if_needed
+    if ! frontend_check "${DASHBOARD_URL}"; then
+      sleep 0.5
+      if ! frontend_check "${DASHBOARD_URL}"; then
+        echo "Mission Control daemon is healthy, but the dashboard frontend is not reachable at ${DASHBOARD_URL}." >&2
+        exit 1
+      fi
+    fi
     echo "[Mission Control] Daemon already healthy at ${HEALTH_URL}"
     exit 0
   fi
@@ -190,10 +269,19 @@ then
   exit 1
 fi
 
+build_frontend_if_needed
+
 export MISSION_CONTROL_SERVER_MODE="daemon"
 export MISSION_CONTROL_BACKEND_HOST="${HOST}"
 export MISSION_CONTROL_BACKEND_PORT="${PORT}"
-export MISSION_CONTROL_REPO_ROOT="${REPO_ROOT}"
+export MISSION_CONTROL_FRONTEND_DIST="${FRONTEND_DIST}"
+export MISSION_CONTROL_CODEX_PROFILE_ROOT="${RUNTIME_CODEX_PROFILE_ROOT}"
+export MISSION_CONTROL_CODEX_HOME="${RUNTIME_CODEX_HOME}"
+export MISSION_CONTROL_SOURCE_CODEX_HOME="${SOURCE_CODEX_HOME}"
+export MISSION_CONTROL_SOURCE_USERPROFILE="${SOURCE_USERPROFILE}"
+export MISSION_CONTROL_SOURCE_HOME="${SOURCE_HOME}"
+export HOME="${RUNTIME_CODEX_PROFILE_ROOT}"
+export USERPROFILE="${RUNTIME_CODEX_PROFILE_ROOT}"
 if [[ -n "${RESOLVED_CODEX_PATH}" ]]; then
   export MISSION_CONTROL_CODEX_PATH="${RESOLVED_CODEX_PATH}"
 fi
@@ -207,7 +295,7 @@ nohup "${PYTHON_BIN}" -u "${REPO_ROOT}/apps/server/src/mission_control_daemon.py
 DAEMON_PID=$!
 
 for _ in $(seq 1 60); do
-  if health_check "${HEALTH_URL}"; then
+  if health_check "${HEALTH_URL}" && frontend_check "${DASHBOARD_URL}"; then
     break
   fi
   if ! kill -0 "${DAEMON_PID}" >/dev/null 2>&1; then
@@ -221,6 +309,11 @@ done
 
 if ! health_check "${HEALTH_URL}"; then
   echo "Mission Control daemon did not become healthy in time." >&2
+  exit 1
+fi
+
+if ! frontend_check "${DASHBOARD_URL}"; then
+  echo "Mission Control daemon is healthy, but the dashboard frontend did not become reachable at ${DASHBOARD_URL}." >&2
   exit 1
 fi
 

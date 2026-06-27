@@ -583,3 +583,93 @@ def test_plugin_health_surfaces_gpu_cluster_lane(monkeypatch, tmp_path) -> None:
     assert payload["status"] == "degraded"
     assert checks["gpu_cluster_health"]["status"] == "degraded"
     assert "pending pods" in checks["gpu_cluster_health"]["summary"].lower()
+
+
+def test_plugin_health_offloads_blocking_probes_to_threads(monkeypatch, tmp_path) -> None:
+    async def fake_inventory() -> list[dict]:
+        return [{"runner_type": "codex_cli", "availability": True}]
+
+    def fake_detect_codex_status() -> dict[str, object]:
+        return {
+            "cli_detected": True,
+            "cli_execution_available": True,
+            "cli_version": "codex 1.0.0",
+            "login_status": "Logged in using ChatGPT",
+            "auth_mode": "chatgpt",
+            "authenticated": True,
+            "auth_status_detectable": True,
+            "mcp_servers": [{"name": "mission-control", "status": "connected"}],
+            "configured_mcp_servers": [{"name": "mission-control"}],
+            "local_skills": [],
+        }
+
+    def fake_detect_webwright_status() -> dict[str, object]:
+        return {
+            "available": False,
+            "install_status": "missing",
+            "summary": "Webwright is not installed.",
+            "recommended_install_commands": [],
+            "workspace_signals": [],
+            "version": None,
+            "launch_command": None,
+        }
+
+    def fake_detect_gpu_status(workspace_path) -> dict[str, object]:
+        return {
+            "available": False,
+            "status": "ready",
+            "summary": "GPU cluster health lane is idle.",
+            "workspace_relevant": False,
+            "telemetry_status": "idle",
+            "workspace_summary_status": "idle",
+            "repo_mode_enabled": False,
+            "repo_mode": None,
+            "cluster_usable": None,
+            "pending_pod_count": None,
+            "gpu_memory_saturated": False,
+            "gpu_memory_saturation_pct": None,
+            "likely_failure_source": "unknown",
+            "blocking_reasons": [],
+            "observability_sources": [],
+            "summary_files": [],
+            "recommended_fixes": [],
+            "safe_commands": [],
+        }
+
+    async def fake_to_thread(func, /, *args, **kwargs):
+        calls.append(getattr(func, "__name__", repr(func)))
+        return func(*args, **kwargs)
+
+    runtime_root = tmp_path / "runtime"
+    launcher_root = tmp_path / "launcher"
+    calls: list[str] = []
+
+    monkeypatch.setattr("plugin_health.detect_codex_status", fake_detect_codex_status)
+    monkeypatch.setattr("plugin_health.detect_webwright_status", fake_detect_webwright_status)
+    monkeypatch.setattr("plugin_health.detect_project_nvidia_gpu_diagnostics", fake_detect_gpu_status)
+    monkeypatch.setattr(
+        "plugin_health.daemon_identity_snapshot",
+        lambda: _daemon_identity(
+            repo_root=str(__import__("plugin_health").REPO_ROOT),
+            runtime_root=str(runtime_root),
+            launcher_root=str(launcher_root),
+        ),
+    )
+    monkeypatch.setattr("plugin_health.read_daemon_metadata", lambda: {"host": "127.0.0.1", "port": 8000, "mode": "daemon"})
+    monkeypatch.setattr(
+        "plugin_health.resolve_backend_binding",
+        lambda: {"host": "127.0.0.1", "port": 8000, "mode": "daemon", "source": "daemon_metadata"},
+    )
+    monkeypatch.setattr("plugin_health.daemon_dashboard_url", lambda project_id=None: "http://127.0.0.1:8000/dashboard")
+    monkeypatch.setattr("plugin_health._probe_url", lambda url, timeout=2.0: (True, "HTTP 200"))
+    monkeypatch.setattr("plugin_health.service.runners.inventory", fake_inventory)
+    monkeypatch.setattr("plugin_health.RUNTIME_ROOT", runtime_root)
+    monkeypatch.setattr("plugin_health.asyncio.to_thread", fake_to_thread)
+
+    payload = asyncio.run(__import__("plugin_health").mission_control_plugin_health())
+
+    assert payload["status"] == "ready"
+    assert "fake_detect_codex_status" in calls
+    assert "fake_detect_webwright_status" in calls
+    assert "fake_detect_gpu_status" in calls
+    assert "_sqlite_db_reachable" in calls

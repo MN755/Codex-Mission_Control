@@ -125,6 +125,13 @@ class MissionControlMcpServer:
                         "user_request": {"type": "string", "minLength": 1},
                         "source": {"type": "string", "minLength": 1},
                         "orchestration_id": {"type": "integer", "minimum": 1},
+                        "mode": {"type": "string", "enum": ["codex_cli", "claude_cli", "ollama", "openai_api", "dry_run"]},
+                        "strategy": {
+                            "type": "string",
+                            "enum": ["fastest_build", "balanced", "high_quality", "documentation_heavy", "research_planning", "massive_codebase", "gpu_programming", "manager_decides"],
+                        },
+                        "interview_mode": {"type": "string", "enum": ["ask", "skip", "auto"]},
+                        "attach_policy": {"type": "string", "enum": ["reuse_existing", "create_new", "ask"]},
                     },
                     required=["project_id", "user_request"],
                 ),
@@ -755,6 +762,10 @@ class MissionControlMcpServer:
             user_request=self._require_string(args, "user_request"),
             source=str(args.get("source", "codex_plugin")),
             orchestration_id=self._optional_int(args, "orchestration_id"),
+            mode=str(args.get("mode", "codex_cli")),
+            strategy=str(args.get("strategy", "balanced")),
+            interview_mode=str(args.get("interview_mode", "skip")),
+            attach_policy=str(args.get("attach_policy", "reuse_existing")),
         )
 
     def _call_get_status(self, args: dict[str, Any]) -> Any:

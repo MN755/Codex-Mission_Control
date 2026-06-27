@@ -97,7 +97,13 @@ class MissionControlDaemonClient:
         if explicit:
             return Path(explicit).expanduser().resolve()
         if self.repo_root is not None:
-            return (self.repo_root / "apps" / "server" / ".runtime").resolve()
+            preferred = (self.repo_root / ".runtime").resolve()
+            legacy = (self.repo_root / "apps" / "server" / ".runtime").resolve()
+            if preferred.exists():
+                return preferred
+            if legacy.exists():
+                return legacy
+            return preferred
         return (self._default_app_support_root() / "runtime").resolve()
 
     @property
@@ -139,6 +145,64 @@ class MissionControlDaemonClient:
             return str(self.repo_root)
         return str(self._default_app_support_root())
 
+    def _daemon_launch_env(self) -> dict[str, str]:
+        env = os.environ.copy()
+        env.setdefault("MISSION_CONTROL_SERVER_MODE", "daemon")
+        env.setdefault("MISSION_CONTROL_BACKEND_HOST", urlparse(self.base_url).hostname or self._configured_host)
+        env.setdefault("MISSION_CONTROL_BACKEND_PORT", str(urlparse(self.base_url).port or self._configured_port))
+        env.setdefault("MISSION_CONTROL_RUNTIME_ROOT", str(self._runtime_root))
+        env.setdefault("MISSION_CONTROL_LAUNCHER_DIR", str(self._launcher_root))
+        if self.repo_root is not None:
+            env.setdefault("MISSION_CONTROL_REPO_ROOT", str(self.repo_root))
+        else:
+            env.setdefault("MISSION_CONTROL_APP_HOME", str(self._default_app_support_root()))
+        return env
+
+    def _daemon_popen_kwargs(self, *, stdout_handle: Any, stderr_handle: Any) -> dict[str, Any]:
+        kwargs: dict[str, Any] = {
+            "cwd": self._daemon_working_dir(),
+            "env": self._daemon_launch_env(),
+            "stdout": stdout_handle,
+            "stderr": stderr_handle,
+        }
+        if os.name == "nt":
+            detached = getattr(subprocess, "DETACHED_PROCESS", 0)
+            new_group = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+            no_window = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+            breakaway = getattr(subprocess, "CREATE_BREAKAWAY_FROM_JOB", 0)
+            kwargs["creationflags"] = detached | new_group | no_window | breakaway
+        else:
+            kwargs["start_new_session"] = True
+        return kwargs
+
+    def _spawn_daemon_process(self, args: list[str], *, stdout_handle: Any, stderr_handle: Any) -> None:
+        kwargs = self._daemon_popen_kwargs(stdout_handle=stdout_handle, stderr_handle=stderr_handle)
+        if os.name != "nt":
+            subprocess.Popen(args, **kwargs)
+            return
+        base_flags = int(kwargs.pop("creationflags", 0))
+        breakaway = getattr(subprocess, "CREATE_BREAKAWAY_FROM_JOB", 0)
+        fallback_flags = [base_flags]
+        if breakaway:
+            fallback_flags.append(base_flags & ~breakaway)
+        fallback_flags.append(0)
+        last_error: PermissionError | None = None
+        seen: set[int] = set()
+        for flags in fallback_flags:
+            if flags in seen:
+                continue
+            seen.add(flags)
+            try:
+                attempt_kwargs = dict(kwargs)
+                if flags:
+                    attempt_kwargs["creationflags"] = flags
+                subprocess.Popen(args, **attempt_kwargs)
+                return
+            except PermissionError as exc:
+                last_error = exc
+        if last_error is not None:
+            raise last_error
+
     def _read_daemon_token(self) -> str | None:
         if not self._daemon_token_path.exists():
             return None
@@ -170,6 +234,15 @@ class MissionControlDaemonClient:
                 return response.status_code == 200 and response.json().get("status") == "ok"
         except Exception:
             return False
+
+    def _healthcheck_with_retries(self, *, attempts: int, delay: float) -> bool:
+        total_attempts = max(1, attempts)
+        for attempt in range(total_attempts):
+            if self._healthcheck():
+                return True
+            if attempt + 1 < total_attempts:
+                time.sleep(max(0.0, delay))
+        return False
 
     def _daemon_identity(self) -> dict[str, Any] | None:
         try:
@@ -208,10 +281,16 @@ class MissionControlDaemonClient:
 
     def ensure_daemon_running(self) -> None:
         self._validate_localhost_binding()
-        if self._healthcheck():
+        if self._healthcheck_with_retries(attempts=2, delay=0.15):
             self._validate_running_daemon_identity()
             return
         if self._port_in_use():
+            if self._healthcheck_with_retries(attempts=4, delay=0.35):
+                self._validate_running_daemon_identity()
+                return
+            if self._daemon_identity():
+                self._validate_running_daemon_identity()
+                return
             parsed = urlparse(self.base_url)
             effective_host = parsed.hostname or self._configured_host
             effective_port = parsed.port or self._configured_port
@@ -222,27 +301,17 @@ class MissionControlDaemonClient:
                 "Likely causes: stale launcher config, another localhost service on the same port, or a dead Mission Control process with stale metadata."
             )
         self._launcher_root.mkdir(parents=True, exist_ok=True)
-        env = os.environ.copy()
-        env.setdefault("MISSION_CONTROL_SERVER_MODE", "daemon")
-        env.setdefault("MISSION_CONTROL_BACKEND_HOST", urlparse(self.base_url).hostname or self._configured_host)
-        env.setdefault("MISSION_CONTROL_BACKEND_PORT", str(urlparse(self.base_url).port or self._configured_port))
-        if self.repo_root is not None:
-            env.setdefault("MISSION_CONTROL_REPO_ROOT", str(self.repo_root))
-        else:
-            env.setdefault("MISSION_CONTROL_APP_HOME", str(self._default_app_support_root()))
         stdout_handle = open(self._launcher_root / "daemon.stdout.log", "a", encoding="utf-8")
         stderr_handle = open(self._launcher_root / "daemon.stderr.log", "a", encoding="utf-8")
-        kwargs: dict[str, Any] = {"cwd": self._daemon_working_dir(), "env": env, "stdout": stdout_handle, "stderr": stderr_handle}
-        if os.name == "nt":
-            kwargs["creationflags"] = (
-                getattr(subprocess, "DETACHED_PROCESS", 0)
-                | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
-                | getattr(subprocess, "CREATE_NO_WINDOW", 0)
-                | getattr(subprocess, "CREATE_BREAKAWAY_FROM_JOB", 0)
+        try:
+            self._spawn_daemon_process(
+                self._daemon_launch_command(),
+                stdout_handle=stdout_handle,
+                stderr_handle=stderr_handle,
             )
-        else:
-            kwargs["start_new_session"] = True
-        subprocess.Popen(self._daemon_launch_command(), **kwargs)
+        finally:
+            stdout_handle.close()
+            stderr_handle.close()
         deadline = time.time() + self.timeout
         while time.time() < deadline:
             if self._healthcheck():
@@ -350,14 +419,38 @@ class MissionControlDaemonClient:
             self._remember_orchestration_project(orchestration.get("id"), project.get("id"))
         return payload
 
-    def start_task(self, *, project_id: int, user_request: str, source: str = "codex_plugin", orchestration_id: int | None = None) -> dict[str, Any]:
+    def start_task(
+        self,
+        *,
+        project_id: int,
+        user_request: str,
+        source: str = "codex_plugin",
+        orchestration_id: int | None = None,
+        mode: str = "codex_cli",
+        strategy: str = "balanced",
+        interview_mode: str = "skip",
+        attach_policy: str = "reuse_existing",
+    ) -> dict[str, Any]:
         payload = self._request(
             "POST",
-            "/api/orchestrations",
-            json_body={"project_id": project_id, "user_request": user_request, "source": source, "orchestration_id": orchestration_id},
+            "/api/headless/start-task",
+            json_body={
+                "project_id": project_id,
+                "user_request": user_request,
+                "source": source,
+                "orchestration_id": orchestration_id,
+                "mode": mode,
+                "strategy": strategy,
+                "interview_mode": interview_mode,
+                "attach_policy": attach_policy,
+            },
         )
         if isinstance(payload, dict):
-            self._remember_orchestration_project(payload.get("id"), project_id)
+            project = payload.get("project") if isinstance(payload.get("project"), dict) else None
+            orchestration = payload.get("orchestration") if isinstance(payload.get("orchestration"), dict) else None
+            remembered_project_id = project.get("id") if project is not None else project_id
+            remembered_orchestration_id = orchestration.get("id") if orchestration is not None else payload.get("id")
+            self._remember_orchestration_project(remembered_orchestration_id, remembered_project_id)
         return payload
 
     def list_projects(self) -> list[dict[str, Any]]:

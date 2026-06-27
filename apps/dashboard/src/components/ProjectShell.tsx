@@ -8,6 +8,10 @@ function projectPath(project: Project): string {
   return project.slug ? `/projects/${project.id}/${project.slug}` : `/projects/${project.id}`;
 }
 
+function asciiMonitorPath(project: Project): string {
+  return project.slug ? `/projects/${project.id}/${project.slug}/ascii-monitor` : `/projects/${project.id}/ascii-monitor`;
+}
+
 export function ProjectShell({
   project,
   title,
@@ -47,6 +51,7 @@ export function ProjectShell({
             <NavLink to={`/projects/${project.id}/interview`}>Interview</NavLink>
             <NavLink to={`/projects/${project.id}/plan`}>Plan</NavLink>
             <NavLink to={modelsPath}>Models &amp; Runners</NavLink>
+            <NavLink to={asciiMonitorPath(project)}>ASCII Monitor</NavLink>
             <NavLink to={`/projects/${project.id}/handoff`}>Handoff</NavLink>
           </nav>
         ) : null}

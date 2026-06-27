@@ -3,10 +3,12 @@ from __future__ import annotations
 import json
 import os
 import secrets
+import socket
 import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from urllib.error import HTTPError, URLError
 
 if os.name == "nt":
     from ctypes import byref, windll
@@ -48,6 +50,41 @@ def _default_binding() -> tuple[str, int]:
         DEFAULT_BACKEND_PORT,
     )
     return host, port
+
+
+def _url_host(host: str) -> str:
+    return f"[{host}]" if ":" in host and not host.startswith("[") else host
+
+
+def _localhost_healthcheck_url(host: str, port: int) -> str:
+    return f"http://{_url_host(host)}:{port}/api/health"
+
+
+def daemon_listener_healthy(host: str, port: int, *, timeout: float = 1.0) -> bool:
+    try:
+        connect_host = host[1:-1] if host.startswith("[") and host.endswith("]") else host
+        with socket.create_connection((connect_host, int(port)), timeout=timeout) as connection:
+            connection.settimeout(timeout)
+            request = (
+                f"GET /api/health HTTP/1.1\r\n"
+                f"Host: {_url_host(host)}:{int(port)}\r\n"
+                "Connection: close\r\n\r\n"
+            ).encode("ascii", errors="ignore")
+            connection.sendall(request)
+            response = bytearray()
+            while True:
+                chunk = connection.recv(4096)
+                if not chunk:
+                    break
+                response.extend(chunk)
+                if len(response) >= 65536:
+                    break
+        if not response:
+            return False
+        status_line = response.split(b"\r\n", 1)[0].decode("iso-8859-1", errors="ignore")
+        return status_line.startswith("HTTP/1.") and " 200" in status_line
+    except (HTTPError, URLError, OSError, TimeoutError, ValueError, socket.timeout):
+        return False
 
 
 def process_is_running(pid: Any) -> bool:
@@ -210,10 +247,22 @@ def read_daemon_metadata(*, validate_liveness: bool = True) -> dict[str, Any]:
     payload.setdefault("launcher_root", str(LAUNCHER_ROOT))
     pid_running = process_is_running(payload.get("pid"))
     payload["pid_running"] = pid_running
+    payload["listener_healthy"] = None
     if validate_liveness:
         if payload.get("pid") and not pid_running and stored_status not in {"stopped", "failed"}:
             payload["status"] = "stale"
             payload["liveness"] = "dead_pid"
+        elif pid_running and str(payload.get("mode") or "").lower() == "daemon":
+            listener_healthy = daemon_listener_healthy(
+                str(payload.get("host") or default_host),
+                int(payload.get("port") or default_port),
+            )
+            payload["listener_healthy"] = listener_healthy
+            if not listener_healthy and stored_status not in {"stopped", "failed"}:
+                payload["status"] = "stale"
+                payload["liveness"] = "listener_missing"
+            else:
+                payload["liveness"] = "running"
         else:
             payload["liveness"] = "running" if pid_running else "unknown"
     else:
@@ -263,12 +312,6 @@ def resolve_backend_binding(*, prefer_live_metadata: bool = True) -> dict[str, A
         "source": source,
         "metadata": metadata,
     }
-
-
-def _url_host(host: str) -> str:
-    return f"[{host}]" if ":" in host and not host.startswith("[") else host
-
-
 def daemon_dashboard_url(project_id: int | None = None) -> str:
     binding = resolve_backend_binding()
     host = binding["host"]

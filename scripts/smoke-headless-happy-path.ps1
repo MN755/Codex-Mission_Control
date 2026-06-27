@@ -1,6 +1,10 @@
 param(
   [string]$BaseUrl = "http://127.0.0.1:8010",
-  [switch]$TryStartDaemon = $true
+  [switch]$TryStartDaemon = $true,
+  [string]$WorkspaceRoot = "",
+  [string]$TranscriptPath = "",
+  [ValidateSet("dry_run", "auto", "codex_cli")]
+  [string]$TaskMode = "dry_run"
 )
 
 Set-StrictMode -Version Latest
@@ -16,8 +20,39 @@ $baseUri = [Uri]$BaseUrl
 $daemonHost = $baseUri.Host
 $daemonPort = $baseUri.Port
 $tokenPath = Join-Path $runtimeRoot "daemon.token"
-$workspaceRoot = Join-Path $runtimeRoot "smoke-headless-happy-path"
+$workspaceRoot = if ([string]::IsNullOrWhiteSpace($WorkspaceRoot)) {
+  Join-Path ([System.IO.Path]::GetTempPath()) "mission-control-smoke-headless-happy-path"
+} else {
+  $WorkspaceRoot
+}
 $workspacePath = Join-Path $workspaceRoot ("repo-" + (Get-Date -Format "yyyyMMdd-HHmmss"))
+$transcriptSections = New-Object System.Collections.Generic.List[string]
+
+function Add-TranscriptSection {
+  param(
+    [string]$Title,
+    [string]$Content
+  )
+  $section = @(
+    "## $Title",
+    "",
+    '```text',
+    $Content,
+    '```'
+  ) -join "`n"
+  $null = $transcriptSections.Add($section)
+}
+
+function Write-Section {
+  param(
+    [string]$Title,
+    [string]$Content
+  )
+  Write-Host ""
+  Write-Host "===== $Title ====="
+  Write-Host $Content
+  Add-TranscriptSection -Title $Title -Content $Content
+}
 
 function Test-Health {
   try {
@@ -41,6 +76,22 @@ function Invoke-Json {
   }
   $json = $Body | ConvertTo-Json -Depth 10
   return Invoke-RestMethod -Uri $Url -Method $Method -Headers $Headers -ContentType "application/json" -Body $json -TimeoutSec 15
+}
+
+function Get-ApiUrl {
+  param(
+    [string]$Path,
+    [hashtable]$Query = @{}
+  )
+  if (-not $Query -or $Query.Count -eq 0) {
+    return "$BaseUrl$Path"
+  }
+  $pairs = foreach ($key in $Query.Keys) {
+    $encodedKey = [Uri]::EscapeDataString([string]$key)
+    $encodedValue = [Uri]::EscapeDataString([string]$Query[$key])
+    "$encodedKey=$encodedValue"
+  }
+  return "${BaseUrl}${Path}?$(($pairs -join '&'))"
 }
 
 function Wait-ForToken {
@@ -70,41 +121,32 @@ $null = New-Item -ItemType Directory -Path (Join-Path $workspacePath "tests") -F
 Set-Content -Path (Join-Path $workspacePath "README.md") -Value "# Smoke repo`n" -Encoding UTF8
 Set-Content -Path (Join-Path $workspacePath "tests\test_smoke.py") -Value "def test_smoke():`n    assert True`n" -Encoding UTF8
 
-$attach = Invoke-Json -Method POST -Url "$BaseUrl/api/orchestrations/attach-workspace" -Headers $bridgeHeaders -Body @{
+$attach = Invoke-Json -Method POST -Url (Get-ApiUrl -Path "/api/headless/attach-workspace") -Headers $bridgeHeaders -Body @{
   workspace_path   = $workspacePath.Replace("\", "/")
-  project_name     = "Headless Smoke"
+  project_name     = (Split-Path -Leaf $workspacePath)
   mode             = "existing_codebase"
   read_only_first  = $true
   attach_policy    = "reuse_existing"
 }
 $projectId = [int]$attach.project.id
 
-$settings = Invoke-Json -Method GET -Url "$BaseUrl/api/settings?project_id=$projectId"
-$settings.runner_mode = "dry_run"
-$null = Invoke-Json -Method PUT -Url "$BaseUrl/api/settings?project_id=$projectId" -Body $settings
-$null = Invoke-Json -Method POST -Url "$BaseUrl/api/projects/$projectId/open"
-
-$orchestration = Invoke-Json -Method POST -Url "$BaseUrl/api/orchestrations" -Headers $bridgeHeaders -Body @{
-  project_id    = $projectId
-  user_request  = "Use Mission Control for this repo and fix the failing tests."
-  source        = "codex_plugin"
+$start = Invoke-Json -Method POST -Url (Get-ApiUrl -Path "/api/headless/start-task") -Headers $bridgeHeaders -Body @{
+  project_id       = $projectId
+  user_request     = "Use Mission Control for this repo and fix the failing tests."
+  strategy         = "balanced"
+  mode             = $TaskMode
+  interview_mode   = "skip"
+  attach_policy    = "reuse_existing"
 }
+
+$orchestration = $start.orchestration
 $orchestrationId = [int]$orchestration.id
+$pending = @($start.pending_decisions)
 
-for ($index = 0; $index -lt 20; $index += 1) {
-  $pending = Invoke-Json -Method GET -Url "$BaseUrl/api/orchestrations/$orchestrationId/pending-decisions?project_id=$projectId" -Headers $bridgeHeaders
-  if ($pending.Count -gt 0) {
-    break
-  }
-  Start-Sleep -Milliseconds 500
-}
+Write-Section -Title "ATTACH WORKSPACE" -Content ($attach | ConvertTo-Json -Depth 6)
+Write-Section -Title "START TASK" -Content ($orchestration | ConvertTo-Json -Depth 6)
+Write-Section -Title "STATUS SUMMARY" -Content $start.status_summary.fallback_markdown
 
-$statusSummary = Invoke-Json -Method GET -Url "$BaseUrl/api/orchestrations/$orchestrationId/status-summary?project_id=$projectId" -Headers $bridgeHeaders
-Write-Host ""
-Write-Host "===== STATUS SUMMARY ====="
-Write-Host $statusSummary.fallback_markdown
-
-$pending = Invoke-Json -Method GET -Url "$BaseUrl/api/orchestrations/$orchestrationId/pending-decisions?project_id=$projectId" -Headers $bridgeHeaders
 for ($attempt = 0; $attempt -lt 3; $attempt += 1) {
   if (-not $pending -or $pending.Count -eq 0) {
     break
@@ -113,10 +155,8 @@ for ($attempt = 0; $attempt -lt 3; $attempt += 1) {
   if (-not $decision) {
     $decision = $pending | Select-Object -First 1
   }
-  $bridgeMessage = Invoke-Json -Method GET -Url "$BaseUrl/api/decisions/$($decision.id)/bridge-message?project_id=$projectId" -Headers $bridgeHeaders
-  Write-Host ""
-  Write-Host "===== PENDING DECISION ====="
-  Write-Host $bridgeMessage.fallback_markdown
+  $bridgeMessage = Invoke-Json -Method GET -Url (Get-ApiUrl -Path "/api/decisions/$($decision.id)/bridge-message" -Query @{ project_id = $projectId }) -Headers $bridgeHeaders
+  Write-Section -Title "PENDING DECISION" -Content $bridgeMessage.fallback_markdown
   $recommended = if ($decision.recommended_option) {
     $decision.options | Where-Object { $_.id -eq $decision.recommended_option } | Select-Object -First 1
   } else {
@@ -126,26 +166,66 @@ for ($attempt = 0; $attempt -lt 3; $attempt += 1) {
   if (-not $selected) {
     break
   }
-  $answered = Invoke-Json -Method POST -Url "$BaseUrl/api/decisions/$($decision.id)/answer?project_id=$projectId" -Headers $bridgeHeaders -Body @{
+  $answered = Invoke-Json -Method POST -Url (Get-ApiUrl -Path "/api/decisions/$($decision.id)/answer" -Query @{ project_id = $projectId }) -Headers $bridgeHeaders -Body @{
     option_id     = $selected.id
     selected_text = $selected.label
   }
-  Write-Host ""
-  Write-Host "===== NEXT STATUS ====="
-  Write-Host $answered.next_status_summary.fallback_markdown
+  Write-Section -Title "NEXT STATUS" -Content $answered.next_status_summary.fallback_markdown
   if (-not $answered.next_status_summary.user_action_required) {
     break
   }
-  $pending = Invoke-Json -Method GET -Url "$BaseUrl/api/orchestrations/$orchestrationId/pending-decisions?project_id=$projectId" -Headers $bridgeHeaders
+  $pending = Invoke-Json -Method GET -Url (Get-ApiUrl -Path "/api/orchestrations/$orchestrationId/pending-decisions" -Query @{ project_id = $projectId }) -Headers $bridgeHeaders
 }
 
-$digest = Invoke-Json -Method GET -Url "$BaseUrl/api/orchestrations/$orchestrationId/event-digest?window=since_orchestration_start&project_id=$projectId" -Headers $bridgeHeaders
-Write-Host ""
-Write-Host "===== EVENT DIGEST ====="
-Write-Host $digest.fallback_markdown
+if ($TaskMode -ne "dry_run") {
+  for ($attempt = 0; $attempt -lt 90; $attempt += 1) {
+    $orchestrationState = Invoke-Json -Method GET -Url (Get-ApiUrl -Path "/api/orchestrations/$orchestrationId" -Query @{ project_id = $projectId }) -Headers $bridgeHeaders
+    $pending = Invoke-Json -Method GET -Url (Get-ApiUrl -Path "/api/orchestrations/$orchestrationId/pending-decisions" -Query @{ project_id = $projectId }) -Headers $bridgeHeaders
+    if ($pending -and $pending.Count -gt 0) {
+      break
+    }
+    if ($orchestrationState.status -eq "completed") {
+      break
+    }
+    Start-Sleep -Seconds 1
+  }
+  $finalStatus = Invoke-Json -Method GET -Url (Get-ApiUrl -Path "/api/orchestrations/$orchestrationId/status-summary" -Query @{ project_id = $projectId }) -Headers $bridgeHeaders
+  Write-Section -Title "FINAL STATUS" -Content $finalStatus.fallback_markdown
+}
 
-$null = Invoke-Json -Method POST -Url "$BaseUrl/api/projects/$projectId/handoff/generate" -Headers $bridgeHeaders
-$handoff = Invoke-Json -Method GET -Url "$BaseUrl/api/orchestrations/$orchestrationId/handoff-summary?project_id=$projectId" -Headers $bridgeHeaders
-Write-Host ""
-Write-Host "===== HANDOFF SUMMARY ====="
-Write-Host $handoff.fallback_markdown
+$digest = Invoke-Json -Method GET -Url (Get-ApiUrl -Path "/api/orchestrations/$orchestrationId/event-digest" -Query @{ window = "since_orchestration_start"; project_id = $projectId }) -Headers $bridgeHeaders
+Write-Section -Title "EVENT DIGEST" -Content $digest.fallback_markdown
+
+$handoff = Invoke-Json -Method GET -Url (Get-ApiUrl -Path "/api/orchestrations/$orchestrationId/handoff-summary" -Query @{ project_id = $projectId }) -Headers $bridgeHeaders
+$approvalLog = Invoke-Json -Method GET -Url (Get-ApiUrl -Path "/api/projects/$projectId/security/audit-log") -Headers $bridgeHeaders
+$approvalSummary = if ($approvalLog -and $approvalLog.Count -gt 0) {
+  ($approvalLog | Select-Object -First 5 | ForEach-Object {
+    "{0} | {1} | {2} | {3}" -f $_.created_at, $_.decision, $_.action_type, $_.action_summary
+  }) -join [Environment]::NewLine
+} else {
+  "No approval audit entries were recorded."
+}
+Write-Section -Title "HANDOFF SUMMARY" -Content $handoff.fallback_markdown
+Write-Section -Title "APPROVAL AUDIT LOG" -Content $approvalSummary
+
+if (-not [string]::IsNullOrWhiteSpace($TranscriptPath)) {
+  $transcriptTarget = [System.IO.Path]::GetFullPath($TranscriptPath)
+  $transcriptDir = Split-Path -Parent $transcriptTarget
+  if ($transcriptDir) {
+    $null = New-Item -ItemType Directory -Path $transcriptDir -Force
+  }
+  $generatedAt = (Get-Date).ToString("u")
+  $commandLine = ".\scripts\smoke-headless-happy-path.ps1 -TranscriptPath $TranscriptPath"
+  $content = @(
+    "# Headless Terminal Transcript",
+    "",
+    "Generated at: $generatedAt",
+    "Command: $commandLine",
+    "Workspace root: $workspacePath",
+    "",
+    ($transcriptSections -join "`n`n")
+  ) -join "`n"
+  Set-Content -Path $transcriptTarget -Value $content -Encoding UTF8
+  Write-Host ""
+  Write-Host "Saved transcript to $transcriptTarget"
+}

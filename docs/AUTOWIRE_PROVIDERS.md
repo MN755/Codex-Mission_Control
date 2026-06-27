@@ -1,6 +1,6 @@
 # Autowire Providers
 
-> Status: Partial / Experimental
+> Status: Current
 
 Provider autowiring probes the local environment and enables only the runners that are available, safe, and clearly understood.
 
@@ -8,14 +8,15 @@ Provider autowiring probes the local environment and enables only the runners th
 
 - `dry_run` is always enabled
 - `codex_cli` is enabled only when the CLI is present and login can be confirmed
-- `ollama` gets a built-in local adapter recipe, but it is only runnable when the local server is reachable
-- `claude_cli` may be detected without being auto-enabled
-- API-backed runners get a built-in adapter recipe, but they stay non-runnable until secure external configuration already exists
+- `claude_cli` is enabled when the CLI path resolves and auth checks do not fail
+- `ollama` gets a built-in local adapter recipe and becomes runnable when the local endpoint is reachable
+- `openai_api` gets a built-in adapter recipe and becomes runnable when secure external configuration already exists
+- billed API lanes are never silently chosen just because they technically exist
 
 ## What autowire now persists
 
 - selected provider endpoint for endpoint-backed providers
-- built-in adapter command and args for `ollama`, `openai_api`, `anthropic_api`, `xai_api`, and `nvidia_dynamo`
+- built-in adapter command and args for `ollama`, `openai_api`, `anthropic_api`, `xai_api`, `nvidia_dynamo`, and `nvidia_nim`
 - install-path-aware plugin and skill paths in the headless config
 - a fresh startup status check instead of stale cached bootstrap state
 
@@ -38,5 +39,6 @@ Provider autowiring probes the local environment and enables only the runners th
 
 - [Background Install](HEADLESS_INSTALL.md)
 - [Runners](RUNNERS.md)
+- [Feature Status](FEATURE_STATUS.md)
 - [Background Health](HEADLESS_HEALTH.md)
 - [Security](SECURITY.md)

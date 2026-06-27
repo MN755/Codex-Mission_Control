@@ -50,6 +50,31 @@ function Get-DaemonIdentity {
   }
 }
 
+function Test-MetadataMatchesExpectedDaemon {
+  param([int]$TargetPid)
+  if (-not (Test-Path $metadataPath)) {
+    return $false
+  }
+  try {
+    $metadata = Get-Content -Raw $metadataPath | ConvertFrom-Json
+  } catch {
+    return $false
+  }
+  if ([string]$metadata.repo_root -ne $repoRoot) {
+    return $false
+  }
+  if ([string]$metadata.mode -ne "daemon") {
+    return $false
+  }
+  if ([string]$metadata.host -ne $effectiveHost) {
+    return $false
+  }
+  if ([int]$metadata.port -ne $effectiveBackendPort) {
+    return $false
+  }
+  return [int]$metadata.pid -eq $TargetPid
+}
+
 function Get-ListeningPortPid {
   $lines = netstat -ano | Select-String ":$effectiveBackendPort"
   foreach ($line in $lines) {
@@ -121,7 +146,10 @@ try {
   $commandLine = ""
 }
 if (-not $commandLine -or $commandLine -notlike "*$repoRoot*") {
-  if (-not ($identity -and [string]$identity.repo_root -eq $repoRoot -and [string]$identity.mode -eq "daemon" -and (Get-ListeningPortPid) -eq $trackedPid)) {
+  $portPid = Get-ListeningPortPid
+  $identityMatches = $identity -and [string]$identity.repo_root -eq $repoRoot -and [string]$identity.mode -eq "daemon" -and $portPid -eq $trackedPid
+  $metadataMatches = (Test-MetadataMatchesExpectedDaemon -TargetPid $trackedPid) -and $portPid -eq $trackedPid
+  if (-not ($identityMatches -or $metadataMatches)) {
     throw "Refusing to stop PID $trackedPid because the command line does not match this repository."
   }
 }

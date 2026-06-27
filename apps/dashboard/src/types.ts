@@ -785,6 +785,19 @@ export interface ProjectWorkspace {
   swarm_events: SwarmEvent[];
 }
 
+export interface AsciiMonitorFrame {
+  project_id: number;
+  project_name: string;
+  orchestration_id: number | null;
+  orchestration_status: string;
+  pending_decisions_count: number;
+  active_agents_count: number;
+  refresh_seconds: number;
+  checked_at: string;
+  viewer_command: string;
+  frame: string;
+}
+
 export interface AppProfile {
   id: number;
   install_id: string | null;

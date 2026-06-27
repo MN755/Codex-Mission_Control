@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from collections.abc import Sequence
 from datetime import datetime
 from pathlib import Path
@@ -16,7 +17,9 @@ from imported_codebase import import_service
 from manager import service
 from models import (
     Agent,
+    AgentRun,
     ApprovalRequest,
+    ChangeRequest,
     ManagerQuestion,
     OrchestrationEvent,
     OrchestrationSession,
@@ -31,6 +34,7 @@ from security.path_validation import PathValidationError, resolve_local_path
 
 ACTIVE_ORCHESTRATION_STATUSES = {"initializing", "planning", "waiting_for_user", "running", "paused"}
 MAX_BACKGROUND_FAILURES = 3
+OPEN_TASK_STATUSES = {"backlog", "assigned", "working", "waiting_on_paths", "needs_review", "blocked"}
 
 
 class OrchestrationCoordinator:
@@ -38,8 +42,19 @@ class OrchestrationCoordinator:
         self._tasks: dict[int, asyncio.Task[None]] = {}
         self._task_metadata: dict[int, dict[str, Any]] = {}
 
+    @staticmethod
+    def _is_ephemeral_test_workspace(raw_path: str | None) -> bool:
+        normalized = str(raw_path or "").replace("\\", "/").lower()
+        if "/.runtime-test-runs/" not in normalized and not normalized.endswith("/.runtime-test-runs"):
+            return False
+        current_runtime_root = str(os.environ.get("MISSION_CONTROL_RUNTIME_ROOT") or "").replace("\\", "/").lower().rstrip("/")
+        if current_runtime_root and normalized.startswith(current_runtime_root):
+            return False
+        return True
+
     def on_startup(self) -> None:
         ensure_daemon_token()
+        resume_after_restart: list[int] = []
         with SessionLocal() as db:
             active = list(
                 db.scalars(
@@ -50,8 +65,34 @@ class OrchestrationCoordinator:
             )
             changed = False
             for session in active:
-                session.status = "paused"
-                session.manager_status = "Daemon restarted. Resume this orchestration to continue."
+                project = db.get(Project, session.project_id)
+                workspace_path = session.workspace_path or (project.workspace_path if project is not None else None)
+                if self._is_ephemeral_test_workspace(workspace_path):
+                    session.status = "paused"
+                    session.manager_status = (
+                        "Daemon restarted. Mission Control left this ephemeral test workspace paused instead of auto-resuming it."
+                    )
+                    self._record_event(
+                        db,
+                        session,
+                        "orchestration_reconciled_after_restart",
+                        {
+                            "orchestration_id": session.id,
+                            "status": session.status,
+                            "auto_resumed": False,
+                            "ephemeral_workspace": True,
+                        },
+                    )
+                    changed = True
+                    continue
+                should_auto_resume = session.status in {"initializing", "planning", "running"}
+                if should_auto_resume:
+                    session.status = "planning"
+                    session.manager_status = "Daemon restarted. Mission Control is automatically resuming background work."
+                    resume_after_restart.append(session.id)
+                else:
+                    session.status = "waiting_for_user"
+                    session.manager_status = "Daemon restarted. Mission Control is still waiting for a user decision."
                 self._record_event(
                     db,
                     session,
@@ -59,11 +100,14 @@ class OrchestrationCoordinator:
                     {
                         "orchestration_id": session.id,
                         "status": session.status,
+                        "auto_resumed": should_auto_resume,
                     },
                 )
                 changed = True
             if changed:
                 db.commit()
+        for orchestration_id in resume_after_restart:
+            self._schedule_background_turn(orchestration_id, "daemon_restart")
 
     async def on_shutdown(self) -> None:
         tasks = list(self._tasks.values())
@@ -142,7 +186,7 @@ class OrchestrationCoordinator:
             return "approval_denied"
         if any(token in message for token in ("auth", "api key", "login", "token", "credential")):
             return "user_action_required"
-        if any(token in message for token in ("database is locked", "timeout", "temporar", "connection", "network", "rate limit")):
+        if any(token in message for token in ("database is locked", "timeout", "temporar", "connection", "network", "rate limit", "usage limit", "quota")):
             return "transient"
         if any(token in message for token in ("invalid", "schema", "json", "parse", "pathvalidationerror", "not found", "workspace")):
             return "input_error"
@@ -195,6 +239,17 @@ class OrchestrationCoordinator:
             {"orchestration_id": session.id, **dict(payload or {})},
         )
         return event
+
+    def _reload_session_project(
+        self,
+        db: Session,
+        orchestration_id: int,
+    ) -> tuple[OrchestrationSession | None, Project | None]:
+        session = db.get(OrchestrationSession, orchestration_id)
+        if session is None:
+            return None, None
+        project = db.get(Project, session.project_id)
+        return session, project
 
     def _update_session_status(
         self,
@@ -475,6 +530,83 @@ class OrchestrationCoordinator:
         )
         return decision.id if decision else None
 
+    def _clear_stale_review_decisions_for_fresh_reset(self, db: Session, project: Project) -> int:
+        cleared = 0
+        stale_review_decisions = list(
+            db.scalars(
+                select(PendingDecision)
+                .where(
+                    PendingDecision.project_id == project.id,
+                    PendingDecision.status == "pending",
+                    (
+                        (PendingDecision.source_kind == "task_review")
+                        | (PendingDecision.decision_type == "handoff_review")
+                    ),
+                )
+                .order_by(PendingDecision.created_at.asc(), PendingDecision.id.asc())
+            )
+        )
+        stale_review_task_ids: set[int] = set()
+        for decision in stale_review_decisions:
+            task_id = int(decision.source_id or decision.related_task_id or 0)
+            review_task = db.get(Task, task_id) if task_id else None
+            if review_task is not None and review_task.project_id == project.id and review_task.status in OPEN_TASK_STATUSES:
+                stale_review_task_ids.add(review_task.id)
+                assigned_agent_id = review_task.assigned_agent_id
+                service._release_reservations(
+                    db,
+                    project.id,
+                    task_id=review_task.id,
+                    agent_id=assigned_agent_id,
+                    publish=False,
+                )
+                if assigned_agent_id is not None:
+                    assigned_agent = db.get(Agent, assigned_agent_id)
+                    if assigned_agent is not None and assigned_agent.current_task_id == review_task.id:
+                        assigned_agent.current_task_id = None
+                review_task.assigned_agent_id = None
+                review_task.status = "backlog"
+                review_task.waiting_reason = "Fresh benchmark reset requested; stale review gate cleared for rerun."
+                review_task.failure_count = 0
+            decision.status = "cancelled"
+            decision.answered_at = utc_now()
+            decision.answer_json = {
+                "option_id": "request_changes",
+                "selected_text": "Request changes",
+                "free_text": "Fresh benchmark reset requested; stale review gate cleared for rerun.",
+            }
+            cleared += 1
+        stale_review_tasks = list(
+            db.scalars(
+                select(Task)
+                .where(Task.project_id == project.id, Task.status == "needs_review")
+                .order_by(Task.priority.asc(), Task.id.asc())
+            )
+        )
+        for review_task in stale_review_tasks:
+            if review_task.id in stale_review_task_ids:
+                continue
+            assigned_agent_id = review_task.assigned_agent_id
+            service._release_reservations(
+                db,
+                project.id,
+                task_id=review_task.id,
+                agent_id=assigned_agent_id,
+                publish=False,
+            )
+            if assigned_agent_id is not None:
+                assigned_agent = db.get(Agent, assigned_agent_id)
+                if assigned_agent is not None and assigned_agent.current_task_id == review_task.id:
+                    assigned_agent.current_task_id = None
+            review_task.assigned_agent_id = None
+            review_task.status = "backlog"
+            review_task.waiting_reason = "Fresh benchmark reset requested; stale review task cleared for rerun."
+            review_task.failure_count = 0
+            cleared += 1
+        if cleared:
+            db.flush()
+        return cleared
+
     def start_orchestration(
         self,
         db: Session,
@@ -525,6 +657,24 @@ class OrchestrationCoordinator:
             session.updated_at = utc_now()
             self._record_event(db, session, "orchestration_request_appended", {"source": source})
         db.flush()
+        normalized_request = " ".join(user_request.strip().split()) if user_request.strip() else ""
+        fresh_reset_request = bool(normalized_request) and service._request_implies_fresh_benchmark_reset(normalized_request)
+        if normalized_request and project.source_type != "idea":
+            change_request = service.create_change_request(db, project, normalized_request)
+            if fresh_reset_request and change_request.status != "new":
+                change_request.status = "new"
+                change_request.classification = "bugfix"
+                change_request.impact_estimate = "large"
+                change_request.updated_at = utc_now()
+        if fresh_reset_request:
+            cleared = self._clear_stale_review_decisions_for_fresh_reset(db, project)
+            if cleared:
+                self._record_event(
+                    db,
+                    session,
+                    "fresh_benchmark_reset_cleared_stale_reviews",
+                    {"cleared_pending_decisions": cleared},
+                )
         if schedule_background_turn:
             session.status = "planning"
             session.manager_status = "Mission Control queued the first background turn."
@@ -724,6 +874,96 @@ class OrchestrationCoordinator:
         db.flush()
         return decision
 
+    def _pending_decision_from_review_task(self, db: Session, session: OrchestrationSession, task: Task) -> PendingDecision:
+        decision = db.scalar(
+            select(PendingDecision)
+            .where(
+                PendingDecision.orchestration_id == session.id,
+                PendingDecision.source_kind == "task_review",
+                PendingDecision.source_id == task.id,
+            )
+            .order_by(PendingDecision.id.desc())
+        )
+        options = [
+            {"id": "approve", "label": "Approve", "description": "Mark this reviewed task complete and let Mission Control continue."},
+            {"id": "request_changes", "label": "Request changes", "description": "Send this task back to backlog so Mission Control can route follow-up work."},
+        ]
+        summary = task.goal or task.scope or "Mission Control paused because this task reached a review gate."
+        message = f"Task \"{task.title}\" needs review before Mission Control can continue."
+        if decision is None:
+            decision = PendingDecision(
+                project_id=session.project_id,
+                orchestration_id=session.id,
+                decision_type="handoff_review",
+                title=f"Review required: {task.title}",
+                message=message,
+                requesting_agent_id=task.assigned_agent_id,
+                related_task_id=task.id,
+                risk_level="medium",
+                options_json=options,
+                recommended_option="approve",
+                source_kind="task_review",
+                source_id=task.id,
+            )
+            db.add(decision)
+        decision.project_id = session.project_id
+        decision.status = "pending" if task.status == "needs_review" else "answered"
+        decision.title = f"Review required: {task.title}"
+        decision.message = message
+        decision.requesting_agent_id = task.assigned_agent_id
+        decision.related_task_id = task.id
+        decision.risk_level = "medium"
+        decision.options_json = options
+        decision.recommended_option = "approve"
+        decision.presentation_json = {
+            "card_type": "handoff_review",
+            "title": f"Review required: {task.title}",
+            "subtitle": message,
+            "risk_level": "medium",
+            "short_reason": summary,
+            "details": [
+                f"Role: {task.agent_role}" if task.agent_role else None,
+                f"Milestone: {task.milestone}" if task.milestone else None,
+                f"Waiting reason: {task.waiting_reason}" if task.waiting_reason else None,
+            ],
+            "buttons": options,
+            "preferred_style": "codex_approval_card",
+        }
+        decision.presentation_json["details"] = [item for item in decision.presentation_json["details"] if item]
+        db.flush()
+        return decision
+
+    def _stale_task_review_reason(self, db: Session, decision: PendingDecision) -> str | None:
+        if decision.source_kind != "task_review" and decision.decision_type != "handoff_review":
+            return None
+        task_id = int(decision.source_id or decision.related_task_id or 0)
+        if not task_id:
+            return "review decision no longer references a task"
+        task = db.get(Task, task_id)
+        if task is None:
+            return "review task no longer exists"
+        active_run_id = db.scalar(
+            select(AgentRun.id)
+            .where(AgentRun.task_id == task.id, AgentRun.finished_at.is_(None))
+            .order_by(AgentRun.id.desc())
+            .limit(1)
+        )
+        if active_run_id is not None:
+            return "review task has an active worker run"
+        if task.status != "needs_review":
+            return f"review task is {task.status}, not needs_review"
+        return None
+
+    def _cancel_stale_task_review_decision(self, decision: PendingDecision, reason: str) -> None:
+        decision.status = "cancelled"
+        decision.answered_at = utc_now()
+        decision.answer_json = {
+            "option_id": "cancelled",
+            "selected_text": "Cancelled stale review decision",
+            "free_text": reason,
+            "source": "task_review_reconciliation",
+        }
+
     def sync_pending_decisions(self, db: Session, session: OrchestrationSession) -> list[PendingDecision]:
         project = db.get(Project, session.project_id)
         if project is None:
@@ -742,6 +982,13 @@ class OrchestrationCoordinator:
                 .order_by(ApprovalRequest.created_at.asc(), ApprovalRequest.id.asc())
             )
         )
+        review_tasks = list(
+            db.scalars(
+                select(Task)
+                .where(Task.project_id == project.id, Task.status == "needs_review")
+                .order_by(Task.created_at.asc(), Task.id.asc())
+            )
+        )
         active_keys: set[tuple[str, int]] = set()
         for question in pending_questions:
             active_keys.add(("manager_question", question.id))
@@ -749,6 +996,9 @@ class OrchestrationCoordinator:
         for approval in pending_approvals:
             active_keys.add(("approval_request", approval.id))
             self._pending_decision_from_approval(db, session, approval)
+        for task in review_tasks:
+            active_keys.add(("task_review", task.id))
+            self._pending_decision_from_review_task(db, session, task)
         existing = list(
             db.scalars(
                 select(PendingDecision)
@@ -759,6 +1009,11 @@ class OrchestrationCoordinator:
         for decision in existing:
             if decision.source_kind == "attach_workspace":
                 continue
+            if decision.status == "pending":
+                stale_review_reason = self._stale_task_review_reason(db, decision)
+                if stale_review_reason is not None:
+                    self._cancel_stale_task_review_decision(decision, stale_review_reason)
+                    continue
             key = (decision.source_kind or "", int(decision.source_id or 0))
             if key not in active_keys and decision.status == "pending":
                 decision.status = "cancelled"
@@ -861,6 +1116,62 @@ class OrchestrationCoordinator:
             metadata = dict(session.metadata_json or {})
             metadata["selected_project_id"] = selected_project.id
             session.metadata_json = metadata
+        elif decision.source_kind == "task_review" and decision.source_id is not None:
+            task = db.get(Task, decision.source_id)
+            if task is None:
+                raise MissionControlError(
+                    code="MC-REVIEW-TASK-NOT-FOUND-001",
+                    detail="Review task not found.",
+                    breakpoint="decision.answer",
+                    project_id=decision.project_id,
+                    orchestration_id=decision.orchestration_id,
+                )
+            if option_id == "approve":
+                asyncio.run(service.complete_task_by_user(db, task))
+            elif option_id == "request_changes":
+                project = db.get(Project, task.project_id)
+                if project is None:
+                    raise MissionControlError(
+                        code="MC-REVIEW-TASK-PROJECT-NOT-FOUND-001",
+                        detail="Project not found for review task.",
+                        breakpoint="decision.answer",
+                        project_id=decision.project_id,
+                        orchestration_id=decision.orchestration_id,
+                    )
+                run = db.scalar(
+                    select(AgentRun)
+                    .where(AgentRun.task_id == task.id, AgentRun.finished_at.is_(None))
+                    .order_by(AgentRun.id.desc())
+                )
+                agent = db.get(Agent, task.assigned_agent_id) if task.assigned_agent_id else None
+                if run is not None:
+                    run.status = "stopped"
+                    run.finished_at = utc_now()
+                if agent is not None:
+                    agent.current_task_id = None
+                    agent.current_action = None
+                    if agent.status not in {"done", "retired"}:
+                        agent.status = "waiting"
+                task.status = "backlog"
+                task.assigned_agent_id = None
+                task.waiting_reason = "Review requested changes before Mission Control can continue."
+                service._release_reservations(db, project.id, task_id=task.id, agent_id=agent.id if agent is not None else None)
+                service.events.publish(
+                    db,
+                    project.id,
+                    "task.review_changes_requested",
+                    {"task_id": task.id, "run_id": run.id if run is not None else None},
+                )
+                service._schedule_orchestration_follow_up(db, project, reason="task_review_changes_requested")
+            else:
+                raise MissionControlError(
+                    code="MC-DECISION-INVALID-OPTION-001",
+                    detail="Unsupported review resolution option.",
+                    breakpoint="decision.validate_option",
+                    project_id=decision.project_id,
+                    orchestration_id=decision.orchestration_id,
+                    safe_details={"received_option": option_id},
+                )
         else:
             raise MissionControlError(
                 code="MC-DECISION-NOT-FOUND-001",
@@ -906,14 +1217,14 @@ class OrchestrationCoordinator:
         pending = self.sync_pending_decisions(db, session)
         current_action = await service.get_project_action(db, project)
         recent_events = self.list_events(db, session)[-8:]
+        manager_agent = db.scalar(
+            select(Agent)
+            .where(Agent.project_id == project.id, Agent.kind == "manager")
+            .order_by(Agent.id.asc())
+        )
+        manager_payload = self._serialize_runtime_agent(manager_agent)
         active_agents = [
-            {
-                "id": agent.id,
-                "name": agent.name,
-                "status": agent.status,
-                "mission": agent.mission,
-                "runner_type": agent.active_runner_type,
-            }
+            self._serialize_runtime_agent(agent)
             for agent in db.scalars(select(Agent).where(Agent.project_id == project.id, Agent.kind != "manager").order_by(Agent.id.asc()))
             if agent.status not in {"idle", "retired", "stopped"}
         ]
@@ -946,6 +1257,7 @@ class OrchestrationCoordinator:
             "orchestration_status": derived_status,
             "manager_status": derived_manager_status,
             "current_phase": project.latest_milestone or project.status,
+            "manager": manager_payload,
             "active_agents": active_agents,
             "pending_decisions_count": len([decision for decision in pending if decision.status == "pending"]),
             "recent_events": [
@@ -961,8 +1273,26 @@ class OrchestrationCoordinator:
             "next_expected_action": self._next_expected_action(current_action, pending, project, background_runtime=background_runtime),
             "user_action_required": any(decision.status == "pending" for decision in pending),
             "handoff_readiness": handoff["status"],
-            "runner_inventory": await service.runners.inventory(),
+            "runner_inventory": service.runners.inventory_preview(),
             "background_runtime": background_runtime,
+        }
+
+    def _serialize_runtime_agent(self, agent: Agent | None) -> dict[str, Any]:
+        if agent is None:
+            return {}
+        current_task_title = None
+        if agent.current_task is not None and agent.current_task.title:
+            current_task_title = agent.current_task.title
+        return {
+            "id": agent.id,
+            "name": agent.name,
+            "status": agent.status,
+            "mission": agent.mission,
+            "runner_type": agent.active_runner_type,
+            "active_model": agent.active_model,
+            "active_reasoning_effort": agent.active_reasoning_effort,
+            "current_action": agent.current_action,
+            "current_task_title": current_task_title,
         }
 
     def _next_expected_action(
@@ -1033,6 +1363,15 @@ class OrchestrationCoordinator:
             return "running", manager_fallback or session.manager_status or "Mission Control has active workers in flight."
         if any(task.status == "waiting_on_paths" for task in runnable_tasks):
             return "planning", "Mission Control is waiting for overlapping path ownership to clear before launching the next worker."
+        review_tasks = [task for task in runnable_tasks if task.status == "needs_review"]
+        review_blocked_only = review_tasks and not any(
+            task.status in {"backlog", "assigned", "waiting_on_paths"} and service._dependencies_met(db, task)
+            for task in runnable_tasks
+        )
+        if review_blocked_only:
+            review_count = len(review_tasks)
+            noun = "task" if review_count == 1 else "tasks"
+            return "waiting_for_user", f"Mission Control is waiting for review on {review_count} {noun} before it can continue."
         if current_action and current_action.get("type") in {"blocker", "degraded", "paused"} and current_action.get("message"):
             return "planning", str(current_action["message"])
         if any(service._dependencies_met(db, task) for task in runnable_tasks):
@@ -1086,7 +1425,7 @@ class OrchestrationCoordinator:
             "started_at": datetime.fromisoformat(str(metadata.get("started_at"))),
             "token_configured": ensure_daemon_token() is not None,
             "active_orchestrations": active_count,
-            "runner_inventory": await service.runners.inventory(),
+            "runner_inventory": service.runners.inventory_preview(),
             "background_runtime": self._all_background_runtime_snapshots(),
             "retrying_orchestrations": sum(1 for item in self._all_background_runtime_snapshots() if item.get("retry_scheduled")),
             "active_background_turns": sum(1 for item in self._all_background_runtime_snapshots() if item.get("turn_active")),
@@ -1104,6 +1443,10 @@ class OrchestrationCoordinator:
     def _schedule_background_turn(self, orchestration_id: int, reason: str) -> None:
         task = self._tasks.get(orchestration_id)
         if task is not None and not task.done():
+            metadata = dict(self._task_metadata.get(orchestration_id) or {})
+            metadata["queued_reason"] = reason
+            metadata["queued_at"] = utc_now().isoformat()
+            self._task_metadata[orchestration_id] = metadata
             return
         self._task_metadata[orchestration_id] = {
             "reason": reason,
@@ -1116,7 +1459,10 @@ class OrchestrationCoordinator:
         self._tasks[orchestration_id] = task
 
     def _background_task_done(self, orchestration_id: int, task: asyncio.Task[None]) -> None:
+        queued_reason: str | None = None
         if self._tasks.get(orchestration_id) is task:
+            task_meta = dict(self._task_metadata.get(orchestration_id) or {})
+            queued_reason = str(task_meta.get("queued_reason") or "").strip() or None
             self._tasks.pop(orchestration_id, None)
             self._task_metadata.pop(orchestration_id, None)
         if task.cancelled():
@@ -1127,6 +1473,8 @@ class OrchestrationCoordinator:
             task.exception()
         except asyncio.CancelledError:
             return
+        if queued_reason:
+            self._schedule_background_turn(orchestration_id, queued_reason)
 
     async def _run_background_turn_deferred(self, orchestration_id: int, reason: str) -> None:
         # FastAPI commits the request-scoped DB session after the handler returns.
@@ -1167,6 +1515,8 @@ class OrchestrationCoordinator:
             "turn_active": bool(task and not task.done() and not task_meta.get("retry_scheduled")),
             "retry_scheduled": bool(task and not task.done() and task_meta.get("retry_scheduled")),
             "reason": task_meta.get("reason"),
+            "queued_reason": task_meta.get("queued_reason"),
+            "queued_at": task_meta.get("queued_at"),
             "scheduled_at": task_meta.get("scheduled_at"),
             "delay_seconds": task_meta.get("delay_seconds"),
             "failure_classification": task_meta.get("failure_classification"),
@@ -1176,6 +1526,114 @@ class OrchestrationCoordinator:
 
     def _all_background_runtime_snapshots(self) -> list[dict[str, Any]]:
         return [self._background_runtime_snapshot(orchestration_id) for orchestration_id in sorted(self._tasks)]
+
+    async def _bootstrap_live_execution(self, db: Session, session: OrchestrationSession, project: Project) -> None:
+        if session.mode != "codex_cli":
+            return
+        if project.source_type == "idea":
+            return
+        orchestration_id = session.id
+        request_text = session.user_request.strip()
+        if request_text:
+            service.create_change_request(db, project, request_text)
+        latest_follow_up_request = db.scalar(
+            select(ChangeRequest)
+            .where(ChangeRequest.project_id == project.id, ChangeRequest.status != "rejected")
+            .order_by(ChangeRequest.updated_at.desc(), ChangeRequest.id.desc())
+            .limit(1)
+        )
+        fresh_benchmark_reset_requested = latest_follow_up_request is not None and service._request_implies_fresh_benchmark_reset(
+            latest_follow_up_request.request_text
+        )
+        if fresh_benchmark_reset_requested:
+            self._clear_stale_review_decisions_for_fresh_reset(db, project)
+        has_tasks = db.scalar(select(Task.id).where(Task.project_id == project.id).limit(1)) is not None
+        has_open_tasks = db.scalar(
+            select(Task.id).where(Task.project_id == project.id, Task.status.in_(list(OPEN_TASK_STATUSES))).limit(1)
+        ) is not None
+        has_pending = db.scalar(
+            select(PendingDecision.id).where(PendingDecision.project_id == project.id, PendingDecision.status == "pending").limit(1)
+        )
+        if has_pending is not None:
+            return
+        latest_task_update = db.scalar(
+            select(func.max(Task.updated_at)).where(Task.project_id == project.id)
+        )
+        productive_open_task_count = service._productive_open_task_count(
+            db,
+            project,
+            list(db.scalars(select(Task).where(Task.project_id == project.id).order_by(Task.priority.asc(), Task.id.asc()))),
+        )
+        target_parallel_task_count = service._target_parallel_open_task_count(db, project)
+        has_recent_follow_up_request = latest_follow_up_request is not None and (
+            latest_task_update is None or latest_follow_up_request.updated_at >= latest_task_update
+        )
+        has_standing_follow_up_request = (
+            latest_follow_up_request is not None
+            and not has_open_tasks
+            and project.handoff_status != "ready"
+        )
+        has_untriaged_follow_up_request = latest_follow_up_request is not None and latest_follow_up_request.status == "new"
+        needs_parallel_replenishment = fresh_benchmark_reset_requested or (
+            has_open_tasks
+            and (bool(request_text) or has_recent_follow_up_request or has_untriaged_follow_up_request)
+            and productive_open_task_count < target_parallel_task_count
+        )
+        should_generate_initial_backlog = not has_tasks
+        should_generate_follow_up_backlog = has_tasks and (
+            fresh_benchmark_reset_requested
+            or
+            needs_parallel_replenishment
+            or (
+                not has_open_tasks
+                and (bool(request_text) or has_recent_follow_up_request or has_standing_follow_up_request or has_untriaged_follow_up_request)
+            )
+        )
+        if not (should_generate_initial_backlog or should_generate_follow_up_backlog):
+            return
+        workers = service.initialize_build_roster(db, project)
+        worker_count = len(workers)
+        # Release the transaction before manager planning or worker startup so
+        # bootstrapping does not keep SQLite pinned across live runner awaits.
+        db.commit()
+        phase_db = SessionLocal()
+        try:
+            session, project = self._reload_session_project(phase_db, orchestration_id)
+            if session is None or project is None:
+                return
+            tasks, manager_mode_used = await service.generate_tasks(phase_db, project)
+            task_count = len(tasks)
+            phase_db.commit()
+        finally:
+            phase_db.close()
+
+        launch_db = SessionLocal()
+        try:
+            session, project = self._reload_session_project(launch_db, orchestration_id)
+            if session is None or project is None:
+                return
+            started_count = await service.start_idle_agents(launch_db, project)
+            provider_backoff = service._provider_backoff_state(launch_db, project)
+            event_type = "live_execution_bootstrapped"
+            event_payload = {
+                "task_count": task_count,
+                "worker_count": worker_count,
+                "workers_started": started_count,
+                "manager_mode_used": manager_mode_used,
+            }
+            if provider_backoff is not None and started_count == 0:
+                event_type = "provider_backoff_active"
+                event_payload["provider_backoff_until"] = provider_backoff["until"].isoformat()
+                event_payload["provider_backoff_summary"] = provider_backoff["summary"]
+            self._record_event(
+                launch_db,
+                session,
+                event_type,
+                event_payload,
+            )
+            launch_db.commit()
+        finally:
+            launch_db.close()
 
     async def _run_background_turn(self, orchestration_id: int, reason: str) -> None:
         db = SessionLocal()
@@ -1212,11 +1670,46 @@ class OrchestrationCoordinator:
             if project.source_type == "existing_folder" and metadata.get("read_only_first") and project.scan_status != "completed":
                 import_service.initial_scan(db, project)
                 self._record_event(db, session, "workspace_scanned", {"scan_status": project.scan_status})
+            # Release request/setup writes before the manager or worker layers do
+            # any live async work. Otherwise the background turn keeps a
+            # long-lived SQLite transaction open while provider calls are in
+            # flight.
+            db.commit()
+            db.close()
+            db = SessionLocal()
+            session, project = self._reload_session_project(db, orchestration_id)
+            if session is None or project is None:
+                return
             manager_message = None
             if reason == "user_request" and session.user_request.strip():
                 manager_message = await service.manager_message(db, project, session.user_request.strip())
+                db.commit()
+                db.close()
+                db = SessionLocal()
+                session, project = self._reload_session_project(db, orchestration_id)
+                if session is None or project is None:
+                    return
+                await self._bootstrap_live_execution(db, session, project)
+                db.close()
+                db = SessionLocal()
+                session, project = self._reload_session_project(db, orchestration_id)
+                if session is None or project is None:
+                    return
             else:
+                await self._bootstrap_live_execution(db, session, project)
+                db.commit()
+                db.close()
+                db = SessionLocal()
+                session, project = self._reload_session_project(db, orchestration_id)
+                if session is None or project is None:
+                    return
                 manager_message = await service.manager_ask_next(db, project)
+            db.commit()
+            db.close()
+            db = SessionLocal()
+            session, project = self._reload_session_project(db, orchestration_id)
+            if session is None or project is None:
+                return
             pending = self.sync_pending_decisions(db, session)
             handoff = service.get_project_handoff_summary(db, project)
             reply = manager_message.get("message", {}).get("content_markdown") if manager_message else None
@@ -1226,7 +1719,11 @@ class OrchestrationCoordinator:
                 project,
                 pending,
                 handoff_status=handoff["status"],
-                current_action=await service.get_project_action(db, project),
+                current_action=service._derive_current_action_preview(
+                    db,
+                    project,
+                    service._workspace_degraded_notices_preview(project),
+                ),
                 manager_fallback=(reply or "Mission Control is continuing in the background.")[:240],
             )
             self._update_session_status(

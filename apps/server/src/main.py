@@ -18,6 +18,7 @@ from capabilities import capability_service
 from codex_auth import auth_service
 from config import DEFAULT_FRONTEND_PORT, RUNNING_FROM_SOURCE, frontend_dist_root, load_launcher_config
 from context_packs import context_pack_service
+from ascii_monitor import DEFAULT_ASCII_MONITOR_WIDTH, build_ascii_monitor_frame
 from db import get_db, init_db
 from diagnostics import open_folder
 from daemon_state import daemon_identity_snapshot, read_daemon_token, resolve_backend_binding, update_daemon_metadata_status
@@ -41,6 +42,7 @@ from models import (
     RecoveryPlan,
     SubagentBatch,
     Task,
+    utc_now,
 )
 from orchestration import coordinator
 from playbooks import playbook_service
@@ -62,10 +64,14 @@ from schemas import (
     AgentPerformanceRecordCreate,
     AgentPerformanceRecordRead,
     AgentReputationSummaryRead,
+    AsciiMonitorFrameRead,
     AppStateRead,
     AppProfileRead,
     AppProfileSummaryRead,
     AppProfileUpdate,
+    ArtifactRegistryPlanRead,
+    ArtifactTransportPlanRead,
+    ArtifactTransportSummaryRead,
     ApiKeyLoginRequest,
     AuthJobRead,
     AuthStateRead,
@@ -78,6 +84,9 @@ from schemas import (
     ConflictRecordRead,
     ConflictResolveRequest,
     CoordinationSummaryRead,
+    ConnectorGovernancePlanRead,
+    ConnectorGovernanceSummaryRead,
+    ConnectorRegistryRead,
     CodexStatusRead,
     ChangeRequestCreate,
     ChangeRequestRead,
@@ -94,13 +103,29 @@ from schemas import (
     DiagnosticReportListItemRead,
     DaemonStatusRead,
     DashboardSummaryRead,
+    DatasetGovernancePlanRead,
+    DatasetGovernanceSummaryRead,
+    DesignTransferPlanRead,
+    DesignTransferSummaryRead,
+    DeviceBrokerPlanRead,
+    DeviceBrokerSummaryRead,
+    DecisionAuditPlanRead,
+    DecisionAuditSummaryRead,
     DecisionRecordRead,
     DocGenerationResponse,
     EvidenceBasedHandoffRead,
     EffectiveUserPreferenceRead,
     ExecutionPolicySummaryRead,
+    ExternalDiscoveryGovernancePlanRead,
+    ExternalDiscoveryGovernanceSummaryRead,
     EventDigestWindow,
     EventRead,
+    FileGraphPlanRead,
+    FileGraphGovernanceSummaryRead,
+    FileGovernancePlanRead,
+    FileGovernanceSummaryRead,
+    GameEngineGovernancePlanRead,
+    GameEngineGovernanceSummaryRead,
     HandoffEvidenceCreate,
     HandoffEvidencePreviewSummaryRead,
     HandoffEvidenceRead,
@@ -111,6 +136,8 @@ from schemas import (
     HeadlessHappyPathDemoRequest,
     HeadlessStartTaskRead,
     HeadlessStartTaskRequest,
+    HostCapabilityIndexPlanRead,
+    HostCapabilityIndexSummaryRead,
     HeadlessRepairRequest,
     ImportFolderRequest,
     ImportFolderResponse,
@@ -134,12 +161,20 @@ from schemas import (
     ManagerQuestionAnswer,
     ManagerQuestionRead,
     ManagerQueueRead,
+    ModelRefactorGovernancePlanRead,
+    ModelRefactorGovernanceSummaryRead,
+    NativeAppValidationGovernancePlanRead,
+    NativeAppValidationGovernanceSummaryRead,
+    RemoteExecutionGovernancePlanRead,
+    RemoteExecutionGovernanceSummaryRead,
     AgentInstructionsStatusRead,
     AgentsMdProposalRead,
     NvidiaAiqResearchRead,
     NvidiaAiqResearchRequest,
     NvidiaAiqStatusRead,
     NvidiaDynamoStatusRead,
+    NvidiaExecutionGovernancePlanRead,
+    NvidiaExecutionGovernanceSummaryRead,
     NvidiaNimStatusRead,
     NvidiaGpuDiagnosticsRead,
     NvidiaLocalRuntimeStatusRead,
@@ -159,6 +194,8 @@ from schemas import (
     PlanRead,
     PluginHealthSummaryRead,
     PlanGenerateRequest,
+    PlatformRunnerPlanRead,
+    PlatformRunnerSummaryRead,
     PendingDecisionAnswerRequest,
     PendingDecisionAnswerResultRead,
     PendingDecisionRead,
@@ -166,6 +203,7 @@ from schemas import (
     PyTorchFeatureBundleRead,
     PyTorchFeatureCatalogEntryRead,
     ProjectCapabilityReportRead,
+    ProjectArtifactRegistryRead,
     ProjectPlaybookApplyRequest,
     ProjectPlaybookRecommendationRead,
     ProjectPlaybookRead,
@@ -175,11 +213,26 @@ from schemas import (
     ProjectCreate,
     ProjectHealthRead,
     ProjectRead,
+    QualityGatePlanRead,
+    QualityGateSummaryRead,
+    RemoteExecutionLaunchPackagePlanRead,
+    RemoteExecutionLaunchRequest,
+    RemoteExecutionLaunchPlanRead,
+    RemoteExecutionPolicyRead,
+    RemoteExecutionPolicyUpdate,
+    RemoteExecutionCapabilityIndexRead,
+    RemoteExecutionRegistryRead,
+    RemoteRunnerPlanRead,
+    RemoteRunnerSummaryRead,
+    RemoteExecutionSelectionRead,
+    RemoteExecutionTargetRead,
+    RemoteExecutionTargetUpsert,
     ProjectSnapshotCreate,
     ProjectSnapshotRead,
     ProjectTimelineEventCreate,
     ProjectTimelineEventRead,
     ProjectUnderstandingRead,
+    ProjectUsageSummaryRead,
     ProjectUpdate,
     ProjectWorkspaceRead,
     ProjectSettingsRead,
@@ -208,6 +261,8 @@ from schemas import (
     SystemStatusRead,
     RunnersStatusRead,
     SafeModeStatusRead,
+    SpatialAssetGovernanceSummaryRead,
+    SpatialAssetGovernancePlanRead,
     Spatial3DFeatureBundleRead,
     Spatial3DFeatureCatalogEntryRead,
     SubagentBatchRead,
@@ -286,6 +341,7 @@ from validation_coverage import validation_coverage_service
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     init_db()
+    await service.on_startup()
     coordinator.on_startup()
     if os.environ.get("MISSION_CONTROL_SERVER_MODE") == "daemon":
         binding = resolve_backend_binding(prefer_live_metadata=False)
@@ -489,6 +545,27 @@ def _require_project_run(db: Session, project: Project, run_id: int, *, resource
     return run
 
 
+def _latest_unfinished_task_run(db: Session, task_id: int) -> AgentRun | None:
+    return db.scalar(
+        select(AgentRun)
+        .where(AgentRun.task_id == task_id, AgentRun.finished_at.is_(None))
+        .order_by(AgentRun.id.desc())
+    )
+
+
+def _restore_running_task_state(db: Session, task: Task, run: AgentRun) -> None:
+    task.status = "working"
+    task.waiting_reason = None
+    if task.assigned_agent_id is None:
+        task.assigned_agent_id = run.agent_id
+    agent = db.get(Agent, run.agent_id)
+    if agent is None:
+        return
+    agent.current_task_id = task.id
+    if agent.status not in {"working", "starting"}:
+        agent.status = "working"
+
+
 def _require_project_message(db: Session, project: Project, message_id: int, *, resource_name: str = "Manager message") -> ManagerMessage:
     message = _get_manager_message_or_404(db, message_id)
     _require_project_scope(resource_name, message.project_id, project.id)
@@ -636,10 +713,11 @@ async def _enrich_attach_with_status_summary(db: Session, attached: dict[str, An
     orchestration = None
     if orchestration_payload and orchestration_payload.get("id") is not None:
         orchestration = db.get(OrchestrationSession, int(orchestration_payload["id"]))
-    try:
-        summary = await bridge_runtime_service.get_status_summary(db, project=project, orchestration=orchestration)
-    except ValueError:
-        return attached
+    summary = bridge_runtime_service.get_attach_status_summary(
+        project=project,
+        attached=attached,
+        orchestration=orchestration,
+    )
     attached["status_summary_markdown"] = summary["fallback_markdown"]
     return attached
 
@@ -1012,6 +1090,106 @@ def update_project_settings(
         return service.update_settings(db, project, payload)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/api/system/remote-execution", response_model=RemoteExecutionRegistryRead)
+def get_remote_execution_registry(
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> RemoteExecutionRegistryRead:
+    return RemoteExecutionRegistryRead(**service.get_remote_execution_registry(db))
+
+
+@app.get("/api/system/remote-execution/capability-index", response_model=RemoteExecutionCapabilityIndexRead)
+def get_remote_execution_capability_index(
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> RemoteExecutionCapabilityIndexRead:
+    return RemoteExecutionCapabilityIndexRead(**service.get_remote_execution_capability_index(db))
+
+
+@app.get("/api/system/remote-execution/hosts", response_model=list[RemoteExecutionTargetRead])
+def list_remote_execution_targets(
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> list[RemoteExecutionTargetRead]:
+    registry = service.get_remote_execution_registry(db)
+    return [RemoteExecutionTargetRead(**item) for item in list(registry.get("targets") or [])]
+
+
+@app.put("/api/system/remote-execution/hosts", response_model=RemoteExecutionTargetRead)
+def upsert_remote_execution_target(
+    payload: RemoteExecutionTargetUpsert,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> RemoteExecutionTargetRead:
+    return RemoteExecutionTargetRead(**service.upsert_remote_execution_target(db, payload.model_dump()))
+
+
+@app.delete("/api/system/remote-execution/hosts/{target_id}")
+def delete_remote_execution_target(
+    target_id: str,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> dict[str, Any]:
+    removed = service.delete_remote_execution_target(db, target_id)
+    if not removed:
+        raise HTTPException(status_code=404, detail="Remote execution target not found")
+    return {"ok": True, "target_id": target_id}
+
+
+@app.get("/api/projects/{project_id}/remote-execution/policy", response_model=RemoteExecutionPolicyRead)
+def get_project_remote_execution_policy(
+    project_id: int,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> RemoteExecutionPolicyRead:
+    project = _get_project_or_404(db, project_id)
+    return RemoteExecutionPolicyRead(**service.get_project_remote_execution_policy(db, project))
+
+
+@app.put("/api/projects/{project_id}/remote-execution/policy", response_model=RemoteExecutionPolicyRead)
+def update_project_remote_execution_policy(
+    project_id: int,
+    payload: RemoteExecutionPolicyUpdate,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> RemoteExecutionPolicyRead:
+    project = _get_project_or_404(db, project_id)
+    return RemoteExecutionPolicyRead(**service.update_project_remote_execution_policy(db, project, payload.model_dump(exclude_unset=True)))
+
+
+@app.get("/api/projects/{project_id}/remote-execution/resolve", response_model=RemoteExecutionSelectionRead)
+def preview_project_remote_execution(
+    project_id: int,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> RemoteExecutionSelectionRead:
+    project = _get_project_or_404(db, project_id)
+    return RemoteExecutionSelectionRead(**service.preview_project_remote_execution(db, project))
+
+
+@app.get("/api/projects/{project_id}/remote-execution/launch-plan", response_model=RemoteExecutionLaunchPlanRead)
+def preview_project_remote_execution_launch_plan(
+    project_id: int,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> RemoteExecutionLaunchPlanRead:
+    project = _get_project_or_404(db, project_id)
+    return RemoteExecutionLaunchPlanRead(**service.preview_project_remote_execution_launch_plan(db, project))
+
+
+@app.post("/api/projects/{project_id}/remote-execution/launch-plan", response_model=RemoteExecutionLaunchPackagePlanRead)
+def create_project_remote_execution_launch_package_plan(
+    project_id: int,
+    payload: RemoteExecutionLaunchRequest,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> RemoteExecutionLaunchPackagePlanRead:
+    project = _get_project_or_404(db, project_id)
+    return RemoteExecutionLaunchPackagePlanRead(
+        **service.build_remote_execution_launch_package_plan(db, project, payload.model_dump())
+    )
 
 
 @app.get("/api/projects/{project_id}/swarm/preferences", response_model=SwarmPreferencesRead)
@@ -2081,7 +2259,7 @@ async def create_orchestration(
     _: None = Depends(_require_bridge_token),
 ) -> OrchestrationSessionRead:
     project = _get_project_or_404(db, payload.project_id)
-    run_initial_turn_inline = (payload.mode or "unknown") != "dry_run" and project.runner_mode != "dry_run"
+    run_initial_turn_inline = (payload.mode or "unknown") == "codex_cli" and project.runner_mode == "auto"
     try:
         session = bridge_runtime_service.start_orchestration(
             db,
@@ -2096,12 +2274,11 @@ async def create_orchestration(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     if run_initial_turn_inline:
-        session_record = coordinator.get_session(db, int(session["id"]))
         db.commit()
-        await coordinator._run_background_turn(session_record.id, "user_request")
+        await coordinator._run_background_turn(int(session["id"]), "user_request")
         db.expire_all()
-        refreshed = coordinator.get_session(db, session_record.id)
-        session = coordinator._serialize_session(refreshed)
+        refreshed = coordinator.get_session(db, int(session["id"]))
+        return OrchestrationSessionRead(**coordinator._serialize_session(refreshed))
     return OrchestrationSessionRead(**session)
 
 
@@ -2504,7 +2681,7 @@ async def answer_project_pending_decision(
 
 
 @app.get("/api/orchestrations/{orchestration_id}/status-summary", response_model=BridgeMessageRead)
-async def get_orchestration_status_summary(
+def get_orchestration_status_summary(
     orchestration_id: int,
     request: Request,
     project_id: int = Query(...),
@@ -2514,11 +2691,11 @@ async def get_orchestration_status_summary(
     session = _get_orchestration_or_404(db, orchestration_id)
     _require_project_scope("Orchestration session", session.project_id, project_id)
     project = _get_project_or_404(db, session.project_id)
-    return BridgeMessageRead(**(await bridge_runtime_service.get_status_summary(db, project=project, orchestration=session)))
+    return BridgeMessageRead(**bridge_runtime_service.get_status_summary_preview(db, project=project, orchestration=session))
 
 
 @app.get("/api/projects/{project_id}/orchestrations/{orchestration_id}/status-summary", response_model=BridgeMessageRead)
-async def get_project_orchestration_status_summary(
+def get_project_orchestration_status_summary(
     project_id: int,
     orchestration_id: int,
     request: Request,
@@ -2528,18 +2705,18 @@ async def get_project_orchestration_status_summary(
     session = _get_orchestration_or_404(db, orchestration_id)
     _require_project_scope("Orchestration session", session.project_id, project_id)
     project = _get_project_or_404(db, session.project_id)
-    return BridgeMessageRead(**(await bridge_runtime_service.get_status_summary(db, project=project, orchestration=session)))
+    return BridgeMessageRead(**bridge_runtime_service.get_status_summary_preview(db, project=project, orchestration=session))
 
 
 @app.get("/api/projects/{project_id}/status-summary", response_model=BridgeMessageRead)
-async def get_project_status_summary(
+def get_project_status_summary(
     project_id: int,
     request: Request,
     db: Session = Depends(get_db),
     _: None = Depends(_require_bridge_token),
 ) -> BridgeMessageRead:
     project = _get_project_or_404(db, project_id)
-    return BridgeMessageRead(**(await bridge_runtime_service.get_status_summary(db, project=project)))
+    return BridgeMessageRead(**bridge_runtime_service.get_status_summary_preview(db, project=project))
 
 
 @app.get("/api/orchestrations/{orchestration_id}/event-digest", response_model=BridgeMessageRead)
@@ -2621,6 +2798,93 @@ def get_project_handoff_summary(
 ) -> BridgeMessageRead:
     project = _get_project_or_404(db, project_id)
     return BridgeMessageRead(**bridge_runtime_service.get_handoff_summary(db, project=project))
+
+
+@app.get("/api/projects/{project_id}/ascii-monitor", response_model=AsciiMonitorFrameRead)
+async def get_project_ascii_monitor(
+    project_id: int,
+    orchestration_id: int | None = Query(default=None),
+    event_window: EventDigestWindow = Query(default="last_15_minutes"),
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> AsciiMonitorFrameRead:
+    project = _get_project_or_404(db, project_id)
+    session = _get_orchestration_or_404(db, orchestration_id) if orchestration_id is not None else coordinator.get_active_session_for_project(db, project)
+    if session is not None and session.project_id != project.id:
+        raise HTTPException(status_code=404, detail="Orchestration session not found")
+
+    checked_at = utc_now()
+    pending_decisions = bridge_runtime_service.get_pending_decisions(db, project=project, orchestration=session)
+    status_summary = bridge_runtime_service.get_status_summary_preview(db, project=project, orchestration=session)
+    handoff_summary = bridge_runtime_service.get_handoff_summary(db, project=project, orchestration=session)
+    warnings = list(service._workspace_degraded_notices_preview(project))
+
+    if session is not None:
+        status_payload = await coordinator.get_status(db, session)
+        events = coordinator.list_events(db, session)
+    else:
+        workspace_agents = service._sorted_workspace_agents(db, project.id)
+        manager_agent = next((agent for agent in workspace_agents if agent.get("kind") == "manager"), None)
+        active_agents = [
+            agent
+            for agent in workspace_agents
+            if agent.get("kind") != "manager" and str(agent.get("status") or "").lower() not in {"idle", "done", "stopped"}
+        ]
+        machine_payload = dict(status_summary.get("machine_payload_json") or {})
+        status_payload = {
+            "project_name": project.name,
+            "orchestration_status": str(machine_payload.get("orchestration_status") or project.status or "idle"),
+            "manager_status": str(machine_payload.get("manager_status") or project.latest_activity or "No active orchestration session."),
+            "manager": {
+                "name": str(manager_agent.get("name") or "Mission Control Manager") if manager_agent else "Mission Control Manager",
+                "runner_type": str(manager_agent.get("runner_type") or project.runner_mode) if manager_agent else str(project.runner_mode),
+                "active_model": str(manager_agent.get("active_model") or "unknown") if manager_agent else "unknown",
+                "status": str(manager_agent.get("status") or project.status or "idle") if manager_agent else str(project.status or "idle"),
+            },
+            "active_agents": active_agents[:8],
+            "current_blockers": list(machine_payload.get("current_blockers") or []),
+            "next_expected_action": str(machine_payload.get("next_expected_step") or "Start or resume an orchestration to stream live worker activity."),
+        }
+        events = service.events.list_events(db, project.id)
+
+    viewer_command = f"python scripts/mission-control-manage.py orchestration-display --project-id {project.id}"
+    if session is not None:
+        viewer_command += f" --orchestration-id {session.id}"
+
+    payload = {
+        "status": status_payload.get("orchestration_status") or project.status or "unknown",
+        "project_id": project.id,
+        "project_name": project.name,
+        "orchestration_id": session.id if session is not None else None,
+        "workspace_path": project.workspace_path,
+        "event_window": event_window,
+        "status_payload": status_payload,
+        "manager": status_payload.get("manager") or {},
+        "status_summary": status_summary,
+        "handoff_summary": handoff_summary,
+        "pending_decisions": pending_decisions,
+        "events": list(events)[-8:],
+        "warnings": warnings,
+        "checked_at": checked_at.isoformat(),
+        "snapshot_saved": False,
+        "snapshot_path": None,
+        "recommended_command": viewer_command,
+        "refresh_seconds": 1.0,
+    }
+    frame = build_ascii_monitor_frame(payload, width=DEFAULT_ASCII_MONITOR_WIDTH)
+
+    return AsciiMonitorFrameRead(
+        project_id=project.id,
+        project_name=project.name,
+        orchestration_id=session.id if session is not None else None,
+        orchestration_status=str(status_payload.get("orchestration_status") or project.status or "unknown"),
+        pending_decisions_count=len(pending_decisions),
+        active_agents_count=len(list(status_payload.get("active_agents") or [])),
+        refresh_seconds=1.0,
+        checked_at=checked_at,
+        viewer_command=viewer_command,
+        frame=frame,
+    )
 
 
 @app.get("/api/projects/{project_id}/handoff/evidence", response_model=list[HandoffEvidenceRead])
@@ -3067,6 +3331,346 @@ def get_project_workspace_tooling_status(
     return WorkspaceToolingStatusRead(**service.build_workspace_tooling_status(project))
 
 
+@app.get("/api/projects/{project_id}/artifact-registry", response_model=ProjectArtifactRegistryRead)
+def get_project_artifact_registry(
+    project_id: int,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> ProjectArtifactRegistryRead:
+    project = _get_project_or_404(db, project_id)
+    return ProjectArtifactRegistryRead(**service.build_project_artifact_registry(project))
+
+
+@app.post("/api/projects/{project_id}/artifact-registry/plan", response_model=ArtifactRegistryPlanRead)
+def create_project_artifact_registry_plan(
+    project_id: int,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> ArtifactRegistryPlanRead:
+    project = _get_project_or_404(db, project_id)
+    return ArtifactRegistryPlanRead(**service.build_artifact_registry_plan(project))
+
+
+@app.get("/api/projects/{project_id}/connector-governance/summary", response_model=ConnectorGovernanceSummaryRead)
+def get_project_connector_governance_summary(
+    project_id: int,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> ConnectorGovernanceSummaryRead:
+    project = _get_project_or_404(db, project_id)
+    return ConnectorGovernanceSummaryRead(**service.build_connector_governance_summary(db, project))
+
+
+@app.post("/api/projects/{project_id}/connector-governance/plan", response_model=ConnectorGovernancePlanRead)
+def create_project_connector_governance_plan(
+    project_id: int,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> ConnectorGovernancePlanRead:
+    project = _get_project_or_404(db, project_id)
+    return ConnectorGovernancePlanRead(**service.build_connector_governance_plan(db, project))
+
+
+@app.get("/api/projects/{project_id}/external-discovery/summary", response_model=ExternalDiscoveryGovernanceSummaryRead)
+def get_project_external_discovery_governance_summary(
+    project_id: int,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> ExternalDiscoveryGovernanceSummaryRead:
+    project = _get_project_or_404(db, project_id)
+    return ExternalDiscoveryGovernanceSummaryRead(**service.build_external_discovery_governance_summary(db, project))
+
+
+@app.post("/api/projects/{project_id}/external-discovery/plan", response_model=ExternalDiscoveryGovernancePlanRead)
+def create_project_external_discovery_governance_plan(
+    project_id: int,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> ExternalDiscoveryGovernancePlanRead:
+    project = _get_project_or_404(db, project_id)
+    return ExternalDiscoveryGovernancePlanRead(**service.build_external_discovery_governance_plan(db, project))
+
+
+@app.get("/api/projects/{project_id}/device-broker/summary", response_model=DeviceBrokerSummaryRead)
+def get_project_device_broker_summary(
+    project_id: int,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> DeviceBrokerSummaryRead:
+    project = _get_project_or_404(db, project_id)
+    return DeviceBrokerSummaryRead(**service.build_device_broker_summary(db, project))
+
+
+@app.post("/api/projects/{project_id}/device-broker/plan", response_model=DeviceBrokerPlanRead)
+def create_project_device_broker_plan(
+    project_id: int,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> DeviceBrokerPlanRead:
+    project = _get_project_or_404(db, project_id)
+    return DeviceBrokerPlanRead(**service.build_device_broker_plan(db, project))
+
+
+@app.get("/api/projects/{project_id}/host-capability-index/summary", response_model=HostCapabilityIndexSummaryRead)
+def get_project_host_capability_index_summary(
+    project_id: int,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> HostCapabilityIndexSummaryRead:
+    project = _get_project_or_404(db, project_id)
+    return HostCapabilityIndexSummaryRead(**service.build_host_capability_index_summary(db, project))
+
+
+@app.post("/api/projects/{project_id}/host-capability-index/plan", response_model=HostCapabilityIndexPlanRead)
+def create_project_host_capability_index_plan(
+    project_id: int,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> HostCapabilityIndexPlanRead:
+    project = _get_project_or_404(db, project_id)
+    return HostCapabilityIndexPlanRead(**service.build_host_capability_index_plan(db, project))
+
+
+@app.get("/api/projects/{project_id}/remote-runners/summary", response_model=RemoteRunnerSummaryRead)
+def get_project_remote_runner_summary(
+    project_id: int,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> RemoteRunnerSummaryRead:
+    project = _get_project_or_404(db, project_id)
+    return RemoteRunnerSummaryRead(**service.build_remote_runner_summary(db, project))
+
+
+@app.post("/api/projects/{project_id}/remote-runners/plan", response_model=RemoteRunnerPlanRead)
+def create_project_remote_runner_plan(
+    project_id: int,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> RemoteRunnerPlanRead:
+    project = _get_project_or_404(db, project_id)
+    return RemoteRunnerPlanRead(**service.build_remote_runner_plan(db, project))
+
+
+@app.get("/api/projects/{project_id}/artifact-transport/summary", response_model=ArtifactTransportSummaryRead)
+def get_project_artifact_transport_summary(
+    project_id: int,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> ArtifactTransportSummaryRead:
+    project = _get_project_or_404(db, project_id)
+    return ArtifactTransportSummaryRead(**service.build_artifact_transport_summary(db, project))
+
+
+@app.post("/api/projects/{project_id}/artifact-transport/plan", response_model=ArtifactTransportPlanRead)
+def create_project_artifact_transport_plan(
+    project_id: int,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> ArtifactTransportPlanRead:
+    project = _get_project_or_404(db, project_id)
+    return ArtifactTransportPlanRead(**service.build_artifact_transport_plan(db, project))
+
+
+@app.get("/api/projects/{project_id}/file-governance/summary", response_model=FileGovernanceSummaryRead)
+def get_project_file_governance_summary(
+    project_id: int,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> FileGovernanceSummaryRead:
+    project = _get_project_or_404(db, project_id)
+    return FileGovernanceSummaryRead(**service.build_file_governance_summary(db, project))
+
+
+@app.post("/api/projects/{project_id}/file-governance/plan", response_model=FileGovernancePlanRead)
+def create_project_file_governance_plan(
+    project_id: int,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> FileGovernancePlanRead:
+    project = _get_project_or_404(db, project_id)
+    return FileGovernancePlanRead(**service.build_file_governance_plan(db, project))
+
+
+@app.get("/api/projects/{project_id}/file-graph-governance/summary", response_model=FileGraphGovernanceSummaryRead)
+def get_project_file_graph_governance_summary(
+    project_id: int,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> FileGraphGovernanceSummaryRead:
+    project = _get_project_or_404(db, project_id)
+    return FileGraphGovernanceSummaryRead(**service.build_file_graph_governance_summary(db, project))
+
+
+@app.post("/api/projects/{project_id}/file-graph-governance/plan", response_model=FileGraphPlanRead)
+def create_project_file_graph_governance_plan(
+    project_id: int,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> FileGraphPlanRead:
+    project = _get_project_or_404(db, project_id)
+    return FileGraphPlanRead(**service.build_file_graph_governance_plan(db, project))
+
+
+@app.get("/api/projects/{project_id}/design-transfer/summary", response_model=DesignTransferSummaryRead)
+def get_project_design_transfer_summary(
+    project_id: int,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> DesignTransferSummaryRead:
+    project = _get_project_or_404(db, project_id)
+    return DesignTransferSummaryRead(**service.build_design_transfer_summary(db, project))
+
+
+@app.post("/api/projects/{project_id}/design-transfer/plan", response_model=DesignTransferPlanRead)
+def create_project_design_transfer_plan(
+    project_id: int,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> DesignTransferPlanRead:
+    project = _get_project_or_404(db, project_id)
+    return DesignTransferPlanRead(**service.build_design_transfer_plan(db, project))
+
+
+@app.get("/api/projects/{project_id}/platform-runners/summary", response_model=PlatformRunnerSummaryRead)
+def get_project_platform_runner_summary(
+    project_id: int,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> PlatformRunnerSummaryRead:
+    project = _get_project_or_404(db, project_id)
+    return PlatformRunnerSummaryRead(**service.build_platform_runner_summary(db, project))
+
+
+@app.post("/api/projects/{project_id}/platform-runners/plan", response_model=PlatformRunnerPlanRead)
+def create_project_platform_runner_plan(
+    project_id: int,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> PlatformRunnerPlanRead:
+    project = _get_project_or_404(db, project_id)
+    return PlatformRunnerPlanRead(**service.build_platform_runner_plan(db, project))
+
+
+@app.get("/api/projects/{project_id}/spatial-asset-governance/summary", response_model=SpatialAssetGovernanceSummaryRead)
+def get_project_spatial_asset_governance_summary(
+    project_id: int,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> SpatialAssetGovernanceSummaryRead:
+    project = _get_project_or_404(db, project_id)
+    return SpatialAssetGovernanceSummaryRead(**service.build_spatial_asset_governance_summary(db, project))
+
+
+@app.post("/api/projects/{project_id}/spatial-asset-governance/plan", response_model=SpatialAssetGovernancePlanRead)
+def create_project_spatial_asset_governance_plan(
+    project_id: int,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> SpatialAssetGovernancePlanRead:
+    project = _get_project_or_404(db, project_id)
+    return SpatialAssetGovernancePlanRead(**service.build_spatial_asset_governance_plan(db, project))
+
+
+@app.get("/api/projects/{project_id}/game-engine-governance/summary", response_model=GameEngineGovernanceSummaryRead)
+def get_project_game_engine_governance_summary(
+    project_id: int,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> GameEngineGovernanceSummaryRead:
+    project = _get_project_or_404(db, project_id)
+    return GameEngineGovernanceSummaryRead(**service.build_game_engine_governance_summary(db, project))
+
+
+@app.post("/api/projects/{project_id}/game-engine-governance/plan", response_model=GameEngineGovernancePlanRead)
+def create_project_game_engine_governance_plan(
+    project_id: int,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> GameEngineGovernancePlanRead:
+    project = _get_project_or_404(db, project_id)
+    return GameEngineGovernancePlanRead(**service.build_game_engine_governance_plan(db, project))
+
+
+@app.get("/api/projects/{project_id}/dataset-governance/summary", response_model=DatasetGovernanceSummaryRead)
+def get_project_dataset_governance_summary(
+    project_id: int,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> DatasetGovernanceSummaryRead:
+    project = _get_project_or_404(db, project_id)
+    return DatasetGovernanceSummaryRead(**service.build_dataset_governance_summary(db, project))
+
+
+@app.post("/api/projects/{project_id}/dataset-governance/plan", response_model=DatasetGovernancePlanRead)
+def create_project_dataset_governance_plan(
+    project_id: int,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> DatasetGovernancePlanRead:
+    project = _get_project_or_404(db, project_id)
+    return DatasetGovernancePlanRead(**service.build_dataset_governance_plan(db, project))
+
+
+@app.get("/api/projects/{project_id}/model-refactor-governance/summary", response_model=ModelRefactorGovernanceSummaryRead)
+def get_project_model_refactor_governance_summary(
+    project_id: int,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> ModelRefactorGovernanceSummaryRead:
+    project = _get_project_or_404(db, project_id)
+    return ModelRefactorGovernanceSummaryRead(**service.build_model_refactor_governance_summary(db, project))
+
+
+@app.post("/api/projects/{project_id}/model-refactor-governance/plan", response_model=ModelRefactorGovernancePlanRead)
+def create_project_model_refactor_governance_plan(
+    project_id: int,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> ModelRefactorGovernancePlanRead:
+    project = _get_project_or_404(db, project_id)
+    return ModelRefactorGovernancePlanRead(**service.build_model_refactor_governance_plan(db, project))
+
+
+@app.get("/api/projects/{project_id}/native-app-validation-governance/summary", response_model=NativeAppValidationGovernanceSummaryRead)
+def get_project_native_app_validation_governance_summary(
+    project_id: int,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> NativeAppValidationGovernanceSummaryRead:
+    project = _get_project_or_404(db, project_id)
+    return NativeAppValidationGovernanceSummaryRead(**service.build_native_app_validation_governance_summary(db, project))
+
+
+@app.post("/api/projects/{project_id}/native-app-validation-governance/plan", response_model=NativeAppValidationGovernancePlanRead)
+def create_project_native_app_validation_governance_plan(
+    project_id: int,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> NativeAppValidationGovernancePlanRead:
+    project = _get_project_or_404(db, project_id)
+    return NativeAppValidationGovernancePlanRead(**service.build_native_app_validation_governance_plan(db, project))
+
+
+@app.get("/api/projects/{project_id}/remote-execution-governance/summary", response_model=RemoteExecutionGovernanceSummaryRead)
+def get_project_remote_execution_governance_summary(
+    project_id: int,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> RemoteExecutionGovernanceSummaryRead:
+    project = _get_project_or_404(db, project_id)
+    return RemoteExecutionGovernanceSummaryRead(**service.build_remote_execution_governance_summary(db, project))
+
+
+@app.post("/api/projects/{project_id}/remote-execution-governance/plan", response_model=RemoteExecutionGovernancePlanRead)
+def create_project_remote_execution_governance_plan(
+    project_id: int,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> RemoteExecutionGovernancePlanRead:
+    project = _get_project_or_404(db, project_id)
+    return RemoteExecutionGovernancePlanRead(**service.build_remote_execution_governance_plan(db, project))
+
+
 @app.get("/api/projects/{project_id}/execution-policy/summary", response_model=ExecutionPolicySummaryRead)
 def get_project_execution_policy_summary(
     project_id: int,
@@ -3085,6 +3689,46 @@ def get_project_coordination_summary(
 ) -> CoordinationSummaryRead:
     project = _get_project_or_404(db, project_id)
     return CoordinationSummaryRead(**service.build_coordination_summary(db, project))
+
+
+@app.get("/api/projects/{project_id}/quality-gates/summary", response_model=QualityGateSummaryRead)
+def get_project_quality_gate_summary(
+    project_id: int,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> QualityGateSummaryRead:
+    project = _get_project_or_404(db, project_id)
+    return QualityGateSummaryRead(**service.build_quality_gate_summary(db, project))
+
+
+@app.post("/api/projects/{project_id}/quality-gates/plan", response_model=QualityGatePlanRead)
+def create_project_quality_gate_plan(
+    project_id: int,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> QualityGatePlanRead:
+    project = _get_project_or_404(db, project_id)
+    return QualityGatePlanRead(**service.build_quality_gate_plan(db, project))
+
+
+@app.get("/api/projects/{project_id}/decision-audit/summary", response_model=DecisionAuditSummaryRead)
+def get_project_decision_audit_summary(
+    project_id: int,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> DecisionAuditSummaryRead:
+    project = _get_project_or_404(db, project_id)
+    return DecisionAuditSummaryRead(**service.build_decision_audit_summary(db, project))
+
+
+@app.post("/api/projects/{project_id}/decision-audit/plan", response_model=DecisionAuditPlanRead)
+def create_project_decision_audit_plan(
+    project_id: int,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> DecisionAuditPlanRead:
+    project = _get_project_or_404(db, project_id)
+    return DecisionAuditPlanRead(**service.build_decision_audit_plan(db, project))
 
 
 @app.get("/api/projects/{project_id}/tensorflow/features", response_model=list[TensorFlowFeatureCatalogEntryRead])
@@ -3331,6 +3975,26 @@ def get_project_nvidia_validation_plan(
 ) -> NvidiaValidationPlanRead:
     project = _get_project_or_404(db, project_id)
     return NvidiaValidationPlanRead(**service.build_nvidia_validation_plan(project))
+
+
+@app.get("/api/projects/{project_id}/nvidia/governance/summary", response_model=NvidiaExecutionGovernanceSummaryRead)
+def get_project_nvidia_execution_governance_summary(
+    project_id: int,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> NvidiaExecutionGovernanceSummaryRead:
+    project = _get_project_or_404(db, project_id)
+    return NvidiaExecutionGovernanceSummaryRead(**service.build_nvidia_execution_governance_summary(db, project))
+
+
+@app.post("/api/projects/{project_id}/nvidia/governance/plan", response_model=NvidiaExecutionGovernancePlanRead)
+def create_project_nvidia_execution_governance_plan(
+    project_id: int,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> NvidiaExecutionGovernancePlanRead:
+    project = _get_project_or_404(db, project_id)
+    return NvidiaExecutionGovernancePlanRead(**service.build_nvidia_execution_governance_plan(db, project))
 
 
 @app.get("/api/projects/{project_id}/nvidia-validation-plan", response_model=NvidiaValidationPlanRead)
@@ -4277,6 +4941,14 @@ def get_integration_health(
     return IntegrationHealthRead(**service.get_integration_health(db))
 
 
+@app.get("/api/integrations/registry", response_model=ConnectorRegistryRead)
+def get_connector_registry(
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> ConnectorRegistryRead:
+    return ConnectorRegistryRead(**service.get_connector_registry(db))
+
+
 @app.post("/api/integrations/import-host-state")
 def import_integration_host_state(
     db: Session = Depends(get_db),
@@ -4588,6 +5260,16 @@ def get_agents(
     return [AgentRead(**item) for item in service._sorted_workspace_agents(db, project_id)]
 
 
+@app.get("/api/projects/{project_id}/usage-summary", response_model=ProjectUsageSummaryRead)
+def get_project_usage_summary(
+    project_id: int,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> ProjectUsageSummaryRead:
+    project = _get_project_or_404(db, project_id)
+    return ProjectUsageSummaryRead(**service.get_project_usage_summary(db, project))
+
+
 @app.get("/api/projects/{project_id}/reservations", response_model=list[ReservationRead])
 def get_reservations(
     project_id: int,
@@ -4771,6 +5453,10 @@ async def start_task(
 ) -> AgentActionResponse:
     project = _get_project_or_404(db, project_id)
     task = _require_project_task(db, project, task_id)
+    existing_run = _latest_unfinished_task_run(db, task.id)
+    if existing_run is not None:
+        _restore_running_task_state(db, task, existing_run)
+        return AgentActionResponse(ok=True, message="Task is already running.", run_id=existing_run.id)
     workers = list(db.scalars(select(Agent).where(Agent.project_id == project.id, Agent.kind == "worker")))
     if not workers:
         workers = service.initialize_build_roster(db, project)
@@ -4808,6 +5494,10 @@ async def start_project_task(
 ) -> AgentActionResponse:
     project = _get_project_or_404(db, project_id)
     task = _require_project_task(db, project, task_id)
+    existing_run = _latest_unfinished_task_run(db, task.id)
+    if existing_run is not None:
+        _restore_running_task_state(db, task, existing_run)
+        return AgentActionResponse(ok=True, message="Task is already running.", run_id=existing_run.id)
     workers = list(db.scalars(select(Agent).where(Agent.project_id == project.id, Agent.kind == "worker")))
     if not workers:
         workers = service.initialize_build_roster(db, project)

@@ -12,6 +12,7 @@ from codex_runner.base import BaseCodexRunner, RunnerContext, RunnerHandle, Runn
 from config import RUNTIME_LOGS_ROOT
 from prompts import worker_task_prompt
 from provider_support import default_label
+from usage_tracking import build_prompt_usage_estimate
 
 
 def _permission_mode(settings: RunnerSettings) -> str | None:
@@ -69,7 +70,8 @@ class ClaudeCodeRunner(BaseCodexRunner):
         return process.returncode == 0
 
     async def start_task(self, context: RunnerContext) -> RunnerHandle:
-        prompt = worker_task_prompt(
+        prompt = await asyncio.to_thread(
+            worker_task_prompt,
             context.project,
             context.agent,
             context.task,
@@ -127,6 +129,7 @@ class ClaudeCodeRunner(BaseCodexRunner):
         if not await self.handshake(context.settings):
             raise RuntimeError("Claude Code CLI is not available.")
         run_id = f"claude-{uuid.uuid4().hex}"
+        initial_usage = build_prompt_usage_estimate(prompt)
         logs_path = RUNTIME_LOGS_ROOT / f"{run_id}.log"
         stdout_path = RUNTIME_LOGS_ROOT / f"{run_id}.stdout.log"
         stderr_path = RUNTIME_LOGS_ROOT / f"{run_id}.stderr.log"
@@ -150,7 +153,7 @@ class ClaudeCodeRunner(BaseCodexRunner):
         self.runs[run_id] = state
         state.events.append({"type": "thread.started", "thread_id": run_id})
         state.events.append({"type": "turn.started", "effective_settings": state.effective_settings})
-        workdir = context.agent.workspace_path or context.project.workspace_path
+        workdir = self.effective_workspace_path(context)
         args = self.build_exec_args(context, resume=resume)
         state.process = await asyncio.create_subprocess_exec(
             *args,
@@ -172,6 +175,7 @@ class ClaudeCodeRunner(BaseCodexRunner):
             stdout_path=str(stdout_path),
             stderr_path=str(stderr_path),
             event_log_path=str(event_log_path),
+            initial_usage=initial_usage,
         )
 
     async def _consume_process(self, run_id: str) -> None:

@@ -1244,8 +1244,10 @@ class ImportedCodebaseService:
         )[:24]
 
     def _detect_git_status(self, root: Path) -> dict[str, Any]:
+        from system_status import detect_git_status
+
         git_dir = root / ".git"
-        is_git_repo = git_dir.exists()
+        git_status = detect_git_status(workspace_path=str(root))
         head_ref = None
         if git_dir.is_dir():
             head = git_dir / "HEAD"
@@ -1256,13 +1258,17 @@ class ImportedCodebaseService:
             except OSError:
                 head_ref = None
         elif git_dir.is_file():
-            is_git_repo = True
             head_ref = "gitdir indirection"
         return {
-            "is_git_repo": is_git_repo,
+            "is_git_repo": bool(git_status.get("is_git_repo")),
             "head_ref": head_ref,
-            "dirty_working_tree": "unknown_without_command" if is_git_repo else "not_git",
-            "command_required_for_dirty_check": is_git_repo,
+            "dirty_working_tree": git_status.get("dirty_working_tree"),
+            "command_required_for_dirty_check": bool(git_status.get("is_git_repo")),
+            "status": git_status.get("status"),
+            "summary": git_status.get("summary"),
+            "safe_directory": git_status.get("safe_directory"),
+            "recommended_fix": git_status.get("recommended_fix"),
+            "error": git_status.get("error"),
         }
 
     def _risk_flags(

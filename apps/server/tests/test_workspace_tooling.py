@@ -218,6 +218,51 @@ def test_detect_workspace_tooling_surfaces_tensorflow_product_pack(tmp_path: Pat
     assert "tensorboard --logdir artifacts/tensorboard" in payload["validation_commands"]
 
 
+def test_detect_workspace_tooling_surfaces_game_engine_validation_pack(tmp_path: Path, monkeypatch) -> None:
+    (tmp_path / "ProjectSettings").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "ProjectSettings" / "ProjectVersion.txt").write_text("m_EditorVersion: 6000.0.0f1\n", encoding="utf-8")
+    (tmp_path / "Packages").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "Packages" / "manifest.json").write_text(
+        json.dumps({"dependencies": {"com.unity.test-framework": "1.4.5"}}),
+        encoding="utf-8",
+    )
+    (tmp_path / "Assets" / "Scenes").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "Assets" / "Scenes" / "MainMenu.unity").write_text("scene\n", encoding="utf-8")
+    (tmp_path / "Game.uproject").write_text('{"FileVersion": 3}\n', encoding="utf-8")
+    (tmp_path / "Config").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "Config" / "DefaultEngine.ini").write_text("[/Script/EngineSettings.GeneralProjectSettings]\n", encoding="utf-8")
+    (tmp_path / "Content" / "Maps").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "Content" / "Maps" / "GoldenPath.umap").write_text("map\n", encoding="utf-8")
+    (tmp_path / "automation").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "automation" / "smoke_test.py").write_text("print('automation')\n", encoding="utf-8")
+    monkeypatch.setattr(
+        "workspace_tooling._which",
+        lambda command: f"C:/tools/{command}.exe" if command in {"Unity", "UnrealEditor-Cmd.exe"} else None,
+    )
+
+    payload = detect_workspace_tooling(tmp_path, project_name="Game Engine Demo")
+
+    assert payload["repo_profile"]["unity_repo"] is True
+    assert payload["repo_profile"]["unreal_repo"] is True
+    assert "unity:ready" in payload["product_lane_statuses"]
+    assert "unreal:ready" in payload["product_lane_statuses"]
+    assert "unity product lane available" in payload["summary"]
+    assert "unreal product lane available" in payload["summary"]
+    assert any(command.startswith("Unity -batchmode -projectPath . -runTests") for command in payload["execution_entrypoints"])
+    tools = {tool["id"]: tool for tool in payload["tools"]}
+    assert tools["unity"]["installed"] is True
+    assert tools["unity"]["configured"] is True
+    assert tools["unity"]["status"] == "ready"
+    assert tools["unity"]["config_sections"] == ["signal:com.unity.test-framework"]
+    assert tools["unreal"]["installed"] is True
+    assert tools["unreal"]["configured"] is True
+    assert tools["unreal"]["status"] == "ready"
+    assert tools["unreal"]["config_sections"] == ["signal:automation_python"]
+    assert any(command.startswith("RunUAT BuildCookRun") for command in tools["unreal"]["recommended_commands"])
+    packs = {pack["id"]: pack for pack in payload["packs"]}
+    assert packs["game_engine_validation_pack"]["status"] == "ready"
+
+
 def test_detect_workspace_tooling_surfaces_pytorch_training_pack(tmp_path: Path, monkeypatch) -> None:
     (tmp_path / "pyproject.toml").write_text(
         "[project]\nname='torch-demo'\ndependencies=['torch','torchvision','accelerate','transformers','onnx']\n",

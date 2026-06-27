@@ -29,11 +29,29 @@ $launcherDir = if ($env:MISSION_CONTROL_LAUNCHER_DIR) {
 } else {
   Join-Path $repoRoot ([string]$config.launcherLogDir)
 }
+$frontendDir = Join-Path $repoRoot "apps\dashboard"
+$frontendDist = Join-Path $frontendDir "dist"
+$frontendIndexPath = Join-Path $frontendDist "index.html"
 $metadataPath = Join-Path $launcherDir "daemon.json"
 $stdoutPath = Join-Path $launcherDir "daemon.stdout.log"
 $stderrPath = Join-Path $launcherDir "daemon.stderr.log"
 $launchLogPath = Join-Path $launcherDir "daemon.launch.log"
 $null = New-Item -ItemType Directory -Path $launcherDir -Force
+$runtimeRoot = if ($env:MISSION_CONTROL_RUNTIME_ROOT) {
+  $env:MISSION_CONTROL_RUNTIME_ROOT
+} else {
+  Join-Path $repoRoot ".runtime"
+}
+$runtimeCodexProfileRoot = if ($env:MISSION_CONTROL_CODEX_PROFILE_ROOT) {
+  $env:MISSION_CONTROL_CODEX_PROFILE_ROOT
+} else {
+  Join-Path $runtimeRoot "codex-profile"
+}
+$runtimeCodexHome = if ($env:MISSION_CONTROL_CODEX_HOME) {
+  $env:MISSION_CONTROL_CODEX_HOME
+} else {
+  Join-Path $runtimeCodexProfileRoot ".codex"
+}
 
 function Assert-LocalHost {
   param([string]$HostValue)
@@ -107,35 +125,113 @@ function Add-UniquePathEntries {
   [System.Environment]::SetEnvironmentVariable("Path", $normalized, "Process")
 }
 
-function Resolve-CodexCliPath {
-  foreach ($name in @("codex", "codex.cmd", "codex.exe", "codex.ps1", "codex.bat")) {
-    $command = Get-Command $name -ErrorAction SilentlyContinue
-    if ($command) {
-      return $command.Source
+function Resolve-SourceCodexHome {
+  if ($env:CODEX_HOME) {
+    return [System.IO.Path]::GetFullPath($env:CODEX_HOME)
+  }
+  $userHome = [Environment]::GetFolderPath("UserProfile")
+  return [System.IO.Path]::GetFullPath((Join-Path $userHome ".codex"))
+}
+
+function Sync-CodexAuthAssets {
+  param(
+    [string]$SourceCodexHome,
+    [string]$TargetCodexHome
+  )
+
+  $sourcePath = [System.IO.Path]::GetFullPath($SourceCodexHome)
+  $targetPath = [System.IO.Path]::GetFullPath($TargetCodexHome)
+  $null = New-Item -ItemType Directory -Path $targetPath -Force
+  $copiedFiles = New-Object System.Collections.Generic.List[string]
+
+  foreach ($name in @("auth.json", ".credentials.json", "installation_id")) {
+    $sourceFile = Join-Path $sourcePath $name
+    if (-not (Test-Path $sourceFile -PathType Leaf)) {
+      continue
     }
+    Copy-Item -LiteralPath $sourceFile -Destination (Join-Path $targetPath $name) -Force
+    $copiedFiles.Add($name) | Out-Null
   }
 
+  return [pscustomobject]@{
+    source_home = $sourcePath
+    target_home = $targetPath
+    copied_files = @($copiedFiles)
+  }
+}
+
+function Test-IsWindowsAppsShimPath {
+  param([string]$PathValue)
+  if (-not $PathValue) {
+    return $false
+  }
+  $normalized = $PathValue.Replace('/', '\').ToLowerInvariant()
+  return $normalized -like "*\microsoft\windowsapps\*" -or $normalized -like "*\program files\windowsapps\*"
+}
+
+function Resolve-CodexCliPath {
   $userHome = [Environment]::GetFolderPath("UserProfile")
   $localAppData = [Environment]::GetFolderPath("LocalApplicationData")
   $tempRoot = [System.IO.Path]::GetTempPath()
-  $candidates = @(
+  $candidates = New-Object System.Collections.Generic.List[string]
+  foreach ($candidate in @(
     $env:MISSION_CONTROL_CODEX_PATH,
     $env:CODEX_CLI_PATH,
-    (Join-Path $localAppData "Microsoft\WindowsApps\codex.exe"),
-    (Join-Path $localAppData "Programs\Codex\codex.exe"),
+    (Join-Path $localAppData "OpenAI\Codex\bin\codex.exe"),
     (Join-Path $localAppData "Programs\OpenAI Codex\codex.exe"),
+    (Join-Path $localAppData "Programs\Codex\codex.exe"),
     (Join-Path $userHome ".local\bin\codex.exe"),
     (Join-Path $userHome ".local\bin\codex"),
     (Join-Path $tempRoot "codex.exe"),
     (Join-Path $tempRoot "codex.cmd")
-  ) | Where-Object { $_ }
+  )) {
+    if ($candidate) {
+      $null = $candidates.Add($candidate)
+    }
+  }
+
+  $versionedBinRoot = Join-Path $localAppData "OpenAI\Codex\bin"
+  if (Test-Path $versionedBinRoot -PathType Container) {
+    $versionedEntries = Get-ChildItem -Path $versionedBinRoot -Directory -ErrorAction SilentlyContinue | Sort-Object Name -Descending
+    foreach ($entry in $versionedEntries) {
+      $null = $candidates.Add((Join-Path $entry.FullName "codex.exe"))
+    }
+  }
+
+  foreach ($candidate in @(
+    (Join-Path $localAppData "Microsoft\WindowsApps\codex.exe")
+  )) {
+    if ($candidate) {
+      $null = $candidates.Add($candidate)
+    }
+  }
 
   foreach ($candidate in $candidates) {
     if (Test-Path $candidate) {
       return (Resolve-Path $candidate).Path
     }
   }
-  return $null
+
+  $windowsAppsFallback = $null
+  foreach ($name in @("codex", "codex.cmd", "codex.exe", "codex.ps1", "codex.bat")) {
+    $command = Get-Command $name -ErrorAction SilentlyContinue
+    if (-not $command) {
+      continue
+    }
+    $resolved = $command.Source
+    try {
+      $resolved = (Resolve-Path $resolved).Path
+    } catch {
+      $resolved = $command.Source
+    }
+    if (-not (Test-IsWindowsAppsShimPath -PathValue $resolved)) {
+      return $resolved
+    }
+    if (-not $windowsAppsFallback) {
+      $windowsAppsFallback = $resolved
+    }
+  }
+  return $windowsAppsFallback
 }
 
 function Resolve-ClaudeCliPath {
@@ -168,6 +264,23 @@ function Resolve-ClaudeCliPath {
   return $null
 }
 
+function Ensure-FrontendBundle {
+  if (Test-Path $frontendIndexPath -PathType Leaf) {
+    return
+  }
+  $npmPath = Get-RequiredCommand -Names @("npm.cmd", "npm")
+  Write-Host "[Mission Control] Dashboard bundle missing. Building frontend..."
+  Push-Location $frontendDir
+  try {
+    & $env:ComSpec /c "`"$npmPath`" run build" | Out-Host
+  } finally {
+    Pop-Location
+  }
+  if (-not (Test-Path $frontendIndexPath -PathType Leaf)) {
+    throw "Dashboard frontend build output was not created at $frontendIndexPath"
+  }
+}
+
 function Add-CodexCliPaths {
   $userHome = [Environment]::GetFolderPath("UserProfile")
   $localAppData = [Environment]::GetFolderPath("LocalApplicationData")
@@ -190,11 +303,18 @@ function Add-CodexCliPaths {
     }
   }
 
+  $versionedBinRoot = Join-Path $localAppData "OpenAI\Codex\bin"
+  if (Test-Path $versionedBinRoot -PathType Container) {
+    $candidateDirs += $versionedBinRoot
+    $candidateDirs += (Get-ChildItem -Path $versionedBinRoot -Directory -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName })
+  }
+
   $candidateDirs += @(
+    (Join-Path $localAppData "OpenAI\Codex\bin"),
+    (Join-Path $localAppData "Programs\OpenAI Codex"),
+    (Join-Path $localAppData "Programs\Codex"),
     (Join-Path $localAppData "Microsoft\WindowsApps"),
     (Join-Path $userHome "AppData\Local\Microsoft\WindowsApps"),
-    (Join-Path $localAppData "Programs\Codex"),
-    (Join-Path $localAppData "Programs\OpenAI Codex"),
     (Join-Path $userHome ".local\bin")
   )
 
@@ -284,6 +404,17 @@ function Test-BackendHealthy {
   }
 }
 
+function Test-FrontendHealthy {
+  $urlHost = Get-UrlHost $effectiveHost
+  $frontendUrl = "http://${urlHost}:${effectiveBackendPort}/dashboard"
+  try {
+    $response = Invoke-WebRequest -Uri $frontendUrl -UseBasicParsing -TimeoutSec 2
+    return $response.StatusCode -eq 200
+  } catch {
+    return $false
+  }
+}
+
 function Get-DaemonIdentity {
   $urlHost = Get-UrlHost $effectiveHost
   $identityUrl = "http://${urlHost}:${effectiveBackendPort}/api/diagnostics/identity"
@@ -352,7 +483,7 @@ function Get-LogTail {
 function Wait-ForBackend {
   param([System.Diagnostics.Process]$ProcessHandle)
   for ($index = 0; $index -lt 60; $index += 1) {
-    if (Test-BackendHealthy) {
+    if ((Test-BackendHealthy) -and (Test-FrontendHealthy)) {
       return
     }
     if ($ProcessHandle) {
@@ -372,8 +503,25 @@ Assert-LocalHost -HostValue $effectiveHost
 
 $pythonPath = Get-RequiredCommand -Names @("python", "py")
 $serverScript = Join-Path $repoRoot "apps\server\src\mission_control_daemon.py"
-$codexCliPath = Add-CodexCliPaths
-$claudeCliPath = Add-ClaudeCliPaths
+$codexCliPath = Resolve-CodexCliPath
+$claudeCliPath = Resolve-ClaudeCliPath
+$codexHomeSync = Sync-CodexAuthAssets -SourceCodexHome (Resolve-SourceCodexHome) -TargetCodexHome $runtimeCodexHome
+$runtimeCodexProfileRoot = [System.IO.Path]::GetFullPath($runtimeCodexProfileRoot)
+$runtimeCodexHome = [string]$codexHomeSync.target_home
+$sourceUserProfile = if ($env:MISSION_CONTROL_SOURCE_USERPROFILE) {
+  $env:MISSION_CONTROL_SOURCE_USERPROFILE
+} elseif ($env:USERPROFILE) {
+  $env:USERPROFILE
+} else {
+  [Environment]::GetFolderPath("UserProfile")
+}
+$sourceHome = if ($env:MISSION_CONTROL_SOURCE_HOME) {
+  $env:MISSION_CONTROL_SOURCE_HOME
+} elseif ($env:HOME) {
+  $env:HOME
+} else {
+  $sourceUserProfile
+}
 
 $launchInfo = [ordered]@{
   generated_at = (Get-Date).ToString("o")
@@ -383,6 +531,10 @@ $launchInfo = [ordered]@{
   python_path = $pythonPath
   server_script = $serverScript
   codex_cli_path = $codexCliPath
+  codex_source_home = $codexHomeSync.source_home
+  codex_profile_root = $runtimeCodexProfileRoot
+  codex_home = $runtimeCodexHome
+  codex_auth_files = @($codexHomeSync.copied_files)
   claude_cli_path = $claudeCliPath
   stdout_path = $stdoutPath
   stderr_path = $stderrPath
@@ -391,6 +543,14 @@ $launchInfo | ConvertTo-Json -Depth 4 | Set-Content -Path $launchLogPath -Encodi
 
 if (Test-BackendHealthy) {
   if (Test-ExpectedDaemon) {
+    Ensure-FrontendBundle
+    if (-not (Test-FrontendHealthy)) {
+      Start-Sleep -Milliseconds 500
+      if (-not (Test-FrontendHealthy)) {
+        $urlHost = Get-UrlHost $effectiveHost
+        throw "Mission Control daemon is healthy, but the dashboard frontend is not reachable at http://${urlHost}:${effectiveBackendPort}/dashboard"
+      }
+    }
     $urlHost = Get-UrlHost $effectiveHost
     Write-Host "[Mission Control] Daemon already healthy on http://${urlHost}:${effectiveBackendPort}"
     exit 0
@@ -402,15 +562,44 @@ if (Test-TcpPortListening -TargetHost $effectiveHost -Port $effectiveBackendPort
   throw "Port $effectiveBackendPort is already occupied on ${effectiveHost}. Pick another backend port or stop the conflicting service first."
 }
 
+Ensure-FrontendBundle
+
 $env:MISSION_CONTROL_SERVER_MODE = "daemon"
 $env:MISSION_CONTROL_BACKEND_HOST = $effectiveHost
 $env:MISSION_CONTROL_BACKEND_PORT = [string]$effectiveBackendPort
-$env:MISSION_CONTROL_REPO_ROOT = $repoRoot
+$env:MISSION_CONTROL_FRONTEND_DIST = $frontendDist
+$env:MISSION_CONTROL_LAUNCHER_DIR = $launcherDir
+$env:MISSION_CONTROL_RUNTIME_ROOT = $runtimeRoot
+$env:MISSION_CONTROL_CODEX_PROFILE_ROOT = $runtimeCodexProfileRoot
+$env:MISSION_CONTROL_CODEX_HOME = $runtimeCodexHome
+$env:MISSION_CONTROL_SOURCE_CODEX_HOME = $codexHomeSync.source_home
+$env:MISSION_CONTROL_SOURCE_USERPROFILE = $sourceUserProfile
+$env:MISSION_CONTROL_SOURCE_HOME = $sourceHome
+$env:USERPROFILE = $runtimeCodexProfileRoot
+$env:HOME = $runtimeCodexProfileRoot
 if ($codexCliPath) {
   $env:MISSION_CONTROL_CODEX_PATH = $codexCliPath
 }
 if ($claudeCliPath) {
   $env:MISSION_CONTROL_CLAUDE_PATH = $claudeCliPath
+}
+
+# Do not let a nested Codex Desktop chat thread leak its own bridge
+# instructions or thread-scoped sandbox into the background daemon.
+foreach ($key in @(
+  "CODEX_INTERNAL_ORIGINATOR_OVERRIDE",
+  "CODEX_THREAD_ID",
+  "CODEX_SHELL"
+)) {
+  if (Test-Path "Env:$key") {
+    Remove-Item "Env:$key" -ErrorAction SilentlyContinue
+  }
+}
+
+# Some Windows shells surface both Path and PATH; Start-Process treats that as
+# a duplicate-key environment block and aborts before launch.
+if (Test-Path Env:PATH) {
+  Remove-Item Env:PATH -ErrorAction SilentlyContinue
 }
 
 $process = Start-Process `
@@ -434,6 +623,11 @@ if (-not (Test-BackendHealthy)) {
   $stderrTail = Get-LogTail -PathValue $stderrPath
   $stdoutTail = Get-LogTail -PathValue $stdoutPath
   throw "Mission Control daemon passed the initial health check but did not stay reachable. stderr:`n$stderrTail`nstdout:`n$stdoutTail"
+}
+if (-not (Test-FrontendHealthy)) {
+  $stderrTail = Get-LogTail -PathValue $stderrPath
+  $stdoutTail = Get-LogTail -PathValue $stdoutPath
+  throw "Mission Control daemon is healthy, but the dashboard frontend did not become reachable. stderr:`n$stderrTail`nstdout:`n$stdoutTail"
 }
 if (-not (Test-ExpectedDaemon)) {
   throw "Mission Control daemon answered health checks, but daemon metadata did not validate the expected repo/host/port identity."

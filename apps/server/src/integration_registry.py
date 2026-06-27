@@ -849,6 +849,10 @@ class IntegrationActionDefinition:
     mutates_remote_state: bool = False
     requires_confirmation: bool = False
     required_params: tuple[str, ...] = ()
+    supports_pagination: bool = False
+    supports_streaming_output: bool = False
+    supports_file_output: bool = False
+    supports_throttle_controls: bool = False
 
 
 @dataclass(frozen=True)
@@ -922,6 +926,10 @@ def _action(
     mutates_remote_state: bool = False,
     requires_confirmation: bool = False,
     required_params: tuple[str, ...] = (),
+    supports_pagination: bool = False,
+    supports_streaming_output: bool = False,
+    supports_file_output: bool = False,
+    supports_throttle_controls: bool = False,
 ) -> IntegrationActionDefinition:
     return IntegrationActionDefinition(
         action_id=action_id,
@@ -934,6 +942,10 @@ def _action(
         mutates_remote_state=mutates_remote_state,
         requires_confirmation=requires_confirmation,
         required_params=required_params,
+        supports_pagination=supports_pagination,
+        supports_streaming_output=supports_streaming_output,
+        supports_file_output=supports_file_output,
+        supports_throttle_controls=supports_throttle_controls,
     )
 
 
@@ -1258,6 +1270,82 @@ FAMILIES: tuple[IntegrationFamilyDefinition, ...] = (
         ),
     ),
     IntegrationFamilyDefinition(
+        family_id="cloud_storage",
+        name="Google Drive / SharePoint / OneDrive / Box / S3",
+        summary="Cloud-storage and large-file discovery integration lane.",
+        category="storage",
+        providers=("google_drive", "sharepoint", "onedrive", "dropbox", "box", "s3"),
+        host_tokens=("google drive", "sharepoint", "onedrive", "dropbox", "box", "s3"),
+        config_files=(),
+        workspace_tokens=("google drive", "sharepoint", "onedrive", "dropbox", "box", "s3", "driveitem", "microsoft graph"),
+        cli_candidates=("rclone", "aws"),
+        legacy_account_keys=(),
+        actions=COMMON_ACTIONS + (
+            _action(
+                "search",
+                "Search files",
+                "Search remote file metadata or content-adjacent state through the configured storage lane.",
+                risk_level="low",
+                permission_policy="ask_once_per_project",
+                required_params=("query",),
+                supports_pagination=True,
+                supports_streaming_output=True,
+                supports_throttle_controls=True,
+            ),
+            _action(
+                "list",
+                "List files",
+                "List files or folders through the configured storage lane.",
+                risk_level="low",
+                permission_policy="ask_once_per_project",
+                supports_pagination=True,
+                supports_streaming_output=True,
+                supports_throttle_controls=True,
+            ),
+            _action(
+                "export",
+                "Export metadata",
+                "Export a bounded metadata manifest for offline review or dedupe planning.",
+                risk_level="low",
+                permission_policy="ask_once_per_project",
+                supports_file_output=True,
+                supports_throttle_controls=True,
+            ),
+        ),
+    ),
+    IntegrationFamilyDefinition(
+        family_id="design_assets",
+        name="Figma / Design Assets",
+        summary="Design-asset and token export integration lane.",
+        category="design",
+        providers=("figma",),
+        host_tokens=("figma",),
+        config_files=(),
+        workspace_tokens=("figma", "design tokens", "component map", "design system"),
+        cli_candidates=(),
+        legacy_account_keys=(),
+        actions=COMMON_ACTIONS + (
+            _action(
+                "list",
+                "List assets",
+                "List design files, components, or exportable artifacts through the configured design lane.",
+                risk_level="low",
+                permission_policy="ask_once_per_project",
+                supports_pagination=True,
+                supports_streaming_output=True,
+            ),
+            _action(
+                "export",
+                "Export design data",
+                "Export tokens, component maps, or asset manifests for code-conformance work.",
+                risk_level="low",
+                permission_policy="ask_once_per_project",
+                supports_file_output=True,
+                supports_throttle_controls=True,
+            ),
+        ),
+    ),
+    IntegrationFamilyDefinition(
         family_id="vector_databases",
         name="Vector Databases",
         summary="Vector-index and retrieval-store integration lane.",
@@ -1285,7 +1373,17 @@ FAMILIES: tuple[IntegrationFamilyDefinition, ...] = (
         cli_candidates=("src", "zoekt-query"),
         legacy_account_keys=(),
         actions=COMMON_ACTIONS + (
-            _action("search", "Search code", "Run a code-search query through the configured engine.", risk_level="low", permission_policy="ask_once_per_project", required_params=("query",)),
+            _action(
+                "search",
+                "Search code",
+                "Run a code-search query through the configured engine.",
+                risk_level="low",
+                permission_policy="ask_once_per_project",
+                required_params=("query",),
+                supports_pagination=True,
+                supports_streaming_output=True,
+                supports_throttle_controls=True,
+            ),
         ),
     ),
     IntegrationFamilyDefinition(
@@ -1393,7 +1491,16 @@ FAMILIES: tuple[IntegrationFamilyDefinition, ...] = (
         cli_candidates=(),
         legacy_account_keys=(),
         actions=COMMON_ACTIONS + (
-            _action("search", "Search tickets", "Search support or knowledge-base state.", risk_level="low", permission_policy="ask_once_per_project"),
+            _action(
+                "search",
+                "Search tickets",
+                "Search support or knowledge-base state.",
+                risk_level="low",
+                permission_policy="ask_once_per_project",
+                supports_pagination=True,
+                supports_streaming_output=True,
+                supports_throttle_controls=True,
+            ),
             _action("create", "Create ticket", "Create a support artifact.", mutates_remote_state=True, requires_confirmation=True),
         ),
     ),
@@ -3066,6 +3173,10 @@ def build_project_integration_status(
                     "missing_params": preflight["missing_params"],
                     "defaulted_params": preflight["defaulted_params"],
                     "params_complete": preflight["params_complete"],
+                    "supports_pagination": bool(action.supports_pagination),
+                    "supports_streaming_output": bool(action.supports_streaming_output),
+                    "supports_file_output": bool(action.supports_file_output),
+                    "supports_throttle_controls": bool(action.supports_throttle_controls),
                     "status": "available" if action_ready else "needs_setup",
                     "provider": action_provider,
                     "provider_candidates": provider_candidates,
@@ -4496,6 +4607,10 @@ def preview_integration_action(
         ),
         "missing_params": missing,
         "params_complete": not missing,
+        "supports_pagination": bool(action.supports_pagination),
+        "supports_streaming_output": bool(action.supports_streaming_output),
+        "supports_file_output": bool(action.supports_file_output),
+        "supports_throttle_controls": bool(action.supports_throttle_controls),
         "provider": resolved_provider,
         "provider_candidates": provider_candidates,
         "provider_signal_breakdown": provider_signal_breakdown,

@@ -1,6 +1,7 @@
 import { Navigate, Route, Routes, useParams } from "react-router-dom";
 
 import { ArchivePage } from "./pages/ArchivePage";
+import { AsciiMonitorPage } from "./pages/AsciiMonitorPage";
 import { DashboardPage } from "./pages/DashboardPage";
 import { DiagnosticsPage } from "./pages/DiagnosticsPage";
 import { HandoffPage } from "./pages/HandoffPage";
@@ -45,6 +46,8 @@ export default function App() {
       <Route path="/projects/new" element={<ProjectIntakePage />} />
       <Route path="/projects/:projectId" element={<ProjectWorkspacePage />} />
       <Route path="/projects/:projectId/:projectSlug" element={<ProjectWorkspacePage />} />
+      <Route path="/projects/:projectId/ascii-monitor" element={<AsciiMonitorPage />} />
+      <Route path="/projects/:projectId/:projectSlug/ascii-monitor" element={<AsciiMonitorPage />} />
       <Route path="/projects/:projectId/models-runners" element={<ModelsRunnersPage />} />
       <Route path="/projects/:projectId/:projectSlug/models-runners" element={<ModelsRunnersPage />} />
       <Route path="/projects/:projectId/interview" element={<InterviewPage />} />

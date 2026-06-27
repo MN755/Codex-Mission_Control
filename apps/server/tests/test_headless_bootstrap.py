@@ -7,6 +7,7 @@ from pathlib import Path
 
 from bootstrap.environment_probe import probe_environment, summarize_path_entries
 from bootstrap.headless_config import build_headless_config, normalize_transport, write_headless_config
+from bootstrap.install_report import build_install_report
 from bootstrap.runner_autowire import autowire_headless, get_headless_config, repair_headless
 from bootstrap.runner_probe import probe_claude_cli, probe_dry_run, probe_ollama, probe_runners, summarize_runner_status
 
@@ -374,6 +375,67 @@ def test_autowire_generates_safe_headless_config_and_repair_preserves_install_id
     assert repaired["headless_config"]["install_id"] == install_id
 
 
+def test_build_install_report_marks_core_bridge_ready_with_dry_run_only() -> None:
+    report = build_install_report(
+        probes=[
+            {
+                "runner_id": "dry_run",
+                "label": "Dry-run",
+                "available": True,
+                "configured": True,
+                "requires_user_action": False,
+                "recommended_fix": None,
+                "billing_warning": None,
+                "details_json": {},
+            },
+            {
+                "runner_id": "codex_cli",
+                "label": "Codex CLI",
+                "available": True,
+                "configured": False,
+                "requires_user_action": True,
+                "recommended_fix": "Run `codex login` and finish local sign-in.",
+                "billing_warning": None,
+                "details_json": {},
+            },
+        ],
+        headless_config={
+            "install_path": str(ROOT),
+            "runtime_path": str(ROOT / ".runtime-test"),
+            "redaction_status": "clean",
+        },
+        health={
+            "status": "degraded",
+            "checks": [
+                {"key": "mission_control_daemon_reachable", "status": "ready", "summary": "Daemon answered locally."},
+                {"key": "daemon_identity_confirmed", "status": "ready", "summary": "Daemon identity matches this checkout."},
+                {"key": "mcp_server_reachable", "status": "ready", "summary": "MCP handshake exposed callable tools."},
+                {"key": "codex_login_status_detectable", "status": "degraded", "summary": "Codex login is not authenticated yet."},
+                {"key": "dashboard_optional_status", "status": "unknown", "summary": "Dashboard remains optional."},
+            ],
+            "recommended_next_steps": ["Run `codex login` and finish local sign-in."],
+            "notes": [],
+            "safe_troubleshooting_commands": [],
+            "codex_chat_markdown": "health",
+            "checked_at": "2026-06-08T00:00:00Z",
+        },
+        environment={
+            "daemon_status": {"repo_root": str(ROOT)},
+            "discovered_installs": [
+                {
+                    "kind": "workspace_repo",
+                    "path": str(ROOT),
+                    "markers": {"install_conflict": True},
+                }
+            ],
+        },
+    )
+
+    assert report["status"] == "ready"
+    assert report["configured_runners"] == ["Dry-run"]
+    assert "Codex CLI" in report["unavailable_runners"]
+
+
 def test_environment_probe_reports_stored_mcp_transport(monkeypatch, tmp_path) -> None:
     runtime_root = tmp_path / "runtime"
     write_headless_config(
@@ -542,6 +604,47 @@ def test_headless_endpoints_and_runner_status_endpoint(client, bridge_headers, m
     assert client.get("/api/runners/status").status_code == 200
     assert client.post("/api/headless/autowire", json={}, headers=bridge_headers).status_code == 200
     assert client.post("/api/headless/repair", json={}, headers=bridge_headers).status_code == 200
+
+
+def test_runners_status_route_accepts_optional_auth_status(client, bridge_headers, monkeypatch) -> None:
+    monkeypatch.setattr(
+        "main.summarize_runner_status",
+        lambda: {
+            "status": "ready",
+            "runners": [
+                {
+                    "runner_id": "openai_api",
+                    "label": "OpenAI API",
+                    "available": False,
+                    "configured": False,
+                    "auth_status": "optional",
+                    "install_status": "not_configured",
+                    "command_path": None,
+                    "version": None,
+                    "safe_default": False,
+                    "requires_user_action": True,
+                    "recommended_fix": "Set the API key and adapter command before enabling this runner.",
+                    "billing_warning": "OpenAI API may incur API billing.",
+                    "code": None,
+                    "severity": None,
+                    "breakpoint": None,
+                    "retryable": None,
+                    "user_action_required": True,
+                    "models": [],
+                    "details_json": {},
+                    "checked_at": "2026-06-09T00:00:00Z",
+                }
+            ],
+            "enabled_runners": ["dry_run"],
+            "safe_defaults": ["dry_run"],
+            "checked_at": "2026-06-09T00:00:00Z",
+        },
+    )
+
+    response = client.get("/api/runners/status", headers=bridge_headers)
+
+    assert response.status_code == 200
+    assert response.json()["runners"][0]["auth_status"] == "optional"
 
 
 def test_scripts_and_headless_skills_exist() -> None:

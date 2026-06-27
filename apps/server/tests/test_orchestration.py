@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import shutil
 import asyncio
+from datetime import timedelta
 from pathlib import Path
 
 import pytest
@@ -11,7 +12,9 @@ from fastapi.testclient import TestClient
 from bridge_formatter import format_status_summary_message
 from bridge_messages import bridge_runtime_service
 from conftest import sample_workspace, seed_imported_codebase_records, wait_for
+from db import SessionLocal
 from main import app
+from models import Agent, AgentRun, ChangeRequest, OrchestrationSession, PendingDecision, Project, Task, utc_now
 
 
 def _bridge_headers() -> dict[str, str]:
@@ -174,6 +177,46 @@ def test_daemon_status_reports_runner_inventory(client) -> None:
     assert "retrying_orchestrations" in payload
 
 
+def test_daemon_status_uses_runner_inventory_preview_without_live_probe(client, monkeypatch) -> None:
+    from manager import service
+
+    async def fail_inventory() -> list[dict[str, object]]:
+        raise AssertionError("daemon/status should not perform live runner inventory probes")
+
+    monkeypatch.setattr(service.runners, "inventory", fail_inventory)
+    monkeypatch.setattr(
+        service.runners,
+        "inventory_preview",
+        lambda: [
+            {
+                "runner_type": "dry_run",
+                "availability": True,
+                "config_status": "ready",
+                "supports_background": True,
+                "supports_streaming": True,
+                "supports_approvals": True,
+                "notes": ["preview"],
+            }
+        ],
+    )
+
+    response = client.get("/api/daemon/status", headers=_bridge_headers())
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["runner_inventory"] == [
+        {
+            "runner_type": "dry_run",
+            "availability": True,
+            "config_status": "ready",
+            "supports_background": True,
+            "supports_streaming": True,
+            "supports_approvals": True,
+            "notes": ["preview"],
+        }
+    ]
+
+
 def test_background_retries_are_tracked_and_shutdown_cancels() -> None:
     from orchestration import coordinator
 
@@ -185,6 +228,52 @@ def test_background_retries_are_tracked_and_shutdown_cancels() -> None:
         assert snapshot["failure_classification"] == "transient"
         await coordinator.on_shutdown()
         assert coordinator._background_runtime_snapshot(999999)["retry_scheduled"] is False
+
+    asyncio.run(run_test())
+
+
+def test_background_turn_requests_queue_follow_up_when_current_turn_is_active(monkeypatch) -> None:
+    from orchestration import coordinator
+
+    async def run_test() -> None:
+        started: list[tuple[int, str]] = []
+        blocker = asyncio.Event()
+        deferred_blocker = asyncio.Event()
+        orchestration_id = 424242
+
+        async def fake_run_background_turn_deferred(target_id: int, reason: str) -> None:
+            started.append((target_id, reason))
+            await deferred_blocker.wait()
+
+        monkeypatch.setattr(coordinator, "_run_background_turn_deferred", fake_run_background_turn_deferred)
+
+        active_task = asyncio.create_task(blocker.wait())
+        coordinator._tasks[orchestration_id] = active_task
+        coordinator._task_metadata[orchestration_id] = {
+            "reason": "resume",
+            "scheduled_at": "2026-06-13T20:00:00+00:00",
+            "retry_scheduled": False,
+            "delay_seconds": 0.1,
+        }
+
+        coordinator._schedule_background_turn(orchestration_id, "worker_report_recorded")
+        queued_snapshot = coordinator._background_runtime_snapshot(orchestration_id)
+        assert queued_snapshot["turn_active"] is True
+        assert queued_snapshot["queued_reason"] == "worker_report_recorded"
+
+        blocker.set()
+        await active_task
+        coordinator._background_task_done(orchestration_id, active_task)
+        await asyncio.sleep(0)
+
+        assert started == [(orchestration_id, "worker_report_recorded")]
+        resumed_snapshot = coordinator._background_runtime_snapshot(orchestration_id)
+        assert resumed_snapshot["turn_active"] is True
+        assert resumed_snapshot["reason"] == "worker_report_recorded"
+        assert resumed_snapshot["queued_reason"] is None
+
+        deferred_blocker.set()
+        await coordinator.on_shutdown()
 
     asyncio.run(run_test())
 
@@ -295,6 +384,169 @@ def test_background_turn_does_not_resume_paused_project(client, monkeypatch) -> 
         assert called["manager"] == 0
         events = coordinator.list_events(db, refreshed)
         assert any(event["event_type"] == "background_turn_skipped" for event in events)
+    finally:
+        db.close()
+
+
+def test_on_startup_auto_resumes_safe_orchestrations_after_daemon_restart(monkeypatch) -> None:
+    from db import SessionLocal
+    from models import OrchestrationSession, Project
+    from orchestration import coordinator
+
+    workspace = _fresh_workspace("startup-auto-resume")
+    scheduled: list[tuple[int, str]] = []
+
+    monkeypatch.setattr(coordinator, "_schedule_background_turn", lambda orchestration_id, reason: scheduled.append((orchestration_id, reason)))
+
+    db = SessionLocal()
+    try:
+        project = Project(
+            name="Startup Auto Resume",
+            idea="Resume safe work after daemon restart.",
+            workspace_path=workspace.as_posix(),
+            status="building",
+            runner_mode="dry_run",
+            manager_mode="auto",
+        )
+        db.add(project)
+        db.flush()
+        session = OrchestrationSession(
+            project_id=project.id,
+            workspace_path=workspace.as_posix(),
+            source="test",
+            user_request="Continue running safely.",
+            status="running",
+            manager_status="Was running before restart.",
+            metadata_json={},
+        )
+        db.add(session)
+        db.commit()
+        orchestration_id = session.id
+    finally:
+        db.close()
+
+    coordinator.on_startup()
+
+    db = SessionLocal()
+    try:
+        refreshed = coordinator.get_session(db, orchestration_id)
+        assert refreshed.status == "planning"
+        assert "automatically resuming" in refreshed.manager_status.lower()
+        events = coordinator.list_events(db, refreshed)
+        reconciled = [event for event in events if event["event_type"] == "orchestration_reconciled_after_restart"]
+        assert reconciled
+        assert reconciled[-1]["payload_json"]["auto_resumed"] is True
+        assert scheduled == [(orchestration_id, "daemon_restart")]
+    finally:
+        db.close()
+
+
+def test_on_startup_preserves_waiting_for_user_sessions_after_daemon_restart(monkeypatch) -> None:
+    from db import SessionLocal
+    from models import OrchestrationSession, Project
+    from orchestration import coordinator
+
+    workspace = _fresh_workspace("startup-await-user")
+    scheduled: list[tuple[int, str]] = []
+
+    monkeypatch.setattr(coordinator, "_schedule_background_turn", lambda orchestration_id, reason: scheduled.append((orchestration_id, reason)))
+
+    db = SessionLocal()
+    try:
+        project = Project(
+            name="Startup Wait For User",
+            idea="Do not auto-resume decision-blocked work.",
+            workspace_path=workspace.as_posix(),
+            status="building",
+            runner_mode="dry_run",
+            manager_mode="auto",
+        )
+        db.add(project)
+        db.flush()
+        session = OrchestrationSession(
+            project_id=project.id,
+            workspace_path=workspace.as_posix(),
+            source="test",
+            user_request="Need user approval.",
+            status="waiting_for_user",
+            manager_status="Waiting on an approval.",
+            metadata_json={},
+        )
+        db.add(session)
+        db.commit()
+        orchestration_id = session.id
+    finally:
+        db.close()
+
+    coordinator.on_startup()
+
+    db = SessionLocal()
+    try:
+        refreshed = coordinator.get_session(db, orchestration_id)
+        assert refreshed.status == "waiting_for_user"
+        assert "waiting for a user decision" in refreshed.manager_status.lower()
+        events = coordinator.list_events(db, refreshed)
+        reconciled = [event for event in events if event["event_type"] == "orchestration_reconciled_after_restart"]
+        assert reconciled
+        assert reconciled[-1]["payload_json"]["auto_resumed"] is False
+        assert scheduled == []
+    finally:
+        db.close()
+
+
+def test_on_startup_does_not_auto_resume_external_test_runtime_workspaces(monkeypatch) -> None:
+    from db import SessionLocal
+    from models import OrchestrationSession, Project
+    from orchestration import coordinator
+
+    workspace = (Path(__file__).resolve().parents[1] / ".runtime-test-runs" / "external-runtime" / "startup-foreign").resolve()
+    if workspace.exists():
+        shutil.rmtree(workspace)
+    workspace.mkdir(parents=True, exist_ok=True)
+    scheduled: list[tuple[int, str]] = []
+
+    monkeypatch.setattr(coordinator, "_schedule_background_turn", lambda orchestration_id, reason: scheduled.append((orchestration_id, reason)))
+
+    db = SessionLocal()
+    try:
+        project = Project(
+            name="Foreign Test Runtime",
+            idea="Do not auto-resume stale pytest artifact workspaces from another runtime root.",
+            workspace_path=workspace.as_posix(),
+            status="building",
+            runner_mode="dry_run",
+            manager_mode="auto",
+        )
+        db.add(project)
+        db.flush()
+        session = OrchestrationSession(
+            project_id=project.id,
+            workspace_path=workspace.as_posix(),
+            source="test",
+            user_request="Continue stale test artifact work.",
+            status="running",
+            manager_status="Was running before restart.",
+            metadata_json={},
+        )
+        db.add(session)
+        db.commit()
+        orchestration_id = session.id
+    finally:
+        db.close()
+
+    coordinator.on_startup()
+
+    db = SessionLocal()
+    try:
+        refreshed = coordinator.get_session(db, orchestration_id)
+        assert refreshed.status == "paused"
+        assert "ephemeral test workspace" in refreshed.manager_status.lower()
+        events = coordinator.list_events(db, refreshed)
+        reconciled = [event for event in events if event["event_type"] == "orchestration_reconciled_after_restart"]
+        assert reconciled
+        assert reconciled[-1]["payload_json"]["auto_resumed"] is False
+        assert reconciled[-1]["payload_json"]["ephemeral_workspace"] is True
+        assert scheduled == []
     finally:
         db.close()
 
@@ -492,7 +744,7 @@ def test_one_active_orchestration_per_workspace_is_enforced(client) -> None:
     start = client.post(
         "/api/orchestrations",
         headers=_bridge_headers(),
-        json={"project_id": project_id, "user_request": "Use Mission Control to manage this repo.", "source": "codex_plugin"},
+        json={"project_id": project_id, "user_request": "Use Mission Control to manage this repo.", "source": "codex_plugin", "mode": "dry_run"},
     )
     assert start.status_code == 200, start.text
     session_id = start.json()["id"]
@@ -505,6 +757,32 @@ def test_one_active_orchestration_per_workspace_is_enforced(client) -> None:
     payload = second_attach.json()
     assert payload["reused_existing_orchestration"] is True
     assert payload["orchestration"]["id"] == session_id
+
+
+def test_live_create_orchestration_returns_without_running_background_turn_inline(client, monkeypatch) -> None:
+    from orchestration import coordinator
+
+    workspace = _fresh_workspace("live-create-no-inline-turn")
+    project = _create_project(client, "Live Create No Inline Turn", workspace.as_posix(), runner_mode="cli")
+    open_response = client.post(f"/api/projects/{project['id']}/open")
+    assert open_response.status_code == 200, open_response.text
+
+    called: list[tuple[int, str]] = []
+
+    async def fail_if_run_inline(orchestration_id: int, reason: str) -> None:
+        called.append((orchestration_id, reason))
+        raise AssertionError("create_orchestration should not run the first live background turn inline")
+
+    monkeypatch.setattr(coordinator, "_run_background_turn", fail_if_run_inline)
+
+    orchestration = client.post(
+        "/api/orchestrations",
+        headers=_bridge_headers(),
+        json={"project_id": project["id"], "user_request": "Run this through Mission Control live.", "source": "codex_plugin", "mode": "codex_cli"},
+    )
+
+    assert orchestration.status_code == 200, orchestration.text
+    assert called == []
 
 
 def test_pending_decisions_can_be_listed_and_answered(client) -> None:
@@ -624,6 +902,224 @@ def test_start_task_bootstraps_worker_roster_for_existing_codebase(client) -> No
     assert any(item["kind"] == "worker" for item in workers_after)
 
 
+def test_project_usage_summary_reports_model_and_context_usage(client) -> None:
+    workspace = _fresh_workspace("project-usage-summary")
+    project = _create_project(client, "Usage Summary", workspace.as_posix(), runner_mode="dry_run")
+
+    db = SessionLocal()
+    try:
+        manager = db.query(Agent).filter(Agent.project_id == project["id"], Agent.kind == "manager").one()
+        manager.status = "working"
+        manager.active_model = "gpt-4.3"
+        manager.active_runner_type = "codex_cli"
+        manager.active_usage_json = {
+            "source": "prompt_estimate",
+            "estimated": True,
+            "sample_count": 1,
+            "estimated_input_tokens": 200,
+            "estimated_context_tokens": 200,
+            "peak_context_tokens": 200,
+            "peak_context_utilization": None,
+            "context_window_tokens": None,
+        }
+
+        worker = Agent(
+            project_id=project["id"],
+            name="Usage Worker",
+            role="Feature specialist",
+            kind="worker",
+            status="working",
+            workspace_path=project["workspace_path"],
+            active_model="gpt-5.4-mini",
+            active_reasoning_effort="low",
+            active_runner_type="codex_cli",
+            active_usage_json={
+                "source": "usage",
+                "estimated": False,
+                "sample_count": 1,
+                "input_tokens": 120,
+                "output_tokens": 20,
+                "total_tokens": 140,
+                "context_tokens": 120,
+                "peak_context_tokens": 120,
+                "context_window_tokens": 1000,
+                "peak_context_utilization": 0.12,
+            },
+        )
+        db.add(worker)
+        db.flush()
+
+        task = Task(
+            project_id=project["id"],
+            assigned_agent_id=worker.id,
+            title="Track worker usage",
+            goal="Persist token telemetry.",
+            scope="Usage monitoring path.",
+            agent_role="Feature specialist",
+            milestone="Telemetry",
+            allowed_paths_json=["apps/server/src/manager.py"],
+            forbidden_paths_json=[],
+            validation_steps_json=["python -m pytest apps/server/tests/test_usage_tracking.py -q"],
+            success_criteria_json=["Usage summary route returns normalized totals."],
+            estimated_complexity="small",
+            dependencies_json=[],
+            status="working",
+            priority=10,
+        )
+        db.add(task)
+        db.flush()
+
+        db.add(
+            AgentRun(
+                agent_id=worker.id,
+                task_id=task.id,
+                runner_type="codex_cli",
+                process_ref="run-active",
+                status="working",
+                effective_settings_json={"provider": "codex", "model": "gpt-5.4-mini"},
+                usage_json={
+                    "source": "usage",
+                    "estimated": False,
+                    "sample_count": 1,
+                    "input_tokens": 120,
+                    "output_tokens": 20,
+                    "total_tokens": 140,
+                    "context_tokens": 120,
+                    "peak_context_tokens": 120,
+                    "context_window_tokens": 1000,
+                    "peak_context_utilization": 0.12,
+                },
+            )
+        )
+        db.add(
+            AgentRun(
+                agent_id=worker.id,
+                task_id=None,
+                runner_type="codex_cli",
+                process_ref="run-finished",
+                status="done",
+                finished_at=utc_now(),
+                effective_settings_json={"provider": "codex", "model": "gpt-5.4-mini"},
+                usage_json={
+                    "source": "usage",
+                    "estimated": False,
+                    "sample_count": 1,
+                    "input_tokens": 200,
+                    "output_tokens": 50,
+                    "total_tokens": 250,
+                    "context_tokens": 140,
+                    "peak_context_tokens": 140,
+                    "context_window_tokens": 1000,
+                    "peak_context_utilization": 0.14,
+                },
+            )
+        )
+        db.commit()
+    finally:
+        db.close()
+
+    agents_payload = client.get(f"/api/projects/{project['id']}/agents").json()
+    worker_payload = next(item for item in agents_payload if item["name"] == "Usage Worker")
+    assert worker_payload["active_usage_json"]["input_tokens"] == 120
+    assert worker_payload["active_usage_json"]["peak_context_tokens"] == 120
+
+    summary = client.get(f"/api/projects/{project['id']}/usage-summary")
+    assert summary.status_code == 200, summary.text
+    payload = summary.json()
+    assert payload["project_id"] == project["id"]
+    assert any(item["name"] == "Manager AI" for item in payload["active_agents"])
+    codex_bucket = next(item for item in payload["by_model"] if item["model"] == "gpt-5.4-mini")
+    assert codex_bucket["run_count"] == 2
+    assert codex_bucket["active_run_count"] == 1
+    assert codex_bucket["input_tokens"] == 320
+    assert codex_bucket["output_tokens"] == 70
+    assert codex_bucket["total_tokens"] == 390
+    assert codex_bucket["context_tokens"] == 260
+    assert codex_bucket["peak_context_tokens"] == 140
+    assert codex_bucket["context_window_tokens"] == 1000
+    assert codex_bucket["peak_context_utilization"] == 0.14
+    manager_bucket = next(item for item in payload["by_model"] if item["model"] == "gpt-4.3")
+    assert manager_bucket["active_agent_count"] == 1
+    assert manager_bucket["estimated_input_tokens"] == 200
+    assert manager_bucket["estimated_context_tokens"] == 200
+    assert "Estimated prompt/context token counts are used until providers emit concrete usage." in payload["notes"]
+
+
+def test_start_task_returns_existing_active_run_instead_of_stamping_waiting_on_paths(client) -> None:
+    workspace = _fresh_workspace("start-task-active-run")
+    project = _create_project(client, "Active Run Repair", workspace.as_posix(), runner_mode="dry_run")
+
+    db = SessionLocal()
+    try:
+        worker = Agent(
+            project_id=project["id"],
+            name="Execution Planner",
+            role="Implementation",
+            kind="worker",
+            status="waiting",
+            workspace_path=project["workspace_path"],
+        )
+        db.add(worker)
+        db.flush()
+        task = Task(
+            project_id=project["id"],
+            assigned_agent_id=worker.id,
+            title="Repair stale task state",
+            goal="Preserve the active run instead of marking the task blocked.",
+            scope="Keep the task route idempotent for already-live work.",
+            agent_role="Implementation",
+            milestone="MVP",
+            allowed_paths_json=["apps/server/src/main.py"],
+            forbidden_paths_json=[],
+            validation_steps_json=["python -m pytest apps/server/tests/test_orchestration.py -q"],
+            success_criteria_json=["Start route returns the existing run."],
+            estimated_complexity="small",
+            dependencies_json=[],
+            status="waiting_on_paths",
+            waiting_reason="Another agent owns overlapping paths.",
+            priority=10,
+        )
+        db.add(task)
+        db.flush()
+        worker.current_task_id = task.id
+        run = AgentRun(
+            agent_id=worker.id,
+            task_id=task.id,
+            runner_type="codex_cli",
+            process_ref="live-run",
+            status="working",
+        )
+        db.add(run)
+        db.commit()
+        task_id = task.id
+        run_id = run.id
+        worker_id = worker.id
+    finally:
+        db.close()
+
+    generic = client.post(f"/api/tasks/{task_id}/start", params={"project_id": project["id"]})
+    assert generic.status_code == 200, generic.text
+    assert generic.json() == {"ok": True, "message": "Task is already running.", "run_id": run_id}
+
+    scoped = client.post(f"/api/projects/{project['id']}/tasks/{task_id}/start")
+    assert scoped.status_code == 200, scoped.text
+    assert scoped.json() == {"ok": True, "message": "Task is already running.", "run_id": run_id}
+
+    db = SessionLocal()
+    try:
+        persisted_task = db.get(Task, task_id)
+        persisted_worker = db.get(Agent, worker_id)
+        assert persisted_task is not None
+        assert persisted_worker is not None
+        assert persisted_task.status == "working"
+        assert persisted_task.waiting_reason is None
+        assert persisted_task.assigned_agent_id == worker_id
+        assert persisted_worker.status == "working"
+        assert persisted_worker.current_task_id == task_id
+    finally:
+        db.close()
+
+
 def test_orchestration_status_reports_pending_decision_count(client) -> None:
     workspace = _fresh_workspace("status-pending")
     project = _create_project(client, "Status Pending", workspace.as_posix(), runner_mode="dry_run")
@@ -643,13 +1139,80 @@ def test_orchestration_status_reports_pending_decision_count(client) -> None:
     assert "background_runtime" in payload
 
 
+def test_orchestration_status_includes_manager_and_agent_runtime_details(client) -> None:
+    workspace = _fresh_workspace("status-runtime-details")
+
+    db = SessionLocal()
+    try:
+        project = Project(
+            name="Runtime Detail Status",
+            idea="Expose live manager and worker details.",
+            workspace_path=workspace.as_posix(),
+            status="building",
+            runner_mode="auto",
+            manager_mode="auto",
+        )
+        db.add(project)
+        db.flush()
+        session = OrchestrationSession(
+            project_id=project.id,
+            workspace_path=workspace.as_posix(),
+            source="test",
+            user_request="Keep the orchestration moving.",
+            status="running",
+            manager_status="Mission Control is routing the next background step.",
+            metadata_json={},
+        )
+        db.add(session)
+        db.flush()
+        manager = Agent(
+            project_id=project.id,
+            name="Mission Control Manager",
+            role="Manager",
+            kind="manager",
+            status="running",
+            workspace_path=workspace.as_posix(),
+            active_runner_type="codex_cli",
+            active_model="gpt-5-codex",
+            current_action="Reviewing worker output and queueing the next safe task.",
+        )
+        worker = Agent(
+            project_id=project.id,
+            name="Service Flow Builder",
+            role="Engineer",
+            kind="worker",
+            status="working",
+            workspace_path=workspace.as_posix(),
+            mission="Harden daemon routing paths.",
+            active_runner_type="codex_cli",
+            active_model="gpt-5-codex",
+            current_action="Fixing the daemon listener drop under load.",
+        )
+        db.add_all([manager, worker])
+        db.commit()
+        project_id = project.id
+        session_id = session.id
+    finally:
+        db.close()
+
+    response = client.get(f"/api/orchestrations/{session_id}/status", headers=_bridge_headers(), params={"project_id": project_id})
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["manager"]["name"] == "Mission Control Manager"
+    assert payload["manager"]["active_model"] == "gpt-5-codex"
+    assert payload["manager"]["runner_type"] == "codex_cli"
+    assert payload["active_agents"][0]["name"] == "Service Flow Builder"
+    assert payload["active_agents"][0]["active_model"] == "gpt-5-codex"
+    assert payload["active_agents"][0]["current_action"] == "Fixing the daemon listener drop under load."
+
+
 def test_orchestration_handoff_returns_not_ready_state(client) -> None:
     workspace = _fresh_workspace("handoff-not-ready")
-    project = _create_project(client, "No Handoff Yet", workspace.as_posix())
+    project = _create_project(client, "No Handoff Yet", workspace.as_posix(), runner_mode="dry_run")
     orchestration = client.post(
         "/api/orchestrations",
         headers=_bridge_headers(),
-        json={"project_id": project["id"], "user_request": "Start background orchestration.", "source": "codex_plugin"},
+        json={"project_id": project["id"], "user_request": "Start background orchestration.", "source": "codex_plugin", "mode": "dry_run"},
     )
     session_id = orchestration.json()["id"]
     handoff = client.get(f"/api/orchestrations/{session_id}/handoff", headers=_bridge_headers(), params={"project_id": project["id"]})
@@ -696,6 +1259,1526 @@ def test_direct_orchestration_runs_initial_turn_inline_for_live_mode(client, mon
     assert payload["manager_status"] == "Inline provider turn completed."
     assert called["reason"] == "user_request"
     assert called["orchestration_id"] == payload["id"]
+
+
+def test_bootstrap_live_execution_reopens_follow_up_scope_after_completed_tasks(monkeypatch) -> None:
+    from db import SessionLocal, init_db
+    from models import ChangeRequest, OrchestrationSession, Project, Task
+    from orchestration import coordinator
+    from sqlalchemy import select
+
+    workspace = _fresh_workspace("follow-up-live-bootstrap")
+    generated: dict[str, object] = {"called": False}
+
+    async def fake_manager_message(db, project, request_text):
+        return {"message": {"content_markdown": f"Queued: {request_text}"}}
+
+    async def fake_generate_tasks(db, project):
+        generated["called"] = True
+        project.status = "building"
+        project.handoff_status = "not_ready"
+        project.final_report_json = None
+        task = Task(
+            project_id=project.id,
+            title="Reopened follow-up batch",
+            goal="Represent the new follow-up scope with fresh backlog work.",
+            scope="Only the newly requested existing-repo change.",
+            agent_role="Primary implementation",
+            milestone="Follow-up batch",
+            allowed_paths_json=["apps/server/src"],
+            forbidden_paths_json=[],
+            validation_steps_json=["python -m pytest apps/server/tests/test_orchestration.py -q"],
+            success_criteria_json=["Mission Control reopened the project with a backlog task."],
+            estimated_complexity="small",
+            dependencies_json=[],
+            status="backlog",
+            priority=10,
+        )
+        db.add(task)
+        db.flush()
+        return [task], "deterministic"
+
+    async def fake_start_idle_agents(db, project):
+        return 0
+
+    monkeypatch.setattr("orchestration.service.manager_message", fake_manager_message)
+    monkeypatch.setattr("orchestration.service.generate_tasks", fake_generate_tasks)
+    monkeypatch.setattr("orchestration.service.start_idle_agents", fake_start_idle_agents)
+    monkeypatch.setattr("orchestration.service.initialize_build_roster", lambda db, project: [])
+
+    init_db()
+    db = SessionLocal()
+    try:
+        project = Project(
+            name="Follow Up Live Bootstrap",
+            idea="Reopen a completed imported repo from a live follow-up request.",
+            workspace_path=workspace.as_posix(),
+            source_type="existing_folder",
+            status="handoff_ready",
+            handoff_status="ready",
+            runner_mode="cli",
+            manager_mode="deterministic",
+            final_report_json={"summary_markdown": "Old handoff"},
+        )
+        completed_task = Task(
+            project_id=1,
+            title="Old completed task",
+            goal="Finish the original imported-repo scope.",
+            scope="Legacy completed scope.",
+            agent_role="Primary implementation",
+            milestone="Initial batch",
+            allowed_paths_json=["apps/server/src"],
+            forbidden_paths_json=[],
+            validation_steps_json=["python -m pytest apps/server/tests/test_orchestration.py -q"],
+            success_criteria_json=["Original scope shipped."],
+            estimated_complexity="small",
+            dependencies_json=[],
+            status="done",
+            priority=10,
+        )
+        db.add(project)
+        db.flush()
+        completed_task.project_id = project.id
+        session = OrchestrationSession(
+            project_id=project.id,
+            workspace_path=workspace.as_posix(),
+            source="test",
+            user_request="Implement a fresh follow-up feature in the imported repo.",
+            status="initializing",
+            manager_status="Starting.",
+            mode="codex_cli",
+            metadata_json={},
+        )
+        db.add_all([completed_task, session])
+        db.commit()
+        project_id = project.id
+        orchestration_id = session.id
+    finally:
+        db.close()
+
+    asyncio.run(coordinator._run_background_turn(orchestration_id, "user_request"))
+
+    db = SessionLocal()
+    try:
+        refreshed_project = db.scalar(select(Project).where(Project.id == project_id))
+        refreshed_session = coordinator.get_session(db, orchestration_id)
+        assert refreshed_project is not None
+        assert refreshed_session is not None
+        assert generated["called"] is True
+        assert refreshed_project.status == "building"
+        assert refreshed_project.handoff_status == "not_ready"
+        assert refreshed_project.final_report_json is None
+        tasks = list(db.scalars(select(Task).where(Task.project_id == refreshed_project.id).order_by(Task.id.asc())))
+        assert any(task.title == "Reopened follow-up batch" and task.status == "backlog" for task in tasks)
+        requests = list(
+            db.scalars(
+                select(ChangeRequest)
+                .where(ChangeRequest.project_id == refreshed_project.id)
+                .order_by(ChangeRequest.id.asc())
+            )
+        )
+        assert requests
+        assert requests[-1].request_text == "Implement a fresh follow-up feature in the imported repo."
+    finally:
+        db.close()
+
+
+def test_background_turn_reopens_follow_up_scope_after_completed_tasks(monkeypatch) -> None:
+    from db import SessionLocal, init_db
+    from models import ChangeRequest, OrchestrationSession, Project, Task
+    from orchestration import coordinator
+    from sqlalchemy import select
+
+    workspace = _fresh_workspace("follow-up-background-bootstrap")
+    generated: dict[str, object] = {"called": False}
+
+    async def fake_manager_ask_next(db, project):
+        return {"message": {"content_markdown": "Open the next narrow cleanup batch."}}
+
+    async def fake_generate_tasks(db, project):
+        generated["called"] = True
+        task = Task(
+            project_id=project.id,
+            title="New Post-Checkpoint Batch",
+            goal="Represent the reopened follow-up scope with fresh backlog work.",
+            scope="Only the newly identified remaining residue cleanup.",
+            agent_role="Primary implementation",
+            milestone="Follow-up batch",
+            allowed_paths_json=["scripts"],
+            forbidden_paths_json=[],
+            validation_steps_json=["python -m pytest apps/server/tests/test_orchestration.py -q"],
+            success_criteria_json=["Mission Control reopened the project with a backlog task."],
+            estimated_complexity="small",
+            dependencies_json=[],
+            status="backlog",
+            priority=10,
+        )
+        db.add(task)
+        db.flush()
+        return [task], "deterministic"
+
+    async def fake_start_idle_agents(db, project):
+        return 0
+
+    monkeypatch.setattr("orchestration.service.manager_ask_next", fake_manager_ask_next)
+    monkeypatch.setattr("orchestration.service.generate_tasks", fake_generate_tasks)
+    monkeypatch.setattr("orchestration.service.start_idle_agents", fake_start_idle_agents)
+    monkeypatch.setattr("orchestration.service.initialize_build_roster", lambda db, project: [])
+
+    init_db()
+    db = SessionLocal()
+    try:
+        project = Project(
+            name="Follow Up Background Bootstrap",
+            idea="Reopen completed imported-repo work after a recorded worker checkpoint.",
+            workspace_path=workspace.as_posix(),
+            source_type="existing_folder",
+            status="building",
+            handoff_status="not_ready",
+            runner_mode="cli",
+            manager_mode="deterministic",
+            final_report_json=None,
+        )
+        completed_task = Task(
+            project_id=1,
+            title="Completed checkpoint task",
+            goal="Finish the previous existing-repo batch.",
+            scope="Legacy completed scope.",
+            agent_role="Primary implementation",
+            milestone="Checkpoint batch",
+            allowed_paths_json=["apps/server/src"],
+            forbidden_paths_json=[],
+            validation_steps_json=["python -m pytest apps/server/tests/test_orchestration.py -q"],
+            success_criteria_json=["Previous scope shipped."],
+            estimated_complexity="small",
+            dependencies_json=[],
+            status="done",
+            priority=10,
+        )
+        db.add(project)
+        db.flush()
+        completed_task.project_id = project.id
+        session = OrchestrationSession(
+            project_id=project.id,
+            workspace_path=workspace.as_posix(),
+            source="test",
+            user_request="Keep the live codex_cli campaign going until the remaining residue batch is opened.",
+            status="planning",
+            manager_status="Continuing after recorded worker progress.",
+            mode="codex_cli",
+            metadata_json={},
+        )
+        db.add_all([completed_task, session])
+        db.commit()
+        project_id = project.id
+        orchestration_id = session.id
+    finally:
+        db.close()
+
+    asyncio.run(coordinator._run_background_turn(orchestration_id, "worker_report_recorded"))
+
+    db = SessionLocal()
+    try:
+        refreshed_project = db.scalar(select(Project).where(Project.id == project_id))
+        refreshed_session = coordinator.get_session(db, orchestration_id)
+        assert refreshed_project is not None
+        assert refreshed_session is not None
+        assert generated["called"] is True
+        tasks = list(db.scalars(select(Task).where(Task.project_id == refreshed_project.id).order_by(Task.id.asc())))
+        assert any(task.title == "New Post-Checkpoint Batch" and task.status == "backlog" for task in tasks)
+        requests = list(
+            db.scalars(
+                select(ChangeRequest)
+                .where(ChangeRequest.project_id == refreshed_project.id)
+                .order_by(ChangeRequest.id.asc())
+            )
+        )
+        assert requests
+        assert requests[-1].request_text == "Keep the live codex_cli campaign going until the remaining residue batch is opened."
+    finally:
+        db.close()
+
+
+def test_bootstrap_live_execution_replenishes_parallel_backlog_for_new_request(monkeypatch) -> None:
+    from db import SessionLocal, init_db
+    from models import OrchestrationSession, Project, Task
+    from orchestration import coordinator
+    from sqlalchemy import select
+
+    workspace = _fresh_workspace("parallel-replenishment-live-bootstrap")
+    generated: dict[str, object] = {"called": False}
+
+    async def fake_manager_message(db, project, request_text):
+        return {"message": {"content_markdown": f"Queued: {request_text}"}}
+
+    async def fake_generate_tasks(db, project):
+        generated["called"] = True
+        task = Task(
+            project_id=project.id,
+            title="Fresh benchmark lane",
+            goal="Replenish the live backlog with a new bounded lane.",
+            scope="Only the new benchmark lane.",
+            agent_role="Primary implementation",
+            milestone="Benchmark reset",
+            allowed_paths_json=["apps/server/src"],
+            forbidden_paths_json=[],
+            validation_steps_json=["python -m pytest apps/server/tests/test_orchestration.py -q"],
+            success_criteria_json=["A fresh backlog lane exists."],
+            estimated_complexity="small",
+            dependencies_json=[],
+            status="backlog",
+            priority=10,
+        )
+        db.add(task)
+        db.flush()
+        return [task], "deterministic"
+
+    async def fake_start_idle_agents(db, project):
+        return 0
+
+    monkeypatch.setattr("orchestration.service.manager_message", fake_manager_message)
+    monkeypatch.setattr("orchestration.service.generate_tasks", fake_generate_tasks)
+    monkeypatch.setattr("orchestration.service.start_idle_agents", fake_start_idle_agents)
+    monkeypatch.setattr("orchestration.service.initialize_build_roster", lambda db, project: [])
+
+    init_db()
+    db = SessionLocal()
+    try:
+        project = Project(
+            name="Parallel Replenishment Live Bootstrap",
+            idea="Do not ignore a new live benchmark request just because one old backlog task still exists.",
+            workspace_path=workspace.as_posix(),
+            source_type="existing_folder",
+            status="building",
+            handoff_status="not_ready",
+            runner_mode="cli",
+            manager_mode="deterministic",
+            final_report_json=None,
+        )
+        existing_backlog = Task(
+            project_id=1,
+            title="Old narrow lane",
+            goal="Represents thin leftover backlog.",
+            scope="Legacy lane.",
+            agent_role="Primary implementation",
+            milestone="Legacy",
+            allowed_paths_json=["docs"],
+            forbidden_paths_json=[],
+            validation_steps_json=["python -m pytest apps/server/tests/test_orchestration.py -q"],
+            success_criteria_json=["Legacy lane remains open."],
+            estimated_complexity="small",
+            dependencies_json=[],
+            status="backlog",
+            priority=20,
+        )
+        db.add(project)
+        db.flush()
+        existing_backlog.project_id = project.id
+        session = OrchestrationSession(
+            project_id=project.id,
+            workspace_path=workspace.as_posix(),
+            source="test",
+            user_request="Start a fresh benchmark attempt and refill the backlog with parallel lanes.",
+            status="planning",
+            manager_status="Continuing after a thin backlog state.",
+            mode="codex_cli",
+            metadata_json={},
+        )
+        db.add_all([existing_backlog, session])
+        db.commit()
+        project_id = project.id
+        orchestration_id = session.id
+    finally:
+        db.close()
+
+    asyncio.run(coordinator._run_background_turn(orchestration_id, "user_request"))
+
+    db = SessionLocal()
+    try:
+        refreshed_project = db.scalar(select(Project).where(Project.id == project_id))
+        tasks = list(db.scalars(select(Task).where(Task.project_id == project_id).order_by(Task.id.asc())))
+        assert refreshed_project is not None
+        assert generated["called"] is True
+        assert any(task.title == "Fresh benchmark lane" for task in tasks)
+    finally:
+        db.close()
+
+
+def test_bootstrap_live_execution_forces_regeneration_for_fresh_benchmark_reset(monkeypatch) -> None:
+    from db import SessionLocal, init_db
+    from models import OrchestrationSession, Project, Task
+    from orchestration import coordinator
+    from sqlalchemy import select
+
+    workspace = _fresh_workspace("fresh-benchmark-reset-bootstrap")
+    generated: dict[str, object] = {"called": False}
+
+    async def fake_manager_message(db, project, request_text):
+        return {"message": {"content_markdown": f"Queued: {request_text}"}}
+
+    async def fake_generate_tasks(db, project):
+        generated["called"] = True
+        task = Task(
+            project_id=project.id,
+            title="Fresh reset lane",
+            goal="Rebuild the backlog from the fresh benchmark reset request.",
+            scope="Only the regenerated lane.",
+            agent_role="Service Flow Builder",
+            milestone="Fresh benchmark reset",
+            allowed_paths_json=["apps/server/src"],
+            forbidden_paths_json=[],
+            validation_steps_json=["python -m pytest apps/server/tests/test_orchestration.py -q"],
+            success_criteria_json=["The fresh reset forces backlog regeneration."],
+            estimated_complexity="small",
+            dependencies_json=[],
+            status="backlog",
+            priority=10,
+        )
+        db.add(task)
+        db.flush()
+        return [task], "deterministic"
+
+    async def fake_start_idle_agents(db, project):
+        return 0
+
+    monkeypatch.setattr("orchestration.service.manager_message", fake_manager_message)
+    monkeypatch.setattr("orchestration.service.generate_tasks", fake_generate_tasks)
+    monkeypatch.setattr("orchestration.service.start_idle_agents", fake_start_idle_agents)
+    monkeypatch.setattr("orchestration.service.initialize_build_roster", lambda db, project: [])
+    monkeypatch.setattr("orchestration.service._productive_open_task_count", lambda db, project, existing_tasks=None: 1)
+    monkeypatch.setattr("orchestration.service._target_parallel_open_task_count", lambda db, project, existing_tasks=None: 1)
+
+    init_db()
+    db = SessionLocal()
+    try:
+        project = Project(
+            name="Fresh Benchmark Reset Bootstrap",
+            idea="A fresh benchmark reset must regenerate backlog even when the old open-task count looks full on paper.",
+            workspace_path=workspace.as_posix(),
+            source_type="existing_folder",
+            status="building",
+            handoff_status="not_ready",
+            runner_mode="cli",
+            manager_mode="deterministic",
+        )
+        stale_open_task = Task(
+            project_id=1,
+            title="Old stale lane",
+            goal="Legacy stale lane.",
+            scope="Old stale scope.",
+            agent_role="Execution Planner",
+            milestone="Legacy",
+            allowed_paths_json=["docs"],
+            forbidden_paths_json=[],
+            validation_steps_json=["python -m pytest apps/server/tests/test_orchestration.py -q"],
+            success_criteria_json=["Legacy lane remains open."],
+            estimated_complexity="small",
+            dependencies_json=[],
+            status="working",
+            priority=20,
+        )
+        db.add(project)
+        db.flush()
+        stale_open_task.project_id = project.id
+        session = OrchestrationSession(
+            project_id=project.id,
+            workspace_path=workspace.as_posix(),
+            source="test",
+            user_request="Fresh benchmark reset after Mission Control runtime update. Start from zero and ignore prior counts.",
+            status="planning",
+            manager_status="Trying to recover from stale backlog state.",
+            mode="codex_cli",
+            metadata_json={},
+        )
+        db.add_all([stale_open_task, session])
+        db.commit()
+        project_id = project.id
+        orchestration_id = session.id
+    finally:
+        db.close()
+
+    asyncio.run(coordinator._run_background_turn(orchestration_id, "user_request"))
+
+    db = SessionLocal()
+    try:
+        refreshed_project = db.scalar(select(Project).where(Project.id == project_id))
+        tasks = list(db.scalars(select(Task).where(Task.project_id == project_id).order_by(Task.id.asc())))
+        assert refreshed_project is not None
+        assert generated["called"] is True
+        assert any(task.title == "Fresh reset lane" for task in tasks)
+    finally:
+        db.close()
+
+
+def test_bootstrap_live_execution_clears_stale_review_decisions_for_fresh_benchmark_reset(monkeypatch) -> None:
+    from db import SessionLocal, init_db
+    from models import OrchestrationSession, PendingDecision, Project, Task
+    from orchestration import coordinator
+    from sqlalchemy import select
+
+    workspace = _fresh_workspace("fresh-benchmark-reset-clears-review-decisions")
+    generated: dict[str, object] = {"called": False}
+
+    async def fake_manager_message(db, project, request_text):
+        return {"message": {"content_markdown": f"Queued: {request_text}"}}
+
+    async def fake_generate_tasks(db, project):
+        generated["called"] = True
+        task = db.scalar(select(Task).where(Task.project_id == project.id, Task.title == "Apps Mcp Server Defect Batch"))
+        assert task is not None
+        return [task], "deterministic"
+
+    async def fake_start_idle_agents(db, project):
+        return 0
+
+    monkeypatch.setattr("orchestration.service.manager_message", fake_manager_message)
+    monkeypatch.setattr("orchestration.service.generate_tasks", fake_generate_tasks)
+    monkeypatch.setattr("orchestration.service.start_idle_agents", fake_start_idle_agents)
+    monkeypatch.setattr("orchestration.service.initialize_build_roster", lambda db, project: [])
+    monkeypatch.setattr("orchestration.service._productive_open_task_count", lambda db, project, existing_tasks=None: 0)
+    monkeypatch.setattr("orchestration.service._target_parallel_open_task_count", lambda db, project, existing_tasks=None: 1)
+
+    init_db()
+    db = SessionLocal()
+    try:
+        project = Project(
+            name="Fresh Benchmark Reset Clears Review Decisions",
+            idea="A fresh benchmark reset should cancel stale handoff review debt before bootstrap exits early.",
+            workspace_path=workspace.as_posix(),
+            source_type="existing_folder",
+            status="building",
+            handoff_status="not_ready",
+            runner_mode="cli",
+            manager_mode="deterministic",
+        )
+        db.add(project)
+        db.flush()
+        review_task = Task(
+            project_id=project.id,
+            assigned_agent_id=None,
+            title="Apps Mcp Server Defect Batch",
+            goal="Old retained review lane.",
+            scope="Legacy review gate.",
+            agent_role="Apps Mcp Server Subsystem Builder",
+            milestone="Legacy batch",
+            allowed_paths_json=["apps/mcp-server"],
+            forbidden_paths_json=[],
+            validation_steps_json=["python -m pytest apps/server/tests/test_orchestration.py -q"],
+            success_criteria_json=["Legacy review debt remains pending."],
+            estimated_complexity="small",
+            dependencies_json=[],
+            status="needs_review",
+            waiting_reason="Runner completion envelope validation failed.",
+            failure_count=2,
+            priority=20,
+        )
+        session = OrchestrationSession(
+            project_id=project.id,
+            workspace_path=workspace.as_posix(),
+            source="test",
+            user_request="Fresh benchmark reset after Mission Control runtime update. Start from zero and ignore prior counts.",
+            status="planning",
+            manager_status="Trying to recover from stale review debt.",
+            mode="codex_cli",
+            metadata_json={},
+        )
+        db.add_all([review_task, session])
+        db.flush()
+        pending = PendingDecision(
+            project_id=project.id,
+            orchestration_id=session.id,
+            decision_type="handoff_review",
+            title="Review required: Apps Mcp Server Defect Batch",
+            message="Task needs review before Mission Control can continue.",
+            requesting_agent_id=None,
+            related_task_id=review_task.id,
+            risk_level="medium",
+            options_json=[
+                {"id": "approve", "label": "Approve", "description": "Mark this reviewed task complete and let Mission Control continue."},
+                {"id": "request_changes", "label": "Request changes", "description": "Send this task back to backlog so Mission Control can route follow-up work."},
+            ],
+            recommended_option="approve",
+            status="pending",
+            source_kind="task_review",
+            source_id=review_task.id,
+        )
+        request = ChangeRequest(
+            project_id=project.id,
+            request_text="Fresh benchmark reset after Mission Control runtime update. Start from zero and ignore prior counts.",
+            classification="bugfix",
+            impact_estimate="large",
+            status="new",
+        )
+        db.add_all([pending, request])
+        db.commit()
+        project_id = project.id
+        orchestration_id = session.id
+        pending_id = pending.id
+        review_task_id = review_task.id
+    finally:
+        db.close()
+
+    asyncio.run(coordinator._run_background_turn(orchestration_id, "user_request"))
+
+    db = SessionLocal()
+    try:
+        refreshed_task = db.get(Task, review_task_id)
+        refreshed_pending = db.get(PendingDecision, pending_id)
+        assert refreshed_task is not None
+        assert refreshed_pending is not None
+        assert generated["called"] is True
+        assert refreshed_task.status == "backlog"
+        assert refreshed_task.assigned_agent_id is None
+        assert refreshed_task.failure_count == 0
+        assert refreshed_pending.status == "cancelled"
+        assert refreshed_pending.answered_at is not None
+    finally:
+        db.close()
+
+
+def test_start_orchestration_clears_stale_review_decisions_for_fresh_benchmark_reset(monkeypatch) -> None:
+    from db import SessionLocal, init_db
+    from models import ChangeRequest, OrchestrationSession, PendingDecision, Project, Task
+    from orchestration import coordinator
+
+    workspace = _fresh_workspace("start-orchestration-clears-review-decisions")
+
+    monkeypatch.setattr(coordinator, "_schedule_background_turn", lambda *args, **kwargs: None)
+
+    init_db()
+    db = SessionLocal()
+    try:
+        project = Project(
+            name="Start Fresh Reset Clears Review Decisions",
+            idea="A fresh benchmark reset should not expose stale review debt in the immediate start response.",
+            workspace_path=workspace.as_posix(),
+            source_type="existing_folder",
+            status="building",
+            handoff_status="not_ready",
+            runner_mode="cli",
+            manager_mode="deterministic",
+        )
+        db.add(project)
+        db.flush()
+        review_task = Task(
+            project_id=project.id,
+            assigned_agent_id=None,
+            title="Apps Mcp Server Tests Defect Batch",
+            goal="Old review lane.",
+            scope="Legacy review gate.",
+            agent_role="Apps Mcp Server Tests Subsystem Builder",
+            milestone="Legacy batch",
+            allowed_paths_json=["apps/mcp-server/tests"],
+            forbidden_paths_json=[],
+            validation_steps_json=["python -m pytest apps/server/tests/test_orchestration.py -q"],
+            success_criteria_json=["Legacy review debt remains pending."],
+            estimated_complexity="small",
+            dependencies_json=[],
+            status="needs_review",
+            waiting_reason="Old review debt.",
+            failure_count=2,
+            priority=20,
+        )
+        session = OrchestrationSession(
+            project_id=project.id,
+            workspace_path=workspace.as_posix(),
+            source="test",
+            user_request="Previous request.",
+            status="waiting_for_user",
+            manager_status="Waiting on stale review debt.",
+            mode="codex_cli",
+            metadata_json={},
+        )
+        db.add_all([review_task, session])
+        db.flush()
+        pending = PendingDecision(
+            project_id=project.id,
+            orchestration_id=session.id,
+            decision_type="handoff_review",
+            title="Review required: Apps Mcp Server Tests Defect Batch",
+            message="Task needs review before Mission Control can continue.",
+            requesting_agent_id=None,
+            related_task_id=review_task.id,
+            risk_level="medium",
+            options_json=[
+                {"id": "approve", "label": "Approve", "description": "Mark this reviewed task complete and let Mission Control continue."},
+                {"id": "request_changes", "label": "Request changes", "description": "Send this task back to backlog so Mission Control can route follow-up work."},
+            ],
+            recommended_option="approve",
+            status="pending",
+            source_kind="task_review",
+            source_id=review_task.id,
+        )
+        bare_review_task = Task(
+            project_id=project.id,
+            assigned_agent_id=None,
+            title="Apps Dashboard Public Defect Batch",
+            goal="Old review lane with no pending row yet.",
+            scope="Legacy review task.",
+            agent_role="Apps Dashboard Public Subsystem Builder",
+            milestone="Legacy batch",
+            allowed_paths_json=["apps/dashboard/public"],
+            forbidden_paths_json=[],
+            validation_steps_json=["npm run test"],
+            success_criteria_json=["Legacy review debt remains pending."],
+            estimated_complexity="small",
+            dependencies_json=[],
+            status="needs_review",
+            waiting_reason="Old review task without decision.",
+            failure_count=1,
+            priority=30,
+        )
+        request_text = "Fresh benchmark reset after Mission Control code changes. Reset to 0 and find, fix, validate, deduplicate, and report 50 distinct issues."
+        previous_request = ChangeRequest(
+            project_id=project.id,
+            request_text=request_text,
+            classification="bugfix",
+            impact_estimate="large",
+            status="accepted",
+        )
+        db.add_all([pending, bare_review_task, previous_request])
+        db.commit()
+
+        coordinator.start_orchestration(
+            db,
+            project=project,
+            source="test",
+            user_request=request_text,
+            orchestration_id=session.id,
+            mode="codex_cli",
+        )
+        db.commit()
+
+        db.refresh(review_task)
+        db.refresh(bare_review_task)
+        db.refresh(pending)
+        db.refresh(previous_request)
+        assert review_task.status == "backlog"
+        assert review_task.assigned_agent_id is None
+        assert review_task.failure_count == 0
+        assert bare_review_task.status == "backlog"
+        assert bare_review_task.assigned_agent_id is None
+        assert bare_review_task.failure_count == 0
+        assert pending.status == "cancelled"
+        assert pending.answered_at is not None
+        assert previous_request.status == "new"
+    finally:
+        db.close()
+
+
+def test_background_turn_reopens_db_sessions_between_bootstrap_phases(monkeypatch) -> None:
+    from db import SessionLocal, init_db
+    from models import OrchestrationSession, Project, Task
+    from orchestration import coordinator
+    from sqlalchemy import select
+
+    workspace = _fresh_workspace("background-turn-session-reopen")
+    seen_sequences: dict[str, int | None] = {"generate": None, "start": None, "ask_next": None}
+
+    import orchestration as orchestration_module
+
+    real_session_local = orchestration_module.SessionLocal
+    sequence = {"value": 0}
+
+    def tracked_session_local():
+        session = real_session_local()
+        sequence["value"] += 1
+        setattr(session, "_mc_sequence", sequence["value"])
+        return session
+
+    async def fake_generate_tasks(db, project):
+        seen_sequences["generate"] = getattr(db, "_mc_sequence", None)
+        task = Task(
+            project_id=project.id,
+            title="Fresh live lane",
+            goal="Represent a fresh live lane after the session boundary.",
+            scope="Only the reopened live lane.",
+            agent_role="Primary implementation",
+            milestone="Live follow-up",
+            allowed_paths_json=["apps/server/src"],
+            forbidden_paths_json=[],
+            validation_steps_json=["python -m pytest apps/server/tests/test_orchestration.py -q"],
+            success_criteria_json=["A fresh live lane exists."],
+            estimated_complexity="small",
+            dependencies_json=[],
+            status="backlog",
+            priority=10,
+        )
+        db.add(task)
+        db.flush()
+        return [task], "deterministic"
+
+    async def fake_start_idle_agents(db, project):
+        seen_sequences["start"] = getattr(db, "_mc_sequence", None)
+        return 0
+
+    async def fake_manager_ask_next(db, project):
+        seen_sequences["ask_next"] = getattr(db, "_mc_sequence", None)
+        return {"message": {"content_markdown": "Continue the next live lane."}}
+
+    monkeypatch.setattr(orchestration_module, "SessionLocal", tracked_session_local)
+    monkeypatch.setattr("orchestration.service.generate_tasks", fake_generate_tasks)
+    monkeypatch.setattr("orchestration.service.start_idle_agents", fake_start_idle_agents)
+    monkeypatch.setattr("orchestration.service.manager_ask_next", fake_manager_ask_next)
+    monkeypatch.setattr("orchestration.service.initialize_build_roster", lambda db, project: [])
+
+    init_db()
+    db = SessionLocal()
+    try:
+        project = Project(
+            name="Background Turn Session Reopen",
+            idea="Close and reopen DB sessions between bootstrap phases so SQLite is not pinned across async work.",
+            workspace_path=workspace.as_posix(),
+            source_type="existing_folder",
+            status="building",
+            handoff_status="not_ready",
+            runner_mode="cli",
+            manager_mode="deterministic",
+        )
+        session = OrchestrationSession(
+            project_id=1,
+            workspace_path=workspace.as_posix(),
+            source="test",
+            user_request="",
+            status="planning",
+            manager_status="Continuing after restart.",
+            mode="codex_cli",
+            metadata_json={},
+        )
+        db.add(project)
+        db.flush()
+        session.project_id = project.id
+        db.add(session)
+        db.commit()
+        orchestration_id = session.id
+        project_id = project.id
+    finally:
+        db.close()
+
+    asyncio.run(coordinator._run_background_turn(orchestration_id, "daemon_restart"))
+
+    db = SessionLocal()
+    try:
+        refreshed_project = db.scalar(select(Project).where(Project.id == project_id))
+        assert refreshed_project is not None
+        assert seen_sequences["generate"] is not None
+        assert seen_sequences["start"] is not None
+        assert seen_sequences["ask_next"] is not None
+        assert seen_sequences["generate"] != seen_sequences["start"]
+        assert seen_sequences["start"] != seen_sequences["ask_next"]
+    finally:
+        db.close()
+
+
+def test_bootstrap_live_execution_records_provider_backoff_event(monkeypatch) -> None:
+    from db import SessionLocal, init_db
+    from models import OrchestrationSession, Project, Task
+    from orchestration import coordinator
+    from sqlalchemy import select
+
+    workspace = _fresh_workspace("provider-backoff-bootstrap")
+
+    async def fake_generate_tasks(db, project):
+        task = Task(
+            project_id=project.id,
+            title="Apps Server Defect Batch",
+            goal="Keep the server lane ready for the next provider window.",
+            scope="Server-only lane.",
+            agent_role="Apps Server Subsystem Builder",
+            milestone="Milestone 1",
+            allowed_paths_json=["apps/server"],
+            forbidden_paths_json=[],
+            validation_steps_json=["python -m pytest apps/server/tests/test_orchestration.py -q"],
+            success_criteria_json=["A runnable lane exists once provider quota recovers."],
+            estimated_complexity="small",
+            dependencies_json=[],
+            status="backlog",
+            priority=10,
+        )
+        db.add(task)
+        db.flush()
+        return [task], "deterministic"
+
+    async def fake_start_idle_agents(db, project):
+        return 0
+
+    monkeypatch.setattr("orchestration.service.generate_tasks", fake_generate_tasks)
+    monkeypatch.setattr("orchestration.service.start_idle_agents", fake_start_idle_agents)
+    monkeypatch.setattr("orchestration.service.initialize_build_roster", lambda db, project: [])
+    monkeypatch.setattr(
+        "orchestration.service._provider_backoff_state",
+        lambda db, project: {
+            "until": project.created_at + timedelta(minutes=15),
+            "remaining_seconds": 900,
+            "summary": "You've hit your usage limit. Try again later.",
+        },
+    )
+
+    init_db()
+    db = SessionLocal()
+    try:
+        project = Project(
+            name="Provider Backoff Bootstrap",
+            idea="Record provider quota backoff honestly instead of emitting another fake bootstrap lap.",
+            workspace_path=workspace.as_posix(),
+            source_type="existing_folder",
+            status="building",
+            handoff_status="not_ready",
+            runner_mode="cli",
+            manager_mode="deterministic",
+        )
+        session = OrchestrationSession(
+            project_id=1,
+            workspace_path=workspace.as_posix(),
+            source="test",
+            user_request="Continue the benchmark when the provider window reopens.",
+            status="planning",
+            manager_status="Mission Control Manager is reviewing the workspace.",
+            mode="codex_cli",
+            metadata_json={},
+        )
+        db.add(project)
+        db.flush()
+        session.project_id = project.id
+        db.add(session)
+        db.commit()
+        orchestration_id = session.id
+        project_id = project.id
+    finally:
+        db.close()
+
+    asyncio.run(coordinator._run_background_turn(orchestration_id, "worker_report_recorded"))
+
+    db = SessionLocal()
+    try:
+        refreshed = db.scalar(select(OrchestrationSession).where(OrchestrationSession.id == orchestration_id))
+        assert refreshed is not None
+        assert "provider usage limit" in refreshed.manager_status.lower()
+        events = coordinator.list_events(db, refreshed)
+        assert any(event["event_type"] == "provider_backoff_active" for event in events)
+        assert not any(event["event_type"] == "live_execution_bootstrapped" for event in events)
+        project = db.scalar(select(Project).where(Project.id == project_id))
+        assert project is not None
+    finally:
+        db.close()
+
+
+def test_derive_runtime_state_waits_for_user_when_only_review_tasks_remain() -> None:
+    from db import SessionLocal, init_db
+    from models import OrchestrationSession, Project, Task
+    from orchestration import coordinator
+
+    workspace = _fresh_workspace("review-only-runtime-state")
+
+    init_db()
+    db = SessionLocal()
+    try:
+        project = Project(
+            name="Review Only Runtime State",
+            idea="Do not pretend review-only work is runnable background work.",
+            workspace_path=workspace.as_posix(),
+            source_type="existing_folder",
+            status="building",
+            handoff_status="needs_review",
+            runner_mode="cli",
+            manager_mode="deterministic",
+        )
+        db.add(project)
+        db.flush()
+        session = OrchestrationSession(
+            project_id=project.id,
+            workspace_path=workspace.as_posix(),
+            source="test",
+            user_request="Continue the imported-repo repair batch.",
+            status="planning",
+            manager_status="Mission Control has runnable work queued and is routing the next safe background step.",
+            mode="codex_cli",
+            metadata_json={},
+        )
+        review_task = Task(
+            project_id=project.id,
+            title="Review the current repair batch",
+            goal="Confirm the batch before continuing.",
+            scope="Review-only lane.",
+            agent_role="Validation Specialist",
+            milestone="Review gate",
+            allowed_paths_json=["apps/server/tests"],
+            forbidden_paths_json=[],
+            validation_steps_json=["pytest -q"],
+            success_criteria_json=["Review is acknowledged before more work starts."],
+            estimated_complexity="small",
+            dependencies_json=[],
+            status="needs_review",
+            priority=10,
+        )
+        blocked_follow_up = Task(
+            project_id=project.id,
+            title="Refresh campaign state after review",
+            goal="Proceed only after the review gate clears.",
+            scope="Follow-up after review.",
+            agent_role="Handoff Writer",
+            milestone="Follow-up",
+            allowed_paths_json=["docs"],
+            forbidden_paths_json=[],
+            validation_steps_json=["pytest -q"],
+            success_criteria_json=["Follow-up waits for review."],
+            estimated_complexity="small",
+            dependencies_json=[],
+            status="backlog",
+            waiting_reason="Waiting for task dependencies to finish.",
+            priority=20,
+        )
+        db.add_all([session, review_task, blocked_follow_up])
+        db.flush()
+        blocked_follow_up.dependencies_json = [review_task.id]
+        db.commit()
+
+        status, message = coordinator._derive_runtime_state(
+            db,
+            session,
+            project,
+            [],
+            handoff_status="needs_review",
+            current_action={"type": "info", "message": "No safe backlog task is ready."},
+            manager_fallback="No safe backlog task is ready.",
+        )
+
+        assert status == "waiting_for_user"
+        assert "waiting for review" in message.lower()
+    finally:
+        db.close()
+
+
+def test_sync_pending_decisions_creates_review_cards_for_needs_review_tasks() -> None:
+    from db import SessionLocal, init_db
+    from models import OrchestrationSession, PendingDecision, Project, Task
+    from orchestration import coordinator
+    from sqlalchemy import select
+
+    workspace = _fresh_workspace("review-task-pending-decisions")
+
+    init_db()
+    db = SessionLocal()
+    try:
+        project = Project(
+            name="Review Decision Mirroring",
+            idea="Mirror needs_review tasks into pending decisions.",
+            workspace_path=workspace.as_posix(),
+            source_type="existing_folder",
+            status="building",
+            handoff_status="needs_review",
+            runner_mode="cli",
+            manager_mode="deterministic",
+        )
+        db.add(project)
+        db.flush()
+        session = OrchestrationSession(
+            project_id=project.id,
+            workspace_path=workspace.as_posix(),
+            source="test",
+            user_request="Continue the review-gated batch.",
+            status="planning",
+            manager_status="Review is required.",
+            mode="codex_cli",
+            metadata_json={},
+        )
+        task = Task(
+            project_id=project.id,
+            title="Review the timeout-lane repair batch",
+            goal="Confirm the repair batch before more work starts.",
+            scope="Review-only lane.",
+            agent_role="Validation Specialist",
+            milestone="Review gate",
+            allowed_paths_json=["apps/server/tests"],
+            forbidden_paths_json=[],
+            validation_steps_json=["pytest -q"],
+            success_criteria_json=["Review is acknowledged before more work starts."],
+            estimated_complexity="small",
+            dependencies_json=[],
+            status="needs_review",
+            priority=10,
+        )
+        db.add_all([session, task])
+        db.commit()
+
+        pending = coordinator.list_pending_decisions(db, session)
+
+        assert len(pending) == 1
+        assert pending[0]["decision_type"] == "handoff_review"
+        assert pending[0]["recommended_option"] == "approve"
+        assert {item["id"] for item in pending[0]["options"]} == {"approve", "request_changes"}
+
+        mirrored = db.scalar(
+            select(PendingDecision)
+            .where(PendingDecision.orchestration_id == session.id, PendingDecision.source_kind == "task_review")
+            .order_by(PendingDecision.id.desc())
+        )
+        assert mirrored is not None
+        assert mirrored.related_task_id == task.id
+        assert mirrored.status == "pending"
+    finally:
+        db.close()
+
+
+def test_sync_pending_decisions_cancels_stale_review_card_for_active_run() -> None:
+    from db import SessionLocal, init_db
+    from orchestration import coordinator
+
+    workspace = _fresh_workspace("stale-review-active-run")
+
+    init_db()
+    db = SessionLocal()
+    try:
+        project = Project(
+            name="Stale Review Active Run",
+            idea="Do not keep obsolete review cards after a task resumes.",
+            workspace_path=workspace.as_posix(),
+            source_type="existing_folder",
+            status="building",
+            handoff_status="needs_review",
+            runner_mode="cli",
+            manager_mode="deterministic",
+        )
+        db.add(project)
+        db.flush()
+        session = OrchestrationSession(
+            project_id=project.id,
+            workspace_path=workspace.as_posix(),
+            source="test",
+            user_request="Continue after stale review.",
+            status="planning",
+            manager_status="A worker resumed the task.",
+            mode="codex_cli",
+            metadata_json={},
+        )
+        worker = Agent(
+            project_id=project.id,
+            name="Review Worker",
+            kind="worker",
+            role="Fixer",
+            status="working",
+            workspace_path=workspace.as_posix(),
+            mission="Resume stale review work.",
+            current_action="Working on resumed task.",
+        )
+        task = Task(
+            project_id=project.id,
+            title="Apps MCP Server Tests Defect Batch",
+            goal="Fix the test defect batch.",
+            scope="apps/mcp-server/tests",
+            agent_role="Fixer",
+            milestone="Benchmark",
+            allowed_paths_json=["apps/mcp-server/tests"],
+            forbidden_paths_json=[],
+            validation_steps_json=["pytest apps/mcp-server/tests"],
+            success_criteria_json=["Task has active work, not pending review."],
+            estimated_complexity="medium",
+            dependencies_json=[],
+            status="working",
+            priority=10,
+        )
+        db.add_all([session, worker, task])
+        db.flush()
+        worker.current_task_id = task.id
+        task.assigned_agent_id = worker.id
+        db.add(
+            AgentRun(
+                agent_id=worker.id,
+                task_id=task.id,
+                runner_type="cli",
+                process_ref="active-review-retry",
+                status="working",
+            )
+        )
+        stale = PendingDecision(
+            project_id=project.id,
+            orchestration_id=session.id,
+            decision_type="handoff_review",
+            title=f"Review required: {task.title}",
+            message="Old review gate should not survive resumed work.",
+            requesting_agent_id=worker.id,
+            related_task_id=task.id,
+            risk_level="medium",
+            options_json=[{"id": "approve", "label": "Approve"}],
+            recommended_option="approve",
+            source_kind="task_review",
+            source_id=task.id,
+            status="pending",
+        )
+        db.add(stale)
+        db.commit()
+
+        coordinator_pending = coordinator.list_pending_decisions(db, session)
+        bridge_pending = bridge_runtime_service.get_pending_decisions(db, project=project)
+
+        db.refresh(stale)
+        assert coordinator_pending == []
+        assert bridge_pending == []
+        assert stale.status == "cancelled"
+        assert stale.answer_json["source"] == "task_review_reconciliation"
+        assert "active worker run" in stale.answer_json["free_text"]
+    finally:
+        db.close()
+
+
+def test_answer_pending_decision_approve_review_task_marks_task_done(monkeypatch) -> None:
+    from db import SessionLocal, init_db
+    from models import OrchestrationSession, Project, Task
+    from orchestration import coordinator
+
+    workspace = _fresh_workspace("approve-review-task")
+
+    async def _skip_finalize_handoff(db, project) -> None:
+        return None
+
+    monkeypatch.setattr("manager.service._maybe_finalize_handoff", _skip_finalize_handoff)
+    monkeypatch.setattr(coordinator, "_schedule_background_turn", lambda orchestration_id, reason: None)
+
+    init_db()
+    db = SessionLocal()
+    try:
+        project = Project(
+            name="Approve Review Task",
+            idea="Approving a review card should complete the task.",
+            workspace_path=workspace.as_posix(),
+            source_type="existing_folder",
+            status="building",
+            handoff_status="needs_review",
+            runner_mode="cli",
+            manager_mode="deterministic",
+        )
+        db.add(project)
+        db.flush()
+        session = OrchestrationSession(
+            project_id=project.id,
+            workspace_path=workspace.as_posix(),
+            source="test",
+            user_request="Approve the review gate.",
+            status="waiting_for_user",
+            manager_status="Waiting for review.",
+            mode="codex_cli",
+            metadata_json={},
+        )
+        task = Task(
+            project_id=project.id,
+            title="Review the validated timeout fix",
+            goal="Clear the review gate.",
+            scope="Review-only lane.",
+            agent_role="Validation Specialist",
+            milestone="Review gate",
+            allowed_paths_json=["apps/server/src"],
+            forbidden_paths_json=[],
+            validation_steps_json=["pytest -q"],
+            success_criteria_json=["The review task is completed."],
+            estimated_complexity="small",
+            dependencies_json=[],
+            status="needs_review",
+            priority=10,
+        )
+        db.add_all([session, task])
+        db.commit()
+
+        decision = coordinator.sync_pending_decisions(db, session)[0]
+
+        coordinator.answer_pending_decision(
+            db,
+            decision,
+            option_id="approve",
+            selected_text="Approve",
+        )
+        db.commit()
+        db.refresh(task)
+        db.refresh(decision)
+
+        assert task.status == "done"
+        assert task.assigned_agent_id is None
+        assert decision.status == "answered"
+        assert decision.answer_json["option_id"] == "approve"
+    finally:
+        db.close()
+
+
+def test_answer_pending_decision_request_changes_requeues_review_task(monkeypatch) -> None:
+    from db import SessionLocal, init_db
+    from models import OrchestrationSession, Project, Task
+    from orchestration import coordinator
+
+    workspace = _fresh_workspace("request-review-changes")
+
+    monkeypatch.setattr(coordinator, "_schedule_background_turn", lambda orchestration_id, reason: None)
+
+    init_db()
+    db = SessionLocal()
+    try:
+        project = Project(
+            name="Request Review Changes",
+            idea="Requesting changes should requeue the task.",
+            workspace_path=workspace.as_posix(),
+            source_type="existing_folder",
+            status="building",
+            handoff_status="needs_review",
+            runner_mode="cli",
+            manager_mode="deterministic",
+        )
+        db.add(project)
+        db.flush()
+        session = OrchestrationSession(
+            project_id=project.id,
+            workspace_path=workspace.as_posix(),
+            source="test",
+            user_request="Bounce the review task back.",
+            status="waiting_for_user",
+            manager_status="Waiting for review.",
+            mode="codex_cli",
+            metadata_json={},
+        )
+        task = Task(
+            project_id=project.id,
+            title="Review the recursive improvement lane",
+            goal="Send it back if the review is not accepted.",
+            scope="Review-only lane.",
+            agent_role="Execution Planner",
+            milestone="Review gate",
+            allowed_paths_json=["docs"],
+            forbidden_paths_json=[],
+            validation_steps_json=["pytest -q"],
+            success_criteria_json=["The review task can be reworked."],
+            estimated_complexity="small",
+            dependencies_json=[],
+            status="needs_review",
+            priority=10,
+        )
+        db.add_all([session, task])
+        db.commit()
+
+        decision = coordinator.sync_pending_decisions(db, session)[0]
+
+        coordinator.answer_pending_decision(
+            db,
+            decision,
+            option_id="request_changes",
+            selected_text="Request changes",
+        )
+        db.commit()
+        db.refresh(task)
+        db.refresh(decision)
+
+        assert task.status == "backlog"
+        assert task.assigned_agent_id is None
+        assert task.waiting_reason == "Review requested changes before Mission Control can continue."
+        assert decision.status == "answered"
+        assert decision.answer_json["option_id"] == "request_changes"
+    finally:
+        db.close()
+
+
+def test_bootstrap_live_execution_reopens_backlog_from_recent_change_request_without_session_text(monkeypatch) -> None:
+    from db import SessionLocal, init_db
+    from models import ChangeRequest, OrchestrationSession, Project, Task
+    from orchestration import coordinator
+    from sqlalchemy import select
+
+    workspace = _fresh_workspace("follow-up-bootstrap-without-session-text")
+    generated: dict[str, object] = {"called": False}
+
+    async def fake_generate_tasks(db, project):
+        generated["called"] = True
+        task = Task(
+            project_id=project.id,
+            title="Fresh repo analysis after idle checkpoint",
+            goal="Open the next evidence-backed repo-analysis batch.",
+            scope="Read-first repo analysis only.",
+            agent_role="execution_planner",
+            milestone="Milestone 1",
+            allowed_paths_json=["apps/server/**", "mission-control/**", "docs/**", "README.md"],
+            forbidden_paths_json=["apps/dashboard/**"],
+            validation_steps_json=["Run the bounded analysis workflow."],
+            success_criteria_json=["A fresh next batch exists."],
+            estimated_complexity="small",
+            dependencies_json=[],
+            status="backlog",
+            priority=10,
+        )
+        db.add(task)
+        db.flush()
+        return [task], "codex"
+
+    async def fake_start_idle_agents(db, project):
+        return 0
+
+    monkeypatch.setattr("orchestration.service.generate_tasks", fake_generate_tasks)
+    monkeypatch.setattr("orchestration.service.start_idle_agents", fake_start_idle_agents)
+    monkeypatch.setattr("orchestration.service.initialize_build_roster", lambda db, project: [])
+
+    init_db()
+    db = SessionLocal()
+    try:
+        project = Project(
+            name="Recent Change Request Bootstrap",
+            idea="Reopen the next batch from a saved request even when the session text is blank.",
+            workspace_path=workspace.as_posix(),
+            source_type="existing_folder",
+            status="building",
+            handoff_status="needs_review",
+            runner_mode="cli",
+            manager_mode="deterministic",
+        )
+        completed_task = Task(
+            project_id=1,
+            title="Completed checkpoint task",
+            goal="Finish the previous batch.",
+            scope="Legacy completed scope.",
+            agent_role="Primary implementation",
+            milestone="Checkpoint batch",
+            allowed_paths_json=["apps/server/src"],
+            forbidden_paths_json=[],
+            validation_steps_json=["python -m pytest apps/server/tests/test_orchestration.py -q"],
+            success_criteria_json=["Previous scope shipped."],
+            estimated_complexity="small",
+            dependencies_json=[],
+            status="done",
+            priority=10,
+        )
+        db.add(project)
+        db.flush()
+        completed_task.project_id = project.id
+        session = OrchestrationSession(
+            project_id=project.id,
+            workspace_path=workspace.as_posix(),
+            source="test",
+            user_request="",
+            status="planning",
+            manager_status="Continuing after a completed batch.",
+            mode="codex_cli",
+            metadata_json={},
+        )
+        db.add_all([completed_task, session])
+        db.flush()
+        request = ChangeRequest(
+            project_id=project.id,
+            request_text="Open the next fresh repo-analysis batch from the current 39-fix baseline.",
+            classification="feature",
+            impact_estimate="medium",
+            status="pending",
+        )
+        db.add(request)
+        db.commit()
+        project_id = project.id
+        orchestration_id = session.id
+    finally:
+        db.close()
+
+
+def test_bootstrap_live_execution_reopens_backlog_from_standing_change_request_after_newer_task_updates(monkeypatch) -> None:
+    from db import SessionLocal, init_db
+    from models import ChangeRequest, OrchestrationSession, Project, Task
+    from orchestration import coordinator
+    from sqlalchemy import select
+
+    workspace = _fresh_workspace("follow-up-bootstrap-standing-request")
+    generated: dict[str, object] = {"called": False}
+
+    async def fake_generate_tasks(db, project):
+        generated["called"] = True
+        task = Task(
+            project_id=project.id,
+            title="Fresh repo analysis from standing request",
+            goal="Open the next batch from the still-active standing request.",
+            scope="Read-first repo analysis only.",
+            agent_role="execution_planner",
+            milestone="Milestone 1",
+            allowed_paths_json=["apps/server/**", "mission-control/**", "docs/**", "README.md"],
+            forbidden_paths_json=["apps/dashboard/**"],
+            validation_steps_json=["Run the bounded analysis workflow."],
+            success_criteria_json=["A fresh next batch exists."],
+            estimated_complexity="small",
+            dependencies_json=[],
+            status="backlog",
+            priority=10,
+        )
+        db.add(task)
+        db.flush()
+        return [task], "codex"
+
+    async def fake_start_idle_agents(db, project):
+        return 0
+
+    monkeypatch.setattr("orchestration.service.generate_tasks", fake_generate_tasks)
+    monkeypatch.setattr("orchestration.service.start_idle_agents", fake_start_idle_agents)
+    monkeypatch.setattr("orchestration.service.initialize_build_roster", lambda db, project: [])
+
+    init_db()
+    db = SessionLocal()
+    try:
+        project = Project(
+            name="Standing Change Request Bootstrap",
+            idea="Reopen the next batch from a standing request even after newer task updates.",
+            workspace_path=workspace.as_posix(),
+            source_type="existing_folder",
+            status="building",
+            handoff_status="not_ready",
+            runner_mode="cli",
+            manager_mode="deterministic",
+        )
+        completed_task = Task(
+            project_id=1,
+            title="Completed checkpoint task",
+            goal="Finish the previous batch.",
+            scope="Legacy completed scope.",
+            agent_role="Primary implementation",
+            milestone="Checkpoint batch",
+            allowed_paths_json=["apps/server/src"],
+            forbidden_paths_json=[],
+            validation_steps_json=["python -m pytest apps/server/tests/test_orchestration.py -q"],
+            success_criteria_json=["Previous scope shipped."],
+            estimated_complexity="small",
+            dependencies_json=[],
+            status="done",
+            priority=10,
+        )
+        db.add(project)
+        db.flush()
+        completed_task.project_id = project.id
+        session = OrchestrationSession(
+            project_id=project.id,
+            workspace_path=workspace.as_posix(),
+            source="test",
+            user_request="",
+            status="planning",
+            manager_status="Continuing after a completed batch.",
+            mode="codex_cli",
+            metadata_json={},
+        )
+        request = ChangeRequest(
+            project_id=project.id,
+            request_text="Keep the repo-analysis and bug-fix campaign going until the user says stop.",
+            classification="feature",
+            impact_estimate="large",
+            status="triaged",
+        )
+        db.add_all([completed_task, session, request])
+        db.flush()
+        request.updated_at = project.created_at
+        completed_task.updated_at = session.created_at
+        db.commit()
+        project_id = project.id
+        orchestration_id = session.id
+    finally:
+        db.close()
+
+    asyncio.run(coordinator._run_background_turn(orchestration_id, "worker_report_recorded"))
+
+    db = SessionLocal()
+    try:
+        tasks = list(db.scalars(select(Task).where(Task.project_id == project_id).order_by(Task.id.asc())))
+        assert generated["called"] is True
+        assert [task.title for task in tasks] == [
+            "Completed checkpoint task",
+            "Fresh repo analysis from standing request",
+        ]
+        assert tasks[-1].status == "backlog"
+    finally:
+        db.close()
 
 
 def test_bridge_routes_require_token(client) -> None:

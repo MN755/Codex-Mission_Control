@@ -417,6 +417,50 @@ def _tool_signal_summary(
     }
 
 
+def _first_installed_binary(candidates: list[str]) -> str | None:
+    for candidate in candidates:
+        binary_path = _which(candidate)
+        if binary_path:
+            return binary_path
+    return None
+
+
+def _engine_tool_summary(
+    *,
+    tool_id: str,
+    label: str,
+    config_files: list[str],
+    config_sections: list[str],
+    binary_candidates: list[str],
+    recommended_commands: list[str],
+    notes: list[str],
+) -> dict[str, Any]:
+    binary_path = _first_installed_binary(binary_candidates)
+    installed = bool(binary_path)
+    configured = bool(config_files or config_sections)
+    status = "ready" if installed and configured else "available" if installed else "needs_setup" if configured else "optional"
+    summary_notes = list(notes)
+    if configured and not installed:
+        summary_notes.append(f"{label} repo signals exist, but the engine CLI is not currently detectable.")
+    elif installed and configured:
+        summary_notes.append(f"{label} is installed and the workspace already exposes repo-owned engine signals.")
+    elif installed:
+        summary_notes.append(f"{label} is installed locally, but the workspace does not clearly opt into it yet.")
+    return {
+        "id": tool_id,
+        "label": label,
+        "category": "validation",
+        "installed": installed,
+        "binary_path": binary_path,
+        "configured": configured,
+        "config_files": config_files[:6],
+        "config_sections": config_sections[:6],
+        "status": status,
+        "recommended_commands": recommended_commands[:4],
+        "notes": summary_notes[:6],
+    }
+
+
 def _pack_status(tools: list[dict[str, Any]], tool_ids: list[str], *, title: str, summary: str) -> dict[str, Any]:
     selected = [tool for tool in tools if tool["id"] in tool_ids]
     ready = [tool for tool in selected if tool["status"] == "ready"]
@@ -520,7 +564,18 @@ def _is_repo_execution_command(command: str) -> bool:
     text = str(command or "").strip()
     if not text or _is_placeholder_command(text):
         return False
-    prefixes = ("python ", "python -m pytest", "accelerate ", "deepspeed ", "torchrun ")
+    prefixes = (
+        "python ",
+        "python -m pytest",
+        "accelerate ",
+        "deepspeed ",
+        "torchrun ",
+        "Unity ",
+        "Unity.exe ",
+        "UnrealEditor-Cmd.exe ",
+        "RunUAT ",
+        "RunUAT.bat ",
+    )
     return text.startswith(prefixes)
 
 
@@ -582,12 +637,53 @@ def detect_workspace_tooling(workspace_path: str | Path | None, *, project_name:
     repo_profile["spatial3d_repo"] = bool(spatial3d_mode.get("enabled"))
     repo_profile["spatial3d_mode"] = spatial3d_mode.get("mode")
     repo_profile["spatial3d_frameworks"] = list(spatial3d_mode.get("frameworks") or [])
+    unity_scene_paths = [path for path in relative_files if path.lower().endswith((".unity", ".prefab", ".asmdef"))][:8]
+    unity_config_files = _dedupe(
+        [path for path in ("ProjectSettings/ProjectVersion.txt", "Packages/manifest.json") if path in relative_files]
+        + unity_scene_paths[:4]
+    )
+    unity_test_signaled = "com.unity.test-framework" in "\n".join(_safe_read_text(root / path).lower() for path in unity_config_files if path.endswith(".json"))
+    unity_tool = _engine_tool_summary(
+        tool_id="unity",
+        label="Unity Editor",
+        config_files=unity_config_files,
+        config_sections=["signal:com.unity.test-framework"] if unity_test_signaled else [],
+        binary_candidates=["Unity", "Unity.exe"],
+        recommended_commands=[
+            "Unity -batchmode -projectPath . -runTests -testPlatform EditMode -quit",
+            "Unity -batchmode -projectPath . -runTests -testPlatform PlayMode -quit",
+        ],
+        notes=["Unity validation should flow through batchmode and repo-owned test lanes instead of manual editor clicking."],
+    )
+    unreal_project_paths = [path for path in relative_files if path.lower().endswith((".uproject", ".uplugin"))][:6]
+    unreal_scene_paths = [path for path in relative_files if path.lower().endswith((".umap", ".uasset"))][:8]
+    unreal_config_files = _dedupe(
+        unreal_project_paths
+        + [path for path in ("Config/DefaultEngine.ini", "Config/DefaultGame.ini") if path in relative_files]
+        + unreal_scene_paths[:4]
+    )
+    unreal_python_signaled = any(path.lower().endswith(".py") and "automation" in path.lower() for path in relative_files)
+    unreal_tool = _engine_tool_summary(
+        tool_id="unreal",
+        label="Unreal Editor",
+        config_files=unreal_config_files,
+        config_sections=["signal:automation_python"] if unreal_python_signaled else [],
+        binary_candidates=["UnrealEditor-Cmd.exe", "RunUAT.bat", "RunUAT"],
+        recommended_commands=[
+            'UnrealEditor-Cmd.exe "<project>.uproject" -ExecCmds="Automation RunTests Project; Quit"',
+            'RunUAT BuildCookRun -project="<project>.uproject" -nop4 -build -cook -stage -pak',
+        ],
+        notes=["Unreal validation should stay inside Automation Tests, commandlets, and BuildCookRun lanes instead of freehand content edits."],
+    )
+    repo_profile["unity_repo"] = unity_tool["configured"]
+    repo_profile["unreal_repo"] = unreal_tool["configured"]
     package_names = _package_json_package_names(root, relative_files)
     haystack = _workspace_signal_haystack_from_files(root, relative_files)
     tools = [
         _tool_signal_summary(tool_id, root=root, relative_files=relative_files, package_names=package_names, haystack=haystack)
         for tool_id in _TOOL_SPECS
     ]
+    tools.extend([unity_tool, unreal_tool])
     tooling_by_id = {tool["id"]: tool for tool in tools}
     tensorflow_plan = build_tensorflow_validation_plan(root)
     pytorch_runtime = detect_pytorch_runtime_status(root)
@@ -619,6 +715,8 @@ def detect_workspace_tooling(workspace_path: str | Path | None, *, project_name:
         [str(item) for item in list(tensorflow_mode.get("important_paths") or [])]
         + [str(item) for item in list(pytorch_mode.get("important_paths") or [])]
         + [str(item) for item in list(spatial3d_mode.get("important_paths") or [])]
+        + unity_config_files[:4]
+        + unreal_config_files[:4]
     )
     notebook_paths = _dedupe(
         [str(item) for item in list(tensorflow_mode.get("notebook_paths") or [])]
@@ -651,6 +749,8 @@ def detect_workspace_tooling(workspace_path: str | Path | None, *, project_name:
         + [str(item) for item in list(spatial3d_mode.get("conversion_commands") or [])]
         + [str(item) for item in list(spatial3d_mode.get("capture_commands") or [])]
         + [str(item) for item in list(spatial3d_mode.get("benchmark_commands") or [])]
+        + (list(unity_tool.get("recommended_commands") or []) if unity_tool["configured"] else [])
+        + (list(unreal_tool.get("recommended_commands") or []) if unreal_tool["configured"] else [])
     )
     runtime_blockers = _dedupe(
         [str(item) for item in list(tensorflow_plan.get("blockers") or [])]
@@ -811,6 +911,12 @@ def detect_workspace_tooling(workspace_path: str | Path | None, *, project_name:
             f"spatial3d:{spatial3d_plan.get('status') or 'not_applicable'}"
             if spatial3d_mode.get("enabled")
             else "",
+            f"unity:{unity_tool.get('status') or 'not_applicable'}"
+            if unity_tool["configured"]
+            else "",
+            f"unreal:{unreal_tool.get('status') or 'not_applicable'}"
+            if unreal_tool["configured"]
+            else "",
         ]
     )
     execution_lane_summaries = _dedupe(
@@ -823,6 +929,12 @@ def detect_workspace_tooling(workspace_path: str | Path | None, *, project_name:
             else "",
             f"Spatial lane `{spatial3d_mode.get('mode')}` has {len(list(spatial3d_plan.get('steps') or []))} planned validation step(s)."
             if spatial3d_mode.get("enabled")
+            else "",
+            f"Unity lane `game_engine` exposes {len(unity_scene_paths)} scene or prefab signal(s) and {len(list(unity_tool.get('recommended_commands') or []))} repo-native command(s)."
+            if unity_tool["configured"]
+            else "",
+            f"Unreal lane `game_engine` exposes {len(unreal_project_paths) + len(unreal_scene_paths)} project or content signal(s) and {len(list(unreal_tool.get('recommended_commands') or []))} repo-native command(s)."
+            if unreal_tool["configured"]
             else "",
             f"Distributed launcher paths detected: {', '.join(distributed_launcher_commands[:3])}."
             if distributed_launcher_commands
@@ -878,6 +990,12 @@ def detect_workspace_tooling(workspace_path: str | Path | None, *, project_name:
             title="Artifact Review Pack",
             summary="Inspect real model artifacts, checkpoints, and observability outputs before claiming deployment or reproducibility success.",
         ),
+        _pack_status(
+            tools,
+            ["unity", "unreal"],
+            title="Game Engine Validation Pack",
+            summary="Surface Unity and Unreal engine-native validation lanes before game work devolves into trust-me-bro builds.",
+        ),
     ]
     recommended_next_steps: list[str] = []
     if tooling_by_id["uv"]["configured"] and not tooling_by_id["uv"]["installed"]:
@@ -908,6 +1026,10 @@ def detect_workspace_tooling(workspace_path: str | Path | None, *, project_name:
         recommended_next_steps.extend(list(pytorch_plan.get("recommended_fixes") or []))
     if spatial3d_mode.get("enabled"):
         recommended_next_steps.extend(list(spatial3d_plan.get("recommended_fixes") or []))
+    if unity_tool["configured"] and not unity_tool["installed"]:
+        recommended_next_steps.append("Install or expose a Unity CLI so Mission Control can run EditMode and PlayMode lanes instead of stopping at scene archaeology.")
+    if unreal_tool["configured"] and not unreal_tool["installed"]:
+        recommended_next_steps.append("Install or expose Unreal commandlet tooling so Mission Control can run Automation Tests and BuildCookRun without pretending the lane exists.")
     if not recommended_next_steps:
         recommended_next_steps.append("The highest-value repo-native tooling lanes are already detectable from this workspace.")
     summary_parts = [
@@ -936,6 +1058,10 @@ def detect_workspace_tooling(workspace_path: str | Path | None, *, project_name:
         summary_parts.append("pytorch product lane available")
     if spatial3d_mode.get("enabled"):
         summary_parts.append("spatial 3d product lane available")
+    if unity_tool["configured"]:
+        summary_parts.append("unity product lane available")
+    if unreal_tool["configured"]:
+        summary_parts.append("unreal product lane available")
     summary = ". ".join(summary_parts).strip() + "."
     return {
         "project_name": project_name,

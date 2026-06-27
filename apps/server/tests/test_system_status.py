@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import subprocess
 
 import pytest
 
@@ -410,3 +411,100 @@ def test_detect_system_status_reports_dynamo_runtime_when_selected(monkeypatch) 
     assert payload["runtime_ready"] is True
     assert payload["runtime_status"] == "ready"
     assert payload["runtime_blockers"] == []
+
+
+def test_detect_provider_statuses_skips_live_ollama_and_dynamo_probes_when_unselected(monkeypatch) -> None:
+    monkeypatch.setattr("system_status.detect_codex_status", lambda: {"provider": "codex", "label": "Codex", "cli_detected": True, "cli_path": "codex", "cli_path_exists": True, "cli_execution_available": True, "cli_version": "codex 1.0.0", "login_status": "ready", "auth_mode": "chatgpt", "authenticated": True, "app_server_supported": True, "configured_plugins": [], "configured_mcp_servers": [], "local_skills": [], "mcp_servers": [], "mcp_state": {}, "notes": [], "available_models": []})
+    monkeypatch.setattr("system_status.detect_claude_code_status", lambda: {"provider": "claude_code", "label": "Claude Code", "cli_detected": False, "cli_path": None, "cli_path_exists": False, "cli_execution_available": False, "cli_version": None, "login_status": "missing", "auth_mode": None, "authenticated": False, "auth_status_detectable": False, "supports_model_override": True, "supports_reasoning_effort": False, "supports_app_server": False, "supports_builtin_auth": False, "available_models": [], "notes": []})
+    monkeypatch.setattr("system_status.detect_nvidia_nim_status", lambda endpoint=None: {"provider": "nvidia_nim", "label": "NVIDIA NIM", "cli_detected": False, "cli_path": None, "cli_path_exists": False, "cli_execution_available": False, "cli_version": None, "login_status": "not configured", "auth_mode": None, "authenticated": False, "auth_status_detectable": True, "supports_model_override": True, "supports_reasoning_effort": False, "supports_app_server": False, "supports_builtin_auth": False, "available_models": [], "notes": [], "reachable": False, "summary": "not configured", "endpoint": "https://integrate.api.nvidia.com", "endpoint_configured": False, "api_key_configured": False, "auth_required": True})
+    monkeypatch.setattr("system_status.detect_custom_status", lambda command=None, args=None: {"provider": "custom", "label": "Custom Adapter", "cli_detected": False, "cli_path": None, "cli_path_exists": False, "cli_execution_available": False, "cli_version": None, "login_status": "missing", "auth_mode": None, "authenticated": False, "auth_status_detectable": True, "supports_model_override": True, "supports_reasoning_effort": False, "supports_app_server": False, "supports_builtin_auth": False, "available_models": [], "notes": []})
+    monkeypatch.setattr("system_status.detect_ollama_status", lambda endpoint=None: (_ for _ in ()).throw(AssertionError("Ollama should not be probed when unselected")))
+    monkeypatch.setattr("system_status.detect_nvidia_dynamo_status", lambda endpoint=None: (_ for _ in ()).throw(AssertionError("Dynamo should not be probed when unselected")))
+
+    from system_status import detect_provider_statuses
+
+    payload = detect_provider_statuses(selected_provider="codex")
+    by_provider = {item["provider"]: item for item in payload}
+
+    assert by_provider["ollama"]["summary"] == "Ollama endpoint was not probed because it is not the selected provider."
+    assert by_provider["nvidia_dynamo"]["summary"] == "NVIDIA Dynamo frontend was not probed because it is not the selected provider."
+
+
+def test_detect_git_status_reports_safe_directory_block(monkeypatch, tmp_path) -> None:
+    workspace = tmp_path / "repo"
+    workspace.mkdir()
+
+    monkeypatch.setattr("system_status.shutil.which", lambda command: "git" if command == "git" else None)
+    monkeypatch.setattr(
+        "system_status.subprocess.run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(
+            args[0],
+            128,
+            "",
+            "fatal: detected dubious ownership in repository at 'C:/repo'\n"
+            "To add an exception for this directory, call:\n"
+            "\tgit config --global --add safe.directory 'C:/repo'",
+        ),
+    )
+
+    from system_status import detect_git_status
+
+    payload = detect_git_status(workspace_path=str(workspace))
+
+    assert payload["status"] == "safe_directory_blocked"
+    assert payload["safe_directory"] is False
+    assert payload["is_git_repo"] is True
+    assert "safe.directory" in str(payload["error"])
+    assert str(workspace) in str(payload["recommended_fix"])
+
+
+def test_detect_git_status_reports_dirty_ready_repo(monkeypatch, tmp_path) -> None:
+    workspace = tmp_path / "repo"
+    workspace.mkdir()
+
+    monkeypatch.setattr("system_status.shutil.which", lambda command: "git" if command == "git" else None)
+    monkeypatch.setattr(
+        "system_status.subprocess.run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(
+            args[0],
+            0,
+            "## main...origin/main\n M apps/server/src/system_status.py\n",
+            "",
+        ),
+    )
+
+    from system_status import detect_git_status
+
+    payload = detect_git_status(workspace_path=str(workspace))
+
+    assert payload["status"] == "ready"
+    assert payload["safe_directory"] is True
+    assert payload["is_git_repo"] is True
+    assert payload["dirty_working_tree"] is True
+    assert payload["details"]["branch_status"] == "## main...origin/main"
+
+
+def test_detect_git_status_uses_workspace_safe_git_config(monkeypatch, tmp_path) -> None:
+    workspace = tmp_path / "repo"
+    workspace.mkdir()
+    runtime_root = tmp_path / "runtime"
+    captured: dict[str, object] = {}
+
+    def fake_run(*args, **kwargs):
+        captured["env"] = kwargs.get("env")
+        return subprocess.CompletedProcess(args[0], 0, "## main\n", "")
+
+    monkeypatch.setattr("system_status.shutil.which", lambda command: "git" if command == "git" else None)
+    monkeypatch.setattr("system_status.subprocess.run", fake_run)
+    monkeypatch.setattr("workspace_git.RUNTIME_ROOT", runtime_root)
+
+    from system_status import detect_git_status
+
+    payload = detect_git_status(workspace_path=str(workspace))
+
+    assert payload["status"] == "ready"
+    env = captured["env"]
+    assert isinstance(env, dict)
+    config_path = Path(env["GIT_CONFIG_GLOBAL"])
+    assert config_path.exists()
+    assert workspace.as_posix() in config_path.read_text(encoding="utf-8")

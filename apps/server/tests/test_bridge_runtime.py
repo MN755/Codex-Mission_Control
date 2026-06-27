@@ -15,7 +15,7 @@ from bridge_formatter import (
 )
 from conftest import sample_workspace, wait_for
 from db import SessionLocal
-from models import DecisionRecord, EvidenceBasedHandoff, ManagerQuestion, PendingDecision, Project, ProjectEvent, utc_now
+from models import Agent, DecisionRecord, EvidenceBasedHandoff, ManagerQuestion, OrchestrationSession, PendingDecision, Project, ProjectEvent, Task, utc_now
 
 
 def _bridge_headers() -> dict[str, str]:
@@ -194,6 +194,71 @@ def test_bridge_formatter_manager_question_handoff_and_redaction() -> None:
     assert "super-secret-token" not in diagnostic["fallback_markdown"]
 
 
+def test_bridge_runtime_get_pending_decisions_includes_review_tasks() -> None:
+    workspace = sample_workspace("bridge-review-pending-decisions")
+
+    db = SessionLocal()
+    try:
+        project = Project(
+            name="Bridge Review Pending Decisions",
+            idea="Review-gated tasks should appear in bridge pending decisions.",
+            workspace_path=workspace,
+            source_type="existing_folder",
+            status="building",
+            handoff_status="needs_review",
+            runner_mode="cli",
+            manager_mode="deterministic",
+        )
+        db.add(project)
+        db.flush()
+        orchestration = OrchestrationSession(
+            project_id=project.id,
+            workspace_path=workspace,
+            source="test",
+            user_request="Continue the review-gated run.",
+            status="waiting_for_user",
+            manager_status="Waiting for review.",
+            mode="codex_cli",
+            metadata_json={},
+        )
+        review_task = Task(
+            project_id=project.id,
+            title="Review the timeout-lane fix batch",
+            goal="Confirm the fix batch before continuing.",
+            scope="Review-only lane.",
+            agent_role="Validation Specialist",
+            milestone="Review gate",
+            allowed_paths_json=["apps/server/src"],
+            forbidden_paths_json=[],
+            validation_steps_json=["pytest -q"],
+            success_criteria_json=["The review task is visible to the bridge."],
+            estimated_complexity="small",
+            dependencies_json=[],
+            status="needs_review",
+            priority=10,
+        )
+        db.add_all([orchestration, review_task])
+        db.commit()
+
+        pending = bridge_runtime_service.get_pending_decisions(db, project=project, orchestration=orchestration)
+
+        assert len(pending) == 1
+        assert pending[0]["decision_type"] == "handoff_review"
+        assert pending[0]["recommended_option"] == "approve"
+        assert {item["id"] for item in pending[0]["options"]} == {"approve", "request_changes"}
+
+        mirrored = db.scalar(
+            select(PendingDecision)
+            .where(PendingDecision.project_id == project.id, PendingDecision.source_kind == "task_review")
+            .order_by(PendingDecision.id.desc())
+        )
+        assert mirrored is not None
+        assert mirrored.related_task_id == review_task.id
+        assert mirrored.status == "pending"
+    finally:
+        db.close()
+
+
 def test_headless_diagnostic_summary_route_formats_sections_and_redacts(monkeypatch, client) -> None:
     async def fake_health() -> dict:
         return {
@@ -310,6 +375,148 @@ def test_pending_decision_rejects_invalid_option(client) -> None:
     )
     assert response.status_code == 400
     assert response.json()["code"] == "MC-DECISION-INVALID-OPTION-001"
+
+
+def test_review_pending_decision_answers_through_bridge_api(client, monkeypatch) -> None:
+    project = _create_project(client, "Review Decision", "review-decision")
+
+    async def fake_status_summary(db, *, project=None, orchestration=None):
+        assert project is not None
+        return _stub_status_summary(project.id, orchestration.id if orchestration is not None else None)
+
+    monkeypatch.setattr(bridge_runtime_service, "get_status_summary", fake_status_summary)
+
+    db = SessionLocal()
+    try:
+        record = db.get(Project, project["id"])
+        assert record is not None
+        orchestration = OrchestrationSession(
+            project_id=record.id,
+            workspace_path=record.workspace_path,
+            source="test",
+            user_request="Review the worker handoff.",
+            status="waiting_for_user",
+            manager_status="Waiting for review.",
+            mode="codex_cli",
+            metadata_json={},
+        )
+        review_task = Task(
+            project_id=record.id,
+            title="Review the timeout-lane fix batch",
+            goal="Confirm the fix batch before continuing.",
+            scope="Review-only lane.",
+            agent_role="Validation Specialist",
+            milestone="Review gate",
+            allowed_paths_json=["apps/server/src"],
+            forbidden_paths_json=[],
+            validation_steps_json=["pytest -q"],
+            success_criteria_json=["The review task can be cleared through the bridge API."],
+            estimated_complexity="small",
+            dependencies_json=[],
+            status="needs_review",
+            priority=10,
+        )
+        db.add_all([orchestration, review_task])
+        db.commit()
+    finally:
+        db.close()
+
+    decisions_response = client.get(
+        f"/api/projects/{project['id']}/pending-decisions",
+        headers=_bridge_headers(),
+        params={"orchestration_id": 1},
+    )
+    assert decisions_response.status_code == 200, decisions_response.text
+    decisions = decisions_response.json()
+    assert len(decisions) == 1
+    decision = decisions[0]
+    assert decision["decision_type"] == "handoff_review"
+
+    answer = client.post(
+        f"/api/projects/{project['id']}/decisions/{decision['id']}/answer",
+        headers=_bridge_headers(),
+        json={"option_id": "approve", "selected_text": "Approve"},
+    )
+    assert answer.status_code == 200, answer.text
+    payload = answer.json()
+    assert payload["decision"]["status"] == "answered"
+    assert payload["decision"]["answer_json"]["option_id"] == "approve"
+
+    db = SessionLocal()
+    try:
+        refreshed_task = db.get(Task, decision["related_task_id"])
+        assert refreshed_task is not None
+        assert refreshed_task.status == "done"
+    finally:
+        db.close()
+
+
+def test_review_pending_decision_request_changes_through_bridge_api(client, monkeypatch) -> None:
+    project = _create_project(client, "Review Changes Decision", "review-changes-decision")
+
+    async def fake_status_summary(db, *, project=None, orchestration=None):
+        assert project is not None
+        return _stub_status_summary(project.id, orchestration.id if orchestration is not None else None)
+
+    monkeypatch.setattr(bridge_runtime_service, "get_status_summary", fake_status_summary)
+
+    db = SessionLocal()
+    try:
+        record = db.get(Project, project["id"])
+        assert record is not None
+        orchestration = OrchestrationSession(
+            project_id=record.id,
+            workspace_path=record.workspace_path,
+            source="test",
+            user_request="Request changes on the worker handoff.",
+            status="waiting_for_user",
+            manager_status="Waiting for review.",
+            mode="codex_cli",
+            metadata_json={},
+        )
+        review_task = Task(
+            project_id=record.id,
+            title="Review the UI workflow batch",
+            goal="Send it back if the review is not accepted.",
+            scope="Review-only lane.",
+            agent_role="UI Workflow Builder",
+            milestone="Review gate",
+            allowed_paths_json=["apps/dashboard/src"],
+            forbidden_paths_json=[],
+            validation_steps_json=["npm run test"],
+            success_criteria_json=["The review task can be requeued through the bridge API."],
+            estimated_complexity="small",
+            dependencies_json=[],
+            status="needs_review",
+            priority=10,
+        )
+        db.add_all([orchestration, review_task])
+        db.commit()
+    finally:
+        db.close()
+
+    decisions = client.get(f"/api/projects/{project['id']}/pending-decisions", headers=_bridge_headers()).json()
+    assert len(decisions) == 1
+    decision = decisions[0]
+
+    answer = client.post(
+        f"/api/projects/{project['id']}/decisions/{decision['id']}/answer",
+        headers=_bridge_headers(),
+        json={"option_id": "request_changes", "selected_text": "Request changes"},
+    )
+    assert answer.status_code == 200, answer.text
+    payload = answer.json()
+    assert payload["decision"]["status"] == "answered"
+    assert payload["decision"]["answer_json"]["option_id"] == "request_changes"
+
+    db = SessionLocal()
+    try:
+        refreshed_task = db.get(Task, decision["related_task_id"])
+        assert refreshed_task is not None
+        assert refreshed_task.status == "backlog"
+        assert refreshed_task.waiting_reason == "Review requested changes before Mission Control can continue."
+    finally:
+        db.close()
 
 
 def test_pending_decisions_get_dedupes_duplicate_rows_for_same_question(client) -> None:
@@ -476,6 +683,119 @@ def test_handoff_summary_uses_recorded_evidence(client) -> None:
     assert direct_payload["evidence_backed"] is False
     assert direct_payload["missing_evidence_count"] == len(direct_payload["missing_evidence"]) == 0
     assert direct_payload["ready_for_release"] is False
+
+
+def test_status_summary_prefers_handoff_state_over_stale_worker_chatter(client) -> None:
+    project = _create_project(client, "Handoff Status Demo", "handoff-status-demo")
+    db = SessionLocal()
+    try:
+        record = db.get(Project, project["id"])
+        assert record is not None
+        record.status = "handoff_ready"
+        record.handoff_status = "needs_review"
+        orchestration = OrchestrationSession(
+            project_id=record.id,
+            workspace_path=record.workspace_path,
+            user_request="Finish the validation handoff.",
+            status="planning",
+            manager_status="Mission Control is continuing in the background.",
+            mode="codex_cli",
+            metadata_json={},
+        )
+        stale_agent = Agent(
+            project_id=record.id,
+            name="Service Flow Builder",
+            role="worker",
+            kind="worker",
+            status="done",
+            current_action="surfaced an old limitation about python availability",
+            workspace_path=record.workspace_path,
+        )
+        handoff = EvidenceBasedHandoff(
+            project_id=record.id,
+            title="Fresh handoff",
+            summary="Fresh handoff summary.",
+            what_was_built="- Fixed the daemon runtime guard",
+            how_to_run="- python -m pytest apps/server/tests/test_bridge_runtime.py",
+            how_to_use="- Review the handoff output",
+            tests_run_json=[{"name": "bridge runtime tests", "status": "passed"}],
+            known_limitations_json=["The handoff currently remains at low confidence because the required Handoff gate is still unresolved."],
+            suggested_next_steps_json=["Resolve the remaining required Handoff gate."],
+            evidence_ids_json=[1],
+            confidence_level="low",
+            dry_run=False,
+        )
+        db.add_all([orchestration, stale_agent, handoff])
+        record.final_report_json = {
+            "missing_evidence": ["Required gate unresolved: Handoff gate"],
+            "known_limitations": list(handoff.known_limitations_json),
+            "confidence_level": "low",
+            "evidence_ids": [1],
+            "dry_run": False,
+        }
+        db.commit()
+        orchestration_id = orchestration.id
+    finally:
+        db.close()
+
+    response = client.get(
+        f"/api/projects/{project['id']}/orchestrations/{orchestration_id}/status-summary",
+        headers=_bridge_headers(),
+    )
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["machine_payload_json"]["manager_status"] == "Mission Control generated the latest evidence-backed handoff and is waiting for review."
+    assert payload["machine_payload_json"]["handoff_readiness"] == "needs_review"
+    assert payload["machine_payload_json"]["orchestration_status"] == "handoff_ready"
+    assert "python was unavailable here" not in payload["fallback_markdown"]
+    assert "Required gate unresolved: Handoff gate" in payload["fallback_markdown"]
+    assert "Review the latest evidence-backed handoff" in payload["fallback_markdown"]
+
+
+def test_status_summary_does_not_treat_no_action_or_missing_handoff_as_blocker_while_building(client) -> None:
+    project = _create_project(client, "Active Build Status Demo", "active-build-status-demo")
+    db = SessionLocal()
+    try:
+        record = db.get(Project, project["id"])
+        assert record is not None
+        record.status = "building"
+        record.handoff_status = "not_ready"
+        orchestration = OrchestrationSession(
+            project_id=record.id,
+            workspace_path=record.workspace_path,
+            user_request="Keep the active swarm moving.",
+            status="planning",
+            manager_status="Mission Control Manager is reviewing the workspace.",
+            mode="codex_cli",
+            metadata_json={},
+        )
+        worker = Agent(
+            project_id=record.id,
+            name="Active Worker",
+            role="worker",
+            kind="worker",
+            status="working",
+            active_model="gpt-5.4-mini",
+            current_action="Working on an independent defect batch.",
+            workspace_path=record.workspace_path,
+        )
+        db.add_all([orchestration, worker])
+        db.commit()
+        orchestration_id = orchestration.id
+    finally:
+        db.close()
+
+    response = client.get(
+        f"/api/projects/{project['id']}/orchestrations/{orchestration_id}/status-summary",
+        headers=_bridge_headers(),
+    )
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["risk_level"] is None
+    assert payload["machine_payload_json"]["current_blockers"] == []
+    assert payload["machine_payload_json"]["next_expected_step"] == "No action needed. 1 agents are working."
+    assert "What is blocking progress" not in payload["fallback_markdown"]
 
 
 def test_safe_mode_endpoints_return_bridge_message(client) -> None:

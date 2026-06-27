@@ -8,13 +8,17 @@ import json
 import re
 import shutil
 import subprocess
+import xml.etree.ElementTree as ET
 from collections import Counter
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Callable, TypeVar
 
 from pydantic import BaseModel, Field, ValidationError
-from sqlalchemy import func, select
+from sqlalchemy import false, func, or_, select
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
 from app_profile import display_name_or_default, get_or_create_app_profile, preview_app_profile, update_app_profile
@@ -26,6 +30,7 @@ from codex_runner.claude_code_runner import ClaudeCodeRunner
 from codex_runner.cli_runner import CliCodexRunner
 from codex_runner.dry_run_runner import DryRunRunner
 from codex_runner.external_adapter_runner import ExternalAdapterRunner
+from codex_runner.remote_adapter_runner import RemoteAdapterRunner
 from config import (
     DEFAULT_APPROVAL_POLICY,
     DEFAULT_MANAGER_MODE,
@@ -34,14 +39,16 @@ from config import (
     WORKTREE_ROOT,
 )
 from context_packs import context_pack_service
-from device_profile import recommended_swarm_max_agents
+from device_profile import detect_performance_profile, recommended_swarm_max_agents
 from events import EventService
 from gpu_support import detect_cuda_repo_mode
 from intelligence import planning_intelligence_service, reputation_service, scope_creep_service
 from interview import INTERVIEW_CATEGORIES, select_fallback_questions
+from launch_guard import LaunchGuardMetrics, LaunchGuardPolicy, evaluate_launch_guard
 from diagnostics import list_diagnostic_reports
 from imported_codebase import import_service
 from integration_registry import (
+    AUTHORITATIVE_CONNECTION_SOURCES,
     build_integration_health,
     build_integration_catalog_with_connections,
     build_project_integration_status,
@@ -53,7 +60,15 @@ from integration_registry import (
     registry_to_legacy_connected_accounts,
 )
 from pytorch_support import detect_pytorch_repo_mode
+from spatial3d_support import build_spatial3d_validation_plan, detect_spatial3d_repo_mode
 from tensorflow_support import detect_tensorflow_repo_mode
+from usage_tracking import (
+    accumulate_usage_rollup,
+    build_prompt_usage_estimate,
+    empty_usage_rollup,
+    merge_usage_snapshots,
+    usage_snapshot_from_event,
+)
 from models import (
     Agent,
     AgentArchetype,
@@ -125,14 +140,22 @@ from playbooks import playbook_service
 from preferences import preference_service
 from planner import build_plan_markdown
 from project_settings import (
+    DEFAULT_HARD_PEAK_CONTEXT_BUDGET,
+    DEFAULT_HARD_TOTAL_TOKEN_BUDGET,
+    DEFAULT_HARD_TOTAL_WORKER_LAUNCH_BUDGET,
+    DEFAULT_LAUNCH_GUARD_ENABLED,
+    DEFAULT_QUOTA_BACKOFF_COOLDOWN_MINUTES,
     ResolvedRunSettings,
+    clamp_codex_model_settings,
     get_or_create_project_settings,
     normalize_provider_adapter_settings,
+    resolve_default_worker_settings,
     normalize_provider_endpoint,
     resolve_manager_settings,
     resolve_worker_settings,
     resolved_run_settings_payload,
     settings_summary,
+    update_project_settings,
 )
 from prompts import (
     MANAGER_DOC_UPDATE_SCHEMA,
@@ -149,6 +172,25 @@ from prompts import (
     manager_swarm_prompt,
 )
 from provider_support import default_label, normalize_provider, provider_label, provider_uses_adapter
+from remote_execution import (
+    build_remote_capability_index,
+    build_remote_execution_contract,
+    build_remote_launch_plan,
+    build_remote_session_recording_contract,
+    delete_remote_target,
+    normalize_remote_execution_policy,
+    normalize_remote_execution_registry,
+    _required_prefixes_satisfied,
+    summarize_remote_execution_registry,
+    upsert_remote_target,
+)
+from result_normalization import (
+    build_normalized_result_rollup,
+    classify_evidence_artifacts,
+    load_normalized_result_rollup,
+    load_normalized_result_rollup_summary,
+    write_normalized_result_rollup,
+)
 from risk import risk_service
 from security import redact_text, redact_value, security_service
 from security.path_validation import PathValidationError, resolve_local_path, resolve_relative_to_root
@@ -173,6 +215,7 @@ from tool_catalog import TOOL_CATALOG, catalog_with_permissions
 from validation_coverage import validation_coverage_service
 from webwright_support import detect_webwright_status
 from workspace_tooling import detect_workspace_tooling
+from workspace_git import workspace_git_env
 from widget_catalog import (
     DASHBOARD_WIDGET_DEFAULTS,
     DASHBOARD_WIDGET_TYPES,
@@ -196,6 +239,10 @@ DOC_FILENAMES = [
 ]
 TASK_OPEN_STATUSES = {"backlog", "assigned", "working", "waiting_on_paths", "needs_review", "blocked"}
 TASK_STARTABLE_STATUSES = {"backlog", "assigned", "waiting_on_paths"}
+RUN_TERMINAL_STATUSES = {"done", "error", "blocked", "needs_review", "stopped", "completed", "failed"}
+STALE_BLOCKED_REQUEUE_REASON = (
+    "Blocked task had no recorded blocker and no active owning run; Mission Control returned it to backlog."
+)
 WORKSPACE_WIDGETS = [
     "Milestones",
     "Test Status",
@@ -357,6 +404,7 @@ class RunnerRegistry:
             "codex_app_server": AppServerCodexRunner(),
             "claude_code_cli": ClaudeCodeRunner(),
             "external_adapter": ExternalAdapterRunner(),
+            "remote_adapter": RemoteAdapterRunner(),
         }
         self._auto_app_server_enabled: bool | None = None
         self._codex_cli_enabled: bool | None = None
@@ -380,8 +428,35 @@ class RunnerRegistry:
     async def effective_runner_type(self, resolved: ResolvedRunSettings) -> str:
         provider = normalize_provider(resolved.provider)
         requested_mode = resolved.runner_mode or DEFAULT_RUNNER_MODE
+        remote_execution = dict(resolved.remote_execution or {})
+        remote_policy = dict(remote_execution.get("policy") or {})
+        remote_selection = dict(remote_execution.get("selection") or {})
+        remote_enabled = bool(remote_policy.get("enabled"))
+        remote_selected = isinstance(remote_execution.get("selected_target"), dict) and bool(remote_execution.get("selected_target"))
+        remote_preflight_ready = bool(remote_selection.get("preflight_ready"))
+        remote_fallback_to_local = bool(remote_policy.get("fallback_to_local", True))
         if requested_mode == "dry_run":
             return "dry_run"
+        if remote_enabled and remote_policy.get("required_runner_family") == "external_adapter" and provider_uses_adapter(provider):
+            if remote_selected and remote_preflight_ready:
+                if await self.runners["remote_adapter"].handshake(
+                    RunnerSettings(
+                        provider=resolved.provider,
+                        sandbox_mode=resolved.sandbox_mode,
+                        approval_policy=resolved.approval_policy,
+                        model=resolved.model,
+                        reasoning_effort=resolved.reasoning_effort,
+                        provider_endpoint=resolved.provider_endpoint,
+                        adapter_command=resolved.adapter_command,
+                        adapter_args=list(resolved.adapter_args),
+                        remote_execution=remote_execution,
+                    )
+                ):
+                    return "remote_adapter"
+            if not remote_fallback_to_local:
+                return "unavailable"
+        elif remote_enabled and not remote_fallback_to_local:
+            return "unavailable"
         if provider == "codex":
             if requested_mode == "app_server":
                 return "codex_app_server" if await self.app_server_available() else "unavailable"
@@ -422,6 +497,8 @@ class RunnerRegistry:
             return "app_server"
         if runner_type in {"codex_cli", "claude_code_cli", "external_adapter"}:
             return "cli"
+        if runner_type == "remote_adapter":
+            return "cli"
         if runner_type == "dry_run":
             return "dry_run"
         return "unavailable"
@@ -439,12 +516,42 @@ class RunnerRegistry:
             return self.runners["codex_cli"]
         if runner_type == "app_server":
             return self.runners["codex_app_server"]
+        if runner_type == "remote_adapter":
+            return self.runners["remote_adapter"]
         raise KeyError(f"Unknown runner type: {runner_type}")
 
     async def inventory(self) -> list[dict[str, Any]]:
         codex_cli_ready = await self.codex_cli_available()
         app_server_ready = await self.app_server_available()
         claude_ready = await self.claude_cli_available()
+        return self._inventory_payload(codex_cli_ready=codex_cli_ready, app_server_ready=app_server_ready, claude_ready=claude_ready)
+
+    def inventory_preview(self) -> list[dict[str, Any]]:
+        return self._inventory_payload(
+            codex_cli_ready=self._codex_cli_enabled is True,
+            app_server_ready=self._auto_app_server_enabled is True,
+            claude_ready=self._claude_cli_enabled is True,
+            preview=True,
+        )
+
+    def _inventory_payload(
+        self,
+        *,
+        codex_cli_ready: bool,
+        app_server_ready: bool,
+        claude_ready: bool,
+        preview: bool = False,
+    ) -> list[dict[str, Any]]:
+        codex_status = "ready" if codex_cli_ready else ("unknown_until_probed" if preview else "missing_or_not_logged_in")
+        app_server_status = "ready" if app_server_ready else ("unknown_until_probed" if preview else "experimental_or_unavailable")
+        claude_status = "ready" if claude_ready else ("unknown_until_probed" if preview else "missing_or_unavailable")
+        codex_notes = ["Uses the local Codex CLI session and approval flow."]
+        app_server_notes = ["Experimental app-server path for Codex-backed background work."]
+        claude_notes = ["Uses the locally configured Claude Code CLI when available."]
+        if preview:
+            codex_notes.append("Preview only: this poll did not perform a fresh Codex CLI handshake.")
+            app_server_notes.append("Preview only: this poll did not perform a fresh app-server handshake.")
+            claude_notes.append("Preview only: this poll did not perform a fresh Claude CLI handshake.")
         return [
             {
                 "runner_type": "dry_run",
@@ -458,29 +565,29 @@ class RunnerRegistry:
             {
                 "runner_type": "codex_cli",
                 "availability": codex_cli_ready,
-                "config_status": "ready" if codex_cli_ready else "missing_or_not_logged_in",
+                "config_status": codex_status,
                 "supports_background": True,
                 "supports_streaming": False,
                 "supports_approvals": True,
-                "notes": ["Uses the local Codex CLI session and approval flow."],
+                "notes": codex_notes,
             },
             {
                 "runner_type": "codex_app_server",
                 "availability": app_server_ready,
-                "config_status": "ready" if app_server_ready else "experimental_or_unavailable",
+                "config_status": app_server_status,
                 "supports_background": True,
                 "supports_streaming": True,
                 "supports_approvals": True,
-                "notes": ["Experimental app-server path for Codex-backed background work."],
+                "notes": app_server_notes,
             },
             {
                 "runner_type": "claude_code_cli",
                 "availability": claude_ready,
-                "config_status": "ready" if claude_ready else "missing_or_unavailable",
+                "config_status": claude_status,
                 "supports_background": True,
                 "supports_streaming": False,
                 "supports_approvals": True,
-                "notes": ["Uses the locally configured Claude Code CLI when available."],
+                "notes": claude_notes,
             },
             {
                 "runner_type": "external_adapter",
@@ -491,16 +598,136 @@ class RunnerRegistry:
                 "supports_approvals": True,
                 "notes": ["Availability depends on the project's configured adapter command."],
             },
+            {
+                "runner_type": "remote_adapter",
+                "availability": False,
+                "config_status": "requires_remote_target_and_project_settings",
+                "supports_background": True,
+                "supports_streaming": False,
+                "supports_approvals": True,
+                "notes": ["Availability depends on a configured remote target plus an adapter-capable worker provider."],
+            },
         ]
 
 
 class MissionControlService:
+    _FOLLOW_UP_BLOCKER_PREFIX = "Blocked task handed off to follow-up task #"
+
     def __init__(self) -> None:
         self.events = EventService()
         self.runners = RunnerRegistry()
         self.active_monitors: dict[int, asyncio.Task] = {}
         self.run_input_snapshots: dict[int, dict[str, str]] = {}
         self.workspace_semantic_index_cache: dict[str, dict[str, Any]] = {}
+
+    @classmethod
+    def _merge_effective_settings_payload(cls, existing: dict[str, Any] | None, incoming: dict[str, Any] | None) -> dict[str, Any]:
+        base = dict(existing or {})
+        updates = dict(incoming or {})
+        merged: dict[str, Any] = dict(base)
+        for key, value in updates.items():
+            current = merged.get(key)
+            if isinstance(current, dict) and isinstance(value, dict):
+                merged[key] = cls._merge_effective_settings_payload(current, value)
+            else:
+                merged[key] = value
+        return merged
+
+    @staticmethod
+    def _is_sqlite_lock_error(exc: Exception) -> bool:
+        return "database is locked" in str(exc).lower()
+
+    @staticmethod
+    def _runner_project_snapshot(project: Project) -> Any:
+        return SimpleNamespace(
+            id=project.id,
+            name=project.name,
+            idea=project.idea,
+            workspace_path=project.workspace_path,
+            docs_path=project.docs_path,
+            created_by=project.created_by,
+            source_type=project.source_type,
+            status=project.status,
+            runner_mode=project.runner_mode,
+            manager_mode=project.manager_mode,
+        )
+
+    @staticmethod
+    def _runner_agent_snapshot(agent: Agent) -> Any:
+        return SimpleNamespace(
+            id=agent.id,
+            name=agent.name,
+            role=agent.role,
+            kind=agent.kind,
+            status=agent.status,
+            workspace_path=agent.workspace_path,
+            session_ref=agent.session_ref,
+        )
+
+    @staticmethod
+    def _runner_task_snapshot(task: Task | None) -> Any:
+        if task is None:
+            return None
+        return SimpleNamespace(
+            id=task.id,
+            title=task.title,
+            goal=task.goal,
+            scope=task.scope,
+            agent_role=task.agent_role,
+            milestone=task.milestone,
+            allowed_paths_json=list(task.allowed_paths_json or []),
+            forbidden_paths_json=list(task.forbidden_paths_json or []),
+            validation_steps_json=list(task.validation_steps_json or []),
+            success_criteria_json=list(task.success_criteria_json or []),
+            estimated_complexity=task.estimated_complexity,
+        )
+
+    @staticmethod
+    def _fallback_worker_context_pack_markdown(project: Project, agent: Agent, task: Task, *, docs_path: str) -> str:
+        docs = context_pack_service._existing_doc_candidates(project)[:5]
+        allowed_paths = list(task.allowed_paths_json or [])
+        forbidden_paths = list(task.forbidden_paths_json or [])
+        validation_steps = list(task.validation_steps_json or [])
+        lines = [
+            "# Worker Context",
+            "",
+            "## Mission",
+            f"- Project: **{project.name}**",
+            f"- Agent: **{agent.name}**",
+            f"- Task: **{task.title}**",
+            f"- Goal: {task.goal}",
+            "",
+            "## Boundaries",
+            "Allowed paths:",
+            *([f"- `{item}`" for item in allowed_paths] or ["- No explicit allowed paths were recorded."]),
+            "Forbidden paths:",
+            *([f"- `{item}`" for item in forbidden_paths] or ["- No forbidden paths were recorded."]),
+            "",
+            "## Validation",
+            *([f"- {item}" for item in validation_steps] or ["- Record what was validated and what remains manual."]),
+            "",
+            "## Docs",
+            *([f"- `{item}`" for item in docs] or [f"- Docs root: `{docs_path}`"]),
+        ]
+        return "\n".join(lines)
+
+    @contextmanager
+    def _sqlite_busy_timeout_scope(self, db: Session, *, milliseconds: int) -> Any:
+        connection = None
+        original_timeout: int | None = None
+        try:
+            bind = getattr(db, "bind", None)
+            dialect_name = getattr(getattr(bind, "dialect", None), "name", None)
+            if dialect_name != "sqlite":
+                yield
+                return
+            connection = db.connection()
+            original_timeout = connection.exec_driver_sql("PRAGMA busy_timeout").scalar()
+            connection.exec_driver_sql(f"PRAGMA busy_timeout = {max(0, int(milliseconds))}")
+            yield
+        finally:
+            if connection is not None and original_timeout is not None:
+                connection.exec_driver_sql(f"PRAGMA busy_timeout = {int(original_timeout)}")
 
     async def on_shutdown(self) -> None:
         active = list(self.active_monitors.values())
@@ -509,6 +736,63 @@ class MissionControlService:
             task.cancel()
         if active:
             await asyncio.gather(*active, return_exceptions=True)
+
+    async def on_startup(self) -> None:
+        from db import SessionLocal
+
+        restart_reason = "Mission Control daemon restarted while this worker run was active. The task was returned to backlog for a safe retry."
+        with SessionLocal() as db:
+            unfinished_runs = list(
+                db.scalars(
+                    select(AgentRun)
+                    .where(AgentRun.finished_at.is_(None))
+                    .order_by(AgentRun.id.asc())
+                )
+            )
+            changed = False
+            for run in unfinished_runs:
+                agent = db.get(Agent, run.agent_id)
+                if agent is None or agent.kind != "worker":
+                    run.status = "stopped"
+                    run.finished_at = utc_now()
+                    changed = True
+                    continue
+                project = db.get(Project, agent.project_id)
+                if project is None:
+                    run.status = "stopped"
+                    run.finished_at = utc_now()
+                    changed = True
+                    continue
+                task = db.get(Task, run.task_id) if run.task_id else None
+                run.status = "stopped"
+                run.finished_at = utc_now()
+                agent.status = "waiting"
+                agent.current_task_id = None
+                agent.current_action = restart_reason
+                if task is not None:
+                    task.status = "backlog"
+                    task.assigned_agent_id = None
+                    task.waiting_reason = restart_reason
+                    self._release_reservations(db, project.id, task_id=task.id, agent_id=agent.id, publish=False)
+                else:
+                    self._release_reservations(db, project.id, agent_id=agent.id, publish=False)
+                self.events.publish(
+                    db,
+                    project.id,
+                    "agent.run_reconciled_after_restart",
+                    {
+                        "agent_id": agent.id,
+                        "task_id": task.id if task is not None else None,
+                        "run_id": run.id,
+                        "reason": "daemon_restart",
+                    },
+                )
+                changed = True
+            for project in db.scalars(select(Project).order_by(Project.id.asc())):
+                if self._reconcile_orphaned_working_tasks(db, project):
+                    changed = True
+                self._refresh_agent_locks(db, project.id)
+            db.commit()
 
     def _project_docs_dir(self, project: Project) -> Path:
         return Path(project.workspace_path) / "mission-control"
@@ -591,6 +875,25 @@ class MissionControlService:
             report = report.model_copy(update={"files_changed": changed_paths[:20]})
         return report
 
+    def _convert_no_change_review_to_blocked(self, task: Task | None, report: WorkerReport) -> WorkerReport:
+        if task is None or report.status != "needs_review":
+            return report
+        if report.files_changed or not self._task_expects_file_changes(task):
+            return report
+        blocker = "No verified workspace file changes were produced for a task that requires a concrete fix."
+        return report.model_copy(
+            update={
+                "status": "blocked",
+                "summary": (
+                    f"{report.summary} Mission Control rejected this as a no-change review gate because the task "
+                    "requires verified changed files."
+                ),
+                "blockers": [blocker, *list(report.blockers or [])],
+                "recommended_next_task": report.recommended_next_task
+                or "Route a fresh focused implementation attempt or replace this lane with a better defect candidate.",
+            }
+        )
+
     @staticmethod
     def _runner_status_from_report_status(status: str) -> str:
         result = {
@@ -645,7 +948,7 @@ class MissionControlService:
             return "user_action_required"
         if any(token in haystack for token in ("schema", "invalid json", "malformed", "parse", "task_id does not match", "outside allowed paths")):
             return "runner_bug" if "schema" in haystack or "json" in haystack or "parse" in haystack else "input_error"
-        if any(token in haystack for token in ("timeout", "temporar", "database is locked", "rate limit", "connection reset", "network")):
+        if any(token in haystack for token in ("timeout", "temporar", "database is locked", "rate limit", "usage limit", "quota", "connection reset", "network")):
             return "transient"
         if any(token in haystack for token in ("gpu", "cluster", "pod pending", "infra", "kubernetes", "disk full", "resource unavailable")):
             return "infra_blocker"
@@ -721,6 +1024,50 @@ class MissionControlService:
             }
         )
         return envelope
+
+    @staticmethod
+    def _recover_runner_payload_from_event_log(run: AgentRun) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+        path_text = str(run.event_log_path or "").strip()
+        if not path_text:
+            return None, None
+        path = Path(path_text)
+        if not path.exists() or not path.is_file():
+            return None, None
+        try:
+            lines = path.read_text(encoding="utf-8", errors="ignore").splitlines()
+        except OSError:
+            return None, None
+        recovered_envelope: dict[str, Any] | None = None
+        recovered_report: dict[str, Any] | None = None
+        for line in reversed(lines):
+            line = str(line or "").strip()
+            if not line:
+                continue
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(event, dict):
+                continue
+            item = event.get("item")
+            candidate_texts: list[str] = []
+            if isinstance(item, dict) and item.get("type") == "agent_message":
+                text = item.get("text")
+                if isinstance(text, str) and text.strip():
+                    candidate_texts.append(text)
+            raw_text = event.get("text")
+            if isinstance(raw_text, str) and raw_text.strip():
+                candidate_texts.append(raw_text)
+            for candidate_text in candidate_texts:
+                envelope = BaseCodexRunner.try_parse_result_envelope(candidate_text)
+                if envelope:
+                    report = envelope.get("report")
+                    return envelope, report if isinstance(report, dict) else None
+                if recovered_report is None:
+                    report = BaseCodexRunner.try_parse_report(candidate_text)
+                    if isinstance(report, dict):
+                        recovered_report = report
+        return recovered_envelope, recovered_report
 
     @staticmethod
     def _trace_outcome_from_report_status(status: str) -> str:
@@ -871,10 +1218,17 @@ class MissionControlService:
         agent.current_action = None
         agent.last_report_summary = reason
         agent.status = "waiting"
+        retry_ready = False
         if task is not None:
             task.failure_count += 1
-            task.status = "needs_review"
-            task.waiting_reason = reason
+            if task.failure_count <= 1:
+                task.status = "backlog"
+                task.assigned_agent_id = None
+                task.waiting_reason = "Previous runner completion envelope was invalid. Mission Control queued a clean retry."
+                retry_ready = True
+            else:
+                task.status = "needs_review"
+                task.waiting_reason = reason
         self._release_reservations(db, project.id, task_id=task.id if task else None, agent_id=agent.id)
         plan = RecoveryPlan(
             project_id=project.id,
@@ -902,6 +1256,8 @@ class MissionControlService:
                 "failure_classification": "runner_bug",
             },
         )
+        if retry_ready:
+            self._schedule_orchestration_follow_up(db, project, reason="worker_report_rejected")
 
     def _ensure_project_workspace(self, project: Project) -> Path:
         docs_dir = self._project_docs_dir(project)
@@ -937,9 +1293,15 @@ class MissionControlService:
             per_role_reasoning_overrides_json={},
             adapter_command=profile.adapter_command,
             adapter_args_json=list(profile.adapter_args_json or []),
+            remote_execution_policy_json={},
             runner_mode=project.runner_mode or profile.default_runner_mode or DEFAULT_RUNNER_MODE,
             sandbox_mode=profile.sandbox_mode,
             approval_policy=profile.approval_policy,
+            launch_guard_enabled=DEFAULT_LAUNCH_GUARD_ENABLED,
+            hard_total_token_budget=DEFAULT_HARD_TOTAL_TOKEN_BUDGET,
+            hard_total_worker_launch_budget=DEFAULT_HARD_TOTAL_WORKER_LAUNCH_BUDGET,
+            hard_peak_context_budget=DEFAULT_HARD_PEAK_CONTEXT_BUDGET,
+            quota_backoff_cooldown_minutes=DEFAULT_QUOTA_BACKOFF_COOLDOWN_MINUTES,
             workspace_widgets_json=[],
             approval_overrides_json={},
             created_at=timestamp,
@@ -957,20 +1319,33 @@ class MissionControlService:
             return project.settings
         profile = self._app_profile_preview(db)
         timestamp = utc_now()
-        return ProjectSettings(
-            project_id=project.id,
-            provider=normalize_provider(profile.selected_provider or "codex"),
+        provider = normalize_provider(profile.selected_provider or "codex")
+        manager_model, default_worker_model, per_role_model_overrides = clamp_codex_model_settings(
+            provider,
             manager_model=profile.manager_model,
             default_worker_model=profile.default_worker_model,
+            per_role_model_overrides={},
+        )
+        return ProjectSettings(
+            project_id=project.id,
+            provider=provider,
+            manager_model=manager_model,
+            default_worker_model=default_worker_model,
             manager_reasoning_effort=profile.manager_reasoning_effort,
             default_worker_reasoning_effort=profile.default_worker_reasoning_effort,
-            per_role_model_overrides_json={},
+            per_role_model_overrides_json=per_role_model_overrides,
             per_role_reasoning_overrides_json={},
             adapter_command=profile.adapter_command,
             adapter_args_json=list(profile.adapter_args_json or []),
+            remote_execution_policy_json={},
             runner_mode=project.runner_mode or profile.default_runner_mode or DEFAULT_RUNNER_MODE,
             sandbox_mode=profile.sandbox_mode,
             approval_policy=profile.approval_policy,
+            launch_guard_enabled=DEFAULT_LAUNCH_GUARD_ENABLED,
+            hard_total_token_budget=DEFAULT_HARD_TOTAL_TOKEN_BUDGET,
+            hard_total_worker_launch_budget=DEFAULT_HARD_TOTAL_WORKER_LAUNCH_BUDGET,
+            hard_peak_context_budget=DEFAULT_HARD_PEAK_CONTEXT_BUDGET,
+            quota_backoff_cooldown_minutes=DEFAULT_QUOTA_BACKOFF_COOLDOWN_MINUTES,
             workspace_widgets_json=[],
             approval_overrides_json={},
             created_at=timestamp,
@@ -1407,13 +1782,14 @@ class MissionControlService:
 
     def _repo_path_buckets(self, manifest: dict[str, Any]) -> dict[str, list[str]]:
         directories = [str(item) for item in manifest.get("top_level_directories", []) if str(item).strip()]
-        frontend = [item for item in directories if item.lower() in {"app", "src", "ui", "web", "frontend", "client", "components"}]
-        backend = [item for item in directories if item.lower() in {"server", "backend", "api", "services", "worker"}]
-        docs = [item for item in directories if "doc" in item.lower() or item.lower() in {"examples", "guides"}]
-        tests = [item for item in directories if "test" in item.lower() or "spec" in item.lower() or item.lower() == "e2e"]
-        data = [item for item in directories if item.lower() in {"data", "db", "database", "migrations", "sql"}]
-        ops = [item for item in directories if item.lower() in {"ops", "infra", "deploy", "scripts", ".github"}]
-        subsystems = [item for item in directories if item not in {".github"}][:5]
+        visible_directories = [item for item in directories if not item.startswith(".") or item == ".github"]
+        frontend = [item for item in visible_directories if item.lower() in {"app", "apps", "src", "ui", "web", "frontend", "client", "components"}]
+        backend = [item for item in visible_directories if item.lower() in {"server", "backend", "api", "services", "worker"}]
+        docs = [item for item in visible_directories if "doc" in item.lower() or item.lower() in {"examples", "guides"}]
+        tests = [item for item in visible_directories if "test" in item.lower() or "spec" in item.lower() or item.lower() == "e2e"]
+        data = [item for item in visible_directories if item.lower() in {"data", "db", "database", "migrations", "sql"}]
+        ops = [item for item in visible_directories if item.lower() in {"ops", "infra", "deploy", "scripts", ".github"}]
+        subsystems = [item for item in visible_directories if item != ".github"][:5]
         if not frontend and "package.json" in manifest.get("detected_files", []):
             frontend = ["src"]
         if not backend and any(item in manifest.get("detected_files", []) for item in {"pyproject.toml", "requirements.txt", "go.mod"}):
@@ -1431,6 +1807,281 @@ class MissionControlService:
             "ops": ops[:3],
             "subsystems": subsystems[:5] or ["src"],
         }
+
+    def _bug_campaign_candidate_paths(
+        self,
+        project: Project,
+        manifest: dict[str, Any],
+        *,
+        docs_path: str,
+        target_count: int,
+    ) -> list[str]:
+        workspace = Path(project.workspace_path or project.source_path or "")
+        buckets = self._repo_path_buckets(manifest)
+        preferred_groups = (
+            buckets["backend"],
+            buckets["frontend"],
+            buckets["ops"],
+            buckets["subsystems"],
+            buckets["tests"],
+            buckets["docs"],
+            buckets["data"],
+        )
+        ignored_names = {
+            ".git",
+            ".venv",
+            "__pycache__",
+            "node_modules",
+            ".runtime",
+            ".runtime-test-runs",
+            ".pytest_cache",
+            "dist",
+            "build",
+            "coverage",
+        }
+        preferred_leaf_names = {
+            "src",
+            "tests",
+            "test",
+            "workflows",
+            "issue_template",
+            "commands",
+            "skills",
+            "tools",
+            "guides",
+            "public",
+        }
+        desired_pool = max(6, min(max(target_count * 2, target_count + 2), 16))
+        ordered: list[str] = []
+        seen: set[str] = set()
+
+        def add_candidate(path_text: str) -> None:
+            normalized = str(path_text or "").strip().replace("\\", "/").strip("/")
+            if not normalized or normalized == docs_path or normalized in seen:
+                return
+            seen.add(normalized)
+            ordered.append(normalized)
+
+        def usable_child_dirs(path: Path) -> list[Path]:
+            if not path.exists() or not path.is_dir():
+                return []
+            children: list[Path] = []
+            for child in sorted(path.iterdir()):
+                if not child.is_dir() or child.name in ignored_names:
+                    continue
+                if child.name.startswith(".") and child.name != ".github":
+                    continue
+                children.append(child)
+            return children
+
+        def leaf_candidates(relative_path: Path) -> list[str]:
+            absolute_path = workspace / relative_path
+            children = usable_child_dirs(absolute_path)
+            if not children:
+                return [relative_path.as_posix()]
+
+            leaves: list[str] = []
+            for child in children:
+                child_relative = relative_path / child.name
+                grandchildren = usable_child_dirs(child)
+                preferred_grandchildren = [
+                    grandchild
+                    for grandchild in grandchildren
+                    if grandchild.name.lower() in preferred_leaf_names
+                ]
+                if preferred_grandchildren:
+                    leaves.extend((child_relative / grandchild.name).as_posix() for grandchild in preferred_grandchildren)
+                else:
+                    leaves.append(child_relative.as_posix())
+                if len(leaves) >= 6:
+                    break
+            return leaves or [relative_path.as_posix()]
+
+        for group in preferred_groups:
+            for relative in group:
+                relative_path = Path(str(relative))
+                if relative_path.name.startswith(".") and relative_path.name != ".github":
+                    continue
+                for candidate in leaf_candidates(relative_path):
+                    add_candidate(candidate)
+                    if len(ordered) >= desired_pool:
+                        return ordered
+        return ordered
+
+    def _deterministic_bug_campaign_swarm_plan(
+        self,
+        db: Session,
+        project: Project,
+        preferences: SwarmPreferences,
+        manifest: dict[str, Any],
+        *,
+        goal: str,
+    ) -> ManagerSwarmPlanPayload:
+        docs_path = "mission-control"
+        capacity = self._defect_campaign_swarm_capacity(db, project, preferences)
+        candidate_paths = self._bug_campaign_candidate_paths(
+            project,
+            manifest,
+            docs_path=docs_path,
+            target_count=capacity,
+        )
+        if not candidate_paths:
+            candidate_paths = self._repo_path_buckets(manifest)["subsystems"][:capacity] or ["src"]
+        owned_paths = candidate_paths[: max(3, capacity)]
+        builder_capacity = max(1, min(len(owned_paths), max(1, capacity - 1)))
+        specs = [
+            self._make_swarm_spec(
+                archetype="feature",
+                name=f"{self._titleize_path_label(path)} Subsystem Builder",
+                mission=f"Own the next bounded defect-fix lane under {path} without crossing into other subsystems.",
+                model_policy="Prefer the default worker model with medium reasoning and strict path ownership.",
+                allowed_paths=[path],
+                forbidden_paths=[other for other in owned_paths if other != path] + [docs_path],
+                spawn_phase="build_start",
+                retire_when=f"The next distinct defect wave under {path} is either fixed with evidence or blocked honestly.",
+                priority=10 + index * 5,
+                iteration_budget=2,
+                toolset=["feature_work", "tests"],
+            )
+            for index, path in enumerate(owned_paths[:builder_capacity], start=1)
+        ]
+        if len(specs) < capacity:
+            specs.append(
+                self._make_swarm_spec(
+                    archetype="test",
+                    name="Defect Ledger Validator",
+                    mission="Verify distinctness, rerun focused checks, and keep the accepted-fix count honest while builders keep moving.",
+                    model_policy="Prefer a careful validation model that records real command evidence and rejects duplicate claims.",
+                    allowed_paths=["tests", "docs", docs_path],
+                    forbidden_paths=owned_paths[:builder_capacity],
+                    spawn_phase="build_start",
+                    retire_when="Accepted fixes are validated and duplicate accounting is current.",
+                    priority=10 + (len(specs) + 1) * 5,
+                    iteration_budget=2,
+                    toolset=["test_runner", "code_review", "handoff_notes"],
+                )
+            )
+        recommended = max(1, min(capacity, len(specs)))
+        return ManagerSwarmPlanPayload(
+            mode="defect_campaign",
+            goal=goal,
+            recommended_agent_count=recommended,
+            coordination_risk="high" if recommended >= 7 else "medium",
+            path_conflict_risk="medium",
+            expected_bottlenecks=[
+                "Defect batches only pay off if each worker owns a narrow path and duplicate root causes get collapsed quickly.",
+                "Validation must run continuously or the benchmark turns into inflated claim-count theater.",
+            ],
+            strategy_summary=(
+                "Built a subsystem-owned defect swarm so Mission Control can keep multiple benchmark lanes hot "
+                "instead of routing a defect campaign through a generic product-build roster."
+            ),
+            validation_strategy=[
+                "Confirm every claimed fix maps to a distinct root cause before counting it.",
+                "Run the narrowest focused validation that proves each accepted fix or blocker.",
+                "Keep the defect ledger current so duplicate discoveries are merged instead of double-counted.",
+            ],
+            specs=specs,
+        )
+
+    @staticmethod
+    def _request_implies_fresh_benchmark_reset(request_text: str | None) -> bool:
+        normalized = " ".join(str(request_text or "").lower().split())
+        if not normalized:
+            return False
+        explicit_markers = (
+            "fresh benchmark",
+            "benchmark reset",
+            "fresh benchmark attempt",
+            "start from zero",
+            "reset to 0",
+            "reset to zero",
+            "reset count to 0",
+            "reset count to zero",
+            "reset accepted issue count",
+            "reset issue count",
+            "reset accepted fix count",
+            "reset fix count",
+            "accepted issue count to 0",
+            "accepted issue count to zero",
+            "accepted fix count to 0",
+            "accepted fix count to zero",
+            "benchmark counter to 0",
+            "benchmark counter to zero",
+            "ignore prior counts",
+            "do not count prior work",
+        )
+        if any(marker in normalized for marker in explicit_markers):
+            return True
+        if "benchmark" in normalized and "reset" in normalized and any(
+            phrase in normalized
+            for phrase in (
+                "count to 0",
+                "count to zero",
+                "counter to 0",
+                "counter to zero",
+                "accepted issue count",
+                "accepted fix count",
+            )
+        ):
+            return True
+        return "benchmark" in normalized and "zero" in normalized and any(
+            token in normalized for token in ("fresh", "reset", "restart", "ignore prior")
+        )
+
+    @staticmethod
+    def _request_implies_bug_campaign(request_text: str | None) -> bool:
+        normalized = " ".join(str(request_text or "").lower().split())
+        if not normalized:
+            return False
+        issue_tokens = ("bug", "bugs", "issue", "issues", "problem", "problems", "defect", "defects")
+        campaign_tokens = (
+            "100",
+            "50",
+            "batch",
+            "campaign",
+            "more",
+            "continue",
+            "parallel",
+            "faster",
+            "speed",
+            "throughput",
+            "45 minute",
+            "45 minutes",
+            "distinct",
+            "deduplicate",
+            "deduped",
+        )
+        return any(token in normalized for token in issue_tokens) and any(token in normalized for token in campaign_tokens)
+
+    def _recent_change_requests(self, db: Session, project: Project, *, limit: int = 8) -> list[ChangeRequest]:
+        return list(
+            db.scalars(
+                select(ChangeRequest)
+                .where(ChangeRequest.project_id == project.id, ChangeRequest.status != "rejected")
+                .order_by(ChangeRequest.updated_at.desc(), ChangeRequest.id.desc())
+                .limit(limit)
+            )
+        )
+
+    def _benchmark_defect_campaign_active(self, db: Session, project: Project) -> bool:
+        recent_requests = self._recent_change_requests(db, project)
+        if not recent_requests:
+            return False
+        has_bug_campaign = any(self._request_implies_bug_campaign(record.request_text) for record in recent_requests)
+        has_fresh_reset = any(self._request_implies_fresh_benchmark_reset(record.request_text) for record in recent_requests)
+        return has_bug_campaign and has_fresh_reset
+
+    def _defect_campaign_swarm_capacity(self, db: Session, project: Project, preferences: SwarmPreferences) -> int:
+        base_capacity = self._swarm_capacity_limit(preferences)
+        if not self._benchmark_defect_campaign_active(db, project):
+            return base_capacity
+        performance = detect_performance_profile()
+        lag_risk = str(performance.get("lag_risk") or "medium")
+        if lag_risk == "high":
+            return base_capacity
+        benchmark_headroom = 3 if lag_risk == "medium" else 4
+        return max(base_capacity, min(preferences.max_agents, base_capacity + benchmark_headroom))
 
     def _choose_swarm_mode(
         self,
@@ -1470,6 +2121,15 @@ class MissionControlService:
             "manager_decides": preferences.max_agents,
         }.get(preferences.swarm_aggressiveness, preferences.max_agents)
         return max(1, min(preferences.max_agents, aggressiveness_cap, recommended_swarm_max_agents()))
+
+    @staticmethod
+    def _manager_action_timeout_seconds(action_name: str) -> float:
+        normalized = str(action_name or "").strip().lower()
+        if normalized in {"swarm.plan", "tasks.decompose"}:
+            return 45.0
+        if normalized in {"plan.generate", "docs.update"}:
+            return 60.0
+        return 90.0
 
     def _make_swarm_spec(
         self,
@@ -2550,6 +3210,8 @@ class MissionControlService:
         evidence: list[HandoffEvidence] = []
         for run in runs:
             raw_report = run.report_json or {}
+            if not self._run_has_meaningful_handoff_signal(run, raw_report):
+                continue
             tests_run = [str(item) for item in raw_report.get("tests_run", []) if str(item).strip()]
             files_changed = [str(item) for item in raw_report.get("files_changed", []) if str(item).strip()]
             if files_changed:
@@ -2610,6 +3272,8 @@ class MissionControlService:
         seen_keys: set[tuple[str, str, str, str | None, str | None, str | None, str]] = set()
         for run in runs:
             raw_report = run.report_json or {}
+            if not self._run_has_meaningful_handoff_signal(run, raw_report):
+                continue
             tests_run = [str(item) for item in raw_report.get("tests_run", []) if str(item).strip()]
             files_changed = [str(item) for item in raw_report.get("files_changed", []) if str(item).strip()]
             candidates: list[dict[str, Any]] = []
@@ -2671,6 +3335,22 @@ class MissionControlService:
                 preview_rows.append(candidate)
         return preview_rows
 
+    @staticmethod
+    def _run_has_meaningful_handoff_signal(run: AgentRun, raw_report: dict[str, Any]) -> bool:
+        if not isinstance(raw_report, dict):
+            return False
+        if any(str(item).strip() for item in list(raw_report.get("files_changed") or [])):
+            return True
+        if any(str(item).strip() for item in list(raw_report.get("tests_run") or [])):
+            return True
+        if str(raw_report.get("summary") or "").strip():
+            return True
+        if any(str(item).strip() for item in list(raw_report.get("blockers") or [])):
+            return True
+        if any(str(item).strip() for item in list(raw_report.get("risks") or [])):
+            return True
+        return False
+
     def _missing_handoff_evidence(self, review_gates: list[ReviewGate], evidence: list[HandoffEvidence]) -> list[str]:
         missing: list[str] = []
         has_passed_test = any(item.evidence_type in {"test_result", "build_result"} and item.status == "passed" for item in evidence)
@@ -2695,6 +3375,41 @@ class MissionControlService:
 
     def _serialize_handoff_record(self, db: Session, project: Project, handoff: EvidenceBasedHandoff | None) -> dict[str, Any]:
         if handoff is None:
+            final_report = dict(project.final_report_json or {})
+            if final_report:
+                artifacts_path = project.docs_path or str(self._project_docs_dir(project))
+                run_instructions = [redact_text(str(item)) for item in final_report.get("how_to_run", []) if str(item).strip()]
+                known_limitations = [redact_text(str(item)) for item in final_report.get("known_limitations", []) if str(item).strip()]
+                tests_run = [redact_text(str(item)) for item in final_report.get("tests_builds_run", []) if str(item).strip()]
+                missing_evidence = [redact_text(str(item)) for item in final_report.get("missing_evidence", []) if str(item).strip()]
+                confidence_level = str(final_report.get("confidence_level") or ("high" if tests_run else "medium"))
+                inferred_status = "ready" if str(project.handoff_status or "") == "ready" or confidence_level == "high" else "needs_review"
+                evidence_backed = bool(final_report.get("evidence_ids")) or bool(tests_run)
+                ready_for_release = inferred_status == "ready" and evidence_backed and not missing_evidence and not bool(final_report.get("dry_run"))
+                return {
+                    "project_id": project.id,
+                    "project_name": project.name,
+                    "project_slug": self._effective_project_slug(project),
+                    "created_at": project.updated_at,
+                    "status": inferred_status,
+                    "summary": redact_text(
+                        str(final_report.get("summary_markdown") or final_report.get("summary") or f"{project.name} is ready for handoff review.")
+                    ),
+                    "artifacts_path": artifacts_path,
+                    "has_artifacts_path": bool(artifacts_path),
+                    "tests_count": len(tests_run),
+                    "run_instructions": run_instructions,
+                    "run_instruction_count": len(run_instructions),
+                    "known_limitations": known_limitations,
+                    "known_limitation_count": len(known_limitations),
+                    "confidence_level": confidence_level,
+                    "evidence_status": "backed" if evidence_backed else "missing",
+                    "evidence_backed": evidence_backed,
+                    "missing_evidence": missing_evidence,
+                    "missing_evidence_count": len(missing_evidence),
+                    "ready_for_release": ready_for_release,
+                    "dry_run": bool(final_report.get("dry_run")),
+                }
             artifacts_path = project.docs_path or str(self._project_docs_dir(project))
             missing_evidence = ["No evidence-backed handoff has been generated yet."]
             return {
@@ -3136,7 +3851,14 @@ class MissionControlService:
         evidence = self._ensure_derived_handoff_evidence(db, project)
         done_titles = [task.title for task in tasks if task.status == "done"]
         final_report = project.final_report_json or {}
-        what_was_built = self._markdown_list([*done_titles, *[str(item) for item in final_report.get("what_was_built", []) if str(item).strip()]])
+        what_was_built = self._markdown_list(
+            self._dedupe_strings(
+                [
+                    *done_titles,
+                    *[str(item) for item in final_report.get("what_was_built", []) if str(item).strip()],
+                ]
+            )
+        )
         how_to_run_items = [redact_text(str(item)) for item in final_report.get("how_to_run", []) if str(item).strip()]
         if not how_to_run_items:
             repo = self._scan_repo_intelligence(db, project)
@@ -3164,9 +3886,12 @@ class MissionControlService:
             evidence=evidence,
             missing_evidence=missing_evidence,
         )
-        next_steps = [redact_text(str(item)) for item in final_report.get("suggested_next_improvements", []) if str(item).strip()]
+        next_steps = self._dedupe_strings(
+            [redact_text(str(item)) for item in final_report.get("suggested_next_improvements", []) if str(item).strip()]
+        )
         if any(gate.required and gate.status != "passed" for gate in review_gates):
             next_steps.append("Resolve remaining required review gates before calling this handoff production-ready.")
+        next_steps = self._dedupe_strings(next_steps)
         handoff = EvidenceBasedHandoff(
             project_id=project.id,
             title=f"{project.name} evidence-backed handoff",
@@ -3371,6 +4096,7 @@ class MissionControlService:
                     capture_output=True,
                     text=True,
                     check=True,
+                    env=workspace_git_env(project.workspace_path),
                 )
                 branch = subprocess.run(
                     ["git", "branch", "--show-current"],
@@ -3378,6 +4104,7 @@ class MissionControlService:
                     capture_output=True,
                     text=True,
                     check=True,
+                    env=workspace_git_env(project.workspace_path),
                 )
                 dirty = subprocess.run(
                     ["git", "status", "--porcelain"],
@@ -3385,6 +4112,7 @@ class MissionControlService:
                     capture_output=True,
                     text=True,
                     check=True,
+                    env=workspace_git_env(project.workspace_path),
                 )
                 snapshot_type = "git_commit"
                 status = "available"
@@ -3564,6 +4292,45 @@ class MissionControlService:
     def get_agent_load(self, db: Session, project: Project) -> list[AgentLoadSnapshot]:
         return self._sync_agent_load_snapshots(db, project)
 
+    def _active_worker_count(self, db: Session, project: Project) -> int:
+        return int(
+            db.scalar(
+                select(func.count(Agent.id)).where(
+                    Agent.project_id == project.id,
+                    Agent.kind == "worker",
+                    Agent.status.in_(["working", "starting"]),
+                )
+            )
+            or 0
+        )
+
+    def _is_lane_blocker_non_actionable_while_workers_run(self, db: Session, project: Project, task: Task) -> bool:
+        if task.status == "waiting_on_paths":
+            return True
+        waiting_reason = str(task.waiting_reason or "")
+        if task.status == "blocked" and waiting_reason == STALE_BLOCKED_REQUEUE_REASON:
+            return True
+        match = re.search(r"Blocked task handed off to follow-up task #(\d+)", waiting_reason)
+        if not match:
+            return False
+        follow_up = db.get(Task, int(match.group(1)))
+        return follow_up is not None and follow_up.project_id == project.id and follow_up.status in TASK_OPEN_STATUSES
+
+    def _current_blocked_task(self, db: Session, project: Project) -> Task | None:
+        active_workers = self._active_worker_count(db, project)
+        blocked_tasks = list(
+            db.scalars(
+                select(Task)
+                .where(Task.project_id == project.id, Task.status.in_(["blocked", "waiting_on_paths"]))
+                .order_by(Task.priority.asc(), Task.id.asc())
+            )
+        )
+        for task in blocked_tasks:
+            if active_workers and self._is_lane_blocker_non_actionable_while_workers_run(db, project, task):
+                continue
+            return task
+        return None
+
     def _derive_current_action_preview(self, db: Session, project: Project, degraded_notices: list[str]) -> dict[str, Any]:
         pending_approval = db.scalar(
             select(ApprovalRequest)
@@ -3633,11 +4400,28 @@ class MissionControlService:
                 "resolved_at": None,
                 "actions_json": [],
             }
-        blocked_task = db.scalar(
-            select(Task)
-            .where(Task.project_id == project.id, Task.status.in_(["blocked", "waiting_on_paths"]))
-            .order_by(Task.priority.asc(), Task.id.asc())
-        )
+        provider_backoff = self._provider_backoff_state(db, project)
+        if provider_backoff is not None:
+            backoff_until = provider_backoff["until"].astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+            return {
+                "id": f"provider-backoff-{project.id}",
+                "project_id": project.id,
+                "type": "degraded",
+                "severity": "warning",
+                "title": "Provider quota backoff active.",
+                "message": f"Codex worker runs hit a provider usage limit. Backoff is active until {backoff_until}.",
+                "requesting_agent_id": None,
+                "related_task_id": None,
+                "command_id": None,
+                "tool_request_id": None,
+                "question_id": None,
+                "created_at": utc_now(),
+                "expires_at": provider_backoff["until"],
+                "auto_decide_at": None,
+                "resolved_at": None,
+                "actions_json": [],
+            }
+        blocked_task = self._current_blocked_task(db, project)
         if blocked_task:
             return {
                 "id": f"task-{blocked_task.id}",
@@ -4572,6 +5356,22 @@ class MissionControlService:
             budget.current_intensity = "medium"
         else:
             budget.current_intensity = "low"
+        policy, metrics, decision = self._evaluate_launch_guard(
+            db,
+            project,
+            settings=settings,
+            role="worker",
+        )
+        budget.launch_guard_enabled = policy.enabled
+        budget.launch_guard_status = decision.status
+        budget.launch_guard_reason = decision.reason
+        budget.hard_total_token_budget = policy.hard_total_token_budget
+        budget.observed_total_tokens = metrics.total_tokens
+        budget.hard_total_worker_launch_budget = policy.hard_total_worker_launch_budget
+        budget.launches_started = metrics.worker_launch_count
+        budget.hard_peak_context_budget = policy.hard_peak_context_budget
+        budget.observed_peak_context_tokens = metrics.peak_context_tokens
+        budget.quota_backoff_active = metrics.quota_backoff_active
         return budget
 
     def _preview_swarm_budget(self, db: Session, project: Project) -> SwarmBudget:
@@ -4579,6 +5379,99 @@ class MissionControlService:
         settings = project.settings or self._project_settings_preview(db, project)
         budget = project.swarm_budget or SwarmBudget(project_id=project.id)
         return self._populate_swarm_budget(db, project, preferences=preferences, settings=settings, budget=budget)
+
+    def _launch_guard_policy(self, settings: ProjectSettings) -> LaunchGuardPolicy:
+        return LaunchGuardPolicy(
+            enabled=bool(settings.launch_guard_enabled),
+            hard_total_token_budget=max(1, int(settings.hard_total_token_budget or DEFAULT_HARD_TOTAL_TOKEN_BUDGET)),
+            hard_total_worker_launch_budget=max(
+                1,
+                int(settings.hard_total_worker_launch_budget or DEFAULT_HARD_TOTAL_WORKER_LAUNCH_BUDGET),
+            ),
+            hard_peak_context_budget=max(1, int(settings.hard_peak_context_budget or DEFAULT_HARD_PEAK_CONTEXT_BUDGET)),
+            quota_backoff_cooldown_minutes=max(
+                1,
+                int(settings.quota_backoff_cooldown_minutes or DEFAULT_QUOTA_BACKOFF_COOLDOWN_MINUTES),
+            ),
+        )
+
+    def _launch_guard_metrics(self, db: Session, project: Project) -> LaunchGuardMetrics:
+        worker_runs = list(
+            db.scalars(
+                select(AgentRun)
+                .join(Agent, Agent.id == AgentRun.agent_id)
+                .where(Agent.project_id == project.id, Agent.kind == "worker")
+                .order_by(AgentRun.id.asc())
+            )
+        )
+        totals = empty_usage_rollup()
+        for run in worker_runs:
+            accumulate_usage_rollup(totals, dict(run.usage_json or {}))
+        active_worker_ids = {
+            int(agent_id)
+            for agent_id in db.scalars(
+                select(AgentRun.agent_id)
+                .join(Agent, Agent.id == AgentRun.agent_id)
+                .where(
+                    Agent.project_id == project.id,
+                    Agent.kind == "worker",
+                    AgentRun.status.not_in(sorted(RUN_TERMINAL_STATUSES)),
+                )
+            )
+        }
+        if active_worker_ids:
+            active_workers = list(
+                db.scalars(
+                    select(Agent)
+                    .where(Agent.id.in_(active_worker_ids))
+                    .order_by(Agent.id.asc())
+                )
+            )
+            for worker in active_workers:
+                accumulate_usage_rollup(totals, dict(worker.active_usage_json or {}))
+        manager_agent = db.scalar(select(Agent).where(Agent.project_id == project.id, Agent.kind == "manager"))
+        if manager_agent is not None:
+            accumulate_usage_rollup(totals, dict(manager_agent.active_usage_json or {}))
+        return LaunchGuardMetrics(
+            total_tokens=int(totals.get("total_tokens") or 0),
+            worker_launch_count=len(worker_runs),
+            peak_context_tokens=int(totals.get("peak_context_tokens") or 0),
+        )
+
+    def _evaluate_launch_guard(
+        self,
+        db: Session,
+        project: Project,
+        *,
+        settings: ProjectSettings | None = None,
+        resolved_settings: ResolvedRunSettings | None = None,
+        role: str = "worker",
+    ):
+        settings = settings or self._project_settings(db, project)
+        policy = self._launch_guard_policy(settings)
+        backoff_state = self._provider_backoff_state(db, project, settings=settings)
+        base_metrics = self._launch_guard_metrics(db, project)
+        metrics = LaunchGuardMetrics(
+            total_tokens=base_metrics.total_tokens,
+            worker_launch_count=base_metrics.worker_launch_count,
+            peak_context_tokens=base_metrics.peak_context_tokens,
+            quota_backoff_active=backoff_state is not None,
+            quota_backoff_until=backoff_state["until"] if backoff_state is not None else None,
+            quota_backoff_summary=backoff_state["summary"] if backoff_state is not None else None,
+        )
+        model = resolved_settings.model if resolved_settings is not None else (
+            resolve_manager_settings(project, settings).model
+            if role == "manager"
+            else resolve_default_worker_settings(project, settings).model
+        )
+        decision = evaluate_launch_guard(
+            policy=policy,
+            metrics=metrics,
+            provider=normalize_provider(settings.provider),
+            role=role,
+            model=model,
+        )
+        return policy, metrics, decision
 
     def _agent_contract_payloads(self, db: Session, project: Project) -> list[dict[str, Any]]:
         plan = self._current_swarm_plan_record(db, project.id)
@@ -8294,6 +9187,7 @@ class MissionControlService:
             "active_model": agent.active_model,
             "active_reasoning_effort": agent.active_reasoning_effort,
             "active_runner_type": agent.active_runner_type,
+            "active_usage_json": dict(agent.active_usage_json or {}),
             "current_action": agent.current_action,
             "current_task_title": current_task.title if current_task else None,
             "display_status": display_status,
@@ -8602,6 +9496,124 @@ class MissionControlService:
                 str(item["name"]).lower(),
             ),
         )
+
+    def get_project_usage_summary(self, db: Session, project: Project) -> dict[str, Any]:
+        agents = list(
+            db.scalars(
+                select(Agent)
+                .where(Agent.project_id == project.id)
+                .order_by(Agent.kind.asc(), Agent.name.asc(), Agent.id.asc())
+            )
+        )
+        runs = list(
+            db.scalars(
+                select(AgentRun)
+                .join(Agent, Agent.id == AgentRun.agent_id)
+                .where(Agent.project_id == project.id)
+                .order_by(AgentRun.started_at.desc(), AgentRun.id.desc())
+            )
+        )
+        agent_by_id = {agent.id: agent for agent in agents}
+        active_agents: list[dict[str, Any]] = []
+        by_model: dict[tuple[str | None, str | None, str | None], dict[str, Any]] = {}
+        totals = empty_usage_rollup()
+        notes: set[str] = set()
+
+        def bucket_for(*, provider: str | None, model: str | None, runner_type: str | None) -> dict[str, Any]:
+            key = (provider, model, runner_type)
+            bucket = by_model.get(key)
+            if bucket is None:
+                bucket = {
+                    "provider": provider,
+                    "model": model,
+                    "runner_type": runner_type,
+                    "run_count": 0,
+                    "active_run_count": 0,
+                    "active_agent_count": 0,
+                    **empty_usage_rollup(),
+                }
+                by_model[key] = bucket
+            return bucket
+
+        for agent in agents:
+            usage_snapshot = dict(agent.active_usage_json or {})
+            if not usage_snapshot:
+                continue
+            effective_provider = None
+            if agent.kind == "manager":
+                settings = self._project_settings(db, project)
+                effective_provider = normalize_provider(settings.provider)
+            active_agents.append(
+                {
+                    "agent_id": agent.id,
+                    "name": agent.name,
+                    "role": agent.role,
+                    "kind": agent.kind,
+                    "status": agent.status,
+                    "provider": effective_provider,
+                    "model": agent.active_model,
+                    "runner_type": agent.active_runner_type,
+                    "usage_json": usage_snapshot,
+                }
+            )
+            if agent.kind == "manager":
+                bucket = bucket_for(
+                    provider=effective_provider,
+                    model=agent.active_model,
+                    runner_type=agent.active_runner_type,
+                )
+                bucket["active_agent_count"] += 1
+                accumulate_usage_rollup(bucket, usage_snapshot)
+                accumulate_usage_rollup(totals, usage_snapshot)
+                if usage_snapshot.get("estimated"):
+                    notes.add("Estimated prompt/context token counts are used until providers emit concrete usage.")
+
+        for run in runs:
+            usage_snapshot = dict(run.usage_json or {})
+            if not usage_snapshot:
+                continue
+            agent = agent_by_id.get(run.agent_id)
+            effective_settings = run.effective_settings_json or {}
+            provider = str(effective_settings.get("provider") or "").strip() or None
+            model = str(effective_settings.get("model") or "").strip() or (agent.active_model if agent else None)
+            bucket = bucket_for(
+                provider=provider,
+                model=model,
+                runner_type=run.runner_type,
+            )
+            bucket["run_count"] += 1
+            if run.finished_at is None:
+                bucket["active_run_count"] += 1
+            accumulate_usage_rollup(bucket, usage_snapshot)
+            accumulate_usage_rollup(totals, usage_snapshot)
+            if usage_snapshot.get("estimated"):
+                notes.add("Estimated prompt/context token counts are used until providers emit concrete usage.")
+
+        model_rows = sorted(
+            by_model.values(),
+            key=lambda item: (
+                -int(item.get("active_run_count") or 0),
+                -int(item.get("run_count") or 0),
+                str(item.get("provider") or ""),
+                str(item.get("model") or ""),
+                str(item.get("runner_type") or ""),
+            ),
+        )
+        active_agents.sort(
+            key=lambda item: (
+                item["kind"] != "manager",
+                str(item["name"]).lower(),
+                int(item["agent_id"]),
+            )
+        )
+        return {
+            "project_id": project.id,
+            "generated_at": utc_now(),
+            "active_agents": active_agents,
+            "by_model": model_rows,
+            "totals_json": totals,
+            "notes": sorted(notes),
+        }
 
     def _serialize_queue_item(
         self,
@@ -9116,11 +10128,7 @@ class MissionControlService:
                 "resolved_at": None,
                 "actions_json": [],
             }
-        blocked_task = db.scalar(
-            select(Task)
-            .where(Task.project_id == project.id, Task.status.in_(["blocked", "waiting_on_paths"]))
-            .order_by(Task.priority.asc(), Task.id.asc())
-        )
+        blocked_task = self._current_blocked_task(db, project)
         if blocked_task:
             return {
                 "id": f"task-{blocked_task.id}",
@@ -9178,7 +10186,7 @@ class MissionControlService:
                 "resolved_at": None,
                 "actions_json": [],
             }
-        working_agents = db.scalar(select(func.count(Agent.id)).where(Agent.project_id == project.id, Agent.kind == "worker", Agent.status.in_(["working", "starting"]))) or 0
+        working_agents = self._active_worker_count(db, project)
         return {
             "id": f"no-action-{project.id}",
             "project_id": project.id,
@@ -9719,7 +10727,36 @@ class MissionControlService:
             provider_endpoint=resolved.provider_endpoint,
             adapter_command=resolved.adapter_command,
             adapter_args=list(resolved.adapter_args),
+            remote_execution=dict(resolved.remote_execution or {}),
         )
+
+    def _apply_remote_execution_selection(self, db: Session, project: Project, resolved: ResolvedRunSettings) -> ResolvedRunSettings:
+        settings = self._project_settings(db, project)
+        policy = normalize_remote_execution_policy(settings.remote_execution_policy_json or {})
+        profile = self._app_profile_preview(db)
+        workspace_tooling = detect_workspace_tooling(project.workspace_path or project.source_path, project_name=project.name)
+        selection = build_remote_execution_contract(
+            profile.remote_execution_registry_json or {},
+            policy,
+            required_runner_family=policy.get("required_runner_family"),
+            require_write_access=bool(policy.get("require_write_access", True)),
+            integration_registry_payload=normalize_integration_registry(
+                profile.integration_registry_json,
+                profile.connected_accounts_json,
+            ),
+            workspace_tooling_payload=workspace_tooling,
+        )
+        resolved.remote_execution = {
+            "policy": policy,
+            "selection": selection,
+            "selected_target": selection.get("selected_target"),
+            "artifact_contract": selection.get("artifact_contract"),
+            "connector_contract": selection.get("connector_contract"),
+            "broker_contract": selection.get("broker_contract"),
+            "result_contract": selection.get("result_contract"),
+            "launch_package": self._remote_execution_launch_package_state(db, project),
+        }
+        return resolved
 
     @staticmethod
     def _cache_agent_run_profile(agent: Agent, resolved: ResolvedRunSettings, *, runner_type: str, action: str) -> None:
@@ -9727,6 +10764,16 @@ class MissionControlService:
         agent.active_reasoning_effort = resolved.effective_reasoning_label
         agent.active_runner_type = runner_type
         agent.current_action = action
+
+    @staticmethod
+    def _set_agent_usage_snapshot(agent: Agent, usage_snapshot: dict[str, Any] | None) -> None:
+        agent.active_usage_json = dict(usage_snapshot or {})
+
+    @staticmethod
+    def _merge_usage_snapshot(existing: dict[str, Any] | None, incoming: dict[str, Any] | None) -> dict[str, Any] | None:
+        if not incoming:
+            return existing
+        return merge_usage_snapshots(existing, incoming)
 
     def _task_board_markdown(self, tasks: list[Task]) -> str:
         grouped: dict[str, list[str]] = {}
@@ -10088,6 +11135,7 @@ class MissionControlService:
         buckets = self._repo_path_buckets(manifest)
         valid_archetypes = {item["name"] for item in AGENT_ARCHETYPE_CATALOG}
         mode = payload.mode if payload.mode in {
+            "defect_campaign",
             "fastest_build",
             "balanced",
             "high_quality",
@@ -10160,12 +11208,17 @@ class MissionControlService:
         current = self._current_swarm_plan_record(db, project.id)
         if current is not None:
             current.status = "superseded"
+        capacity_limit = (
+            self._defect_campaign_swarm_capacity(db, project, preferences)
+            if payload.mode == "defect_campaign"
+            else self._swarm_capacity_limit(preferences)
+        )
         plan = SwarmPlan(
             project_id=project.id,
             milestone_id=milestone_id,
             mode=payload.mode,
             goal=payload.goal,
-            recommended_agent_count=min(self._swarm_capacity_limit(preferences), payload.recommended_agent_count),
+            recommended_agent_count=min(capacity_limit, payload.recommended_agent_count),
             max_agent_count=preferences.max_agents,
             coordination_risk=payload.coordination_risk,
             path_conflict_risk=payload.path_conflict_risk,
@@ -10420,14 +11473,41 @@ class MissionControlService:
                 agent.archetype = spec.archetype
                 agent.mission = spec.mission
                 agent.retire_when = spec.retire_when
+                if agent.status in {"retired", "done", "stopped"}:
+                    agent.status = "idle"
+                    agent.current_task_id = None
+                    agent.current_action = None
+                    agent.session_ref = None
+                    agent.active_usage_json = None
+                    agent.active_model = None
+                    agent.active_reasoning_effort = None
+                    agent.active_runner_type = None
+                    agent.locked_paths_json = []
+                    agent.failure_count = 0
+                    spawned += 1
+                    self._record_swarm_event(
+                        db,
+                        project,
+                        event_type="agent_reactivated",
+                        message=f"{agent.name} reactivated for the latest swarm strategy.",
+                        swarm_plan_id=plan.id,
+                        agent_id=agent.id,
+                        metadata_json={"spec_id": spec.id},
+                    )
                 spec.status = "spawned"
         if preferences.allow_dynamic_retirement:
             for agent_name, agent in existing_agents.items():
                 if agent_name in target_names or agent.kind != "worker":
                     continue
                 if agent.status in {"idle", "waiting", "done", "stopped"} or project.runner_mode == "dry_run":
-                    agent.status = "done"
+                    agent.status = "retired"
                     agent.current_task_id = None
+                    agent.session_ref = None
+                    agent.active_usage_json = None
+                    agent.active_model = None
+                    agent.active_reasoning_effort = None
+                    agent.active_runner_type = None
+                    agent.locked_paths_json = []
                     agent.current_action = "Retired by the latest swarm strategy."
                     retired += 1
                     self._record_swarm_event(
@@ -10515,13 +11595,141 @@ class MissionControlService:
         )
         return sync
 
-    def _deterministic_task_decomposition(self, db: Session, project: Project, plan: Plan | None) -> ManagerTaskDecomposition:
+    def _target_parallel_open_task_count(
+        self,
+        db: Session,
+        project: Project,
+        *,
+        existing_tasks: list[Task] | None = None,
+    ) -> int:
+        preferences = self._ensure_swarm_preferences(db, project)
+        target = self._defect_campaign_swarm_capacity(db, project, preferences)
+        current_plan = self._current_swarm_plan_record(db, project.id)
+        if current_plan is not None and current_plan.recommended_agent_count:
+            target = min(target, max(1, int(current_plan.recommended_agent_count)))
+        if existing_tasks:
+            spawned_workers = len(
+                {
+                    task.agent_role
+                    for task in existing_tasks
+                    if task.status in TASK_OPEN_STATUSES and (task.agent_role or "").strip()
+                }
+            )
+            if spawned_workers:
+                target = max(target, min(spawned_workers, max(1, preferences.max_agents)))
+        return max(1, target)
+
+    def _productive_open_task_count(self, db: Session, project: Project, tasks: list[Task]) -> int:
+        productive = 0
+        for task in tasks:
+            if task.status not in TASK_OPEN_STATUSES:
+                continue
+            if task.status in {"working", "needs_review"}:
+                productive += 1
+                continue
+            if task.status in {"backlog", "assigned"} and self._dependencies_met(db, task):
+                productive += 1
+        return productive
+
+    def _deterministic_task_decomposition(
+        self,
+        db: Session,
+        project: Project,
+        plan: Plan | None,
+        *,
+        requested_change_requests: list[ChangeRequest] | None = None,
+    ) -> ManagerTaskDecomposition:
         intelligence = planning_intelligence_service.build_context(db, project)
         validation_gaps = [
             str(item.get("area"))
             for item in (intelligence.get("validation_coverage") or [])
             if item.get("coverage_status") in {"none", "failed"}
         ]
+        root = Path(project.source_path or project.workspace_path)
+        top_level_names = {item.name.lower() for item in root.iterdir()} if root.exists() else set()
+        has_tests = any(name in {"tests", "test"} for name in top_level_names)
+        primary_code_path = next((name for name in ["src", "app", "lib", "package", "server"] if name in top_level_names), "src")
+        docs_path = "mission-control"
+        request_text = " ".join(
+            filter(
+                None,
+                [
+                    project.idea,
+                    project.latest_activity or "",
+                    *[record.request_text for record in list(requested_change_requests or [])],
+                ],
+            )
+        ).lower()
+        bug_campaign_requested = project.source_type != "idea" and self._request_implies_bug_campaign(request_text)
+        if bug_campaign_requested:
+            manifest = self._workspace_manifest_summary(project)
+            target_open_tasks = self._target_parallel_open_task_count(db, project)
+            candidate_paths = self._bug_campaign_candidate_paths(
+                project,
+                manifest,
+                docs_path=docs_path,
+                target_count=target_open_tasks,
+            )
+            if not candidate_paths:
+                candidate_paths = [primary_code_path]
+            lane_count = max(4, min(len(candidate_paths), max(target_open_tasks + 2, target_open_tasks)))
+            owned_paths = candidate_paths[:lane_count]
+            tasks = [
+                ManagerTaskItem(
+                    title=f"{self._titleize_path_label(path)} Defect Batch",
+                    goal=f"Find and fix the next bounded set of real defects under {path}.",
+                    scope="Keep the batch small, evidence-backed, and inside the owned path instead of wandering across the repo.",
+                    agent_role=f"{self._titleize_path_label(path)} Subsystem Builder",
+                    milestone="Milestone 1 - Parallel defect batches",
+                    priority=10 + index * 5,
+                    allowed_paths=[path],
+                    forbidden_paths=[other for other in owned_paths if other != path] + [docs_path],
+                    validation_steps=[
+                        "Confirm each defect is distinct and real before editing.",
+                        "Run the narrowest validation that proves the fix or blocker.",
+                        "Record unresolved blockers honestly instead of inflating the win count.",
+                    ],
+                    success_criteria=[
+                        "At least one real issue is fixed or isolated with evidence.",
+                        "The batch stays inside the owned path and does not collide with other lanes.",
+                    ],
+                    estimated_complexity="small",
+                    dependencies=[],
+                    status="backlog",
+                )
+                for index, path in enumerate(owned_paths, start=1)
+            ]
+            tasks.append(
+                ManagerTaskItem(
+                    title="Cross-batch validation and defect ledger update",
+                    goal="Verify completed defect batches, keep the defect ledger honest, and tee up the next bounded wave.",
+                    scope="Use tests, docs, and mission-control evidence files to validate fixes and keep campaign accounting truthful.",
+                    agent_role="Validation Specialist",
+                    milestone="Milestone 2 - Validate and recount",
+                    priority=10 + (len(tasks) + 1) * 5,
+                    allowed_paths=["tests", "docs", docs_path],
+                    forbidden_paths=owned_paths,
+                    validation_steps=[
+                        "Re-run focused checks for completed batches.",
+                        "Update the defect ledger and batch checkpoint with only evidence-backed closures.",
+                    ],
+                    success_criteria=[
+                        "Validated fixes are distinguished from unverified claims.",
+                        "The next bounded batch is obvious from the remaining ledger.",
+                    ],
+                    estimated_complexity="small",
+                    dependencies=[],
+                    status="backlog",
+                )
+            )
+            return ManagerTaskDecomposition(
+                summary_markdown="Generated a parallel defect-batch campaign so the swarm can keep multiple bounded fix lanes moving at once.",
+                milestones=[
+                    "Milestone 1 - Parallel defect batches",
+                    "Milestone 2 - Validate and recount",
+                ],
+                tasks=tasks,
+            )
         swarm_plan = self._current_swarm_plan_record(db, project.id)
         if swarm_plan is not None:
             specs = self._swarm_specs_for_plan(db, swarm_plan.id)
@@ -10554,12 +11762,7 @@ class MissionControlService:
                     tasks=tasks,
                 )
         if project.source_type != "idea":
-            root = Path(project.source_path or project.workspace_path)
-            top_level_names = {item.name.lower() for item in root.iterdir()} if root.exists() else set()
-            has_tests = any(name in {"tests", "test"} for name in top_level_names)
-            primary_code_path = next((name for name in ["src", "app", "lib", "package", "server"] if name in top_level_names), "src")
-            docs_path = "mission-control"
-            request_text = " ".join(filter(None, [project.idea, project.latest_activity or ""])).lower()
+            
             focused_on_tests = has_tests or "test" in request_text or "failing" in request_text or "fix" in request_text
             tasks = (
                 [
@@ -10758,11 +11961,30 @@ class MissionControlService:
                 escalation_message=report.summary,
             )
         if report.status == "blocked":
+            failure_classification = self._classify_failure(
+                summary=report.summary,
+                blockers=list(report.blockers or []),
+                risks=list(report.risks or []),
+                diagnostics=[],
+                report_status=report.status,
+            )
+            if failure_classification in {"transient", "infra_blocker"}:
+                return ManagerWorkerDecision(
+                    decision_type="wait",
+                    summary_markdown=(
+                        f"Pause new follow-up work for **{task.title}** until the external provider/runtime blocker clears."
+                    ),
+                )
             validation_agent = db.scalar(
                 select(Agent)
-                .where(Agent.project_id == project.id, Agent.kind == "worker")
+                .where(
+                    Agent.project_id == project.id,
+                    Agent.kind == "worker",
+                    Agent.status.not_in(["retired", "done"]),
+                )
                 .order_by(Agent.id.asc())
             )
+            suggested_follow_up_paths = self._suggest_follow_up_allowed_paths(task, report)
             if validation_agent and task.failure_count < 2:
                 return ManagerWorkerDecision(
                     decision_type="request_fix",
@@ -10770,6 +11992,7 @@ class MissionControlService:
                     assign_to_agent_id=validation_agent.id,
                     follow_up_title=f"Unblock: {task.title}",
                     follow_up_goal=report.blockers[0] if report.blockers else f"Resolve the blocker reported by {agent.name}.",
+                    follow_up_allowed_paths=suggested_follow_up_paths,
                 )
             return ManagerWorkerDecision(
                 decision_type="escalate_to_user",
@@ -10819,6 +12042,18 @@ class MissionControlService:
             ],
         )
 
+    @staticmethod
+    def _is_stale_manager_session_failure(text: str | None) -> bool:
+        if not text:
+            return False
+        haystack = text.lower()
+        return "thread/resume" in haystack and (
+            "no rollout found" in haystack
+            or "thread id" in haystack
+            or "not found" in haystack
+            or "unknown thread" in haystack
+        )
+
     async def _resolve_manager_model(
         self,
         db: Session,
@@ -10832,17 +12067,27 @@ class MissionControlService:
         fallback_factory: Callable[[], TManagerModel],
         prompt_override: str | None = None,
     ) -> tuple[TManagerModel, str]:
+        project_id = project.id
         manager_agent = self._manager_agent(db, project.id)
         settings_record = self._project_settings(db, project)
         resolved_settings = resolve_manager_settings(project, settings_record)
         latest_plan = self._latest_plan(db, project.id)
         docs_path = project.docs_path or str(self._project_docs_dir(project))
         requested_mode = project.manager_mode or DEFAULT_MANAGER_MODE
+        
+        def _best_effort_live_status_commit() -> None:
+            try:
+                db.commit()
+            except OperationalError as exc:
+                db.rollback()
+                if "database is locked" not in str(exc).lower():
+                    raise
 
         if requested_mode == "deterministic" or resolved_settings.runner_mode == "dry_run":
             manager_agent.active_model = resolved_settings.effective_model_label
             manager_agent.active_reasoning_effort = resolved_settings.effective_reasoning_label
             manager_agent.active_runner_type = resolved_settings.runner_mode
+            self._set_agent_usage_snapshot(manager_agent, None)
             manager_agent.current_action = action_name
             self.events.publish(db, project.id, "manager.mode.deterministic", {"action": action_name})
             return fallback_factory(), "deterministic"
@@ -10850,36 +12095,103 @@ class MissionControlService:
         try_live_provider = requested_mode in {"provider", "codex", "auto"}
         if try_live_provider:
             try:
-                runner = await self.runners.get_runner_for_settings(resolved_settings)
-                prompt = prompt_override or manager_action_prompt(
-                    project,
-                    docs_path,
-                    action=action_name,
-                    objective=objective,
-                    response_schema=response_schema,
-                    payload=payload,
-                    plan_markdown=latest_plan.content_markdown if latest_plan else None,
-                    user_name=self._preferred_user_name(db, project),
-                    provider=resolved_settings.provider,
-                    model=resolved_settings.effective_model_label,
-                    reasoning_effort=resolved_settings.effective_reasoning_label,
-                )
+                prompt = prompt_override
+                if prompt is None:
+                    prompt = await asyncio.to_thread(
+                        manager_action_prompt,
+                        project,
+                        docs_path,
+                        action=action_name,
+                        objective=objective,
+                        response_schema=response_schema,
+                        payload=payload,
+                        plan_markdown=latest_plan.content_markdown if latest_plan else None,
+                        user_name=self._preferred_user_name(db, project),
+                        provider=resolved_settings.provider,
+                        model=resolved_settings.effective_model_label,
+                        reasoning_effort=resolved_settings.effective_reasoning_label,
+                    )
+                resolved_settings = self._apply_remote_execution_selection(db, project, resolved_settings)
+                manager_usage_estimate = build_prompt_usage_estimate(prompt)
                 manager_agent.status = "working"
-                self._cache_agent_run_profile(manager_agent, resolved_settings, runner_type=runner.runner_type, action=action_name)
-                handle, last_payload = await runner.run_manager_turn(
-                    RunnerContext(
-                        project=project,
-                        agent=manager_agent,
+                manager_agent.current_action = action_name
+                self._set_agent_usage_snapshot(manager_agent, manager_usage_estimate)
+                context = RunnerContext(
+                    project=self._runner_project_snapshot(project),
+                    agent=self._runner_agent_snapshot(manager_agent),
+                    task=None,
+                    docs_path=docs_path,
+                    plan_markdown=latest_plan.content_markdown if latest_plan else None,
+                    settings=self._runner_settings_payload(resolved_settings),
+                )
+                # Release the transaction before any provider handshake or live
+                # manager turn so background orchestration does not pin SQLite
+                # while the external runner is thinking.
+                _best_effort_live_status_commit()
+                runner = await self.runners.get_runner_for_settings(resolved_settings)
+                attempted_stale_session_retry = False
+                while True:
+                    project = db.get(Project, project_id)
+                    if project is None:
+                        raise ValueError("Project disappeared before manager model resolution.")
+                    manager_agent = self._manager_agent(db, project.id)
+                    manager_agent.status = "working"
+                    context = RunnerContext(
+                        project=self._runner_project_snapshot(project),
+                        agent=self._runner_agent_snapshot(manager_agent),
                         task=None,
                         docs_path=docs_path,
                         plan_markdown=latest_plan.content_markdown if latest_plan else None,
                         settings=self._runner_settings_payload(resolved_settings),
-                    ),
-                    prompt,
-                )
-                manager_agent.status = "idle"
-                if handle.session_ref:
-                    manager_agent.session_ref = handle.session_ref
+                    )
+                    self._cache_agent_run_profile(manager_agent, resolved_settings, runner_type=runner.runner_type, action=action_name)
+                    _best_effort_live_status_commit()
+                    handle, last_payload = await asyncio.wait_for(
+                        runner.run_manager_turn(
+                            context,
+                            prompt,
+                        ),
+                        timeout=self._manager_action_timeout_seconds(action_name),
+                    )
+                    project = db.get(Project, project_id)
+                    if project is None:
+                        raise ValueError("Project disappeared after manager model resolution.")
+                    manager_agent = self._manager_agent(db, project.id)
+                    manager_agent.status = "idle"
+                    if handle.session_ref:
+                        manager_agent.session_ref = handle.session_ref
+                    manager_agent.active_usage_json = self._merge_usage_snapshot(
+                        manager_agent.active_usage_json,
+                        handle.latest_usage or handle.initial_usage,
+                    )
+                    text = ""
+                    if last_payload and isinstance(last_payload.get("item"), dict):
+                        text = last_payload["item"].get("text", "")
+                    elif last_payload:
+                        text = str(last_payload.get("text", ""))
+                    if (
+                        not handle.session_ref
+                        and manager_agent.session_ref
+                        and self._is_stale_manager_session_failure(text)
+                        and not attempted_stale_session_retry
+                    ):
+                        stale_session_ref = manager_agent.session_ref
+                        manager_agent.session_ref = None
+                        manager_agent.current_action = f"{action_name} reset a stale Codex thread and is retrying fresh."
+                        self.events.publish(
+                            db,
+                            project.id,
+                            "manager.session_ref_reset",
+                            {
+                                "action": action_name,
+                                "stale_session_ref": stale_session_ref,
+                                "reason": "stale_codex_thread_resume_failed",
+                            },
+                        )
+                        _best_effort_live_status_commit()
+                        attempted_stale_session_retry = True
+                        continue
+                    break
                 self.events.publish(
                     db,
                     project.id,
@@ -10904,26 +12216,40 @@ class MissionControlService:
                             "effective_settings": resolved_run_settings_payload(resolved_settings),
                         },
                     )
-                text = ""
-                if last_payload and isinstance(last_payload.get("item"), dict):
-                    text = last_payload["item"].get("text", "")
-                elif last_payload:
-                    text = str(last_payload.get("text", ""))
                 parsed, repaired = runner.try_parse_json_payload(text)
                 if repaired:
                     self.events.publish(db, project.id, "manager.parse_repair_attempted", {"action": action_name})
                 if parsed is not None:
                     return _validate_model(model_schema, parsed), resolved_settings.provider
                 self.events.publish(db, project.id, "manager.parse_failed", {"action": action_name})
+            except asyncio.TimeoutError:
+                db.rollback()
+                project = db.get(Project, project_id) or project
+                manager_agent = self._manager_agent(db, project.id)
+                manager_agent.status = "idle"
+                manager_agent.current_action = f"{action_name} timed out; using deterministic fallback."
+                self.events.publish(
+                    db,
+                    project.id,
+                    "manager.turn.timeout",
+                    {"action": action_name, "timeout_seconds": self._manager_action_timeout_seconds(action_name)},
+                )
             except (ValidationError, ValueError, RuntimeError) as exc:
+                db.rollback()
+                project = db.get(Project, project_id) or project
                 self.events.publish(db, project.id, "manager.parse_failed", {"action": action_name, "error": str(exc)})
             except Exception as exc:  # noqa: BLE001
+                db.rollback()
+                project = db.get(Project, project_id) or project
                 self.events.publish(db, project.id, "manager.parse_failed", {"action": action_name, "error": str(exc)})
+            project = db.get(Project, project_id) or project
+            manager_agent = self._manager_agent(db, project.id)
             self.events.publish(db, project.id, "manager.mode.fallback", {"action": action_name})
 
         manager_agent.active_model = resolved_settings.effective_model_label
         manager_agent.active_reasoning_effort = resolved_settings.effective_reasoning_label
         manager_agent.active_runner_type = resolved_settings.runner_mode
+        self._set_agent_usage_snapshot(manager_agent, None)
         manager_agent.current_action = action_name
         self.events.publish(db, project.id, "manager.mode.deterministic", {"action": action_name})
         return fallback_factory(), "deterministic"
@@ -10965,6 +12291,7 @@ class MissionControlService:
             adapter_command=adapter_command,
             ollama_endpoint=provider_endpoint,
             adapter_args=adapter_args,
+            workspace_path=project.workspace_path if project else None,
         )
         status["current_auth_job"] = auth_service.job_payload(auth_service.current_job())
         if normalize_provider(selected_provider) == "codex":
@@ -10986,24 +12313,26 @@ class MissionControlService:
                 "runner_type": run.runner_type,
                 "status": run.status,
                 "effective_settings": run.effective_settings_json or {},
+                "usage": run.usage_json or {},
             }
             for run in active_runs
         ]
         if project:
             settings = project_settings or self._project_settings(db, project)
+            resolved_manager = self._apply_remote_execution_selection(db, project, resolve_manager_settings(project, settings))
+            resolved_worker = resolve_default_worker_settings(project, settings)
             status["current_settings_summary"] = settings_summary(settings)
             status["selected_provider"] = normalize_provider(settings.provider)
             status["selected_provider_label"] = provider_label(settings.provider)
-            status["selected_manager_model"] = settings.manager_model
-            status["selected_default_worker_model"] = settings.default_worker_model
+            status["selected_manager_model"] = resolved_manager.effective_model_label
+            status["selected_default_worker_model"] = resolved_worker.effective_model_label
             status["model_advisories"] = assess_model_advisories(
                 provider=settings.provider,
-                manager_model=settings.manager_model,
-                worker_model=settings.default_worker_model,
+                manager_model=resolved_manager.effective_model_label,
+                worker_model=resolved_worker.effective_model_label,
                 available_models=list(status.get("available_models", [])),
             )
-            resolved = resolve_manager_settings(project, settings)
-            status["effective_runner_mode"] = await self.runners.effective_mode(resolved)
+            status["effective_runner_mode"] = await self.runners.effective_mode(resolved_manager)
         else:
             status["effective_runner_mode"] = app_profile.default_runner_mode or DEFAULT_RUNNER_MODE
         status["app_state_summary"] = app_profile
@@ -11062,6 +12391,9386 @@ class MissionControlService:
 
     def update_app_profile(self, db: Session, payload: AppProfileUpdate) -> AppProfile:
         return update_app_profile(db, payload)
+
+    def get_remote_execution_registry(self, db: Session) -> dict[str, Any]:
+        profile = self._app_profile_preview(db)
+        registry = normalize_remote_execution_registry(profile.remote_execution_registry_json or {})
+        return {**registry, "summary": summarize_remote_execution_registry(registry)}
+
+    def get_remote_execution_capability_index(self, db: Session) -> dict[str, Any]:
+        profile = self._app_profile_preview(db)
+        registry = normalize_remote_execution_registry(profile.remote_execution_registry_json or {})
+        return build_remote_capability_index(registry)
+
+    def upsert_remote_execution_target(self, db: Session, payload: dict[str, Any]) -> dict[str, Any]:
+        profile = get_or_create_app_profile(db)
+        updated_registry, target = upsert_remote_target(profile.remote_execution_registry_json or {}, payload)
+        profile.remote_execution_registry_json = updated_registry
+        db.flush()
+        return target
+
+    def delete_remote_execution_target(self, db: Session, target_id: str) -> bool:
+        profile = get_or_create_app_profile(db)
+        updated_registry, removed = delete_remote_target(profile.remote_execution_registry_json or {}, target_id)
+        profile.remote_execution_registry_json = updated_registry
+        db.flush()
+        return removed
+
+    def get_project_remote_execution_policy(self, db: Session, project: Project) -> dict[str, Any]:
+        settings = self._project_settings(db, project)
+        return normalize_remote_execution_policy(settings.remote_execution_policy_json or {})
+
+    def update_project_remote_execution_policy(self, db: Session, project: Project, payload: dict[str, Any]) -> dict[str, Any]:
+        settings = self._ensure_project_settings(db, project)
+        current = normalize_remote_execution_policy(settings.remote_execution_policy_json or {})
+        merged = dict(current)
+        for key, value in dict(payload or {}).items():
+            if key == "preferred_target_id":
+                merged[key] = value
+                continue
+            if value is not None:
+                merged[key] = value
+        settings.remote_execution_policy_json = normalize_remote_execution_policy(merged)
+        db.flush()
+        return dict(settings.remote_execution_policy_json or {})
+
+    def preview_project_remote_execution(self, db: Session, project: Project) -> dict[str, Any]:
+        profile = self._app_profile_preview(db)
+        settings = self._project_settings(db, project)
+        return build_remote_execution_contract(
+            profile.remote_execution_registry_json or {},
+            settings.remote_execution_policy_json or {},
+            integration_registry_payload=normalize_integration_registry(
+                profile.integration_registry_json,
+                profile.connected_accounts_json,
+            ),
+            workspace_tooling_payload=detect_workspace_tooling(
+                project.workspace_path or project.source_path,
+                project_name=project.name,
+            ),
+        )
+
+    def preview_project_remote_execution_launch_plan(self, db: Session, project: Project) -> dict[str, Any]:
+        settings = self._project_settings(db, project)
+        resolved = self._apply_remote_execution_selection(
+            db,
+            project,
+            resolve_default_worker_settings(project, settings),
+        )
+        remote_execution = dict(resolved.remote_execution or {})
+        selected_target = dict(remote_execution.get("selected_target") or {})
+        return build_remote_launch_plan(
+            selected_target=selected_target,
+            policy_payload=remote_execution.get("policy"),
+            adapter_command=selected_target.get("adapter_command") or resolved.adapter_command,
+            adapter_args=list(selected_target.get("adapter_args") or resolved.adapter_args or []),
+            broker_contract=remote_execution.get("broker_contract"),
+            artifact_contract=remote_execution.get("artifact_contract"),
+            connector_contract=remote_execution.get("connector_contract"),
+            result_contract=remote_execution.get("result_contract"),
+            workspace_path=project.workspace_path or project.source_path,
+        )
+
+    @staticmethod
+    def _remote_execution_launch_manifest_root(workspace_root: Path) -> Path:
+        return workspace_root / "artifacts" / "remote-execution-launch"
+
+    @staticmethod
+    def _remote_execution_launch_runner_ref(project: Project) -> str:
+        return f"remote_execution_launch:{project.id}"
+
+    def _find_remote_execution_launch_approval(
+        self,
+        db: Session,
+        project: Project,
+        *,
+        statuses: tuple[str, ...] | None = None,
+    ) -> ApprovalRequest | None:
+        query = select(ApprovalRequest).where(
+            ApprovalRequest.project_id == project.id,
+            ApprovalRequest.runner_ref == self._remote_execution_launch_runner_ref(project),
+        )
+        if statuses:
+            query = query.where(ApprovalRequest.status.in_(statuses))
+        return db.scalar(query.order_by(ApprovalRequest.created_at.desc(), ApprovalRequest.id.desc()))
+
+    def _expire_remote_execution_launch_approval_if_pending(self, db: Session, project: Project) -> None:
+        approval = self._find_remote_execution_launch_approval(db, project, statuses=("pending",))
+        if approval is None:
+            return
+        approval.status = "expired"
+        approval.resolved_at = utc_now()
+        approval.resolved_by = "system"
+        security_service.log_audit(
+            db,
+            project=project,
+            action_type=approval.request_type,
+            action_summary=approval.title,
+            risk_level=approval.risk_level,
+            decision="expired",
+            decided_by="system",
+            reason="Remote launch package no longer requires an explicit approval gate.",
+            metadata_json={"approval_id": approval.id, "runner_ref": approval.runner_ref},
+        )
+        self.events.publish(db, project.id, "approval_resolved", {"approval_id": approval.id, "status": approval.status})
+        self._publish_workspace_state(db, project.id)
+
+    def _upsert_remote_execution_launch_approval(
+        self,
+        db: Session,
+        project: Project,
+        *,
+        title: str,
+        reason_short: str,
+        cwd: str,
+        request_payload_json: dict[str, Any],
+    ) -> ApprovalRequest:
+        existing = self._find_remote_execution_launch_approval(db, project, statuses=("pending",))
+        if existing is None:
+            return self._create_approval(
+                db,
+                project,
+                request_type="command",
+                title=title,
+                reason_short=reason_short,
+                risk_level="medium",
+                cwd=cwd,
+                request_payload_json=request_payload_json,
+                runner_ref=self._remote_execution_launch_runner_ref(project),
+            )
+
+        evaluation = security_service.evaluate_action(
+            db,
+            {
+                "project_id": project.id,
+                "action_type": "command",
+                "title": title,
+                "summary": reason_short,
+                "command": request_payload_json.get("command"),
+                "tool_name": title,
+                "cwd": cwd,
+                "affected_paths_json": request_payload_json.get("affected_paths_json") or [],
+                "external_access_requested": False,
+                "modifies_files": bool(request_payload_json.get("modifies_files")),
+                "modifies_package_files": bool(request_payload_json.get("modifies_package_files")),
+                "deletes_files": bool(request_payload_json.get("deletes_files")),
+                "deploys": bool(request_payload_json.get("deploys")),
+                "accesses_network": bool(request_payload_json.get("accesses_network")),
+                "accesses_credentials": bool(request_payload_json.get("accesses_credentials")),
+                "writes_outside_workspace": bool(request_payload_json.get("writes_outside_workspace")),
+            },
+            project=project,
+        )
+        existing.title = title
+        existing.reason_short = reason_short
+        existing.cwd = cwd
+        existing.request_payload_json = self._redact_payload(request_payload_json)
+        existing.risk_level = str(evaluation["assessment"]["risk_level"] or existing.risk_level)
+        if evaluation["decision"] == "auto_approved":
+            existing.status = "approved_once"
+            existing.resolved_by = "policy"
+            existing.resolved_at = utc_now()
+            security_service.log_audit(
+                db,
+                project=project,
+                action_type=existing.request_type,
+                action_summary=existing.title,
+                risk_level=existing.risk_level,
+                decision="auto_approved",
+                decided_by="policy",
+                reason=str(evaluation["reason"]),
+                metadata_json={"approval_id": existing.id, "cwd": cwd, "request_type": existing.request_type},
+            )
+            self._record_approval_resolution_message(db, project, existing)
+            self.events.publish(db, project.id, "approval_resolved", {"approval_id": existing.id, "status": existing.status})
+            self._advance_dry_run_after_approval(db, project, existing)
+        elif evaluation["decision"] == "blocked":
+            existing.status = "denied"
+            existing.resolved_by = "policy"
+            existing.resolved_at = utc_now()
+            security_service.log_audit(
+                db,
+                project=project,
+                action_type=existing.request_type,
+                action_summary=existing.title,
+                risk_level=existing.risk_level,
+                decision="blocked",
+                decided_by="policy",
+                reason=str(evaluation["reason"]),
+                metadata_json={"approval_id": existing.id, "cwd": cwd, "request_type": existing.request_type},
+            )
+            self._record_approval_resolution_message(db, project, existing)
+            self.events.publish(db, project.id, "approval_resolved", {"approval_id": existing.id, "status": existing.status})
+            self._advance_dry_run_after_approval(db, project, existing)
+        else:
+            existing.status = "pending"
+            existing.resolved_by = None
+            existing.resolved_at = None
+        self._publish_workspace_state(db, project.id)
+        return existing
+
+    def _remote_execution_launch_package_state(self, db: Session, project: Project) -> dict[str, Any]:
+        workspace_path = project.workspace_path or project.source_path
+        if not workspace_path:
+            return {}
+        workspace_root = Path(workspace_path).expanduser()
+        manifest_root = self._remote_execution_launch_manifest_root(workspace_root)
+        launch_request_path = manifest_root / "launch-request.json"
+        launch_command_path = manifest_root / "launch-command.json"
+        launch_environment_path = manifest_root / "launch-environment.json"
+        if not launch_request_path.exists():
+            return {}
+        request_manifest = self._load_json_object(launch_request_path) or {}
+        command_manifest = self._load_json_object(launch_command_path) or {}
+        environment_manifest = self._load_json_object(launch_environment_path) or {}
+        approval = self._find_remote_execution_launch_approval(db, project)
+        return {
+            "manifest_root": manifest_root.relative_to(workspace_root).as_posix() if manifest_root.exists() else None,
+            "launch_request_path": launch_request_path.relative_to(workspace_root).as_posix(),
+            "launch_command_path": launch_command_path.relative_to(workspace_root).as_posix() if launch_command_path.exists() else None,
+            "launch_environment_path": launch_environment_path.relative_to(workspace_root).as_posix() if launch_environment_path.exists() else None,
+            "approval_required": bool(request_manifest.get("approval_required")),
+            "dry_run": bool(request_manifest.get("dry_run", True)),
+            "write_intent": bool(request_manifest.get("write_intent", False)),
+            "target_id": request_manifest.get("target_id"),
+            "adapter_command": request_manifest.get("adapter_command"),
+            "allowed_relative_paths": list(request_manifest.get("allowed_relative_paths") or []),
+            "forbidden_relative_paths": list(request_manifest.get("forbidden_relative_paths") or []),
+            "command_preview": command_manifest.get("command_preview"),
+            "exec_args": list(command_manifest.get("exec_args") or []),
+            "environment": dict(environment_manifest.get("environment") or {}),
+            "approval_id": approval.id if approval is not None else None,
+            "approval_status": approval.status if approval is not None else None,
+        }
+
+    def build_remote_execution_launch_package_plan(
+        self,
+        db: Session,
+        project: Project,
+        payload: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        request_payload = dict(payload or {})
+        workspace_path = project.workspace_path or project.source_path
+        if not workspace_path:
+            raise MissionControlError("Workspace path is required to generate remote execution launch manifests.")
+        workspace_root = Path(workspace_path).expanduser()
+        if not workspace_root.exists() or not workspace_root.is_dir():
+            raise MissionControlError("Workspace path must exist before generating remote execution launch manifests.")
+
+        settings = self._project_settings(db, project)
+        resolved = self._apply_remote_execution_selection(
+            db,
+            project,
+            resolve_default_worker_settings(project, settings),
+        )
+        remote_execution = dict(resolved.remote_execution or {})
+        selected_target = dict(remote_execution.get("selected_target") or {})
+        adapter_command = request_payload.get("adapter_command") or selected_target.get("adapter_command") or resolved.adapter_command
+        adapter_args = (
+            list(request_payload.get("adapter_args") or [])
+            or list(selected_target.get("adapter_args") or [])
+            or list(resolved.adapter_args or [])
+        )
+        dry_run = bool(request_payload.get("dry_run", True))
+        write_intent = bool(request_payload.get("write_intent", False))
+        allowed_paths = [str(item) for item in list(request_payload.get("allowed_paths") or []) if str(item).strip()]
+        forbidden_paths = [str(item) for item in list(request_payload.get("forbidden_paths") or []) if str(item).strip()]
+
+        launch_plan = build_remote_launch_plan(
+            selected_target=selected_target,
+            policy_payload=remote_execution.get("policy"),
+            adapter_command=adapter_command,
+            adapter_args=adapter_args,
+            broker_contract=remote_execution.get("broker_contract"),
+            artifact_contract=remote_execution.get("artifact_contract"),
+            connector_contract=remote_execution.get("connector_contract"),
+            result_contract=remote_execution.get("result_contract"),
+            workspace_path=workspace_path,
+            allowed_paths=allowed_paths,
+            forbidden_paths=forbidden_paths,
+        )
+
+        manifest_root = self._remote_execution_launch_manifest_root(workspace_root)
+        manifest_root.mkdir(parents=True, exist_ok=True)
+        launch_request_path = manifest_root / "launch-request.json"
+        launch_command_path = manifest_root / "launch-command.json"
+        launch_environment_path = manifest_root / "launch-environment.json"
+        approval_checkpoint_path = manifest_root / "approval-checkpoints.json"
+
+        approval_required = bool(write_intent or not dry_run)
+        approval_request_payload = {
+            "command": str(launch_plan.get("command_preview") or ""),
+            "launch_request_path": launch_request_path.relative_to(workspace_root).as_posix(),
+            "launch_command_path": launch_command_path.relative_to(workspace_root).as_posix(),
+            "launch_environment_path": launch_environment_path.relative_to(workspace_root).as_posix(),
+            "approval_checkpoint_path": approval_checkpoint_path.relative_to(workspace_root).as_posix(),
+            "target_id": launch_plan.get("target_id"),
+            "transport": launch_plan.get("transport"),
+            "host": launch_plan.get("host"),
+            "affected_paths_json": list(launch_plan.get("allowed_relative_paths") or []),
+            "remote_artifact_paths": list(launch_plan.get("remote_artifact_paths") or []),
+            "modifies_files": write_intent,
+            "modifies_package_files": False,
+            "deletes_files": False,
+            "deploys": False,
+            "accesses_network": True,
+            "accesses_credentials": False,
+            "writes_outside_workspace": False,
+        }
+        approval: ApprovalRequest | None = None
+        if approval_required:
+            approval = self._upsert_remote_execution_launch_approval(
+                db,
+                project,
+                title=f"Approve brokered remote launch on `{launch_plan.get('target_id') or 'unknown-target'}`",
+                reason_short=(
+                    "This launch package requests a non-dry-run or mutation-capable brokered remote execution and must be explicitly approved before the remote adapter runs."
+                ),
+                cwd=workspace_path,
+                request_payload_json=approval_request_payload,
+            )
+        else:
+            self._expire_remote_execution_launch_approval_if_pending(db, project)
+        path_scope_blocked = any(
+            reason in {"task_allowed_path_outside_workspace", "task_forbidden_path_outside_workspace", "task_allowed_paths_outside_remote_policy"}
+            for reason in list(launch_plan.get("blocking_reasons") or [])
+        )
+        result_contract_blocked = bool(
+            set(
+                str(item)
+                for item in list((remote_execution.get("result_contract") or {}).get("blocking_reasons") or [])
+                if str(item).strip()
+            )
+        )
+
+        launch_request_manifest = {
+            "dry_run": dry_run,
+            "write_intent": write_intent,
+            "approval_required": approval_required,
+            "approval_id": approval.id if approval is not None else None,
+            "approval_status": approval.status if approval is not None else None,
+            "target_id": launch_plan.get("target_id"),
+            "selected_target_probe_status": launch_plan.get("selected_target_probe_status"),
+            "required_runner_family": launch_plan.get("required_runner_family"),
+            "adapter_command": launch_plan.get("adapter_command"),
+            "adapter_args": list(launch_plan.get("adapter_args") or []),
+            "allowed_paths": allowed_paths,
+            "forbidden_paths": forbidden_paths,
+            "allowed_relative_paths": list(launch_plan.get("allowed_relative_paths") or []),
+            "forbidden_relative_paths": list(launch_plan.get("forbidden_relative_paths") or []),
+            "blocking_reasons": list(launch_plan.get("blocking_reasons") or []),
+        }
+        launch_command_manifest = {
+            "target_id": launch_plan.get("target_id"),
+            "transport": launch_plan.get("transport"),
+            "host": launch_plan.get("host"),
+            "remote_workspace_root": launch_plan.get("remote_workspace_root"),
+            "remote_cwd": launch_plan.get("remote_cwd"),
+            "command_preview": launch_plan.get("command_preview"),
+            "exec_args": list(launch_plan.get("exec_args") or []),
+            "required_result_formats": list(launch_plan.get("required_result_formats") or []),
+            "target_result_formats": list(launch_plan.get("target_result_formats") or []),
+            "required_command_families": list(launch_plan.get("required_command_families") or []),
+            "target_command_families": list(launch_plan.get("target_command_families") or []),
+            "required_toolchains": list(launch_plan.get("required_toolchains") or []),
+            "target_toolchains": list(launch_plan.get("target_toolchains") or []),
+            "expected_evidence_categories": list(launch_plan.get("expected_evidence_categories") or []),
+            "observed_evidence_categories": list(launch_plan.get("observed_evidence_categories") or []),
+            "normalized_summary_artifact": launch_plan.get("normalized_summary_artifact"),
+            "remote_artifact_paths": list(launch_plan.get("remote_artifact_paths") or []),
+        }
+        launch_environment_manifest = {
+            "target_id": launch_plan.get("target_id"),
+            "transport": launch_plan.get("transport"),
+            "session_recording_required": bool(launch_plan.get("session_recording_required")),
+            "session_recording_enabled": bool(launch_plan.get("session_recording_enabled")),
+            "session_recording_artifact_paths": list(launch_plan.get("session_recording_artifact_paths") or []),
+            "remote_session_recording_artifact_paths": list(launch_plan.get("remote_session_recording_artifact_paths") or []),
+            "primary_session_recording_artifact_path": launch_plan.get("primary_session_recording_artifact_path"),
+            "primary_remote_session_recording_artifact_path": launch_plan.get("primary_remote_session_recording_artifact_path"),
+            "allowed_repo_roots": list(launch_plan.get("allowed_repo_roots") or []),
+            "allowed_relative_paths": list(launch_plan.get("allowed_relative_paths") or []),
+            "allowed_remote_paths": list(launch_plan.get("allowed_remote_paths") or []),
+            "forbidden_relative_paths": list(launch_plan.get("forbidden_relative_paths") or []),
+            "forbidden_remote_paths": list(launch_plan.get("forbidden_remote_paths") or []),
+            "connector_families": list(launch_plan.get("connector_families") or []),
+            "environment": dict(launch_plan.get("environment") or {}),
+        }
+        approval_checkpoints = {
+            "checkpoints": [
+                {
+                    "checkpoint_id": "broker_policy_review",
+                    "stage": "broker",
+                    "status": "ready" if bool(launch_plan.get("preflight_ready")) else "blocked",
+                    "reason": "Remote launch requests stay blocked until the selected target satisfies the brokered execution contract.",
+                },
+                {
+                    "checkpoint_id": "path_scope_review",
+                    "stage": "sandbox",
+                    "status": "blocked"
+                    if path_scope_blocked
+                    else "ready"
+                    if list(launch_plan.get("allowed_relative_paths") or [])
+                    else "partial",
+                    "reason": "Remote path scope has to stay inside broker-approved prefixes before execution stops being an incident report waiting to happen.",
+                },
+                {
+                    "checkpoint_id": "result_contract_review",
+                    "stage": "evidence",
+                    "status": "blocked"
+                    if result_contract_blocked
+                    else "ready"
+                    if launch_plan.get("normalized_summary_artifact") or list(launch_plan.get("expected_evidence_categories") or [])
+                    else "partial",
+                    "reason": "Remote launch requests need normalized result expectations before downstream lanes can trust the output.",
+                },
+                {
+                    "checkpoint_id": "execution_approval_gate",
+                    "stage": "approval",
+                    "status": "blocked"
+                    if not bool(launch_plan.get("preflight_ready"))
+                    else "partial"
+                    if approval_required
+                    else "ready",
+                    "reason": "Mutating or non-dry-run remote execution still needs an explicit approval gate even when the launch package is technically valid.",
+                },
+            ]
+        }
+
+        launch_request_path.write_text(json.dumps(launch_request_manifest, indent=2), encoding="utf-8")
+        launch_command_path.write_text(json.dumps(launch_command_manifest, indent=2), encoding="utf-8")
+        launch_environment_path.write_text(json.dumps(launch_environment_manifest, indent=2), encoding="utf-8")
+        approval_checkpoint_path.write_text(json.dumps(approval_checkpoints, indent=2), encoding="utf-8")
+
+        notes = self._dedupe_strings(
+            [
+                "Generated a brokered remote execution launch package with request, command, environment, and approval manifests.",
+                (
+                    "Dry-run mode keeps the approval gate clear while still recording the exact remote command envelope."
+                    if dry_run and not write_intent
+                    else "Execution intent is not dry-run only, so the launch package still expects an explicit approval checkpoint."
+                ),
+            ]
+            + [str(item) for item in list(launch_plan.get("notes") or [])[:4]]
+        )[:8]
+        plan_status = (
+            "ready"
+            if bool(launch_plan.get("preflight_ready")) and not approval_required
+            else "partial"
+            if bool(launch_plan.get("preflight_ready"))
+            else "blocked"
+        )
+        summary = (
+            f"Generated a remote launch package for target `{launch_plan.get('target_id') or 'none'}` "
+            f"with transport `{launch_plan.get('transport') or 'none'}` and adapter `{launch_plan.get('adapter_command') or 'none'}`."
+        )
+        return {
+            "project_id": project.id,
+            "project_name": project.name,
+            "workspace_path": workspace_path,
+            "summary": summary,
+            "plan_status": plan_status,
+            "approval_required": approval_required,
+            "approval_id": approval.id if approval is not None else None,
+            "approval_status": approval.status if approval is not None else None,
+            "dry_run": dry_run,
+            "write_intent": write_intent,
+            "target_id": launch_plan.get("target_id"),
+            "selected_target_probe_status": launch_plan.get("selected_target_probe_status"),
+            "required_runner_family": launch_plan.get("required_runner_family"),
+            "transport": launch_plan.get("transport"),
+            "host": launch_plan.get("host"),
+            "remote_workspace_root": launch_plan.get("remote_workspace_root"),
+            "adapter_command": launch_plan.get("adapter_command"),
+            "adapter_args": list(launch_plan.get("adapter_args") or []),
+            "allowed_relative_paths": list(launch_plan.get("allowed_relative_paths") or []),
+            "forbidden_relative_paths": list(launch_plan.get("forbidden_relative_paths") or []),
+            "remote_artifact_paths": list(launch_plan.get("remote_artifact_paths") or []),
+            "connector_families": list(launch_plan.get("connector_families") or []),
+            "required_result_formats": list(launch_plan.get("required_result_formats") or []),
+            "target_result_formats": list(launch_plan.get("target_result_formats") or []),
+            "expected_evidence_categories": list(launch_plan.get("expected_evidence_categories") or []),
+            "normalized_summary_artifact": launch_plan.get("normalized_summary_artifact"),
+            "session_recording_required": bool(launch_plan.get("session_recording_required")),
+            "session_recording_enabled": bool(launch_plan.get("session_recording_enabled")),
+            "session_recording_artifact_paths": list(launch_plan.get("session_recording_artifact_paths") or []),
+            "remote_session_recording_artifact_paths": list(
+                launch_plan.get("remote_session_recording_artifact_paths") or []
+            ),
+            "command_preview": str(launch_plan.get("command_preview") or ""),
+            "manifest_root": manifest_root.relative_to(workspace_root).as_posix(),
+            "launch_request_path": launch_request_path.relative_to(workspace_root).as_posix(),
+            "launch_command_path": launch_command_path.relative_to(workspace_root).as_posix(),
+            "launch_environment_path": launch_environment_path.relative_to(workspace_root).as_posix(),
+            "approval_checkpoint_path": approval_checkpoint_path.relative_to(workspace_root).as_posix(),
+            "blocking_reasons": list(launch_plan.get("blocking_reasons") or []),
+            "notes": notes,
+        }
+
+    def build_device_broker_summary(self, db: Session, project: Project) -> dict[str, Any]:
+        profile = self._app_profile_preview(db)
+        registry = normalize_remote_execution_registry(profile.remote_execution_registry_json or {})
+        capability_index = build_remote_capability_index(registry)
+        remote_execution = self.preview_project_remote_execution(db, project)
+        artifact_registry = self.build_project_artifact_registry(project)
+        connector_registry = self.get_connector_registry(db)
+        ready_candidate_ids = [
+            str(item) for item in list(remote_execution.get("ready_candidate_ids") or []) if str(item).strip()
+        ]
+        summary = (
+            f"Device broker sees {capability_index.get('target_count', 0)} target(s); "
+            f"{capability_index.get('ready_target_count', 0)} ready target(s), "
+            f"selected target `{remote_execution.get('selected_target_id') or 'none'}`, and "
+            f"{artifact_registry.get('artifact_count', 0)} artifact path(s) with "
+            f"{connector_registry.get('connection_count', 0)} connector lane(s) available."
+        )
+        return {
+            "project_id": project.id,
+            "project_name": project.name,
+            "workspace_path": project.workspace_path,
+            "summary": summary,
+            "preflight_ready": bool(remote_execution.get("preflight_ready")),
+            "selected_target_id": remote_execution.get("selected_target_id"),
+            "selected_target_probe_status": str(remote_execution.get("selected_target_probe_status") or "unknown"),
+            "ready_candidate_count": int(remote_execution.get("ready_candidate_count") or 0),
+            "ready_candidate_ids": ready_candidate_ids[:8],
+            "recommended_target_ids": ready_candidate_ids[:8],
+            "blocking_reasons": list(remote_execution.get("blocking_reasons") or []),
+            "ready_target_count": int(capability_index.get("ready_target_count") or 0),
+            "capability_index": capability_index,
+            "remote_execution": remote_execution,
+            "artifact_registry": artifact_registry,
+            "connector_registry": connector_registry,
+        }
+
+    @staticmethod
+    def _device_broker_manifest_root(workspace_root: Path) -> Path:
+        return workspace_root / "artifacts" / "device-broker"
+
+    def build_device_broker_plan(self, db: Session, project: Project) -> dict[str, Any]:
+        summary = self.build_device_broker_summary(db, project)
+        workspace_path = project.workspace_path or project.source_path
+        if not workspace_path:
+            raise MissionControlError("Workspace path is required to generate device broker manifests.")
+        workspace_root = Path(workspace_path).expanduser()
+        if not workspace_root.exists() or not workspace_root.is_dir():
+            raise MissionControlError("Workspace path must exist before generating device broker manifests.")
+
+        manifest_root = self._device_broker_manifest_root(workspace_root)
+        manifest_root.mkdir(parents=True, exist_ok=True)
+
+        target_index_path = manifest_root / "target-index.json"
+        broker_selection_path = manifest_root / "broker-selection.json"
+        policy_contract_path = manifest_root / "policy-contract.json"
+        artifact_contract_path = manifest_root / "artifact-contract.json"
+        connector_contract_path = manifest_root / "connector-contract.json"
+        approval_checkpoint_path = manifest_root / "approval-checkpoints.json"
+
+        capability_index = dict(summary.get("capability_index") or {})
+        remote_execution = dict(summary.get("remote_execution") or {})
+        broker_contract = dict(remote_execution.get("broker_contract") or {})
+        artifact_contract = dict(remote_execution.get("artifact_contract") or {})
+        connector_contract = dict(remote_execution.get("connector_contract") or {})
+        policy = dict(remote_execution.get("policy") or {})
+        artifact_registry = dict(summary.get("artifact_registry") or {})
+        connector_registry = dict(summary.get("connector_registry") or {})
+        capability_targets = [dict(item or {}) for item in list(capability_index.get("targets") or [])]
+        ready_target_ids = [
+            str(item.get("target_id") or "")
+            for item in capability_targets
+            if bool(item.get("ready")) and str(item.get("target_id") or "").strip()
+        ]
+
+        target_index_payload = {
+            "target_count": int(capability_index.get("target_count") or 0),
+            "ready_target_count": int(capability_index.get("ready_target_count") or 0),
+            "ready_target_ids": ready_target_ids,
+            "transport_counts": self._count_string_values(
+                [str(item.get("transport") or "") for item in capability_targets if str(item.get("transport") or "").strip()]
+            ),
+            "os_family_counts": self._count_string_values(
+                [str(item.get("os_family") or "") for item in capability_targets if str(item.get("os_family") or "").strip()]
+            ),
+            "toolchain_counts": dict(capability_index.get("toolchain_counts") or {}),
+            "command_family_counts": dict(capability_index.get("command_family_counts") or {}),
+            "result_format_counts": dict(capability_index.get("result_format_counts") or {}),
+            "gpu_counts": dict(capability_index.get("gpu_counts") or {}),
+            "trust_level_counts": dict(capability_index.get("trust_level_counts") or {}),
+            "connector_family_counts": dict(capability_index.get("connector_family_counts") or {}),
+            "targets": list(capability_index.get("targets") or []),
+        }
+        broker_selection_payload = {
+            "preflight_ready": bool(summary.get("preflight_ready")),
+            "selected_target_id": summary.get("selected_target_id"),
+            "selected_target_probe_status": str(summary.get("selected_target_probe_status") or "unknown"),
+            "ready_candidate_count": int(summary.get("ready_candidate_count") or 0),
+            "ready_candidate_ids": list(summary.get("ready_candidate_ids") or []),
+            "recommended_target_ids": list(summary.get("recommended_target_ids") or []),
+            "blocking_reasons": list(summary.get("blocking_reasons") or []),
+            "required_runner_family": str(remote_execution.get("required_runner_family") or "external_adapter"),
+            "eligible_target_count": int(remote_execution.get("eligible_target_count") or 0),
+            "candidates": list(remote_execution.get("candidates") or []),
+            "selected_target": dict(remote_execution.get("selected_target") or {}),
+            "selection_requirements": {
+                "approval_required": True,
+                "preflight_required": True,
+                "session_recording_required": bool(broker_contract.get("require_session_recording") or policy.get("require_session_recording")),
+                "workspace_root_required": bool(broker_contract.get("require_target_workspace_root") or policy.get("require_target_workspace_root")),
+            },
+        }
+        policy_contract_payload = {
+            "policy": policy,
+            "broker_contract": broker_contract,
+            "require_write_access": bool(remote_execution.get("require_write_access", True)),
+            "registry_summary": dict(remote_execution.get("registry_summary") or {}),
+            "policy_requirements": {
+                "allowed_trust_levels": list(policy.get("allowed_trust_levels") or []),
+                "required_toolchains": list(policy.get("required_toolchains") or []),
+                "required_command_families": list(policy.get("required_command_families") or []),
+                "required_result_formats": list(policy.get("required_result_formats") or []),
+                "required_repo_roots": list(policy.get("required_repo_roots") or []),
+                "required_path_prefixes": list(policy.get("required_path_prefixes") or []),
+                "required_connector_families": list(policy.get("required_connector_families") or []),
+            },
+            "security_controls": {
+                "session_recording_required": bool(policy.get("require_session_recording")),
+                "workspace_root_required": bool(policy.get("require_target_workspace_root")),
+                "artifact_sync_enabled": bool(policy.get("artifact_sync_enabled")),
+                "minimum_command_runtime_seconds": broker_contract.get("target_command_runtime_seconds"),
+                "minimum_file_transfer_quota_mb": broker_contract.get("target_file_transfer_quota_mb"),
+            },
+        }
+        artifact_contract_payload = {
+            "artifact_contract": artifact_contract,
+            "artifact_registry": {
+                "artifact_count": int(artifact_registry.get("artifact_count") or 0),
+                "artifact_paths": list(artifact_registry.get("artifact_paths") or []),
+                "artifact_kind_counts": dict(artifact_registry.get("artifact_kind_counts") or {}),
+                "validation_evidence_targets": list(artifact_registry.get("validation_evidence_targets") or []),
+                "execution_entrypoints": list(artifact_registry.get("execution_entrypoints") or []),
+            },
+            "artifact_scope": {
+                "selected_artifact_root": artifact_contract.get("selected_artifact_root"),
+                "remote_workspace_root": artifact_contract.get("remote_workspace_root"),
+                "target_artifact_roots": list(artifact_contract.get("target_artifact_roots") or []),
+                "sync_enabled": bool(artifact_contract.get("sync_enabled")),
+                "required": bool(artifact_contract.get("required")),
+                "preflight_ready": bool(artifact_contract.get("preflight_ready", True)),
+            },
+        }
+        connector_contract_payload = {
+            "connector_contract": connector_contract,
+            "connector_registry": {
+                "family_count": int(connector_registry.get("family_count") or 0),
+                "connection_count": int(connector_registry.get("connection_count") or 0),
+                "authoritative_connection_count": int(connector_registry.get("authoritative_connection_count") or 0),
+                "host_imported_count": int(connector_registry.get("host_imported_count") or 0),
+                "ready_family_count": int(connector_registry.get("ready_family_count") or 0),
+                "ready_families": list(connector_registry.get("ready_families") or []),
+                "provider_counts": dict(connector_registry.get("provider_counts") or {}),
+                "category_counts": dict(connector_registry.get("category_counts") or {}),
+                "connection_source_counts": dict(connector_registry.get("connection_source_counts") or {}),
+            },
+            "required_family_status": {
+                "required_connector_families": list(connector_contract.get("required_connector_families") or []),
+                "target_connector_families": list(connector_contract.get("target_connector_families") or []),
+                "available_families": list(connector_contract.get("available_families") or []),
+                "missing_required_families": list(connector_contract.get("missing_required_families") or []),
+                "preflight_ready": bool(connector_contract.get("preflight_ready", True)),
+            },
+        }
+        approval_checkpoints = {
+            "checkpoints": [
+                {
+                    "checkpoint_id": "policy_contract_review",
+                    "stage": "policy",
+                    "status": "ready" if bool(policy.get("enabled")) else "partial",
+                    "reason": "Remote execution policy needs to be explicit before the broker starts acting like guardrails are optional.",
+                },
+                {
+                    "checkpoint_id": "target_selection_review",
+                    "stage": "selection",
+                    "status": "ready" if bool(summary.get("preflight_ready")) else "blocked",
+                    "reason": "Brokered execution should not claim readiness before the selected target actually satisfies the project contract.",
+                },
+                {
+                    "checkpoint_id": "session_recording_review",
+                    "stage": "recording",
+                    "status": (
+                        "ready"
+                        if not bool(broker_contract.get("require_session_recording"))
+                        or bool(broker_contract.get("session_recording_enabled"))
+                        else "blocked"
+                    ),
+                    "reason": "Remote sessions need recording when the policy says they do, because audit trails are not optional cosplay.",
+                },
+                {
+                    "checkpoint_id": "artifact_scope_review",
+                    "stage": "artifacts",
+                    "status": "ready" if bool(artifact_contract.get("preflight_ready", True)) else "partial",
+                    "reason": "Artifact sync paths should stay inside broker-approved roots before remote runners touch anything.",
+                },
+                {
+                    "checkpoint_id": "connector_scope_review",
+                    "stage": "connectors",
+                    "status": "ready" if bool(connector_contract.get("preflight_ready", True)) else "partial",
+                    "reason": "Required connector families need to be present before the broker promises governed execution against them.",
+                },
+                {
+                    "checkpoint_id": "workspace_root_review",
+                    "stage": "workspace_root",
+                    "status": (
+                        "ready"
+                        if not bool(broker_contract.get("require_target_workspace_root"))
+                        or bool(artifact_contract.get("remote_workspace_root"))
+                        else "blocked"
+                    ),
+                    "reason": "Workspace-root pinning matters when the policy wants path sandboxing instead of SSH freestyle.",
+                },
+            ]
+        }
+
+        target_index_path.write_text(json.dumps(target_index_payload, indent=2), encoding="utf-8")
+        broker_selection_path.write_text(json.dumps(broker_selection_payload, indent=2), encoding="utf-8")
+        policy_contract_path.write_text(json.dumps(policy_contract_payload, indent=2), encoding="utf-8")
+        artifact_contract_path.write_text(json.dumps(artifact_contract_payload, indent=2), encoding="utf-8")
+        connector_contract_path.write_text(json.dumps(connector_contract_payload, indent=2), encoding="utf-8")
+        approval_checkpoint_path.write_text(json.dumps(approval_checkpoints, indent=2), encoding="utf-8")
+
+        target_count = int(capability_index.get("target_count") or 0)
+        ready_target_count = int(summary.get("ready_target_count") or 0)
+        ready_candidate_count = int(summary.get("ready_candidate_count") or 0)
+        selected_target_id = summary.get("selected_target_id")
+        blocking_reasons = self._dedupe_strings(
+            list(summary.get("blocking_reasons") or [])
+            + (["no_remote_targets_indexed"] if target_count == 0 else [])
+            + (
+                ["no_ready_broker_target"]
+                if target_count > 0 and ready_target_count == 0 and ready_candidate_count == 0
+                else []
+            )
+            + (
+                ["session_recording_required_but_unavailable"]
+                if bool(broker_contract.get("require_session_recording"))
+                and not bool(broker_contract.get("session_recording_enabled"))
+                else []
+            )
+        )
+        notes = self._dedupe_strings(
+            [
+                "Generated device broker manifests for target indexing, selection state, policy contract, artifact scope, connector scope, and approval checkpoints.",
+                (
+                    f"Selected broker target is `{selected_target_id}`."
+                    if selected_target_id
+                    else "No broker target is currently selected."
+                ),
+                (
+                    "Broker preflight is ready."
+                    if bool(summary.get("preflight_ready"))
+                    else "Broker preflight is not ready yet, so the plan records the stop signs instead of pretending remote execution is safe."
+                ),
+                (
+                    f"{ready_target_count} ready target(s) are currently indexed."
+                    if ready_target_count > 0
+                    else "No ready targets are currently indexed."
+                ),
+            ]
+        )[:8]
+        plan_status = (
+            "ready"
+            if bool(summary.get("preflight_ready")) and selected_target_id and ready_target_count > 0
+            else "partial"
+            if target_count > 0 or ready_candidate_count > 0 or selected_target_id
+            else "blocked"
+        )
+        result_summary = (
+            f"Generated a device broker plan with {target_count} indexed target(s), "
+            f"{ready_target_count} ready target(s), and selected target `{selected_target_id or 'none'}`."
+        )
+        return {
+            "project_id": project.id,
+            "project_name": project.name,
+            "workspace_path": workspace_path,
+            "summary": result_summary,
+            "plan_status": plan_status,
+            "preflight_ready": bool(summary.get("preflight_ready")),
+            "selected_target_id": selected_target_id,
+            "selected_target_probe_status": str(summary.get("selected_target_probe_status") or "unknown"),
+            "ready_target_count": ready_target_count,
+            "ready_candidate_count": ready_candidate_count,
+            "required_runner_family": str(remote_execution.get("required_runner_family") or "external_adapter"),
+            "manifest_root": manifest_root.relative_to(workspace_root).as_posix(),
+            "target_index_path": target_index_path.relative_to(workspace_root).as_posix(),
+            "broker_selection_path": broker_selection_path.relative_to(workspace_root).as_posix(),
+            "policy_contract_path": policy_contract_path.relative_to(workspace_root).as_posix(),
+            "artifact_contract_path": artifact_contract_path.relative_to(workspace_root).as_posix(),
+            "connector_contract_path": connector_contract_path.relative_to(workspace_root).as_posix(),
+            "approval_checkpoint_path": approval_checkpoint_path.relative_to(workspace_root).as_posix(),
+            "blocking_reasons": blocking_reasons,
+            "notes": notes,
+        }
+
+    def build_host_capability_index_summary(self, db: Session, project: Project) -> dict[str, Any]:
+        profile = self._app_profile_preview(db)
+        registry = normalize_remote_execution_registry(profile.remote_execution_registry_json or {})
+        capability_index = build_remote_capability_index(registry)
+        remote_execution = self.preview_project_remote_execution(db, project)
+
+        policy = dict(remote_execution.get("policy") or {})
+        selected_target_id = str(remote_execution.get("selected_target_id") or "").strip() or None
+        required_runner_family = str(remote_execution.get("required_runner_family") or "external_adapter")
+        allowed_trust_levels = [str(item) for item in list(policy.get("allowed_trust_levels") or []) if str(item).strip()]
+        required_toolchains = [str(item) for item in list(policy.get("required_toolchains") or []) if str(item).strip()]
+        required_command_families = [str(item) for item in list(policy.get("required_command_families") or []) if str(item).strip()]
+        required_result_formats = [str(item) for item in list(policy.get("required_result_formats") or []) if str(item).strip()]
+        required_connector_families = [str(item) for item in list(policy.get("required_connector_families") or []) if str(item).strip()]
+
+        candidate_map = {
+            str(item.get("target_id") or "").strip(): dict(item or {})
+            for item in list(remote_execution.get("candidates") or [])
+            if str(item.get("target_id") or "").strip()
+        }
+        ready_candidate_ids = self._dedupe_strings(
+            [str(item) for item in list(remote_execution.get("ready_candidate_ids") or []) if str(item).strip()]
+        )
+        recommended_target_ids = ready_candidate_ids
+
+        matches: list[dict[str, Any]] = []
+        rejected_target_ids: list[str] = []
+        selected_target_status = "not_applicable"
+        for target in list(capability_index.get("targets") or []):
+            entry = dict(target or {})
+            target_id = str(entry.get("target_id") or "").strip()
+            candidate = candidate_map.get(target_id, {})
+            rejected_reasons = self._dedupe_strings(
+                [str(item) for item in list(candidate.get("rejected_reasons") or []) if str(item).strip()]
+            )
+            selected = bool(selected_target_id and target_id == selected_target_id)
+            ready = bool(entry.get("ready"))
+            if rejected_reasons:
+                status = "blocked"
+                rejected_target_ids.append(target_id)
+            elif ready:
+                status = "ready"
+            else:
+                status = "partial"
+            notes = self._dedupe_strings(
+                (
+                    ["Selected broker target for the current project policy."] if selected else []
+                )
+                + (
+                    ["Meets current project policy requirements."]
+                    if target_id in recommended_target_ids
+                    else []
+                )
+                + (
+                    ["Target is indexed but not probe-ready yet."]
+                    if not ready
+                    else []
+                )
+            )
+            match = {
+                "target_id": target_id,
+                "label": str(entry.get("label") or target_id),
+                "transport": str(entry.get("transport") or "ssh"),
+                "host": str(entry.get("host") or ""),
+                "os_family": str(entry.get("os_family") or "unknown"),
+                "architecture": str(entry.get("architecture") or "unknown"),
+                "gpu": str(entry.get("gpu") or "").strip() or None,
+                "trust_level": str(entry.get("trust_level") or "limited"),
+                "ready": ready,
+                "selected": selected,
+                "status": status,
+                "runner_families": [str(item) for item in list(entry.get("runner_families") or []) if str(item).strip()],
+                "capabilities": [str(item) for item in list(entry.get("capabilities") or []) if str(item).strip()],
+                "tags": [str(item) for item in list(entry.get("tags") or []) if str(item).strip()],
+                "adapter_command": str(entry.get("adapter_command") or "").strip() or None,
+                "toolchains": [str(item) for item in list(entry.get("toolchains") or []) if str(item).strip()],
+                "command_families": [str(item) for item in list(entry.get("command_families") or []) if str(item).strip()],
+                "result_formats": [str(item) for item in list(entry.get("result_formats") or []) if str(item).strip()],
+                "connector_families": [str(item) for item in list(entry.get("connector_families") or []) if str(item).strip()],
+                "session_recording_enabled": bool(entry.get("session_recording_enabled")),
+                "max_command_runtime_seconds": entry.get("max_command_runtime_seconds"),
+                "file_transfer_quota_mb": entry.get("file_transfer_quota_mb"),
+                "rejected_reasons": rejected_reasons,
+                "notes": notes,
+            }
+            matches.append(match)
+            if selected:
+                selected_target_status = status
+
+        matches.sort(
+            key=lambda item: (
+                0 if item.get("selected") else 1,
+                {"ready": 0, "partial": 1, "blocked": 2, "unavailable": 3}.get(str(item.get("status") or ""), 4),
+                str(item.get("target_id") or ""),
+            )
+        )
+        rejected_target_ids = self._dedupe_strings([item for item in rejected_target_ids if item])
+        target_count = int(capability_index.get("target_count") or 0)
+        ready_target_count = int(capability_index.get("ready_target_count") or 0)
+        eligible_target_count = int(remote_execution.get("eligible_target_count") or 0)
+        blocking_reasons = self._dedupe_strings(
+            [str(item) for item in list(remote_execution.get("blocking_reasons") or []) if str(item).strip()]
+            + (
+                ["Selected target does not satisfy the current project host capability contract."]
+                if selected_target_id and selected_target_status == "blocked"
+                else []
+            )
+        )
+        if not policy.get("enabled") and not selected_target_id:
+            selection_status = "not_applicable"
+        elif not blocking_reasons and selected_target_status == "ready":
+            selection_status = "ready"
+        elif recommended_target_ids or eligible_target_count > 0 or ready_target_count > 0:
+            selection_status = "partial"
+        else:
+            selection_status = "blocked"
+
+        notes = self._dedupe_strings(
+            [
+                (
+                    f"Selected target is `{selected_target_id}` with status `{selected_target_status}`."
+                    if selected_target_id
+                    else "No broker target is currently selected for this project."
+                ),
+                f"{eligible_target_count} eligible target(s), {len(recommended_target_ids)} recommended target(s), and {len(rejected_target_ids)} rejected target(s) were derived from the current project contract.",
+                (
+                    f"Required toolchains: {', '.join(required_toolchains)}."
+                    if required_toolchains
+                    else "No explicit toolchain requirement is set on the current project policy."
+                ),
+                (
+                    f"Required command families: {', '.join(required_command_families)}."
+                    if required_command_families
+                    else "No explicit command-family requirement is set on the current project policy."
+                ),
+                (
+                    f"Required connector families: {', '.join(required_connector_families)}."
+                    if required_connector_families
+                    else "No explicit connector-family requirement is set on the current project policy."
+                ),
+            ]
+        )[:8]
+        summary = (
+            f"Host capability selection is `{selection_status}` with {target_count} indexed target(s), "
+            f"{eligible_target_count} eligible target(s), selected target `{selected_target_id or 'none'}`, and "
+            f"{len(rejected_target_ids)} rejected target(s)."
+        )
+        return {
+            "project_id": project.id,
+            "project_name": project.name,
+            "workspace_path": project.workspace_path,
+            "summary": summary,
+            "selection_status": selection_status,
+            "selected_target_id": selected_target_id,
+            "selected_target_probe_status": str(remote_execution.get("selected_target_probe_status") or "unknown"),
+            "selected_target_status": selected_target_status,
+            "required_runner_family": required_runner_family,
+            "target_count": target_count,
+            "ready_target_count": ready_target_count,
+            "eligible_target_count": eligible_target_count,
+            "ready_candidate_count": int(remote_execution.get("ready_candidate_count") or 0),
+            "ready_candidate_ids": ready_candidate_ids,
+            "rejected_target_count": len(rejected_target_ids),
+            "recommended_target_ids": recommended_target_ids,
+            "rejected_target_ids": rejected_target_ids,
+            "allowed_trust_levels": allowed_trust_levels,
+            "required_toolchains": required_toolchains,
+            "required_command_families": required_command_families,
+            "required_result_formats": required_result_formats,
+            "required_connector_families": required_connector_families,
+            "blocking_reasons": blocking_reasons,
+            "notes": notes,
+            "matches": matches[:24],
+        }
+
+    @staticmethod
+    def _host_capability_manifest_root(workspace_root: Path) -> Path:
+        return workspace_root / "artifacts" / "host-capability-index"
+
+    def build_host_capability_index_plan(self, db: Session, project: Project) -> dict[str, Any]:
+        summary = self.build_host_capability_index_summary(db, project)
+        workspace_path = project.workspace_path or project.source_path
+        if not workspace_path:
+            raise MissionControlError("Workspace path is required to generate host capability manifests.")
+        workspace_root = Path(workspace_path).expanduser()
+        if not workspace_root.exists() or not workspace_root.is_dir():
+            raise MissionControlError("Workspace path must exist before generating host capability manifests.")
+
+        manifest_root = self._host_capability_manifest_root(workspace_root)
+        manifest_root.mkdir(parents=True, exist_ok=True)
+
+        target_matrix_path = manifest_root / "target-matrix.json"
+        eligibility_report_path = manifest_root / "eligibility-report.json"
+        policy_requirements_path = manifest_root / "policy-requirements.json"
+        selection_checkpoint_path = manifest_root / "selection-checkpoints.json"
+
+        matches = [dict(item or {}) for item in list(summary.get("matches") or [])]
+        selected_match = next(
+            (
+                item
+                for item in matches
+                if str(item.get("target_id") or "").strip()
+                and str(item.get("target_id") or "").strip() == str(summary.get("selected_target_id") or "").strip()
+            ),
+            None,
+        )
+        target_matrix = {
+            "selected_target_id": summary.get("selected_target_id"),
+            "selected_target_status": str(summary.get("selected_target_status") or "not_applicable"),
+            "required_runner_family": str(summary.get("required_runner_family") or "external_adapter"),
+            "target_count": int(summary.get("target_count") or 0),
+            "ready_target_count": int(summary.get("ready_target_count") or 0),
+            "eligible_target_count": int(summary.get("eligible_target_count") or 0),
+            "rejected_target_count": int(summary.get("rejected_target_count") or 0),
+            "status_counts": self._count_string_values(
+                [str(item.get("status") or "") for item in matches if str(item.get("status") or "").strip()]
+            ),
+            "transport_counts": self._count_string_values(
+                [str(item.get("transport") or "") for item in matches if str(item.get("transport") or "").strip()]
+            ),
+            "os_family_counts": self._count_string_values(
+                [str(item.get("os_family") or "") for item in matches if str(item.get("os_family") or "").strip()]
+            ),
+            "matches": matches,
+        }
+        eligibility_report = {
+            "selection_status": str(summary.get("selection_status") or "not_applicable"),
+            "selected_target_id": summary.get("selected_target_id"),
+            "selected_target_status": str(summary.get("selected_target_status") or "not_applicable"),
+            "selected_target_probe_status": str(summary.get("selected_target_probe_status") or "unknown"),
+            "ready_candidate_count": int(summary.get("ready_candidate_count") or 0),
+            "eligible_target_count": int(summary.get("eligible_target_count") or 0),
+            "recommended_target_count": len(list(summary.get("recommended_target_ids") or [])),
+            "ready_candidate_ids": list(summary.get("ready_candidate_ids") or []),
+            "recommended_target_ids": list(summary.get("recommended_target_ids") or []),
+            "rejected_target_ids": list(summary.get("rejected_target_ids") or []),
+            "selected_match": selected_match,
+            "blocked_matches": [
+                {
+                    "target_id": str(item.get("target_id") or ""),
+                    "rejected_reasons": list(item.get("rejected_reasons") or []),
+                }
+                for item in matches
+                if str(item.get("status") or "") == "blocked"
+            ],
+        }
+        policy_requirements = {
+            "required_runner_family": str(summary.get("required_runner_family") or "external_adapter"),
+            "allowed_trust_levels": list(summary.get("allowed_trust_levels") or []),
+            "required_toolchains": list(summary.get("required_toolchains") or []),
+            "required_command_families": list(summary.get("required_command_families") or []),
+            "required_result_formats": list(summary.get("required_result_formats") or []),
+            "required_connector_families": list(summary.get("required_connector_families") or []),
+            "policy_summary": {
+                "trust_constrained": bool(list(summary.get("allowed_trust_levels") or [])),
+                "toolchain_constrained": bool(list(summary.get("required_toolchains") or [])),
+                "command_family_constrained": bool(list(summary.get("required_command_families") or [])),
+                "result_format_constrained": bool(list(summary.get("required_result_formats") or [])),
+                "connector_family_constrained": bool(list(summary.get("required_connector_families") or [])),
+            },
+        }
+        selection_checkpoints = {
+            "checkpoints": [
+                {
+                    "checkpoint_id": "selected_target_ready",
+                    "stage": "selection",
+                    "status": "ready" if str(summary.get("selected_target_status") or "") == "ready" else "partial",
+                    "reason": "Selected targets should satisfy the project contract before they graduate from maybe to usable.",
+                },
+                {
+                    "checkpoint_id": "ready_candidate_review",
+                    "stage": "eligibility",
+                    "status": "ready" if int(summary.get("ready_candidate_count") or 0) > 0 else "blocked",
+                    "reason": "At least one ready candidate should exist before Mission Control acts like remote execution is actually available.",
+                },
+                {
+                    "checkpoint_id": "probe_status_review",
+                    "stage": "eligibility",
+                    "status": "ready" if str(summary.get("selected_target_probe_status") or "unknown") in {"ready", "reachable"} else "partial",
+                    "reason": "Probe status should be explicit so target selection is backed by evidence instead of trust-fall infrastructure.",
+                },
+                {
+                    "checkpoint_id": "policy_requirement_review",
+                    "stage": "policy",
+                    "status": "ready" if not list(summary.get("blocking_reasons") or []) else "partial",
+                    "reason": "Policy requirements should be visible and explain rejections instead of being hidden in vibes.",
+                },
+            ]
+        }
+
+        target_matrix_path.write_text(json.dumps(target_matrix, indent=2), encoding="utf-8")
+        eligibility_report_path.write_text(json.dumps(eligibility_report, indent=2), encoding="utf-8")
+        policy_requirements_path.write_text(json.dumps(policy_requirements, indent=2), encoding="utf-8")
+        selection_checkpoint_path.write_text(json.dumps(selection_checkpoints, indent=2), encoding="utf-8")
+
+        target_count = int(summary.get("target_count") or 0)
+        eligible_target_count = int(summary.get("eligible_target_count") or 0)
+        ready_candidate_count = int(summary.get("ready_candidate_count") or 0)
+        selected_target_id = summary.get("selected_target_id")
+        blocking_reasons = self._dedupe_strings(
+            list(summary.get("blocking_reasons") or [])
+            + (["no_indexed_host_targets"] if target_count == 0 else [])
+            + (["no_eligible_host_target"] if target_count > 0 and eligible_target_count == 0 else [])
+            + (["no_ready_host_candidate"] if eligible_target_count > 0 and ready_candidate_count == 0 else [])
+        )
+        notes = self._dedupe_strings(
+            [
+                "Generated host capability manifests for target matrices, eligibility rollups, policy requirements, and selection checkpoints.",
+                (
+                    f"Selected target is `{selected_target_id}`."
+                    if selected_target_id
+                    else "No host target is currently selected."
+                ),
+                f"{eligible_target_count} eligible target(s) and {ready_candidate_count} ready candidate(s) remain after policy filtering.",
+            ]
+            + [str(item) for item in list(summary.get("notes") or [])[:3]]
+        )[:8]
+        plan_status = (
+            "ready"
+            if str(summary.get("selection_status") or "") == "ready"
+            else "partial"
+            if target_count > 0 or eligible_target_count > 0 or selected_target_id
+            else "blocked"
+        )
+        result_summary = (
+            f"Generated a host capability plan with {target_count} indexed target(s), "
+            f"{eligible_target_count} eligible target(s), and selected target `{selected_target_id or 'none'}`."
+        )
+        return {
+            "project_id": project.id,
+            "project_name": project.name,
+            "workspace_path": workspace_path,
+            "summary": result_summary,
+            "plan_status": plan_status,
+            "selection_status": str(summary.get("selection_status") or "not_applicable"),
+            "selected_target_id": selected_target_id,
+            "selected_target_status": str(summary.get("selected_target_status") or "not_applicable"),
+            "target_count": target_count,
+            "eligible_target_count": eligible_target_count,
+            "ready_candidate_count": ready_candidate_count,
+            "manifest_root": manifest_root.relative_to(workspace_root).as_posix(),
+            "target_matrix_path": target_matrix_path.relative_to(workspace_root).as_posix(),
+            "eligibility_report_path": eligibility_report_path.relative_to(workspace_root).as_posix(),
+            "policy_requirements_path": policy_requirements_path.relative_to(workspace_root).as_posix(),
+            "selection_checkpoint_path": selection_checkpoint_path.relative_to(workspace_root).as_posix(),
+            "blocking_reasons": blocking_reasons,
+            "notes": notes,
+        }
+
+    def build_remote_runner_summary(self, db: Session, project: Project) -> dict[str, Any]:
+        host_capability = self.build_host_capability_index_summary(db, project)
+        remote_execution = self.preview_project_remote_execution(db, project)
+        tooling = self.build_workspace_tooling_status(project)
+        selected_target_id = str(host_capability.get("selected_target_id") or "").strip() or None
+        required_runner_family = str(host_capability.get("required_runner_family") or "external_adapter")
+        matches = [dict(item) for item in list(host_capability.get("matches") or [])]
+        required_result_formats = {
+            str(item).strip().lower()
+            for item in list(host_capability.get("required_result_formats") or [])
+            if str(item).strip()
+        }
+        required_command_families = {
+            str(item).strip().lower()
+            for item in list(host_capability.get("required_command_families") or [])
+            if str(item).strip()
+        }
+        session_recording_required = bool(dict(remote_execution.get("policy") or {}).get("require_session_recording"))
+        browser_ready = any(str(item) == "browser:ready" for item in list(tooling.get("product_lane_statuses") or []))
+        local_tooling_present = bool(tooling.get("available")) or bool(tooling.get("tool_count")) or bool(tooling.get("execution_entrypoint_count"))
+
+        def _coverage_status(values: list[str], required: set[str]) -> str:
+            if not required:
+                return "not_applicable"
+            normalized = {str(item).strip().lower() for item in values if str(item).strip()}
+            return "ready" if required.issubset(normalized) else "blocked"
+
+        adapter_specs = [
+            {
+                "adapter_id": "local_workspace",
+                "title": "Local Workspace Adapter",
+                "transport": "local",
+                "predicate": lambda match: False,
+                "base_status": "ready" if local_tooling_present else "partial" if browser_ready else "unavailable",
+                "base_notes": [
+                    "Local workspace execution is the fallback for repo analysis, lightweight validation, and non-brokered dry runs.",
+                ],
+            },
+            {
+                "adapter_id": "tailscale_ssh",
+                "title": "Tailscale SSH Adapter",
+                "transport": "tailscale_ssh",
+                "predicate": lambda match: str(match.get("transport") or "") == "tailscale_ssh",
+                "base_status": None,
+                "base_notes": [
+                    "Best fit for identity-backed tailnet execution with centralized revocation and re-auth support.",
+                ],
+            },
+            {
+                "adapter_id": "plain_ssh",
+                "title": "Plain SSH Adapter",
+                "transport": "ssh",
+                "predicate": lambda match: str(match.get("transport") or "") == "ssh",
+                "base_status": None,
+                "base_notes": [
+                    "Use for generic SSH hosts when tailnet identity routing is unavailable.",
+                ],
+            },
+            {
+                "adapter_id": "lan_appliance",
+                "title": "LAN SSH Adapter",
+                "transport": "lan_ssh",
+                "predicate": lambda match: str(match.get("transport") or "") == "lan_ssh",
+                "base_status": None,
+                "base_notes": [
+                    "Use for subnet-routed or LAN-scoped appliances that stay behind broker policy controls.",
+                ],
+            },
+            {
+                "adapter_id": "windows_host",
+                "title": "Windows Host Adapter",
+                "transport": "host_family",
+                "predicate": lambda match: str(match.get("os_family") or "") == "windows",
+                "base_status": None,
+                "base_notes": [
+                    "Windows hosts cover PowerShell, packaging, and engine-native Windows workflows.",
+                ],
+            },
+            {
+                "adapter_id": "macos_host",
+                "title": "macOS Host Adapter",
+                "transport": "host_family",
+                "predicate": lambda match: str(match.get("os_family") or "") in {"macos", "darwin"},
+                "base_status": None,
+                "base_notes": [
+                    "macOS hosts are required for Xcode, iOS, simulator, and Apple signing flows.",
+                ],
+            },
+        ]
+
+        adapters: list[dict[str, Any]] = []
+        for spec in adapter_specs:
+            adapter_matches = [match for match in matches if spec["predicate"](match)]
+            ready_matches = [match for match in adapter_matches if str(match.get("status") or "") == "ready"]
+            selected_matches = [match for match in adapter_matches if bool(match.get("selected"))]
+            ready_selected_matches = [match for match in selected_matches if str(match.get("status") or "") == "ready"]
+            ready_session_matches = [match for match in ready_matches if bool(match.get("session_recording_enabled"))]
+            session_rejected = any(
+                "session" in " ".join([str(reason) for reason in list(match.get("rejected_reasons") or [])]).lower()
+                for match in adapter_matches
+            )
+            session_recording_coverage = (
+                "not_applicable"
+                if spec["adapter_id"] == "local_workspace" or not adapter_matches
+                else "blocked"
+                if session_rejected
+                else "ready"
+                if ready_matches and len(ready_session_matches) == len(ready_matches)
+                else "partial"
+            )
+            result_format_coverage = (
+                "not_applicable"
+                if spec["adapter_id"] == "local_workspace"
+                else _coverage_status(
+                    [
+                        value
+                        for match in adapter_matches
+                        for value in list(match.get("result_formats") or [])
+                    ],
+                    required_result_formats,
+                )
+            )
+            command_family_coverage = (
+                "not_applicable"
+                if spec["adapter_id"] == "local_workspace"
+                else _coverage_status(
+                    [
+                        value
+                        for match in adapter_matches
+                        for value in list(match.get("command_families") or [])
+                    ],
+                    required_command_families,
+                )
+            )
+            selected_session_recording_coverage = (
+                "not_applicable"
+                if spec["adapter_id"] == "local_workspace" or not selected_matches or not session_recording_required
+                else "ready"
+                if ready_selected_matches and all(bool(match.get("session_recording_enabled")) for match in ready_selected_matches)
+                else "blocked"
+            )
+            selected_result_format_coverage = (
+                "not_applicable"
+                if spec["adapter_id"] == "local_workspace" or not selected_matches
+                else _coverage_status(
+                    [
+                        value
+                        for match in ready_selected_matches
+                        for value in list(match.get("result_formats") or [])
+                    ],
+                    required_result_formats,
+                )
+                if ready_selected_matches
+                else "blocked"
+            )
+            selected_command_family_coverage = (
+                "not_applicable"
+                if spec["adapter_id"] == "local_workspace" or not selected_matches
+                else _coverage_status(
+                    [
+                        value
+                        for match in ready_selected_matches
+                        for value in list(match.get("command_families") or [])
+                    ],
+                    required_command_families,
+                )
+                if ready_selected_matches
+                else "blocked"
+            )
+            selected_contract_ready = bool(
+                spec["adapter_id"] != "local_workspace"
+                and ready_selected_matches
+                and selected_session_recording_coverage != "blocked"
+                and selected_result_format_coverage != "blocked"
+                and selected_command_family_coverage != "blocked"
+            )
+
+            if spec["base_status"] is not None:
+                status = spec["base_status"]
+                summary = (
+                    "Workspace tooling is available for local execution."
+                    if status == "ready"
+                    else "Local execution is visible but not fully wired."
+                    if status == "partial"
+                    else "No meaningful local execution surface is currently available."
+                )
+            elif ready_matches:
+                status = "ready"
+                summary = f"{len(ready_matches)} ready target(s) currently back this adapter family."
+            elif adapter_matches:
+                status = "partial"
+                summary = "Targets exist for this adapter family, but they do not fully satisfy the current broker contract."
+            else:
+                status = "unavailable"
+                summary = "No targets currently advertise this adapter family."
+
+            notes = self._dedupe_strings(
+                list(spec["base_notes"])
+                + (
+                    [f"Current project selection is `{selected_matches[0].get('target_id')}`."]
+                    if selected_matches
+                    else []
+                )
+                + (
+                    [f"Current project policy requires runner family `{required_runner_family}`."]
+                    if spec["adapter_id"] != "local_workspace"
+                    else []
+                )
+                + (
+                    ["Current project policy requires session recording for brokered execution."]
+                    if spec["adapter_id"] != "local_workspace" and session_recording_required
+                    else []
+                )
+                + [str(item) for match in adapter_matches[:3] for item in list(match.get("rejected_reasons") or [])[:2]]
+            )[:8]
+
+            adapters.append(
+                {
+                    "adapter_id": spec["adapter_id"],
+                    "title": spec["title"],
+                    "status": status,
+                    "summary": summary,
+                    "transport": spec["transport"],
+                    "target_ids": [str(match.get("target_id") or "") for match in adapter_matches if str(match.get("target_id") or "").strip()],
+                    "selected_target_ids": [str(match.get("target_id") or "") for match in selected_matches if str(match.get("target_id") or "").strip()],
+                    "os_families": self._dedupe_strings([str(match.get("os_family") or "") for match in adapter_matches if str(match.get("os_family") or "").strip()]),
+                    "ready_target_count": len(ready_matches),
+                    "selected_ready": any(str(match.get("status") or "") == "ready" for match in selected_matches),
+                    "session_recording_coverage": session_recording_coverage,
+                    "result_format_coverage": result_format_coverage,
+                    "command_family_coverage": command_family_coverage,
+                    "selected_session_recording_coverage": selected_session_recording_coverage,
+                    "selected_result_format_coverage": selected_result_format_coverage,
+                    "selected_command_family_coverage": selected_command_family_coverage,
+                    "selected_contract_ready": selected_contract_ready,
+                    "notes": notes,
+                }
+            )
+
+        ready_adapter_ids = [str(item["adapter_id"]) for item in adapters if item["status"] == "ready"]
+        remote_ready_adapter_ids = [adapter_id for adapter_id in ready_adapter_ids if adapter_id != "local_workspace"]
+        remote_contract_ready_adapter_ids = [
+            str(item["adapter_id"])
+            for item in adapters
+            if str(item.get("adapter_id") or "") != "local_workspace"
+            and str(item.get("status") or "") == "ready"
+            and str(item.get("session_recording_coverage") or "") != "blocked"
+            and str(item.get("result_format_coverage") or "") != "blocked"
+            and str(item.get("command_family_coverage") or "") != "blocked"
+        ]
+        selected_ready_adapter_ids = [
+            str(item["adapter_id"])
+            for item in adapters
+            if str(item.get("adapter_id") or "") != "local_workspace" and bool(item.get("selected_ready"))
+        ]
+        selected_contract_ready_adapter_ids = [
+            str(item["adapter_id"])
+            for item in adapters
+            if bool(item.get("selected_contract_ready"))
+        ]
+        partial_adapter_ids = [str(item["adapter_id"]) for item in adapters if item["status"] == "partial"]
+        unavailable_adapter_ids = [str(item["adapter_id"]) for item in adapters if item["status"] == "unavailable"]
+        blocking_reasons = self._dedupe_strings(
+            [str(item) for item in list(remote_execution.get("blocking_reasons") or []) if str(item).strip()]
+            + (
+                ["No remote runner adapter family is fully ready for the current project contract."]
+                if not remote_contract_ready_adapter_ids and required_runner_family
+                else []
+            )
+            + (
+                ["Selected target is not bound to a contract-ready remote runner adapter."]
+                if selected_target_id and not selected_contract_ready_adapter_ids
+                else []
+            )
+        )
+        notes = self._dedupe_strings(
+            [
+                (
+                    f"Selected target is `{selected_target_id}`."
+                    if selected_target_id
+                    else "No remote target is currently selected."
+                ),
+                f"{len(ready_adapter_ids)} adapter family(s) are ready, {len(partial_adapter_ids)} are partial, and {len(unavailable_adapter_ids)} are unavailable.",
+                (
+                    f"{len(remote_contract_ready_adapter_ids)} remote adapter family(s) fully satisfy the current project contract."
+                    if remote_contract_ready_adapter_ids
+                    else "No remote adapter family fully satisfies the current project contract yet."
+                ),
+                "Remote runner adapters describe execution backplanes; platform runners describe product/test lanes built on top of them.",
+            ]
+            + [str(item) for item in list(host_capability.get("notes") or [])[:2]]
+        )[:8]
+        summary = (
+            f"Remote runner fabric has {len(ready_adapter_ids)} ready adapter family(s), "
+            f"{len(partial_adapter_ids)} partial adapter family(s), and selected target `{selected_target_id or 'none'}`."
+        )
+        return {
+            "project_id": project.id,
+            "project_name": project.name,
+            "workspace_path": project.workspace_path,
+            "summary": summary,
+            "selected_target_id": selected_target_id,
+            "selected_target_probe_status": str(host_capability.get("selected_target_probe_status") or "unknown"),
+            "required_runner_family": required_runner_family,
+            "ready_candidate_count": int(host_capability.get("ready_candidate_count") or 0),
+            "ready_candidate_ids": [str(item) for item in list(host_capability.get("ready_candidate_ids") or []) if str(item).strip()],
+            "adapter_count": len(adapters),
+            "ready_adapter_count": len(ready_adapter_ids),
+            "remote_ready_adapter_count": len(remote_ready_adapter_ids),
+            "remote_contract_ready_adapter_count": len(remote_contract_ready_adapter_ids),
+            "partial_adapter_count": len(partial_adapter_ids),
+            "unavailable_adapter_count": len(unavailable_adapter_ids),
+            "ready_adapter_ids": ready_adapter_ids,
+            "remote_ready_adapter_ids": remote_ready_adapter_ids,
+            "remote_contract_ready_adapter_ids": remote_contract_ready_adapter_ids,
+            "selected_ready_adapter_ids": selected_ready_adapter_ids,
+            "selected_contract_ready_adapter_ids": selected_contract_ready_adapter_ids,
+            "partial_adapter_ids": partial_adapter_ids,
+            "unavailable_adapter_ids": unavailable_adapter_ids,
+            "blocking_reasons": blocking_reasons,
+            "notes": notes,
+            "adapters": adapters,
+        }
+
+    @staticmethod
+    def _remote_runner_manifest_root(workspace_root: Path) -> Path:
+        return workspace_root / "artifacts" / "remote-runners"
+
+    def build_remote_runner_plan(self, db: Session, project: Project) -> dict[str, Any]:
+        summary = self.build_remote_runner_summary(db, project)
+        workspace_path = project.workspace_path or project.source_path
+        if not workspace_path:
+            raise MissionControlError("Workspace path is required to generate remote runner manifests.")
+        workspace_root = Path(workspace_path).expanduser()
+        if not workspace_root.exists() or not workspace_root.is_dir():
+            raise MissionControlError("Workspace path must exist before generating remote runner manifests.")
+
+        manifest_root = self._remote_runner_manifest_root(workspace_root)
+        manifest_root.mkdir(parents=True, exist_ok=True)
+
+        adapter_inventory_path = manifest_root / "adapter-inventory.json"
+        coverage_report_path = manifest_root / "coverage-report.json"
+        target_binding_path = manifest_root / "target-binding.json"
+        approval_checkpoint_path = manifest_root / "approval-checkpoints.json"
+
+        adapters = [dict(item or {}) for item in list(summary.get("adapters") or [])]
+        adapter_inventory = {
+            "selected_target_id": summary.get("selected_target_id"),
+            "required_runner_family": str(summary.get("required_runner_family") or "external_adapter"),
+            "adapter_count": int(summary.get("adapter_count") or 0),
+            "ready_adapter_count": int(summary.get("ready_adapter_count") or 0),
+            "partial_adapter_count": int(summary.get("partial_adapter_count") or 0),
+            "unavailable_adapter_count": int(summary.get("unavailable_adapter_count") or 0),
+            "ready_adapter_ids": list(summary.get("ready_adapter_ids") or []),
+            "partial_adapter_ids": list(summary.get("partial_adapter_ids") or []),
+            "unavailable_adapter_ids": list(summary.get("unavailable_adapter_ids") or []),
+            "status_counts": self._count_string_values(
+                [str(item.get("status") or "") for item in adapters if str(item.get("status") or "").strip()]
+            ),
+            "transport_counts": self._count_string_values(
+                [str(item.get("transport") or "") for item in adapters if str(item.get("transport") or "").strip()]
+            ),
+            "adapters": adapters,
+        }
+        coverage_report = {
+            "required_runner_family": str(summary.get("required_runner_family") or "external_adapter"),
+            "coverage_summary": {
+                "ready_adapter_ids": list(summary.get("ready_adapter_ids") or []),
+                "remote_ready_adapter_ids": list(summary.get("remote_ready_adapter_ids") or []),
+                "remote_contract_ready_adapter_ids": list(summary.get("remote_contract_ready_adapter_ids") or []),
+                "selected_ready_adapter_ids": list(summary.get("selected_ready_adapter_ids") or []),
+                "selected_contract_ready_adapter_ids": list(summary.get("selected_contract_ready_adapter_ids") or []),
+                "blocked_session_recording_adapter_ids": [
+                    str(item.get("adapter_id") or "")
+                    for item in adapters
+                    if str(item.get("session_recording_coverage") or "") == "blocked"
+                ],
+                "blocked_result_format_adapter_ids": [
+                    str(item.get("adapter_id") or "")
+                    for item in adapters
+                    if str(item.get("result_format_coverage") or "") == "blocked"
+                ],
+                "blocked_command_family_adapter_ids": [
+                    str(item.get("adapter_id") or "")
+                    for item in adapters
+                    if str(item.get("command_family_coverage") or "") == "blocked"
+                ],
+            },
+            "coverage": [
+                {
+                    "adapter_id": str(item.get("adapter_id") or ""),
+                    "status": str(item.get("status") or "unavailable"),
+                    "session_recording_coverage": str(item.get("session_recording_coverage") or "not_applicable"),
+                    "result_format_coverage": str(item.get("result_format_coverage") or "not_applicable"),
+                    "command_family_coverage": str(item.get("command_family_coverage") or "not_applicable"),
+                    "selected_session_recording_coverage": str(item.get("selected_session_recording_coverage") or "not_applicable"),
+                    "selected_result_format_coverage": str(item.get("selected_result_format_coverage") or "not_applicable"),
+                    "selected_command_family_coverage": str(item.get("selected_command_family_coverage") or "not_applicable"),
+                    "selected_ready": bool(item.get("selected_ready")),
+                    "selected_contract_ready": bool(item.get("selected_contract_ready")),
+                }
+                for item in adapters
+            ],
+        }
+        target_binding = {
+            "selected_target_id": summary.get("selected_target_id"),
+            "selected_target_probe_status": str(summary.get("selected_target_probe_status") or "unknown"),
+            "ready_candidate_count": int(summary.get("ready_candidate_count") or 0),
+            "ready_candidate_ids": list(summary.get("ready_candidate_ids") or []),
+            "selected_adapter_ids": [
+                str(item.get("adapter_id") or "")
+                for item in adapters
+                if list(item.get("selected_target_ids") or [])
+            ],
+            "adapters_with_selected_targets": [
+                {
+                    "adapter_id": str(item.get("adapter_id") or ""),
+                    "status": str(item.get("status") or "unavailable"),
+                    "selected_target_ids": list(item.get("selected_target_ids") or []),
+                    "target_ids": list(item.get("target_ids") or []),
+                }
+                for item in adapters
+                if list(item.get("selected_target_ids") or [])
+            ],
+        }
+        approval_checkpoints = {
+            "checkpoints": [
+                {
+                    "checkpoint_id": "ready_adapter_review",
+                    "stage": "adapter",
+                    "status": "ready" if int(summary.get("remote_contract_ready_adapter_count") or 0) > 0 else "blocked",
+                    "reason": "At least one adapter family should be actually ready before Mission Control claims remote execution is usable.",
+                },
+                {
+                    "checkpoint_id": "selected_target_binding_review",
+                    "stage": "binding",
+                    "status": "ready"
+                    if list(summary.get("selected_contract_ready_adapter_ids") or [])
+                    else "blocked"
+                    if summary.get("selected_target_id")
+                    else "partial",
+                    "reason": "Selected-target binding should be explicit so runner routing does not devolve into guesswork.",
+                },
+                {
+                    "checkpoint_id": "coverage_review",
+                    "stage": "coverage",
+                    "status": "ready"
+                    if list(summary.get("remote_contract_ready_adapter_ids") or [])
+                    else "partial",
+                    "reason": "Ready adapters should cover the project contract instead of just existing in theory.",
+                },
+                {
+                    "checkpoint_id": "result_format_review",
+                    "stage": "coverage",
+                    "status": "ready"
+                    if list(summary.get("selected_contract_ready_adapter_ids") or [])
+                    or (
+                        not summary.get("selected_target_id")
+                        and list(summary.get("remote_contract_ready_adapter_ids") or [])
+                    )
+                    else "partial",
+                    "reason": "Ready adapters should emit the required result format instead of improvising output schemas.",
+                },
+            ]
+        }
+
+        adapter_inventory_path.write_text(json.dumps(adapter_inventory, indent=2), encoding="utf-8")
+        coverage_report_path.write_text(json.dumps(coverage_report, indent=2), encoding="utf-8")
+        target_binding_path.write_text(json.dumps(target_binding, indent=2), encoding="utf-8")
+        approval_checkpoint_path.write_text(json.dumps(approval_checkpoints, indent=2), encoding="utf-8")
+
+        adapter_count = int(summary.get("adapter_count") or 0)
+        ready_adapter_count = int(summary.get("ready_adapter_count") or 0)
+        partial_adapter_count = int(summary.get("partial_adapter_count") or 0)
+        remote_contract_ready_adapter_count = int(summary.get("remote_contract_ready_adapter_count") or 0)
+        selected_contract_ready_adapter_ids = [
+            str(item) for item in list(summary.get("selected_contract_ready_adapter_ids") or []) if str(item).strip()
+        ]
+        blocking_reasons = self._dedupe_strings(
+            list(summary.get("blocking_reasons") or [])
+            + (["no_remote_runner_adapters_indexed"] if adapter_count == 0 else [])
+            + (
+                ["no_ready_remote_runner_adapter"]
+                if adapter_count > 0 and remote_contract_ready_adapter_count == 0
+                else []
+            )
+            + (
+                ["selected_target_not_bound_to_contract_ready_remote_runner_adapter"]
+                if summary.get("selected_target_id") and not selected_contract_ready_adapter_ids
+                else []
+            )
+        )
+        notes = self._dedupe_strings(
+            [
+                "Generated remote runner manifests for adapter inventory, coverage rollups, target bindings, and approval checkpoints.",
+                f"{ready_adapter_count} adapter family(s) are ready and {partial_adapter_count} remain partial.",
+            ]
+            + [str(item) for item in list(summary.get("notes") or [])[:3]]
+        )[:8]
+        plan_status = (
+            "ready"
+            if selected_contract_ready_adapter_ids and summary.get("selected_target_id")
+            else "partial"
+            if adapter_count > 0 or partial_adapter_count > 0
+            else "blocked"
+        )
+        result_summary = (
+            f"Generated a remote runner plan with {adapter_count} adapter family(s), "
+            f"{ready_adapter_count} ready adapter family(s), and selected target `{summary.get('selected_target_id') or 'none'}`."
+        )
+        return {
+            "project_id": project.id,
+            "project_name": project.name,
+            "workspace_path": workspace_path,
+            "summary": result_summary,
+            "plan_status": plan_status,
+            "selected_target_id": summary.get("selected_target_id"),
+            "required_runner_family": str(summary.get("required_runner_family") or "external_adapter"),
+            "adapter_count": adapter_count,
+            "ready_adapter_count": ready_adapter_count,
+            "remote_contract_ready_adapter_count": remote_contract_ready_adapter_count,
+            "selected_contract_ready_adapter_count": len(selected_contract_ready_adapter_ids),
+            "partial_adapter_count": partial_adapter_count,
+            "selected_ready_adapter_ids": [str(item) for item in list(summary.get("selected_ready_adapter_ids") or []) if str(item).strip()],
+            "selected_contract_ready_adapter_ids": selected_contract_ready_adapter_ids,
+            "manifest_root": manifest_root.relative_to(workspace_root).as_posix(),
+            "adapter_inventory_path": adapter_inventory_path.relative_to(workspace_root).as_posix(),
+            "coverage_report_path": coverage_report_path.relative_to(workspace_root).as_posix(),
+            "target_binding_path": target_binding_path.relative_to(workspace_root).as_posix(),
+            "approval_checkpoint_path": approval_checkpoint_path.relative_to(workspace_root).as_posix(),
+            "blocking_reasons": blocking_reasons,
+            "notes": notes,
+        }
+
+    def build_platform_runner_summary(self, db: Session, project: Project) -> dict[str, Any]:
+        broker_summary = self.build_device_broker_summary(db, project)
+        tooling = self.build_workspace_tooling_status(project)
+        targets = list(broker_summary.get("capability_index", {}).get("targets") or [])
+        selected_target_id = str(broker_summary.get("selected_target_id") or "").strip() or None
+        tooling_statuses = {
+            str(item).split(":", 1)[0]: str(item).split(":", 1)[1]
+            for item in list(tooling.get("product_lane_statuses") or [])
+            if ":" in str(item)
+        }
+        configured_tool_ids = {str(item).strip().lower() for item in list(tooling.get("configured_tool_ids") or []) if str(item).strip()}
+        installed_tool_ids = {str(item).strip().lower() for item in list(tooling.get("installed_tool_ids") or []) if str(item).strip()}
+
+        def _normalize_set(values: list[str] | None) -> set[str]:
+            return {str(value).strip().lower() for value in list(values or []) if str(value).strip()}
+
+        def _target_matches(
+            target: dict[str, Any],
+            *,
+            os_families: set[str] | None = None,
+            toolchain_tokens: set[str] | None = None,
+            command_family_tokens: set[str] | None = None,
+        ) -> bool:
+            os_family = str(target.get("os_family") or "").strip().lower()
+            target_toolchains = _normalize_set(target.get("toolchains"))
+            target_command_families = _normalize_set(target.get("command_families"))
+            if os_families and os_family not in os_families:
+                return False
+            if toolchain_tokens and not any(
+                token in toolchain or toolchain in toolchain_tokens
+                for token in toolchain_tokens
+                for toolchain in target_toolchains
+            ):
+                return False
+            if command_family_tokens and not any(
+                token in family or family in command_family_tokens
+                for token in command_family_tokens
+                for family in target_command_families
+            ):
+                return False
+            return True
+
+        lane_specs = [
+            {
+                "lane_id": "linux",
+                "title": "Linux Runner",
+                "os_families": {"linux"},
+                "toolchain_tokens": set(),
+                "command_family_tokens": set(),
+                "recommended_commands": ["python -m pytest", "bash ./scripts/validate.sh"],
+                "workspace_lane": None,
+                "workspace_tools": set(),
+                "notes": ["Best fit for general CI, Python, container, and GPU-oriented automation."],
+            },
+            {
+                "lane_id": "windows",
+                "title": "Windows Runner",
+                "os_families": {"windows"},
+                "toolchain_tokens": set(),
+                "command_family_tokens": {"powershell"},
+                "recommended_commands": ["powershell -File .\\scripts\\validate.ps1", "cmd /c npm test"],
+                "workspace_lane": None,
+                "workspace_tools": set(),
+                "notes": ["Needed for native Windows build, packaging, and engine-specific validation lanes."],
+            },
+            {
+                "lane_id": "macos",
+                "title": "macOS Runner",
+                "os_families": {"macos", "darwin"},
+                "toolchain_tokens": set(),
+                "command_family_tokens": set(),
+                "recommended_commands": ["xcodebuild test", "swift test"],
+                "workspace_lane": None,
+                "workspace_tools": set(),
+                "notes": ["Required for Apple-native signing, simulator, and Xcode-based tasks."],
+            },
+            {
+                "lane_id": "browser",
+                "title": "Browser Runner",
+                "os_families": set(),
+                "toolchain_tokens": {"playwright", "cypress", "chrome", "chromium"},
+                "command_family_tokens": {"browser", "playwright", "cypress", "cdp", "chrome_devtools"},
+                "recommended_commands": ["playwright test", "npx playwright test"],
+                "workspace_lane": "browser",
+                "workspace_tools": {"playwright"},
+                "notes": ["Browser validation should stay governed by repo-native automation, not screenshot vibes."],
+            },
+            {
+                "lane_id": "android",
+                "title": "Android Runner",
+                "os_families": set(),
+                "toolchain_tokens": {"android", "adb", "gradle", "emulator"},
+                "command_family_tokens": {"adb", "gradle", "android_emulator"},
+                "recommended_commands": ["./gradlew test", "adb devices"],
+                "workspace_lane": None,
+                "workspace_tools": set(),
+                "notes": ["Use for device-install, emulator, and Android build/test workflows."],
+            },
+            {
+                "lane_id": "ios",
+                "title": "iOS Runner",
+                "os_families": {"macos", "darwin"},
+                "toolchain_tokens": {"xcode", "xcodebuild", "ios", "simctl"},
+                "command_family_tokens": {"xcodebuild", "simctl"},
+                "recommended_commands": ["xcodebuild test", "xcrun simctl list"],
+                "workspace_lane": None,
+                "workspace_tools": set(),
+                "notes": ["iOS lanes only count when a macOS host actually exposes Xcode-grade tooling."],
+            },
+            {
+                "lane_id": "unity",
+                "title": "Unity Runner",
+                "os_families": set(),
+                "toolchain_tokens": {"unity"},
+                "command_family_tokens": {"unity_batchmode"},
+                "recommended_commands": ["Unity -batchmode -runTests", "Unity -batchmode -quit -projectPath ."],
+                "workspace_lane": "unity",
+                "workspace_tools": {"unity"},
+                "notes": ["Unity work should route through engine-native batchmode/test lanes instead of freestyle edits."],
+            },
+            {
+                "lane_id": "unreal",
+                "title": "Unreal Runner",
+                "os_families": set(),
+                "toolchain_tokens": {"unreal", "ue5", "ue_5", "runuat"},
+                "command_family_tokens": {"unreal", "unreal_commandlet", "runuat"},
+                "recommended_commands": ["RunUAT BuildCookRun", "UnrealEditor-Cmd.exe -RunAutomationTests"],
+                "workspace_lane": "unreal",
+                "workspace_tools": {"unreal"},
+                "notes": ["Unreal lanes need engine automation and content governance or the whole thing turns feral."],
+            },
+        ]
+
+        lanes: list[dict[str, Any]] = []
+        for spec in lane_specs:
+            matching_targets = [
+                target
+                for target in targets
+                if _target_matches(
+                    target,
+                    os_families=set(spec["os_families"]),
+                    toolchain_tokens=set(spec["toolchain_tokens"]),
+                    command_family_tokens=set(spec["command_family_tokens"]),
+                )
+            ]
+            ready_targets = [target for target in matching_targets if bool(target.get("ready"))]
+            selected_targets = [
+                str(target.get("target_id") or "")
+                for target in matching_targets
+                if selected_target_id and str(target.get("target_id") or "") == selected_target_id
+            ]
+            workspace_lane_status = tooling_statuses.get(str(spec["workspace_lane"])) if spec["workspace_lane"] else None
+            workspace_tool_hit = bool(configured_tool_ids.intersection(set(spec["workspace_tools"]))) if spec["workspace_tools"] else False
+            workspace_tool_installed = bool(installed_tool_ids.intersection(set(spec["workspace_tools"]))) if spec["workspace_tools"] else False
+
+            notes = list(spec["notes"])
+            if workspace_lane_status:
+                notes.append(f"Workspace tooling reports `{spec['workspace_lane']}:{workspace_lane_status}`.")
+            elif workspace_tool_hit:
+                notes.append("Workspace tooling already advertises the matching validation stack.")
+            elif workspace_tool_installed:
+                notes.append("Runtime binaries exist locally, but repo wiring is still incomplete.")
+
+            if ready_targets:
+                status = "ready"
+                summary = f"{len(ready_targets)} ready target(s) can execute this lane now."
+            elif matching_targets or workspace_tool_hit or workspace_tool_installed or workspace_lane_status:
+                status = "partial"
+                summary = "Signals exist, but this lane still needs broker or repo wiring before it is truly safe to use."
+            else:
+                status = "unavailable"
+                summary = "No usable runner target or repo-native tooling signal is currently available for this lane."
+
+            lane_toolchains = self._dedupe_strings(
+                [
+                    str(toolchain)
+                    for target in matching_targets
+                    for toolchain in list(target.get("toolchains") or [])
+                ]
+            )
+            lane_command_families = self._dedupe_strings(
+                [
+                    str(family)
+                    for target in matching_targets
+                    for family in list(target.get("command_families") or [])
+                ]
+            )
+            lane_os_families = self._dedupe_strings([str(target.get("os_family") or "") for target in matching_targets])
+
+            if selected_targets:
+                notes.append(f"Current broker selection prefers `{selected_targets[0]}` for this lane.")
+            if status != "ready" and broker_summary.get("blocking_reasons"):
+                notes.extend([f"Broker blocker: {item}" for item in list(broker_summary.get("blocking_reasons") or [])[:3]])
+
+            lanes.append(
+                {
+                    "lane_id": spec["lane_id"],
+                    "title": spec["title"],
+                    "status": status,
+                    "summary": summary,
+                    "target_ids": [str(target.get("target_id") or "") for target in matching_targets if str(target.get("target_id") or "").strip()],
+                    "target_count": len(matching_targets),
+                    "selected_target_ids": selected_targets,
+                    "os_families": lane_os_families,
+                    "toolchains": lane_toolchains,
+                    "command_families": lane_command_families,
+                    "recommended_commands": list(spec["recommended_commands"]),
+                    "notes": self._dedupe_strings(notes)[:6],
+                }
+            )
+
+        ready_lane_ids = [str(item["lane_id"]) for item in lanes if item["status"] == "ready"]
+        selected_ready_lane_ids = [
+            str(item["lane_id"])
+            for item in lanes
+            if str(item.get("status") or "") == "ready" and list(item.get("selected_target_ids") or [])
+        ]
+        target_backed_ready_lane_ids = [
+            str(item["lane_id"])
+            for item in lanes
+            if str(item.get("status") or "") == "ready" and list(item.get("target_ids") or [])
+        ]
+        partial_lane_ids = [str(item["lane_id"]) for item in lanes if item["status"] == "partial"]
+        unavailable_lane_ids = [str(item["lane_id"]) for item in lanes if item["status"] == "unavailable"]
+        blocking_reasons = self._dedupe_strings(
+            list(broker_summary.get("blocking_reasons") or [])
+            + (
+                ["Selected platform target is not bound to any ready platform lane."]
+                if selected_target_id and not selected_ready_lane_ids
+                else []
+            )
+        )
+        summary = (
+            f"Platform runner summary found {len(ready_lane_ids)} ready lane(s), "
+            f"{len(partial_lane_ids)} partial lane(s), and {len(unavailable_lane_ids)} unavailable lane(s) "
+            f"across the current broker and workspace tooling surface."
+        )
+        return {
+            "project_id": project.id,
+            "project_name": project.name,
+            "workspace_path": project.workspace_path,
+            "summary": summary,
+            "selected_target_id": selected_target_id,
+            "selected_target_probe_status": str(broker_summary.get("selected_target_probe_status") or "unknown"),
+            "ready_candidate_count": int(broker_summary.get("ready_candidate_count") or 0),
+            "ready_candidate_ids": [str(item) for item in list(broker_summary.get("ready_candidate_ids") or []) if str(item).strip()],
+            "lane_count": len(lanes),
+            "ready_lane_count": len(ready_lane_ids),
+            "selected_ready_lane_count": len(selected_ready_lane_ids),
+            "target_backed_ready_lane_count": len(target_backed_ready_lane_ids),
+            "partial_lane_count": len(partial_lane_ids),
+            "unavailable_lane_count": len(unavailable_lane_ids),
+            "ready_lane_ids": ready_lane_ids,
+            "selected_ready_lane_ids": selected_ready_lane_ids,
+            "target_backed_ready_lane_ids": target_backed_ready_lane_ids,
+            "partial_lane_ids": partial_lane_ids,
+            "unavailable_lane_ids": unavailable_lane_ids,
+            "blocking_reasons": blocking_reasons,
+            "lanes": lanes,
+        }
+
+    @staticmethod
+    def _platform_runner_manifest_root(workspace_root: Path) -> Path:
+        return workspace_root / "artifacts" / "platform-runners"
+
+    def build_platform_runner_plan(self, db: Session, project: Project) -> dict[str, Any]:
+        summary = self.build_platform_runner_summary(db, project)
+        workspace_path = project.workspace_path or project.source_path
+        if not workspace_path:
+            raise MissionControlError("Workspace path is required to generate platform runner manifests.")
+        workspace_root = Path(workspace_path).expanduser()
+        if not workspace_root.exists() or not workspace_root.is_dir():
+            raise MissionControlError("Workspace path must exist before generating platform runner manifests.")
+
+        manifest_root = self._platform_runner_manifest_root(workspace_root)
+        manifest_root.mkdir(parents=True, exist_ok=True)
+
+        lane_inventory_path = manifest_root / "lane-inventory.json"
+        native_tooling_path = manifest_root / "native-tooling.json"
+        execution_matrix_path = manifest_root / "execution-matrix.json"
+        approval_checkpoint_path = manifest_root / "approval-checkpoints.json"
+
+        lanes = [dict(item or {}) for item in list(summary.get("lanes") or [])]
+        lane_inventory = {
+            "selected_target_id": summary.get("selected_target_id"),
+            "lane_count": int(summary.get("lane_count") or 0),
+            "ready_lane_count": int(summary.get("ready_lane_count") or 0),
+            "partial_lane_count": int(summary.get("partial_lane_count") or 0),
+            "unavailable_lane_count": int(summary.get("unavailable_lane_count") or 0),
+            "ready_lane_ids": list(summary.get("ready_lane_ids") or []),
+            "partial_lane_ids": list(summary.get("partial_lane_ids") or []),
+            "unavailable_lane_ids": list(summary.get("unavailable_lane_ids") or []),
+            "status_counts": self._count_string_values(
+                [str(item.get("status") or "") for item in lanes if str(item.get("status") or "").strip()]
+            ),
+            "lanes": lanes,
+        }
+        native_tooling = {
+            "selected_target_id": summary.get("selected_target_id"),
+            "selected_target_probe_status": str(summary.get("selected_target_probe_status") or "unknown"),
+            "ready_candidate_count": int(summary.get("ready_candidate_count") or 0),
+            "ready_candidate_ids": list(summary.get("ready_candidate_ids") or []),
+            "selected_lane_ids": [
+                str(item.get("lane_id") or "")
+                for item in lanes
+                if list(item.get("selected_target_ids") or [])
+            ],
+            "native_lanes": [
+                {
+                    "lane_id": str(item.get("lane_id") or ""),
+                    "status": str(item.get("status") or "unavailable"),
+                    "recommended_commands": list(item.get("recommended_commands") or []),
+                    "toolchains": list(item.get("toolchains") or []),
+                    "command_families": list(item.get("command_families") or []),
+                    "selected_target_ids": list(item.get("selected_target_ids") or []),
+                }
+                for item in lanes
+            ],
+        }
+        execution_matrix = {
+            "selected_target_id": summary.get("selected_target_id"),
+            "selected_target_probe_status": str(summary.get("selected_target_probe_status") or "unknown"),
+            "by_status": {
+                "ready": list(summary.get("ready_lane_ids") or []),
+                "partial": list(summary.get("partial_lane_ids") or []),
+                "unavailable": list(summary.get("unavailable_lane_ids") or []),
+            },
+            "selected_ready_lane_ids": list(summary.get("selected_ready_lane_ids") or []),
+            "target_backed_ready_lane_ids": list(summary.get("target_backed_ready_lane_ids") or []),
+            "lane_command_matrix": [
+                {
+                    "lane_id": str(item.get("lane_id") or ""),
+                    "status": str(item.get("status") or "unavailable"),
+                    "recommended_commands": list(item.get("recommended_commands") or []),
+                    "toolchains": list(item.get("toolchains") or []),
+                }
+                for item in lanes
+            ],
+            "selected_lane_bindings": [
+                {
+                    "lane_id": str(item.get("lane_id") or ""),
+                    "selected_target_ids": list(item.get("selected_target_ids") or []),
+                    "target_ids": list(item.get("target_ids") or []),
+                }
+                for item in lanes
+                if list(item.get("selected_target_ids") or [])
+            ],
+        }
+        approval_checkpoints = {
+            "checkpoints": [
+                {
+                    "checkpoint_id": "ready_lane_review",
+                    "stage": "lane",
+                    "status": "ready" if int(summary.get("ready_lane_count") or 0) > 0 else "blocked",
+                    "reason": "At least one platform lane should be truly ready before native-app claims stop being fiction.",
+                },
+                {
+                    "checkpoint_id": "selected_target_review",
+                    "stage": "target",
+                    "status": "ready"
+                    if summary.get("selected_target_id")
+                    and str(summary.get("selected_target_probe_status") or "unknown") in {"ready", "reachable"}
+                    else "blocked"
+                    if summary.get("selected_target_id")
+                    else "partial",
+                    "reason": "Selected-target routing matters for host-backed lanes even when some local/browser lanes can still operate.",
+                },
+                {
+                    "checkpoint_id": "selected_binding_review",
+                    "stage": "binding",
+                    "status": "ready"
+                    if list(summary.get("selected_ready_lane_ids") or [])
+                    else "blocked"
+                    if summary.get("selected_target_id")
+                    else "partial",
+                    "reason": "Host-backed lanes should show explicit selected-target bindings instead of hand-wavy routing claims.",
+                },
+                {
+                    "checkpoint_id": "engine_native_command_review",
+                    "stage": "commands",
+                    "status": "ready"
+                    if any(list(item.get("recommended_commands") or []) for item in lanes if str(item.get("status") or "") != "unavailable")
+                    else "partial",
+                    "reason": "Platform lanes should expose concrete repo-native commands instead of acting like the runtime details are somebody else’s problem.",
+                },
+            ]
+        }
+
+        lane_inventory_path.write_text(json.dumps(lane_inventory, indent=2), encoding="utf-8")
+        native_tooling_path.write_text(json.dumps(native_tooling, indent=2), encoding="utf-8")
+        execution_matrix_path.write_text(json.dumps(execution_matrix, indent=2), encoding="utf-8")
+        approval_checkpoint_path.write_text(json.dumps(approval_checkpoints, indent=2), encoding="utf-8")
+
+        lane_count = int(summary.get("lane_count") or 0)
+        ready_lane_count = int(summary.get("ready_lane_count") or 0)
+        selected_ready_lane_count = int(summary.get("selected_ready_lane_count") or 0)
+        partial_lane_count = int(summary.get("partial_lane_count") or 0)
+        blocking_reasons = self._dedupe_strings(
+            list(summary.get("blocking_reasons") or [])
+            + (["no_platform_runner_lanes_indexed"] if lane_count == 0 else [])
+            + (["no_ready_platform_runner_lane"] if lane_count > 0 and ready_lane_count == 0 else [])
+            + (
+                ["selected_target_not_bound_to_ready_platform_runner_lane"]
+                if summary.get("selected_target_id") and selected_ready_lane_count == 0
+                else []
+            )
+        )
+        notes = self._dedupe_strings(
+            [
+                "Generated platform runner manifests for lane inventory, native tooling, execution matrices, and approval checkpoints.",
+                f"{ready_lane_count} lane(s) are ready and {partial_lane_count} lane(s) remain partial.",
+            ]
+            + [str(item) for item in lanes[:3] for item in list(item.get("notes") or [])[:1]]
+        )[:8]
+        plan_status = (
+            "ready"
+            if (
+                ready_lane_count > 0
+                and (
+                    not summary.get("selected_target_id")
+                    or (
+                        selected_ready_lane_count > 0
+                        and str(summary.get("selected_target_probe_status") or "unknown") in {"ready", "reachable"}
+                    )
+                )
+            )
+            else "partial"
+            if lane_count > 0 or partial_lane_count > 0
+            else "blocked"
+        )
+        result_summary = (
+            f"Generated a platform runner plan with {lane_count} lane(s), "
+            f"{ready_lane_count} ready lane(s), and selected target `{summary.get('selected_target_id') or 'none'}`."
+        )
+        return {
+            "project_id": project.id,
+            "project_name": project.name,
+            "workspace_path": workspace_path,
+            "summary": result_summary,
+            "plan_status": plan_status,
+            "selected_target_id": summary.get("selected_target_id"),
+            "lane_count": lane_count,
+            "ready_lane_count": ready_lane_count,
+            "selected_ready_lane_count": selected_ready_lane_count,
+            "target_backed_ready_lane_count": int(summary.get("target_backed_ready_lane_count") or 0),
+            "partial_lane_count": partial_lane_count,
+            "selected_ready_lane_ids": [str(item) for item in list(summary.get("selected_ready_lane_ids") or []) if str(item).strip()],
+            "target_backed_ready_lane_ids": [str(item) for item in list(summary.get("target_backed_ready_lane_ids") or []) if str(item).strip()],
+            "manifest_root": manifest_root.relative_to(workspace_root).as_posix(),
+            "lane_inventory_path": lane_inventory_path.relative_to(workspace_root).as_posix(),
+            "native_tooling_path": native_tooling_path.relative_to(workspace_root).as_posix(),
+            "execution_matrix_path": execution_matrix_path.relative_to(workspace_root).as_posix(),
+            "approval_checkpoint_path": approval_checkpoint_path.relative_to(workspace_root).as_posix(),
+            "blocking_reasons": blocking_reasons,
+            "notes": notes,
+        }
+
+    def _build_artifact_transport_session_recording_summary(
+        self,
+        workspace_root: Path | None,
+        remote_execution: dict[str, Any],
+    ) -> dict[str, Any]:
+        policy = dict(remote_execution.get("policy") or {})
+        broker_contract = dict(remote_execution.get("broker_contract") or {})
+        artifact_contract = dict(remote_execution.get("artifact_contract") or {})
+        result_contract = dict(remote_execution.get("result_contract") or {})
+        session_recording_contract = build_remote_session_recording_contract(
+            selected_target=remote_execution.get("selected_target"),
+            policy_payload=policy,
+            artifact_contract=artifact_contract,
+            broker_contract=broker_contract,
+        )
+        session_recording_required = bool(
+            session_recording_contract.get("session_recording_required")
+            or policy.get("require_session_recording")
+            or broker_contract.get("require_session_recording")
+        )
+        session_recording_enabled = bool(
+            session_recording_contract.get("session_recording_enabled")
+            or broker_contract.get("session_recording_enabled")
+        )
+        declared_artifact_paths = self._dedupe_strings(
+            [str(item) for item in list(result_contract.get("session_recording_artifact_paths") or []) if str(item).strip()]
+            + [str(item) for item in list(session_recording_contract.get("artifact_paths") or []) if str(item).strip()]
+        )
+        remote_artifact_paths = self._dedupe_strings(
+            [
+                str(item)
+                for item in list(result_contract.get("remote_session_recording_artifact_paths") or [])
+                if str(item).strip()
+            ]
+            + [str(item) for item in list(session_recording_contract.get("remote_artifact_paths") or []) if str(item).strip()]
+        )
+        runtime_manifest_records = (
+            self._collect_remote_runtime_manifest_records(workspace_root)
+            if workspace_root is not None and workspace_root.exists() and workspace_root.is_dir()
+            else []
+        )
+        runtime_manifest_recording_paths = self._dedupe_strings(
+            [
+                str(path)
+                for item in runtime_manifest_records
+                for path in list(item.get("session_recording_artifact_paths") or [])
+                if str(path).strip()
+            ]
+        )
+        declared_artifact_paths = self._dedupe_strings(declared_artifact_paths + runtime_manifest_recording_paths)
+
+        produced_artifact_paths: list[str] = []
+        missing_artifact_paths: list[str] = []
+        if workspace_root is not None and workspace_root.exists() and workspace_root.is_dir():
+            for relative_path in declared_artifact_paths:
+                artifact_path = self._resolve_workspace_artifact_path(workspace_root, relative_path)
+                if artifact_path.exists() and artifact_path.is_file():
+                    produced_artifact_paths.append(relative_path)
+                else:
+                    missing_artifact_paths.append(relative_path)
+
+        runtime_manifest_count = len(runtime_manifest_records)
+        produced_artifact_paths = self._dedupe_strings(produced_artifact_paths)
+        missing_artifact_paths = self._dedupe_strings(missing_artifact_paths)
+        manifests_expect_recordings = any(
+            bool(item.get("session_recording_required")) and bool(item.get("session_recording_enabled"))
+            for item in runtime_manifest_records
+        )
+        delivery_status = (
+            "not_applicable"
+            if not session_recording_required
+            else "blocked"
+            if not session_recording_enabled
+            else "blocked"
+            if not declared_artifact_paths and not remote_artifact_paths
+            else "ready"
+            if declared_artifact_paths and not missing_artifact_paths
+            else "partial"
+            if manifests_expect_recordings
+            else "planned"
+        )
+        blocking_reasons = self._dedupe_strings(
+            (["session_recording_artifact_paths_undeclared_for_transport"] if session_recording_required and session_recording_enabled and not declared_artifact_paths and not remote_artifact_paths else [])
+            + (["session_recording_artifact_missing_after_remote_execution"] if manifests_expect_recordings and missing_artifact_paths else [])
+        )
+        notes = self._dedupe_strings(
+            [
+                (
+                    f"Brokered session recording is required and `{delivery_status}` with {len(declared_artifact_paths)} declared local artifact path(s)."
+                    if session_recording_required
+                    else "Brokered session recording is not required for this transport lane."
+                ),
+                (
+                    f"Observed {runtime_manifest_count} remote runtime manifest(s) while checking recording delivery."
+                    if runtime_manifest_count > 0
+                    else "No remote runtime manifest has been captured yet, so recording delivery is still at the planning stage."
+                ),
+                (
+                    f"{len(missing_artifact_paths)} declared recording artifact path(s) are still missing from the workspace."
+                    if missing_artifact_paths
+                    else "All declared recording artifact paths currently resolve on disk."
+                ),
+            ]
+        )[:6]
+        return {
+            "session_recording_status": delivery_status,
+            "session_recording_required": session_recording_required,
+            "session_recording_artifact_paths": declared_artifact_paths,
+            "produced_session_recording_artifact_paths": produced_artifact_paths,
+            "missing_session_recording_artifact_paths": missing_artifact_paths,
+            "remote_session_recording_artifact_paths": remote_artifact_paths,
+            "session_recording_runtime_manifest_count": runtime_manifest_count,
+            "blocking_reasons": blocking_reasons,
+            "notes": notes,
+        }
+
+    def build_artifact_transport_summary(self, db: Session, project: Project) -> dict[str, Any]:
+        remote_execution = self.preview_project_remote_execution(db, project)
+        artifact_registry = self.build_project_artifact_registry(project)
+        connector_registry = self.get_connector_registry(db)
+        platform_summary = self.build_platform_runner_summary(db, project)
+        artifact_contract = dict(remote_execution.get("artifact_contract") or {})
+        connector_contract = dict(remote_execution.get("connector_contract") or {})
+        selected_target_id = str(remote_execution.get("selected_target_id") or "").strip() or None
+        workspace_path = str(project.workspace_path or project.source_path or "").strip()
+        workspace_root = Path(workspace_path).expanduser() if workspace_path else None
+        session_recording_summary = self._build_artifact_transport_session_recording_summary(
+            workspace_root,
+            remote_execution,
+        )
+        sync_enabled = bool(artifact_contract.get("sync_enabled"))
+        selected_ready_platform_lanes = [
+            str(item) for item in list(platform_summary.get("selected_ready_lane_ids") or []) if str(item).strip()
+        ]
+        target_backed_ready_platform_lanes = [
+            str(item) for item in list(platform_summary.get("target_backed_ready_lane_ids") or []) if str(item).strip()
+        ]
+        blocking_reasons = self._dedupe_strings(
+            [
+                *list(remote_execution.get("blocking_reasons") or []),
+                *list(artifact_contract.get("blocking_reasons") or []),
+                *list(connector_contract.get("blocking_reasons") or []),
+                *list(platform_summary.get("blocking_reasons") or []),
+                *list(session_recording_summary.get("blocking_reasons") or []),
+            ]
+        )
+        selected_artifact_root = str(artifact_contract.get("selected_artifact_root") or "").strip()
+        remote_workspace_root = str(artifact_contract.get("remote_workspace_root") or "").strip()
+        available_connector_families = [str(item) for item in list(connector_contract.get("available_families") or []) if str(item).strip()]
+        if selected_artifact_root:
+            base_transport_mode = "remote_artifact_root"
+        elif remote_workspace_root and sync_enabled:
+            base_transport_mode = "workspace_relative_sync"
+        elif available_connector_families:
+            base_transport_mode = "connector_only"
+        elif int(artifact_registry.get("artifact_count") or 0) > 0:
+            base_transport_mode = "local_only"
+        else:
+            base_transport_mode = "discovery_needed"
+        if (
+            selected_target_id
+            and base_transport_mode in {"remote_artifact_root", "workspace_relative_sync"}
+            and not selected_ready_platform_lanes
+        ):
+            blocking_reasons = self._dedupe_strings(
+                list(blocking_reasons) + ["selected_target_not_bound_to_ready_platform_lane_for_transport"]
+            )
+        recommended_transport_mode = "blocked" if blocking_reasons else base_transport_mode
+        preflight_ready = bool(remote_execution.get("preflight_ready")) and not blocking_reasons
+        notes = self._dedupe_strings(
+            [
+                *[str(item) for item in list(artifact_contract.get("notes") or [])],
+                *[str(item) for item in list(connector_contract.get("notes") or [])],
+                *[str(item) for item in list(session_recording_summary.get("notes") or [])],
+                f"Recommended transport mode: {recommended_transport_mode}.",
+                f"Ready platform lanes: {', '.join(list(platform_summary.get('ready_lane_ids') or [])[:6]) or 'none'}.",
+                (
+                    f"Selected-target ready platform lanes: {', '.join(selected_ready_platform_lanes[:6])}."
+                    if selected_ready_platform_lanes
+                    else "No ready platform lane is currently bound to the selected target."
+                ),
+            ]
+        )[:8]
+        summary = (
+            f"Artifact transport is `{recommended_transport_mode}` with "
+            f"{artifact_registry.get('artifact_count', 0)} local artifact path(s), "
+            f"{len(available_connector_families)} usable connector family lane(s), and "
+            f"{len(list(platform_summary.get('ready_lane_ids') or []))} ready platform lane(s)."
+        )
+        return {
+            "project_id": project.id,
+            "project_name": project.name,
+            "workspace_path": project.workspace_path,
+            "summary": summary,
+            "selected_target_id": selected_target_id,
+            "selected_target_probe_status": str(remote_execution.get("selected_target_probe_status") or "unknown"),
+            "ready_candidate_count": int(remote_execution.get("ready_candidate_count") or 0),
+            "ready_candidate_ids": [str(item) for item in list(remote_execution.get("ready_candidate_ids") or []) if str(item).strip()],
+            "preflight_ready": preflight_ready,
+            "sync_enabled": sync_enabled,
+            "recommended_transport_mode": recommended_transport_mode,
+            "blocking_reasons": blocking_reasons,
+            "session_recording_status": str(session_recording_summary.get("session_recording_status") or "not_applicable"),
+            "session_recording_required": bool(session_recording_summary.get("session_recording_required")),
+            "session_recording_artifact_paths": list(session_recording_summary.get("session_recording_artifact_paths") or []),
+            "produced_session_recording_artifact_paths": list(
+                session_recording_summary.get("produced_session_recording_artifact_paths") or []
+            ),
+            "missing_session_recording_artifact_paths": list(
+                session_recording_summary.get("missing_session_recording_artifact_paths") or []
+            ),
+            "remote_session_recording_artifact_paths": list(
+                session_recording_summary.get("remote_session_recording_artifact_paths") or []
+            ),
+            "session_recording_runtime_manifest_count": int(
+                session_recording_summary.get("session_recording_runtime_manifest_count") or 0
+            ),
+            "ready_platform_lanes": list(platform_summary.get("ready_lane_ids") or []),
+            "selected_ready_platform_lanes": selected_ready_platform_lanes,
+            "target_backed_ready_platform_lanes": target_backed_ready_platform_lanes,
+            "partial_platform_lanes": list(platform_summary.get("partial_lane_ids") or []),
+            "notes": notes,
+            "artifact_registry": artifact_registry,
+            "connector_registry": connector_registry,
+            "artifact_contract": artifact_contract,
+            "connector_contract": connector_contract,
+        }
+
+    def build_file_governance_summary(self, db: Session, project: Project) -> dict[str, Any]:
+        connector_registry = self.get_connector_registry(db)
+        platform_runners = self.build_platform_runner_summary(db, project)
+        artifact_transport = self.build_artifact_transport_summary(db, project)
+        settings = self._project_settings(db, project)
+        profile = self._app_profile_preview(db)
+        registry = normalize_integration_registry(
+            profile.integration_registry_json,
+            profile.connected_accounts_json,
+        )
+        raw_connections = dict(registry.get("connections") or {})
+        storage_provider_tokens = {
+            "google_drive",
+            "gdrive",
+            "drive",
+            "sharepoint",
+            "onedrive",
+            "dropbox",
+            "box",
+            "s3",
+            "google_workspace_drive",
+            "microsoft_graph",
+            "local_fs",
+            "filesystem",
+            "file_share",
+        }
+        storage_family_tokens = {
+            "storage",
+            "drive",
+            "sharepoint",
+            "onedrive",
+            "files",
+            "filesystem",
+            "file_graph",
+        }
+        storage_lanes: list[dict[str, Any]] = []
+        for family_id, raw_connection in sorted(raw_connections.items()):
+            connection = dict(raw_connection or {})
+            status = str(connection.get("status") or "disconnected")
+            providers = self._dedupe_strings(
+                [str(item) for item in list(connection.get("providers") or []) if str(item).strip()]
+            )
+            matched_providers = [
+                provider
+                for provider in providers
+                if any(token in provider.lower() for token in storage_provider_tokens)
+            ]
+            family_text = str(family_id or "").strip().lower()
+            family_matches = any(token in family_text for token in storage_family_tokens)
+            if not matched_providers and not family_matches:
+                continue
+            lane_id = family_text or "storage_lane"
+            title = str(connection.get("family") or family_id).replace("_", " ").title()
+            if title.lower() == lane_id.replace("_", " "):
+                title = title.replace("Fs", "FS")
+            notes = self._dedupe_strings(
+                [str(item) for item in list(connection.get("notes") or []) if str(item).strip()]
+                + (
+                    ["This lane is host-imported, so treat it as advisory until Mission Control owns the auth path."]
+                    if bool(connection.get("host_imported"))
+                    else []
+                )
+            )[:6]
+            summary = (
+                f"{len(matched_providers or providers or [family_id])} provider hint(s) available for file-governance work."
+                if status != "disconnected"
+                else "Provider hints exist, but the lane is not connected yet."
+            )
+            storage_lanes.append(
+                {
+                    "lane_id": lane_id,
+                    "title": title,
+                    "status": status,
+                    "summary": summary,
+                    "providers": matched_providers or providers,
+                    "provider_count": len(matched_providers or providers),
+                    "connection_source": str(connection.get("connection_source") or "mission_control"),
+                    "host_imported": bool(connection.get("host_imported")),
+                    "notes": notes,
+                }
+            )
+
+        if project.workspace_path or project.source_path:
+            storage_lanes.insert(
+                0,
+                {
+                    "lane_id": "local_fs",
+                    "title": "Local Filesystem",
+                    "status": "connected",
+                    "summary": "The project workspace itself is a governed local file-management lane.",
+                    "providers": ["local_fs"],
+                    "provider_count": 1,
+                    "connection_source": "mission_control",
+                    "host_imported": False,
+                    "notes": [
+                        "Use dry-run manifests before any bulk rename, archive, or delete action.",
+                        "Local scans can be paired with brokered remote runners for platform-specific verification.",
+                    ],
+                },
+            )
+
+        ready_scanner_lanes = [
+            str(lane_id)
+            for lane_id in list(platform_runners.get("ready_lane_ids") or [])
+            if lane_id in {"linux", "windows", "macos"}
+        ]
+        selected_target_id = str(platform_runners.get("selected_target_id") or "").strip() or None
+        selected_ready_scanner_lanes = [
+            str(lane_id)
+            for lane_id in list(platform_runners.get("selected_ready_lane_ids") or [])
+            if str(lane_id).strip() in {"linux", "windows", "macos"}
+        ]
+        target_backed_ready_scanner_lanes = [
+            str(lane_id)
+            for lane_id in list(platform_runners.get("target_backed_ready_lane_ids") or [])
+            if str(lane_id).strip() in {"linux", "windows", "macos"}
+        ]
+        storage_providers = self._dedupe_strings(
+            [
+                str(provider)
+                for lane in storage_lanes
+                for provider in list(lane.get("providers") or [])
+                if str(provider).strip()
+            ]
+        )
+        connected_storage_lanes = [
+            lane
+            for lane in storage_lanes
+            if str(lane.get("status") or "") not in {"disconnected", "needs_setup", "unknown"}
+        ]
+        blocking_reasons = self._dedupe_strings(
+            list(artifact_transport.get("blocking_reasons") or [])
+            + list(platform_runners.get("blocking_reasons") or [])
+            + (["no_storage_connectors_or_scanner_lanes"] if not connected_storage_lanes and not ready_scanner_lanes else [])
+        )
+        if connected_storage_lanes and selected_ready_scanner_lanes:
+            recommended_operation_mode = "hybrid_connector_sync"
+        elif connected_storage_lanes:
+            recommended_operation_mode = "connector_only"
+        elif selected_ready_scanner_lanes:
+            recommended_operation_mode = "brokered_remote_index"
+        elif project.workspace_path or project.source_path:
+            recommended_operation_mode = "local_index_only"
+        else:
+            recommended_operation_mode = "discovery_needed"
+        supports_bulk_planning = bool(connected_storage_lanes or ready_scanner_lanes or (project.workspace_path or project.source_path))
+        notes = self._dedupe_strings(
+            [
+                "Bulk file organization should always start with a reversible dry-run manifest.",
+                "Destructive moves, deletes, and archives stay approval-gated even when scanning is automated.",
+                f"Artifact transport mode currently resolves to `{artifact_transport.get('recommended_transport_mode')}`.",
+                (
+                    f"Ready scanner lanes: {', '.join(ready_scanner_lanes)}."
+                    if ready_scanner_lanes
+                    else "No brokered scanner lane is fully ready yet."
+                ),
+                (
+                    f"Selected-target scanner lanes: {', '.join(selected_ready_scanner_lanes)}."
+                    if selected_ready_scanner_lanes
+                    else "No ready scanner lane is currently bound to the selected target."
+                ),
+            ]
+            + [str(item) for item in list(artifact_transport.get("notes") or [])[:3]]
+        )[:8]
+        summary = (
+            f"File governance is `{recommended_operation_mode}` with {len(connected_storage_lanes)} connected storage lane(s), "
+            f"{len(ready_scanner_lanes)} ready scanner lane(s), and {len(storage_providers)} distinct storage provider hint(s)."
+        )
+        destructive_actions_require_approval = str(settings.approval_policy or "") != "never"
+        return {
+            "project_id": project.id,
+            "project_name": project.name,
+            "workspace_path": project.workspace_path,
+            "summary": summary,
+            "recommended_operation_mode": recommended_operation_mode,
+            "supports_bulk_planning": supports_bulk_planning,
+            "destructive_actions_require_approval": destructive_actions_require_approval,
+            "storage_lane_count": len(storage_lanes),
+            "connected_storage_lane_count": len(connected_storage_lanes),
+            "ready_scanner_lane_count": len(ready_scanner_lanes),
+            "storage_provider_count": len(storage_providers),
+            "storage_providers": storage_providers,
+            "ready_scanner_lanes": ready_scanner_lanes,
+            "selected_target_id": selected_target_id,
+            "selected_ready_scanner_lanes": selected_ready_scanner_lanes,
+            "target_backed_ready_scanner_lanes": target_backed_ready_scanner_lanes,
+            "blocking_reasons": blocking_reasons,
+            "notes": notes,
+            "storage_lanes": storage_lanes,
+            "connector_registry": connector_registry,
+            "platform_runners": platform_runners,
+            "artifact_transport": artifact_transport,
+        }
+
+    @staticmethod
+    def _artifact_transport_manifest_root(workspace_root: Path) -> Path:
+        return workspace_root / "artifacts" / "artifact-transport"
+
+    def build_artifact_transport_plan(self, db: Session, project: Project) -> dict[str, Any]:
+        summary = self.build_artifact_transport_summary(db, project)
+        workspace_path = str(project.workspace_path or project.source_path or "").strip() or None
+        recommended_transport_mode = str(summary.get("recommended_transport_mode") or "discovery_needed")
+        selected_target_id = str(summary.get("selected_target_id") or "").strip() or None
+        preflight_ready = bool(summary.get("preflight_ready"))
+        sync_enabled = bool(summary.get("sync_enabled"))
+        if workspace_path is None:
+            return {
+                "project_id": project.id,
+                "project_name": project.name,
+                "workspace_path": None,
+                "summary": "Artifact transport planning is blocked because the workspace path is missing.",
+                "plan_status": "blocked",
+                "selected_target_id": selected_target_id,
+                "recommended_transport_mode": recommended_transport_mode,
+                "preflight_ready": preflight_ready,
+                "sync_enabled": sync_enabled,
+                "blocking_reasons": ["workspace_path_missing"],
+                "notes": ["Mission Control cannot materialize artifact transport manifests without a real workspace."],
+            }
+
+        workspace_root = Path(workspace_path)
+        if not workspace_root.exists() or not workspace_root.is_dir():
+            return {
+                "project_id": project.id,
+                "project_name": project.name,
+                "workspace_path": workspace_path,
+                "summary": "Artifact transport planning is blocked because the workspace directory does not exist.",
+                "plan_status": "blocked",
+                "selected_target_id": selected_target_id,
+                "recommended_transport_mode": recommended_transport_mode,
+                "preflight_ready": preflight_ready,
+                "sync_enabled": sync_enabled,
+                "blocking_reasons": ["workspace_directory_missing"],
+                "notes": ["The broker cannot ship artifacts from a workspace that is not actually on disk."],
+            }
+
+        manifest_root = self._artifact_transport_manifest_root(workspace_root)
+        manifest_root.mkdir(parents=True, exist_ok=True)
+
+        transport_mode_path = manifest_root / "transport-mode.json"
+        artifact_sync_plan_path = manifest_root / "artifact-sync-plan.json"
+        connector_lane_plan_path = manifest_root / "connector-lane-plan.json"
+        platform_lane_plan_path = manifest_root / "platform-lane-plan.json"
+        session_recording_delivery_path = manifest_root / "session-recording-delivery.json"
+        approval_checkpoint_path = manifest_root / "approval-checkpoints.json"
+
+        artifact_registry = dict(summary.get("artifact_registry") or {})
+        connector_registry = dict(summary.get("connector_registry") or {})
+        artifact_contract = dict(summary.get("artifact_contract") or {})
+        connector_contract = dict(summary.get("connector_contract") or {})
+        ready_platform_lanes = [
+            str(item) for item in list(summary.get("ready_platform_lanes") or []) if str(item).strip()
+        ]
+        selected_ready_platform_lanes = [
+            str(item) for item in list(summary.get("selected_ready_platform_lanes") or []) if str(item).strip()
+        ]
+        target_backed_ready_platform_lanes = [
+            str(item) for item in list(summary.get("target_backed_ready_platform_lanes") or []) if str(item).strip()
+        ]
+        partial_platform_lanes = [
+            str(item) for item in list(summary.get("partial_platform_lanes") or []) if str(item).strip()
+        ]
+        platform_summary = self.build_platform_runner_summary(db, project)
+        platform_lane_map = {
+            str(item.get("lane_id") or ""): dict(item or {})
+            for item in list(platform_summary.get("lanes") or [])
+            if str(item.get("lane_id") or "").strip()
+        }
+
+        blocking_reasons = self._dedupe_strings(
+            list(summary.get("blocking_reasons") or [])
+            + (["artifact_transport_preflight_not_ready"] if not preflight_ready else [])
+        )
+
+        local_artifact_paths = [
+            str(item)
+            for item in list(artifact_contract.get("local_artifact_paths") or artifact_registry.get("artifact_paths") or [])
+            if str(item).strip()
+        ]
+        remote_workspace_artifact_paths = [
+            str(item)
+            for item in list(artifact_contract.get("remote_workspace_artifact_paths") or [])
+            if str(item).strip()
+        ]
+
+        transport_mode_payload = {
+            "selected_target_id": selected_target_id,
+            "selected_target_probe_status": str(summary.get("selected_target_probe_status") or "unknown"),
+            "recommended_transport_mode": recommended_transport_mode,
+            "preflight_ready": preflight_ready,
+            "sync_enabled": sync_enabled,
+            "blocking_reasons": blocking_reasons,
+            "ready_candidate_ids": list(summary.get("ready_candidate_ids") or []),
+            "ready_platform_lanes": ready_platform_lanes,
+            "selected_ready_platform_lanes": selected_ready_platform_lanes,
+            "partial_platform_lanes": partial_platform_lanes,
+            "transport_requirements": {
+                "selected_target_required": True,
+                "artifact_sync_required": bool(artifact_contract.get("required")),
+                "connector_authority_required": bool(connector_contract.get("require_connector_authority")),
+                "session_recording_required": True,
+            },
+        }
+        artifact_sync_plan = {
+            "local_artifact_paths": local_artifact_paths,
+            "local_artifact_path_count": int(
+                artifact_contract.get("local_artifact_path_count") or len(local_artifact_paths)
+            ),
+            "artifact_kind_summaries": list(artifact_contract.get("artifact_kind_summaries") or artifact_registry.get("artifact_kind_summaries") or []),
+            "artifact_inspection_commands": list(
+                artifact_contract.get("artifact_inspection_commands") or artifact_registry.get("inspection_commands") or []
+            ),
+            "target_artifact_roots": list(artifact_contract.get("target_artifact_roots") or []),
+            "selected_artifact_root": artifact_contract.get("selected_artifact_root"),
+            "remote_workspace_root": artifact_contract.get("remote_workspace_root"),
+            "remote_workspace_artifact_paths": remote_workspace_artifact_paths,
+            "sync_enabled": sync_enabled,
+            "preflight_ready": bool(artifact_contract.get("preflight_ready", preflight_ready)),
+            "blocking_reasons": list(artifact_contract.get("blocking_reasons") or []),
+            "notes": list(artifact_contract.get("notes") or []),
+            "sync_requirements": {
+                "approval_required_before_publish": True,
+                "target_root_required": bool(artifact_contract.get("selected_artifact_root")),
+                "remote_workspace_root_required": bool(artifact_contract.get("remote_workspace_root")),
+                "inspection_required": bool(
+                    list(artifact_contract.get("artifact_inspection_commands") or artifact_registry.get("inspection_commands") or [])
+                ),
+            },
+        }
+        connector_lane_plan = {
+            "required_connector_families": list(connector_contract.get("required_connector_families") or []),
+            "target_connector_families": list(connector_contract.get("target_connector_families") or []),
+            "available_families": list(connector_contract.get("available_families") or []),
+            "missing_required_families": list(connector_contract.get("missing_required_families") or []),
+            "available_connector_count": int(connector_contract.get("available_connector_count") or 0),
+            "provider_counts": dict(connector_registry.get("provider_counts") or {}),
+            "status_counts": dict(connector_registry.get("status_counts") or {}),
+            "preflight_ready": bool(connector_contract.get("preflight_ready", preflight_ready)),
+            "blocking_reasons": list(connector_contract.get("blocking_reasons") or []),
+            "notes": list(connector_contract.get("notes") or []),
+            "authority_requirements": {
+                "require_connector_authority": bool(connector_contract.get("require_connector_authority"))
+                or bool(list(connector_contract.get("required_connector_families") or [])),
+                "allow_host_integrated_connectors": bool(connector_contract.get("allow_host_integrated_connectors")),
+                "approval_required_before_connector_only_mode": True,
+            },
+        }
+        platform_lane_plan = {
+            "selected_target_id": selected_target_id,
+            "ready_platform_lanes": ready_platform_lanes,
+            "selected_ready_platform_lanes": selected_ready_platform_lanes,
+            "partial_platform_lanes": partial_platform_lanes,
+            "ready_lane_count": len(ready_platform_lanes),
+            "selected_ready_lane_count": len(selected_ready_platform_lanes),
+            "partial_lane_count": len(partial_platform_lanes),
+            "recommended_transport_mode": recommended_transport_mode,
+            "lane_bindings": [
+                {
+                    "lane_id": lane_id,
+                    "status": str((platform_lane_map.get(lane_id) or {}).get("status") or "unavailable"),
+                    "selected_target_ids": list((platform_lane_map.get(lane_id) or {}).get("selected_target_ids") or []),
+                    "recommended_commands": list((platform_lane_map.get(lane_id) or {}).get("recommended_commands") or []),
+                }
+                for lane_id in [*ready_platform_lanes, *partial_platform_lanes]
+            ],
+        }
+        session_recording_delivery = {
+            "session_recording_status": str(summary.get("session_recording_status") or "not_applicable"),
+            "session_recording_required": bool(summary.get("session_recording_required")),
+            "session_recording_runtime_manifest_count": int(summary.get("session_recording_runtime_manifest_count") or 0),
+            "session_recording_artifact_paths": list(summary.get("session_recording_artifact_paths") or []),
+            "produced_session_recording_artifact_paths": list(
+                summary.get("produced_session_recording_artifact_paths") or []
+            ),
+            "missing_session_recording_artifact_paths": list(summary.get("missing_session_recording_artifact_paths") or []),
+            "remote_session_recording_artifact_paths": list(
+                summary.get("remote_session_recording_artifact_paths") or []
+            ),
+        }
+        approval_checkpoints = {
+            "checkpoints": [
+                {
+                    "checkpoint_id": "artifact_contract_review",
+                    "stage": "artifact_contract",
+                    "status": "ready" if not list(artifact_contract.get("blocking_reasons") or []) else "blocked",
+                    "reason": "Artifact sync must be explicit before remote execution stops being cosplay.",
+                },
+                {
+                    "checkpoint_id": "connector_contract_review",
+                    "stage": "connector_contract",
+                    "status": "ready" if not list(connector_contract.get("missing_required_families") or []) else "partial",
+                    "reason": "Connector authority has to be grounded before remote runners start depending on it.",
+                },
+                {
+                    "checkpoint_id": "platform_lane_binding_review",
+                    "stage": "platform_lane",
+                    "status": (
+                        "ready"
+                        if selected_ready_platform_lanes
+                        else "blocked"
+                        if selected_target_id
+                        else "partial"
+                        if ready_platform_lanes
+                        else "partial"
+                    ),
+                    "reason": "Transport plans should identify actual ready or partial platform lanes instead of pretending artifacts teleport themselves.",
+                },
+                {
+                    "checkpoint_id": "session_recording_delivery_review",
+                    "stage": "session_recording_delivery",
+                    "status": (
+                        "ready"
+                        if str(summary.get("session_recording_status") or "") in {"ready", "not_applicable"}
+                        else "partial"
+                        if str(summary.get("session_recording_status") or "") == "planned"
+                        else "blocked"
+                    ),
+                    "reason": "Declared session recordings need an evidence trail, not trust falls and manifest fan fiction.",
+                },
+                {
+                    "checkpoint_id": "publish_gate_review",
+                    "stage": "publish_gate",
+                    "status": "ready" if preflight_ready and not blocking_reasons else "blocked",
+                    "reason": "Remote artifact publishing stays gated until transport preflight is actually clean.",
+                },
+            ]
+        }
+
+        transport_mode_path.write_text(json.dumps(transport_mode_payload, indent=2), encoding="utf-8")
+        artifact_sync_plan_path.write_text(json.dumps(artifact_sync_plan, indent=2), encoding="utf-8")
+        connector_lane_plan_path.write_text(json.dumps(connector_lane_plan, indent=2), encoding="utf-8")
+        platform_lane_plan_path.write_text(json.dumps(platform_lane_plan, indent=2), encoding="utf-8")
+        session_recording_delivery_path.write_text(json.dumps(session_recording_delivery, indent=2), encoding="utf-8")
+        approval_checkpoint_path.write_text(json.dumps(approval_checkpoints, indent=2), encoding="utf-8")
+
+        artifact_count = int(artifact_registry.get("artifact_count") or len(local_artifact_paths))
+        connector_family_count = len(list(connector_contract.get("available_families") or []))
+        lane_signal_count = len(ready_platform_lanes) + len(partial_platform_lanes)
+        notes = self._dedupe_strings(
+            [
+                "Generated artifact transport manifests for transport mode, sync planning, connector lanes, platform lanes, and approval checkpoints.",
+                f"Transport mode resolves to `{recommended_transport_mode}` with {artifact_count} artifact path(s) and {len(ready_platform_lanes)} ready platform lane(s).",
+            ]
+            + [str(item) for item in list(summary.get("notes") or [])[:4]]
+        )[:8]
+        plan_status = (
+            "ready"
+            if preflight_ready and not blocking_reasons and bool(selected_target_id) and bool(selected_ready_platform_lanes)
+            else "partial"
+            if artifact_count > 0 or connector_family_count > 0 or lane_signal_count > 0
+            else "blocked"
+        )
+        result_summary = (
+            f"Generated an artifact transport plan with {artifact_count} artifact path(s), "
+            f"{connector_family_count} connector family lane(s), and {len(ready_platform_lanes)} ready platform lane(s)."
+        )
+        return {
+            "project_id": project.id,
+            "project_name": project.name,
+            "workspace_path": workspace_path,
+            "summary": result_summary,
+            "plan_status": plan_status,
+            "selected_target_id": selected_target_id,
+            "recommended_transport_mode": recommended_transport_mode,
+            "preflight_ready": preflight_ready,
+            "sync_enabled": sync_enabled,
+            "selected_ready_lane_count": len(selected_ready_platform_lanes),
+            "selected_ready_platform_lanes": selected_ready_platform_lanes,
+            "target_backed_ready_platform_lanes": target_backed_ready_platform_lanes,
+            "session_recording_status": str(summary.get("session_recording_status") or "not_applicable"),
+            "session_recording_required": bool(summary.get("session_recording_required")),
+            "session_recording_runtime_manifest_count": int(summary.get("session_recording_runtime_manifest_count") or 0),
+            "session_recording_artifact_paths": list(summary.get("session_recording_artifact_paths") or []),
+            "produced_session_recording_artifact_paths": list(
+                summary.get("produced_session_recording_artifact_paths") or []
+            ),
+            "missing_session_recording_artifact_paths": list(summary.get("missing_session_recording_artifact_paths") or []),
+            "remote_session_recording_artifact_paths": list(summary.get("remote_session_recording_artifact_paths") or []),
+            "manifest_root": manifest_root.relative_to(workspace_root).as_posix(),
+            "transport_mode_path": transport_mode_path.relative_to(workspace_root).as_posix(),
+            "artifact_sync_plan_path": artifact_sync_plan_path.relative_to(workspace_root).as_posix(),
+            "connector_lane_plan_path": connector_lane_plan_path.relative_to(workspace_root).as_posix(),
+            "platform_lane_plan_path": platform_lane_plan_path.relative_to(workspace_root).as_posix(),
+            "session_recording_delivery_path": session_recording_delivery_path.relative_to(workspace_root).as_posix(),
+            "approval_checkpoint_path": approval_checkpoint_path.relative_to(workspace_root).as_posix(),
+            "blocking_reasons": blocking_reasons,
+            "notes": notes,
+        }
+
+    @staticmethod
+    def _file_governance_manifest_root(workspace_root: Path) -> Path:
+        return workspace_root / "artifacts" / "file-governance"
+
+    def build_file_governance_plan(self, db: Session, project: Project) -> dict[str, Any]:
+        summary = self.build_file_governance_summary(db, project)
+        workspace_path = str(project.workspace_path or project.source_path or "").strip() or None
+        recommended_operation_mode = str(summary.get("recommended_operation_mode") or "discovery_needed")
+        supports_bulk_planning = bool(summary.get("supports_bulk_planning"))
+        destructive_actions_require_approval = bool(summary.get("destructive_actions_require_approval", True))
+        if workspace_path is None:
+            return {
+                "project_id": project.id,
+                "project_name": project.name,
+                "workspace_path": None,
+                "summary": "File governance planning is blocked because the workspace path is missing.",
+                "plan_status": "blocked",
+                "recommended_operation_mode": recommended_operation_mode,
+                "supports_bulk_planning": supports_bulk_planning,
+                "destructive_actions_require_approval": destructive_actions_require_approval,
+                "blocking_reasons": ["workspace_path_missing"],
+                "notes": ["Mission Control cannot generate governed file manifests without a concrete workspace."],
+            }
+
+        workspace_root = Path(workspace_path)
+        if not workspace_root.exists() or not workspace_root.is_dir():
+            return {
+                "project_id": project.id,
+                "project_name": project.name,
+                "workspace_path": workspace_path,
+                "summary": "File governance planning is blocked because the workspace directory does not exist.",
+                "plan_status": "blocked",
+                "recommended_operation_mode": recommended_operation_mode,
+                "supports_bulk_planning": supports_bulk_planning,
+                "destructive_actions_require_approval": destructive_actions_require_approval,
+                "blocking_reasons": ["workspace_directory_missing"],
+                "notes": ["File governance cannot plan dry runs against a workspace that is not on disk."],
+            }
+
+        manifest_root = self._file_governance_manifest_root(workspace_root)
+        manifest_root.mkdir(parents=True, exist_ok=True)
+
+        storage_lanes_path = manifest_root / "storage-lanes.json"
+        scanner_lanes_path = manifest_root / "scanner-lanes.json"
+        operation_mode_path = manifest_root / "operation-mode.json"
+        approval_guardrails_path = manifest_root / "approval-guardrails.json"
+        transport_integration_path = manifest_root / "transport-integration.json"
+
+        storage_lanes = [dict(item or {}) for item in list(summary.get("storage_lanes") or [])]
+        storage_providers = [str(item) for item in list(summary.get("storage_providers") or []) if str(item).strip()]
+        ready_scanner_lanes = [str(item) for item in list(summary.get("ready_scanner_lanes") or []) if str(item).strip()]
+        selected_ready_scanner_lanes = [
+            str(item) for item in list(summary.get("selected_ready_scanner_lanes") or []) if str(item).strip()
+        ]
+        target_backed_ready_scanner_lanes = [
+            str(item) for item in list(summary.get("target_backed_ready_scanner_lanes") or []) if str(item).strip()
+        ]
+        connected_storage_lanes = [
+            lane
+            for lane in storage_lanes
+            if str(lane.get("status") or "") not in {"disconnected", "needs_setup", "unknown"}
+        ]
+        disconnected_storage_lanes = [
+            lane
+            for lane in storage_lanes
+            if str(lane.get("status") or "") in {"disconnected", "needs_setup", "unknown"}
+        ]
+        platform_runners = dict(summary.get("platform_runners") or {})
+        platform_lane_map = {
+            str(item.get("lane_id") or ""): dict(item or {})
+            for item in list(platform_runners.get("lanes") or [])
+            if str(item.get("lane_id") or "").strip()
+        }
+        artifact_transport = dict(summary.get("artifact_transport") or {})
+        connector_registry = dict(summary.get("connector_registry") or {})
+        connector_contract = dict(artifact_transport.get("connector_contract") or {})
+        required_connector_families = [
+            str(item)
+            for item in list(connector_contract.get("required_connector_families") or [])
+            if str(item).strip()
+        ]
+        available_connector_families = [
+            str(item)
+            for item in list(connector_contract.get("available_families") or [])
+            if str(item).strip()
+        ]
+        connector_authority_required = bool(connector_contract.get("require_connector_authority")) or bool(
+            required_connector_families
+        )
+        ready_platform_lanes = [
+            str(item)
+            for item in list(artifact_transport.get("ready_platform_lanes") or platform_runners.get("ready_lane_ids") or [])
+            if str(item).strip()
+        ]
+        partial_platform_lanes = [
+            str(item)
+            for item in list(
+                artifact_transport.get("partial_platform_lanes") or platform_runners.get("partial_lane_ids") or []
+            )
+            if str(item).strip()
+        ]
+        storage_lane_bindings = [
+            {
+                "lane_id": str(lane.get("lane_id") or ""),
+                "status": str(lane.get("status") or "unknown"),
+                "providers": list(lane.get("providers") or []),
+                "connection_source": str(lane.get("connection_source") or "mission_control"),
+                "host_imported": bool(lane.get("host_imported")),
+            }
+            for lane in storage_lanes
+        ]
+        scanner_lane_bindings = [
+            {
+                "lane_id": lane_id,
+                "status": str((platform_lane_map.get(lane_id) or {}).get("status") or "unavailable"),
+                "selected_target_ids": list((platform_lane_map.get(lane_id) or {}).get("selected_target_ids") or []),
+                "recommended_commands": list((platform_lane_map.get(lane_id) or {}).get("recommended_commands") or []),
+                "toolchains": list((platform_lane_map.get(lane_id) or {}).get("toolchains") or []),
+            }
+            for lane_id in self._dedupe_strings([*ready_scanner_lanes, *list(platform_runners.get("partial_lane_ids") or [])])
+        ]
+
+        blocking_reasons = self._dedupe_strings(
+            list(summary.get("blocking_reasons") or [])
+            + (["bulk_file_governance_not_supported"] if not supports_bulk_planning else [])
+        )
+
+        storage_lane_payload = {
+            "storage_lane_count": int(summary.get("storage_lane_count") or len(storage_lanes)),
+            "connected_storage_lane_count": int(summary.get("connected_storage_lane_count") or len(connected_storage_lanes)),
+            "storage_provider_count": int(summary.get("storage_provider_count") or len(storage_providers)),
+            "storage_providers": storage_providers,
+            "connected_lane_ids": [str(lane.get("lane_id") or "") for lane in connected_storage_lanes if str(lane.get("lane_id") or "").strip()],
+            "disconnected_lane_ids": [str(lane.get("lane_id") or "") for lane in disconnected_storage_lanes if str(lane.get("lane_id") or "").strip()],
+            "host_imported_lane_ids": [
+                str(lane.get("lane_id") or "")
+                for lane in storage_lanes
+                if bool(lane.get("host_imported")) and str(lane.get("lane_id") or "").strip()
+            ],
+            "provider_counts": dict(connector_registry.get("provider_counts") or {}),
+            "connection_source_counts": dict(connector_registry.get("connection_source_counts") or {}),
+            "transport_dependencies": {
+                "recommended_transport_mode": str(artifact_transport.get("recommended_transport_mode") or "discovery_needed"),
+                "selected_target_id": artifact_transport.get("selected_target_id"),
+                "sync_enabled": bool(artifact_transport.get("sync_enabled")),
+                "connector_authority_required": connector_authority_required,
+            },
+            "governance_requirements": {
+                "content_hashing_required": True,
+                "duplicate_clustering_required": True,
+                "semantic_classification_required": True,
+                "dry_run_manifest_required": True,
+                "reversible_batch_manifest_required": True,
+            },
+            "lanes": storage_lanes,
+            "lane_bindings": storage_lane_bindings,
+        }
+        scanner_lane_payload = {
+            "ready_scanner_lane_count": int(summary.get("ready_scanner_lane_count") or len(ready_scanner_lanes)),
+            "ready_scanner_lanes": ready_scanner_lanes,
+            "selected_ready_scanner_lane_count": len(selected_ready_scanner_lanes),
+            "selected_ready_scanner_lanes": selected_ready_scanner_lanes,
+            "target_backed_ready_scanner_lanes": target_backed_ready_scanner_lanes,
+            "selected_target_id": platform_runners.get("selected_target_id"),
+            "selected_target_probe_status": str(platform_runners.get("selected_target_probe_status") or "unknown"),
+            "ready_candidate_ids": list(platform_runners.get("ready_candidate_ids") or []),
+            "ready_lane_ids": list(platform_runners.get("ready_lane_ids") or ready_scanner_lanes),
+            "partial_lane_ids": list(platform_runners.get("partial_lane_ids") or []),
+            "ready_platform_lanes": ready_platform_lanes,
+            "partial_platform_lanes": partial_platform_lanes,
+            "scanner_requirements": {
+                "brokered_execution_only": True,
+                "selected_target_required_for_remote_scan": bool(ready_scanner_lanes),
+                "destructive_approval_required": destructive_actions_require_approval,
+                "transport_preflight_required": True,
+                "session_recording_required": True,
+            },
+            "lane_bindings": scanner_lane_bindings,
+        }
+        operation_mode_payload = {
+            "recommended_operation_mode": recommended_operation_mode,
+            "supports_bulk_planning": supports_bulk_planning,
+            "destructive_actions_require_approval": destructive_actions_require_approval,
+            "storage_lane_count": int(summary.get("storage_lane_count") or len(storage_lanes)),
+            "ready_scanner_lane_count": int(summary.get("ready_scanner_lane_count") or len(ready_scanner_lanes)),
+            "storage_provider_count": int(summary.get("storage_provider_count") or len(storage_providers)),
+            "selected_target_id": artifact_transport.get("selected_target_id"),
+            "recommended_transport_mode": str(artifact_transport.get("recommended_transport_mode") or "discovery_needed"),
+            "transport_preflight_ready": bool(artifact_transport.get("preflight_ready")),
+            "mutation_requirements": {
+                "dry_run_required": True,
+                "content_hash_required": True,
+                "duplicate_review_required": True,
+                "semantic_classification_required": True,
+                "reversible_batch_manifest_required": True,
+                "human_approval_required_for_destructive_mutations": destructive_actions_require_approval,
+            },
+            "notes": list(summary.get("notes") or []),
+        }
+        approval_guardrails_payload = {
+            "destructive_actions_require_approval": destructive_actions_require_approval,
+            "supports_bulk_planning": supports_bulk_planning,
+            "blocking_reasons": blocking_reasons,
+            "approval_required_operations": ["move", "rename", "archive", "delete"],
+            "required_connector_families": required_connector_families,
+            "available_connector_families": available_connector_families,
+            "transport_preflight_ready": bool(artifact_transport.get("preflight_ready")),
+            "dry_run_manifest_required": True,
+            "reversible_batch_manifest_required": True,
+            "approval_checkpoints": [
+                {
+                    "checkpoint_id": "storage_lane_review",
+                    "stage": "storage",
+                    "status": "ready" if connected_storage_lanes else "partial",
+                    "reason": "At least one governed storage lane should be explicit before bulk file plans pretend they can land anywhere useful.",
+                },
+                {
+                    "checkpoint_id": "scanner_lane_review",
+                    "stage": "scanner",
+                    "status": "ready"
+                    if selected_ready_scanner_lanes
+                    else "partial",
+                    "reason": "Remote scanning needs a real brokered lane instead of manifest fanfiction.",
+                },
+                {
+                    "checkpoint_id": "mutation_gate_review",
+                    "stage": "mutation",
+                    "status": "ready" if destructive_actions_require_approval else "partial",
+                    "reason": "Bulk rename, archive, and delete operations stay approval-gated because YOLO is not a governance model.",
+                },
+                {
+                    "checkpoint_id": "restore_bundle_review",
+                    "stage": "restore",
+                    "status": "ready" if supports_bulk_planning else "blocked",
+                    "reason": "Every destructive batch needs a reversible restore manifest before Mission Control gets to act confident about it.",
+                },
+            ],
+            "notes": [
+                "Generate a dry-run manifest before touching real files.",
+                "Keep destructive bulk actions reversible and explicitly approved.",
+            ],
+        }
+        transport_integration_payload = {
+            "recommended_transport_mode": str(artifact_transport.get("recommended_transport_mode") or "discovery_needed"),
+            "selected_target_id": artifact_transport.get("selected_target_id"),
+            "selected_target_probe_status": str(artifact_transport.get("selected_target_probe_status") or "unknown"),
+            "preflight_ready": bool(artifact_transport.get("preflight_ready")),
+            "sync_enabled": bool(artifact_transport.get("sync_enabled")),
+            "blocking_reasons": list(artifact_transport.get("blocking_reasons") or []),
+            "ready_platform_lanes": ready_platform_lanes,
+            "partial_platform_lanes": partial_platform_lanes,
+            "required_connector_families": required_connector_families,
+            "available_connector_families": available_connector_families,
+            "integration_requirements": {
+                "artifact_transport_preflight_required": True,
+                "connector_authority_required": connector_authority_required,
+                "scanner_transport_alignment_required": True,
+                "selected_target_binding_required": bool(artifact_transport.get("selected_target_id")),
+            },
+            "lane_bindings": [
+                {
+                    "lane_id": lane_id,
+                    "status": str((platform_lane_map.get(lane_id) or {}).get("status") or "unavailable"),
+                    "selected_target_ids": list((platform_lane_map.get(lane_id) or {}).get("selected_target_ids") or []),
+                    "recommended_commands": list((platform_lane_map.get(lane_id) or {}).get("recommended_commands") or []),
+                }
+                for lane_id in self._dedupe_strings([*ready_platform_lanes, *partial_platform_lanes])
+            ],
+        }
+
+        storage_lanes_path.write_text(json.dumps(storage_lane_payload, indent=2), encoding="utf-8")
+        scanner_lanes_path.write_text(json.dumps(scanner_lane_payload, indent=2), encoding="utf-8")
+        operation_mode_path.write_text(json.dumps(operation_mode_payload, indent=2), encoding="utf-8")
+        approval_guardrails_path.write_text(json.dumps(approval_guardrails_payload, indent=2), encoding="utf-8")
+        transport_integration_path.write_text(json.dumps(transport_integration_payload, indent=2), encoding="utf-8")
+
+        notes = self._dedupe_strings(
+            [
+                "Generated file governance manifests for storage lanes, scanner lanes, operating mode, approval guardrails, and transport integration.",
+                f"File governance resolves to `{recommended_operation_mode}` with {len(storage_lanes)} storage lane(s) and {len(ready_scanner_lanes)} ready scanner lane(s).",
+            ]
+            + [str(item) for item in list(summary.get("notes") or [])[:4]]
+        )[:8]
+        plan_status = (
+            "ready"
+            if supports_bulk_planning and not blocking_reasons and recommended_operation_mode != "discovery_needed"
+            else "partial"
+            if supports_bulk_planning
+            else "blocked"
+        )
+        result_summary = (
+            f"Generated a file governance plan with {len(storage_lanes)} storage lane(s), "
+            f"{len(ready_scanner_lanes)} ready scanner lane(s), and {len(storage_providers)} storage provider hint(s)."
+        )
+        return {
+            "project_id": project.id,
+            "project_name": project.name,
+            "workspace_path": workspace_path,
+            "summary": result_summary,
+            "plan_status": plan_status,
+            "recommended_operation_mode": recommended_operation_mode,
+            "supports_bulk_planning": supports_bulk_planning,
+            "destructive_actions_require_approval": destructive_actions_require_approval,
+            "storage_lane_count": int(summary.get("storage_lane_count") or len(storage_lanes)),
+            "ready_scanner_lane_count": int(summary.get("ready_scanner_lane_count") or len(ready_scanner_lanes)),
+            "selected_target_id": str(summary.get("selected_target_id") or "").strip() or None,
+            "selected_ready_scanner_lane_count": len(selected_ready_scanner_lanes),
+            "selected_ready_scanner_lanes": selected_ready_scanner_lanes,
+            "target_backed_ready_scanner_lanes": target_backed_ready_scanner_lanes,
+            "storage_provider_count": int(summary.get("storage_provider_count") or len(storage_providers)),
+            "manifest_root": manifest_root.relative_to(workspace_root).as_posix(),
+            "storage_lanes_path": storage_lanes_path.relative_to(workspace_root).as_posix(),
+            "scanner_lanes_path": scanner_lanes_path.relative_to(workspace_root).as_posix(),
+            "operation_mode_path": operation_mode_path.relative_to(workspace_root).as_posix(),
+            "approval_guardrails_path": approval_guardrails_path.relative_to(workspace_root).as_posix(),
+            "transport_integration_path": transport_integration_path.relative_to(workspace_root).as_posix(),
+            "blocking_reasons": blocking_reasons,
+            "notes": notes,
+        }
+
+    @staticmethod
+    def _file_graph_manifest_root(workspace_root: Path) -> Path:
+        return workspace_root / "artifacts" / "file-graph"
+
+    @staticmethod
+    def _file_graph_ignored_parts() -> set[str]:
+        return {
+            ".git",
+            ".hg",
+            ".svn",
+            "__pycache__",
+            "node_modules",
+            ".venv",
+            "venv",
+            ".codex",
+            ".claude",
+            "mission-control",
+            "Microsoft",
+        }
+
+    @staticmethod
+    def _classify_file_graph_path(relative_path: str) -> str:
+        suffix = Path(relative_path).suffix.lower()
+        if suffix in {".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp", ".svg", ".tif", ".tiff", ".exr"}:
+            return "image"
+        if suffix in {".mp4", ".mov", ".avi", ".mkv", ".webm"}:
+            return "video"
+        if suffix in {".mp3", ".wav", ".flac", ".ogg", ".m4a"}:
+            return "audio"
+        if suffix in {".blend", ".fbx", ".obj", ".glb", ".gltf", ".usd", ".usda", ".usdc", ".ply", ".stl"}:
+            return "3d_asset"
+        if suffix in {".uasset", ".umap", ".unity", ".prefab", ".mat", ".anim"}:
+            return "game_asset"
+        if suffix in {".onnx", ".pt", ".pth", ".ckpt", ".safetensors", ".bin"}:
+            return "model"
+        if suffix in {".csv", ".tsv", ".parquet", ".feather", ".jsonl"}:
+            return "dataset"
+        if suffix in {".md", ".txt", ".pdf", ".doc", ".docx", ".rtf"}:
+            return "document"
+        if suffix in {".xls", ".xlsx", ".ods"}:
+            return "spreadsheet"
+        if suffix in {".ppt", ".pptx", ".key"}:
+            return "presentation"
+        if suffix in {".yaml", ".yml", ".toml", ".ini", ".cfg", ".conf", ".env"}:
+            return "config"
+        if suffix in {".py", ".ts", ".tsx", ".js", ".jsx", ".rs", ".go", ".java", ".cs", ".cpp", ".c", ".h", ".hpp", ".swift", ".kt"}:
+            return "code"
+        if suffix in {".zip", ".tar", ".gz", ".7z", ".rar"}:
+            return "archive"
+        return "other"
+
+    @staticmethod
+    def _sha256_for_path(path: Path) -> str:
+        digest = hashlib.sha256()
+        with path.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
+        return digest.hexdigest()
+
+    def build_file_graph_governance_plan(self, db: Session, project: Project) -> dict[str, Any]:
+        workspace_path = str(project.workspace_path or project.source_path or "").strip() or None
+        file_governance = self.build_file_governance_summary(db, project)
+        quality_gates = self.build_quality_gate_summary(db, project)
+        supports_bulk_planning = bool(file_governance.get("supports_bulk_planning"))
+        destructive_actions_require_approval = bool(file_governance.get("destructive_actions_require_approval", True))
+        quality_gate_blocker_count = int(quality_gates.get("blocking_gate_count") or 0)
+        blocking_reasons = self._dedupe_strings(
+            (["bulk_planning_lane_not_ready"] if not supports_bulk_planning else [])
+            + (
+                ["destructive_bulk_actions_are_not_approval_gated"]
+                if not destructive_actions_require_approval
+                else []
+            )
+            + (
+                [f"{quality_gate_blocker_count} quality gate(s) still block a clean file-graph handoff."]
+                if quality_gate_blocker_count > 0
+                else []
+            )
+        )
+        if workspace_path is None:
+            return {
+                "project_id": project.id,
+                "project_name": project.name,
+                "workspace_path": None,
+                "summary": "File-graph planning is blocked because this project has no workspace path.",
+                "plan_status": "blocked",
+                "supports_bulk_planning": supports_bulk_planning,
+                "destructive_actions_require_approval": destructive_actions_require_approval,
+                "blocking_reasons": ["workspace_path_missing"],
+                "notes": ["Dry-run manifests need a concrete workspace before Mission Control can scan anything."],
+            }
+
+        workspace_root = Path(workspace_path)
+        if not workspace_root.exists() or not workspace_root.is_dir():
+            return {
+                "project_id": project.id,
+                "project_name": project.name,
+                "workspace_path": workspace_path,
+                "summary": "File-graph planning is blocked because the workspace path does not exist as a directory.",
+                "plan_status": "blocked",
+                "supports_bulk_planning": supports_bulk_planning,
+                "destructive_actions_require_approval": destructive_actions_require_approval,
+                "blocking_reasons": ["workspace_directory_missing"],
+                "notes": ["Mission Control cannot fake a file graph for a workspace that is not actually on disk."],
+            }
+
+        manifest_root = self._file_graph_manifest_root(workspace_root)
+        manifest_root.mkdir(parents=True, exist_ok=True)
+        ignored_parts = self._file_graph_ignored_parts()
+        recommended_operation_mode = str(file_governance.get("recommended_operation_mode") or "discovery_needed")
+        scanned_entries: list[dict[str, Any]] = []
+        skipped_paths: list[str] = []
+        for candidate in sorted(workspace_root.rglob("*")):
+            if not candidate.is_file():
+                continue
+            relative_path = candidate.relative_to(workspace_root).as_posix()
+            if relative_path.startswith("artifacts/file-graph/"):
+                continue
+            if any(part in ignored_parts for part in candidate.relative_to(workspace_root).parts):
+                continue
+            try:
+                stat = candidate.stat()
+                sha256 = self._sha256_for_path(candidate)
+            except OSError:
+                skipped_paths.append(relative_path)
+                continue
+            scanned_entries.append(
+                {
+                    "path": relative_path,
+                    "size_bytes": int(stat.st_size),
+                    "sha256": sha256,
+                    "classification": self._classify_file_graph_path(relative_path),
+                }
+            )
+
+        if not scanned_entries:
+            return {
+                "project_id": project.id,
+                "project_name": project.name,
+                "workspace_path": workspace_path,
+                "summary": "File-graph planning is blocked because the workspace has no scannable files after exclusions.",
+                "plan_status": "blocked",
+                "supports_bulk_planning": supports_bulk_planning,
+                "destructive_actions_require_approval": destructive_actions_require_approval,
+                "blocking_reasons": ["workspace_has_no_scannable_files"],
+                "notes": ["Mission Control skipped ignored infrastructure folders and found nothing worth organizing."],
+            }
+
+        hash_to_entries: dict[str, list[dict[str, Any]]] = {}
+        classification_buckets: dict[str, list[str]] = {}
+        for entry in scanned_entries:
+            hash_to_entries.setdefault(str(entry["sha256"]), []).append(entry)
+            classification_buckets.setdefault(str(entry["classification"]), []).append(str(entry["path"]))
+
+        duplicate_clusters: list[dict[str, Any]] = []
+        proposed_actions: list[dict[str, Any]] = []
+        restore_actions: list[dict[str, Any]] = []
+        action_index = 1
+        for sha256, entries in sorted(hash_to_entries.items()):
+            ordered_entries = sorted(entries, key=lambda item: (len(str(item["path"])), str(item["path"])))
+            if len(ordered_entries) < 2:
+                continue
+            canonical = str(ordered_entries[0]["path"])
+            duplicate_paths = [str(item["path"]) for item in ordered_entries[1:]]
+            duplicate_clusters.append(
+                {
+                    "sha256": sha256,
+                    "canonical_path": canonical,
+                    "paths": [str(item["path"]) for item in ordered_entries],
+                    "duplicate_count": len(duplicate_paths),
+                    "size_bytes": int(ordered_entries[0]["size_bytes"]),
+                }
+            )
+            for duplicate_path in duplicate_paths:
+                suffix = Path(duplicate_path).suffix
+                safe_name = duplicate_path.replace("/", "__")
+                archive_destination = f"archive/review/duplicates/{safe_name}{suffix if suffix and not safe_name.endswith(suffix) else ''}"
+                action_id = f"duplicate-review-{action_index}"
+                action_index += 1
+                proposed_actions.append(
+                    {
+                        "action_id": action_id,
+                        "action_type": "archive_candidate",
+                        "reason": "duplicate_content",
+                        "source_path": duplicate_path,
+                        "canonical_path": canonical,
+                        "proposed_destination": archive_destination,
+                        "sha256": sha256,
+                    }
+                )
+                restore_actions.append(
+                    {
+                        "action_id": action_id,
+                        "restore_source": archive_destination,
+                        "restore_destination": duplicate_path,
+                        "reason": "undo_archive_candidate",
+                    }
+                )
+
+        classification_manifest = {
+            "generated_by": "mission-control",
+            "recommended_operation_mode": recommended_operation_mode,
+            "destructive_actions_require_approval": destructive_actions_require_approval,
+            "scanned_file_count": len(scanned_entries),
+            "skipped_file_count": len(skipped_paths),
+            "bucket_count": len(classification_buckets),
+            "bucket_sizes": {
+                bucket: len(paths)
+                for bucket, paths in sorted(classification_buckets.items(), key=lambda item: item[0])
+            },
+            "buckets": {
+                bucket: sorted(paths)
+                for bucket, paths in sorted(classification_buckets.items(), key=lambda item: item[0])
+            },
+        }
+        dry_run_manifest = {
+            "generated_by": "mission-control",
+            "mode": "dry_run",
+            "requires_human_approval": True,
+            "recommended_operation_mode": recommended_operation_mode,
+            "destructive_actions_require_approval": destructive_actions_require_approval,
+            "duplicate_cluster_count": len(duplicate_clusters),
+            "skipped_paths": skipped_paths[:50],
+            "blocking_reasons": blocking_reasons,
+            "action_count": len(proposed_actions),
+            "actions": proposed_actions,
+        }
+        restore_manifest = {
+            "generated_by": "mission-control",
+            "mode": "reversible_batch_restore",
+            "requires_human_approval": destructive_actions_require_approval,
+            "recommended_operation_mode": recommended_operation_mode,
+            "restores_action_ids": [str(item.get("action_id") or "") for item in restore_actions if str(item.get("action_id") or "").strip()],
+            "action_count": len(restore_actions),
+            "actions": restore_actions,
+        }
+
+        hash_manifest_path = manifest_root / "content-hashes.sha256"
+        duplicate_cluster_path = manifest_root / "duplicate-clusters.json"
+        classification_manifest_path = manifest_root / "semantic-classification-taxonomy.json"
+        dry_run_manifest_path = manifest_root / "bulk-rename-dry-run-plan.json"
+        reversible_batch_manifest_path = manifest_root / "restore-batch-manifest.json"
+
+        hash_manifest_path.write_text(
+            "\n".join(
+                f"{entry['sha256']}  {entry['path']}"
+                for entry in sorted(scanned_entries, key=lambda item: str(item["path"]))
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        duplicate_cluster_path.write_text(json.dumps(duplicate_clusters, indent=2), encoding="utf-8")
+        classification_manifest_path.write_text(json.dumps(classification_manifest, indent=2), encoding="utf-8")
+        dry_run_manifest_path.write_text(json.dumps(dry_run_manifest, indent=2), encoding="utf-8")
+        reversible_batch_manifest_path.write_text(json.dumps(restore_manifest, indent=2), encoding="utf-8")
+
+        if not supports_bulk_planning:
+            plan_status = "blocked"
+        elif blocking_reasons:
+            plan_status = "partial"
+        else:
+            plan_status = "ready"
+        action_counts = self._count_string_values(
+            [str(item.get("action_type") or "") for item in proposed_actions]
+        )
+        notes = self._dedupe_strings(
+            [
+                "Generated reversible dry-run manifests for hashing, duplicate review, classification, and restore planning.",
+                "No destructive mutation was executed; this is a governed plan only.",
+                (
+                    "Duplicate review actions are archive candidates only and still require approval before any real move."
+                    if proposed_actions
+                    else "No duplicate archive candidates were found in this workspace snapshot."
+                ),
+                (
+                    "Resolve required quality gates before treating this dry-run plan as execution-ready."
+                    if quality_gate_blocker_count > 0
+                    else None
+                ),
+                (
+                    "Destructive bulk actions are not approval-gated right now, so this plan stays partial until that policy is fixed."
+                    if not destructive_actions_require_approval
+                    else None
+                ),
+                f"Skipped {len(skipped_paths)} unreadable file(s) during hashing." if skipped_paths else "All scannable files were hashed successfully.",
+            ]
+            + [str(item) for item in list(file_governance.get("notes") or [])[:2]]
+        )[:8]
+        summary = (
+            f"Generated a governed file-graph dry-run plan with {len(scanned_entries)} scanned file(s), "
+            f"{len(duplicate_clusters)} duplicate cluster(s), {len(classification_buckets)} classification bucket(s), "
+            f"and {len(proposed_actions)} proposed action(s)."
+        )
+        return {
+            "project_id": project.id,
+            "project_name": project.name,
+            "workspace_path": workspace_path,
+            "summary": summary,
+            "plan_status": plan_status,
+            "supports_bulk_planning": supports_bulk_planning,
+            "destructive_actions_require_approval": destructive_actions_require_approval,
+            "scanned_file_count": len(scanned_entries),
+            "hashed_file_count": len(scanned_entries),
+            "duplicate_cluster_count": len(duplicate_clusters),
+            "classification_bucket_count": len(classification_buckets),
+            "action_count": len(proposed_actions),
+            "action_counts": action_counts,
+            "manifest_root": manifest_root.relative_to(workspace_root).as_posix(),
+            "hash_manifest_path": hash_manifest_path.relative_to(workspace_root).as_posix(),
+            "duplicate_cluster_path": duplicate_cluster_path.relative_to(workspace_root).as_posix(),
+            "classification_manifest_path": classification_manifest_path.relative_to(workspace_root).as_posix(),
+            "dry_run_manifest_path": dry_run_manifest_path.relative_to(workspace_root).as_posix(),
+            "reversible_batch_manifest_path": reversible_batch_manifest_path.relative_to(workspace_root).as_posix(),
+            "proposed_actions": proposed_actions[:200],
+            "restore_actions": restore_actions[:200],
+            "blocking_reasons": blocking_reasons,
+            "notes": notes,
+        }
+
+    def build_file_graph_governance_summary(self, db: Session, project: Project) -> dict[str, Any]:
+        artifact_registry = self.build_project_artifact_registry(project)
+        file_governance = self.build_file_governance_summary(db, project)
+        quality_gates = self.build_quality_gate_summary(db, project)
+        decision_audit = self.build_decision_audit_summary(db, project)
+
+        artifact_paths = [str(item) for item in list(artifact_registry.get("artifact_paths") or []) if str(item).strip()]
+        config_review_paths = [
+            str(item) for item in list(artifact_registry.get("config_review_paths") or []) if str(item).strip()
+        ]
+        validation_targets = [
+            str(item) for item in list(artifact_registry.get("validation_evidence_targets") or []) if str(item).strip()
+        ]
+        signal_paths = self._dedupe_strings(artifact_paths + config_review_paths + validation_targets)
+
+        def _match_paths(tokens: tuple[str, ...], *, extensions: set[str] | None = None) -> list[str]:
+            matches: list[str] = []
+            for path in signal_paths:
+                lowered = path.lower()
+                suffix = Path(path).suffix.lower()
+                if extensions and suffix not in extensions:
+                    continue
+                if any(token in lowered for token in tokens):
+                    matches.append(path)
+            return self._dedupe_strings(matches)
+
+        manifest_extensions = {
+            ".json",
+            ".jsonl",
+            ".yaml",
+            ".yml",
+            ".csv",
+            ".md",
+            ".txt",
+            ".sha1",
+            ".sha256",
+        }
+        hash_manifest_paths = _match_paths(
+            ("hash", "checksum", "fingerprint", "sha1", "sha256", "md5"),
+            extensions=manifest_extensions,
+        )
+        duplicate_cluster_paths = _match_paths(
+            ("duplicate", "dedupe", "cluster", "overlap", "similarity"),
+            extensions=manifest_extensions,
+        )
+        classification_manifest_paths = _match_paths(
+            ("semantic", "classification", "taxonomy", "tag", "label-map", "catalog"),
+            extensions=manifest_extensions,
+        )
+        dry_run_manifest_paths = _match_paths(
+            ("dry-run", "dry_run", "dryrun", "preview", "simulation", "whatif", "plan"),
+            extensions=manifest_extensions,
+        )
+        reversible_batch_manifest_paths = _match_paths(
+            ("restore", "rollback", "revert", "undo", "reversible"),
+            extensions=manifest_extensions,
+        )
+
+        supports_bulk_planning = bool(file_governance.get("supports_bulk_planning"))
+        destructive_actions_require_approval = bool(file_governance.get("destructive_actions_require_approval", True))
+        quality_gate_blocker_count = int(quality_gates.get("blocking_gate_count") or 0)
+        pending_question_count = int(decision_audit.get("pending_question_count") or 0)
+        has_operational_lane = bool(
+            supports_bulk_planning
+            or project.workspace_path
+            or project.source_path
+            or int(file_governance.get("connected_storage_lane_count") or 0) > 0
+            or int(file_governance.get("ready_scanner_lane_count") or 0) > 0
+        )
+
+        def _signal_status(paths: list[str], *, fallback_ready: bool = False) -> str:
+            if not has_operational_lane:
+                return "not_applicable"
+            if paths:
+                return "ready"
+            if fallback_ready:
+                return "partial"
+            return "blocked"
+
+        hashing_readiness_status = _signal_status(hash_manifest_paths, fallback_ready=supports_bulk_planning)
+        duplicate_clustering_status = _signal_status(
+            duplicate_cluster_paths,
+            fallback_ready=hashing_readiness_status in {"ready", "partial"},
+        )
+        semantic_classification_status = _signal_status(
+            classification_manifest_paths,
+            fallback_ready=supports_bulk_planning,
+        )
+        dry_run_manifest_status = _signal_status(dry_run_manifest_paths, fallback_ready=supports_bulk_planning)
+        reversible_batch_status = _signal_status(
+            reversible_batch_manifest_paths,
+            fallback_ready=dry_run_manifest_status in {"ready", "partial"},
+        )
+        destructive_approval_status = (
+            "not_applicable"
+            if not has_operational_lane
+            else "ready"
+            if destructive_actions_require_approval
+            else "blocked"
+        )
+
+        blocking_reasons = self._dedupe_strings(
+            (["no_bulk_file_governance_lane_available"] if not supports_bulk_planning else [])
+            + (
+                ["destructive_bulk_actions_are_not_approval_gated"]
+                if destructive_approval_status == "blocked"
+                else []
+            )
+            + (
+                [f"{quality_gate_blocker_count} quality gate(s) still block a clean file-graph handoff."]
+                if quality_gate_blocker_count > 0
+                else []
+            )
+        )
+        recommended_fixes = self._dedupe_strings(
+            (
+                ["Add a content hashing or checksum manifest before approving duplicate cleanup."]
+                if not hash_manifest_paths
+                else []
+            )
+            + (
+                ["Generate duplicate-cluster evidence before merging, archiving, or deleting at scale."]
+                if not duplicate_cluster_paths
+                else []
+            )
+            + (
+                ["Add a semantic classification or taxonomy manifest so bulk moves follow explicit intent."]
+                if not classification_manifest_paths
+                else []
+            )
+            + (
+                ["Create a dry-run mutation manifest before any bulk rename, archive, or delete action."]
+                if not dry_run_manifest_paths
+                else []
+            )
+            + (
+                ["Generate a reversible restore or rollback manifest before destructive bulk execution."]
+                if not reversible_batch_manifest_paths
+                else []
+            )
+            + (
+                ["Re-enable approval gating for destructive file operations before using file-graph automation."]
+                if destructive_approval_status == "blocked"
+                else []
+            )
+            + (
+                ["Resolve required quality gates before treating this file-graph plan as execution-ready."]
+                if quality_gate_blocker_count > 0
+                else []
+            )
+            + (
+                ["Resolve pending project questions before approving destructive file-graph execution."]
+                if pending_question_count > 0
+                else []
+            )
+        )
+
+        if not has_operational_lane:
+            governance_status = "not_applicable"
+        elif blocking_reasons:
+            governance_status = "blocked"
+        elif all(
+            status == "ready"
+            for status in (
+                hashing_readiness_status,
+                duplicate_clustering_status,
+                semantic_classification_status,
+                dry_run_manifest_status,
+                reversible_batch_status,
+                destructive_approval_status,
+            )
+        ):
+            governance_status = "ready"
+        else:
+            governance_status = "partial"
+
+        notes = self._dedupe_strings(
+            [
+                "File-graph automation stays fake until hashing, dedupe, classification, dry-run, and reversal evidence all exist.",
+                "Destructive bulk actions should consume approval-gated dry-run manifests, not vibes.",
+                (
+                    f"Base file-governance mode currently resolves to `{file_governance.get('recommended_operation_mode')}`."
+                    if file_governance.get("recommended_operation_mode")
+                    else "Base file-governance mode is still unresolved."
+                ),
+                f"{quality_gate_blocker_count} quality gate(s) and {pending_question_count} pending question(s) currently affect file-graph handoff confidence.",
+            ]
+            + [str(item) for item in list(file_governance.get("notes") or [])[:3]]
+            + [str(item) for item in list(artifact_registry.get("recommended_next_steps") or [])[:2]]
+        )[:8]
+        summary = (
+            f"File-graph governance is `{governance_status}` with {len(hash_manifest_paths)} hash manifest(s), "
+            f"{len(duplicate_cluster_paths)} duplicate-cluster signal(s), {len(classification_manifest_paths)} "
+            f"classification manifest(s), {len(dry_run_manifest_paths)} dry-run plan(s), "
+            f"{len(reversible_batch_manifest_paths)} reversible batch manifest(s), and "
+            f"{quality_gate_blocker_count} blocking quality gate(s)."
+        )
+
+        return {
+            "project_id": project.id,
+            "project_name": project.name,
+            "workspace_path": project.workspace_path,
+            "summary": summary,
+            "governance_status": governance_status,
+            "recommended_operation_mode": str(file_governance.get("recommended_operation_mode") or "discovery_needed"),
+            "destructive_actions_require_approval": destructive_actions_require_approval,
+            "hashing_readiness_status": hashing_readiness_status,
+            "duplicate_clustering_status": duplicate_clustering_status,
+            "semantic_classification_status": semantic_classification_status,
+            "dry_run_manifest_status": dry_run_manifest_status,
+            "reversible_batch_status": reversible_batch_status,
+            "destructive_approval_status": destructive_approval_status,
+            "signal_path_count": len(signal_paths),
+            "signal_paths": signal_paths,
+            "hash_manifest_count": len(hash_manifest_paths),
+            "hash_manifest_paths": hash_manifest_paths,
+            "duplicate_cluster_count": len(duplicate_cluster_paths),
+            "duplicate_cluster_paths": duplicate_cluster_paths,
+            "classification_manifest_count": len(classification_manifest_paths),
+            "classification_manifest_paths": classification_manifest_paths,
+            "dry_run_manifest_count": len(dry_run_manifest_paths),
+            "dry_run_manifest_paths": dry_run_manifest_paths,
+            "reversible_batch_manifest_count": len(reversible_batch_manifest_paths),
+            "reversible_batch_manifest_paths": reversible_batch_manifest_paths,
+            "quality_gate_blocker_count": quality_gate_blocker_count,
+            "pending_question_count": pending_question_count,
+            "blocking_reasons": blocking_reasons,
+            "recommended_fixes": recommended_fixes,
+            "notes": notes,
+            "artifact_registry": artifact_registry,
+            "file_governance": file_governance,
+        }
+
+    def build_design_transfer_summary(self, db: Session, project: Project) -> dict[str, Any]:
+        artifact_registry = self.build_project_artifact_registry(project)
+        connector_registry = self.get_connector_registry(db)
+        platform_runners = self.build_platform_runner_summary(db, project)
+        browser_lane = next(
+            (lane for lane in list(platform_runners.get("lanes") or []) if str(lane.get("lane_id") or "") == "browser"),
+            {},
+        )
+        browser_lane_status = str(browser_lane.get("status") or "unavailable")
+        browser_lane_target_ids = [
+            str(item)
+            for item in list(browser_lane.get("target_ids") or [])
+            if str(item).strip()
+        ]
+        design_extensions = {".fig", ".figma", ".png", ".jpg", ".jpeg", ".svg", ".pdf", ".html", ".htm", ".json"}
+        design_hint_tokens = ("figma", "design", "token", "theme", "style", "mock", "wireframe", "screen", "component")
+        design_artifact_paths = [
+            path
+            for path in [str(item) for item in list(artifact_registry.get("artifact_paths") or []) if str(item).strip()]
+            if (
+                (Path(path).suffix.lower() in design_extensions)
+                and any(token in path.lower() for token in design_hint_tokens)
+            )
+            or Path(path).suffix.lower() in {".png", ".jpg", ".jpeg", ".svg", ".pdf"}
+        ]
+        design_artifact_paths = self._dedupe_strings(design_artifact_paths)
+        design_artifact_formats = sorted({Path(path).suffix.lower() or "<no_ext>" for path in design_artifact_paths})
+        figma_connected = any(
+            "figma" in str(provider).lower()
+            for provider in dict(connector_registry.get("provider_counts") or {}).keys()
+        ) and (
+            "figma" in [str(item) for item in list(connector_registry.get("ready_families") or [])]
+            or any(
+                "figma" in str(provider).lower()
+                and str(connection.get("status") or "") not in {"disconnected", "needs_setup"}
+                for connection in list(connector_registry.get("connections") or [])
+                for provider in list(connection.get("providers") or [])
+            )
+        )
+        if figma_connected and design_artifact_paths:
+            recommended_ingestion_mode = "figma_plus_artifacts"
+        elif figma_connected:
+            recommended_ingestion_mode = "figma_only"
+        elif design_artifact_paths:
+            recommended_ingestion_mode = "artifact_only"
+        elif browser_lane_status in {"ready", "partial"}:
+            recommended_ingestion_mode = "browser_validation_only"
+        else:
+            recommended_ingestion_mode = "discovery_needed"
+        supports_visual_regression = browser_lane_status in {"ready", "partial"} or any(
+            fmt in {".png", ".jpg", ".jpeg", ".svg"} for fmt in design_artifact_formats
+        )
+        code_conformance_ready = browser_lane_status == "ready"
+        blocking_reasons = self._dedupe_strings(
+            ([] if figma_connected or design_artifact_paths else ["no_design_inputs_detected"])
+            + ([] if browser_lane_status != "unavailable" else ["browser_conformance_lane_unavailable"])
+        )
+        notes = self._dedupe_strings(
+            [
+                "Design-to-code should route through explicit artifacts or a verified Figma lane, not screenshot telepathy.",
+                (
+                    f"Browser lane is `{browser_lane_status}` for DOM, screenshot, and accessibility conformance."
+                    if browser_lane_status != "unavailable"
+                    else "No browser conformance lane is currently exposed."
+                ),
+                "Security-sensitive design connectors should stay guided or API-backed, never free-shell nonsense.",
+            ]
+            + [str(item) for item in list(browser_lane.get("notes") or [])[:2]]
+        )[:8]
+        summary = (
+            f"Design transfer is `{recommended_ingestion_mode}` with "
+            f"{len(design_artifact_paths)} design artifact path(s), figma_connected={str(figma_connected).lower()}, "
+            f"and browser lane `{browser_lane_status}`."
+        )
+        return {
+            "project_id": project.id,
+            "project_name": project.name,
+            "workspace_path": project.workspace_path,
+            "summary": summary,
+            "recommended_ingestion_mode": recommended_ingestion_mode,
+            "figma_connected": figma_connected,
+            "design_artifact_count": len(design_artifact_paths),
+            "design_artifact_paths": design_artifact_paths,
+            "design_artifact_formats": design_artifact_formats,
+            "browser_lane_status": browser_lane_status,
+            "browser_lane_target_ids": browser_lane_target_ids,
+            "supports_visual_regression": supports_visual_regression,
+            "code_conformance_ready": code_conformance_ready,
+            "blocking_reasons": blocking_reasons,
+            "notes": notes,
+            "artifact_registry": artifact_registry,
+            "connector_registry": connector_registry,
+            "platform_runners": platform_runners,
+        }
+
+    @staticmethod
+    def _design_transfer_manifest_root(workspace_root: Path) -> Path:
+        return workspace_root / "artifacts" / "design-transfer"
+
+    def build_design_transfer_plan(self, db: Session, project: Project) -> dict[str, Any]:
+        summary = self.build_design_transfer_summary(db, project)
+        workspace_path = str(project.workspace_path or project.source_path or "").strip() or None
+        if workspace_path is None:
+            return {
+                "project_id": project.id,
+                "project_name": project.name,
+                "workspace_path": None,
+                "summary": "Design transfer planning is blocked because the workspace path is missing.",
+                "plan_status": "blocked",
+                "recommended_ingestion_mode": str(summary.get("recommended_ingestion_mode") or "discovery_needed"),
+                "figma_connected": bool(summary.get("figma_connected")),
+                "browser_lane_status": str(summary.get("browser_lane_status") or "unavailable"),
+                "blocking_reasons": ["workspace_path_missing"],
+                "notes": ["Mission Control cannot materialize design-transfer manifests without a real workspace."],
+            }
+
+        workspace_root = Path(workspace_path)
+        if not workspace_root.exists() or not workspace_root.is_dir():
+            return {
+                "project_id": project.id,
+                "project_name": project.name,
+                "workspace_path": workspace_path,
+                "summary": "Design transfer planning is blocked because the workspace directory does not exist.",
+                "plan_status": "blocked",
+                "recommended_ingestion_mode": str(summary.get("recommended_ingestion_mode") or "discovery_needed"),
+                "figma_connected": bool(summary.get("figma_connected")),
+                "browser_lane_status": str(summary.get("browser_lane_status") or "unavailable"),
+                "blocking_reasons": ["workspace_directory_missing"],
+                "notes": ["The design lane needs actual repo files before it can map artifacts into code conformance work."],
+            }
+
+        design_artifact_paths = [
+            str(item) for item in list(summary.get("design_artifact_paths") or []) if str(item).strip()
+        ]
+        browser_lane_status = str(summary.get("browser_lane_status") or "unavailable")
+        figma_connected = bool(summary.get("figma_connected"))
+        blocking_reasons = self._dedupe_strings(list(summary.get("blocking_reasons") or []))
+        if not design_artifact_paths:
+            blocking_reasons.append("no_design_inputs_detected")
+
+        component_candidate_paths: list[str] = []
+        for candidate in sorted(workspace_root.rglob("*")):
+            if not candidate.is_file():
+                continue
+            relative_path = candidate.relative_to(workspace_root).as_posix()
+            if relative_path.startswith("artifacts/design-transfer/"):
+                continue
+            suffix = candidate.suffix.lower()
+            if suffix not in {".tsx", ".jsx", ".vue", ".html", ".css", ".scss", ".ts", ".js"}:
+                continue
+            if any(part in self._file_graph_ignored_parts() for part in candidate.relative_to(workspace_root).parts):
+                continue
+            component_candidate_paths.append(relative_path)
+
+        component_mappings: list[dict[str, Any]] = []
+        for artifact_path in design_artifact_paths:
+            artifact_stem_tokens = {
+                token
+                for token in re.split(r"[^a-z0-9]+", Path(artifact_path).stem.lower())
+                if token and token not in {"design", "mock", "screen", "tokens", "token", "figma"}
+            }
+            if not artifact_stem_tokens:
+                artifact_stem_tokens = {
+                    token for token in re.split(r"[^a-z0-9]+", Path(artifact_path).stem.lower()) if token
+                }
+            matches = [
+                path
+                for path in component_candidate_paths
+                if artifact_stem_tokens
+                and any(token in Path(path).stem.lower() or token in path.lower() for token in artifact_stem_tokens)
+            ][:5]
+            component_mappings.append(
+                {
+                    "design_artifact_path": artifact_path,
+                    "suggested_code_paths": matches,
+                    "mapping_status": "mapped" if matches else "needs_review",
+                    "artifact_format": Path(artifact_path).suffix.lower() or "<no_ext>",
+                }
+            )
+
+        conformance_checks = [
+            {
+                "check_id": "screenshot_diff",
+                "kind": "visual_regression",
+                "status": "ready" if browser_lane_status in {"ready", "partial"} else "blocked",
+                "target_artifacts": [path for path in design_artifact_paths if Path(path).suffix.lower() in {".png", ".jpg", ".jpeg", ".svg", ".pdf"}],
+                "recommended_command": "playwright test" if browser_lane_status in {"ready", "partial"} else None,
+            },
+            {
+                "check_id": "token_usage",
+                "kind": "design_tokens",
+                "status": "ready" if any(path.endswith(".json") for path in design_artifact_paths) else "blocked",
+                "target_artifacts": [path for path in design_artifact_paths if path.endswith(".json")],
+                "recommended_command": "python inspect_design_assets.py",
+            },
+            {
+                "check_id": "dom_aria",
+                "kind": "accessibility",
+                "status": "ready" if browser_lane_status == "ready" else "blocked",
+                "target_artifacts": design_artifact_paths[:6],
+                "recommended_command": "playwright test" if browser_lane_status == "ready" else None,
+            },
+        ]
+
+        manifest_root = self._design_transfer_manifest_root(workspace_root)
+        manifest_root.mkdir(parents=True, exist_ok=True)
+        design_intent_manifest_path = manifest_root / "design-intent-transfer.json"
+        component_map_manifest_path = manifest_root / "component-map.json"
+        screenshot_diff_plan_path = manifest_root / "screenshot-diff-plan.json"
+        token_usage_plan_path = manifest_root / "design-token-usage-plan.json"
+        aria_check_plan_path = manifest_root / "dom-aria-check-plan.json"
+
+        design_intent_manifest = {
+            "generated_by": "mission-control",
+            "recommended_ingestion_mode": str(summary.get("recommended_ingestion_mode") or "discovery_needed"),
+            "figma_connected": figma_connected,
+            "browser_lane_status": browser_lane_status,
+            "design_artifact_paths": design_artifact_paths,
+            "notes": list(summary.get("notes") or []),
+        }
+        screenshot_diff_manifest = {
+            "check_id": "screenshot_diff",
+            "status": next((check["status"] for check in conformance_checks if check["check_id"] == "screenshot_diff"), "blocked"),
+            "target_artifacts": [path for path in design_artifact_paths if Path(path).suffix.lower() in {".png", ".jpg", ".jpeg", ".svg", ".pdf"}],
+            "browser_lane_target_ids": list(summary.get("browser_lane_target_ids") or []),
+            "recommended_command": "playwright test" if browser_lane_status in {"ready", "partial"} else None,
+        }
+        token_usage_manifest = {
+            "check_id": "token_usage",
+            "status": next((check["status"] for check in conformance_checks if check["check_id"] == "token_usage"), "blocked"),
+            "token_artifacts": [path for path in design_artifact_paths if path.endswith(".json")],
+            "recommended_command": "python inspect_design_assets.py",
+        }
+        aria_check_manifest = {
+            "check_id": "dom_aria",
+            "status": next((check["status"] for check in conformance_checks if check["check_id"] == "dom_aria"), "blocked"),
+            "recommended_command": "playwright test" if browser_lane_status == "ready" else None,
+            "mapped_code_paths": self._dedupe_strings(
+                [path for mapping in component_mappings for path in list(mapping.get("suggested_code_paths") or [])]
+            )[:20],
+        }
+
+        design_intent_manifest_path.write_text(json.dumps(design_intent_manifest, indent=2), encoding="utf-8")
+        component_map_manifest_path.write_text(json.dumps(component_mappings, indent=2), encoding="utf-8")
+        screenshot_diff_plan_path.write_text(json.dumps(screenshot_diff_manifest, indent=2), encoding="utf-8")
+        token_usage_plan_path.write_text(json.dumps(token_usage_manifest, indent=2), encoding="utf-8")
+        aria_check_plan_path.write_text(json.dumps(aria_check_manifest, indent=2), encoding="utf-8")
+
+        mapped_count = len([item for item in component_mappings if item.get("mapping_status") == "mapped"])
+        notes = self._dedupe_strings(
+            [
+                "Generated design-transfer manifests for intent transfer, component mapping, visual diffing, token checks, and ARIA review.",
+                (
+                    "Browser conformance is fully ready, so screenshot and DOM/ARIA checks can run without pretending."
+                    if browser_lane_status == "ready"
+                    else "Browser conformance is not fully ready, so some checks remain staged instead of executable."
+                ),
+                (
+                    f"{mapped_count} design artifact(s) mapped onto likely code targets."
+                    if mapped_count
+                    else "No strong code-path matches were found, so component mapping still needs human review."
+                ),
+            ]
+            + [str(item) for item in list(summary.get("notes") or [])[:2]]
+        )[:8]
+        plan_status = "ready" if not blocking_reasons and browser_lane_status == "ready" else "partial" if design_artifact_paths else "blocked"
+        result_summary = (
+            f"Generated a governed design-transfer plan with {len(design_artifact_paths)} design artifact(s), "
+            f"{len(component_mappings)} component mapping row(s), and {len(conformance_checks)} conformance check plan(s)."
+        )
+        return {
+            "project_id": project.id,
+            "project_name": project.name,
+            "workspace_path": workspace_path,
+            "summary": result_summary,
+            "plan_status": plan_status,
+            "recommended_ingestion_mode": str(summary.get("recommended_ingestion_mode") or "discovery_needed"),
+            "figma_connected": figma_connected,
+            "browser_lane_status": browser_lane_status,
+            "browser_lane_target_ids": [str(item) for item in list(summary.get("browser_lane_target_ids") or []) if str(item).strip()],
+            "design_artifact_count": len(design_artifact_paths),
+            "supports_visual_regression": bool(summary.get("supports_visual_regression")),
+            "code_conformance_ready": bool(summary.get("code_conformance_ready")),
+            "component_mapping_count": len(component_mappings),
+            "conformance_check_count": len(conformance_checks),
+            "manifest_root": manifest_root.relative_to(workspace_root).as_posix(),
+            "design_intent_manifest_path": design_intent_manifest_path.relative_to(workspace_root).as_posix(),
+            "component_map_manifest_path": component_map_manifest_path.relative_to(workspace_root).as_posix(),
+            "screenshot_diff_plan_path": screenshot_diff_plan_path.relative_to(workspace_root).as_posix(),
+            "token_usage_plan_path": token_usage_plan_path.relative_to(workspace_root).as_posix(),
+            "aria_check_plan_path": aria_check_plan_path.relative_to(workspace_root).as_posix(),
+            "component_mappings": component_mappings[:200],
+            "conformance_checks": conformance_checks,
+            "blocking_reasons": self._dedupe_strings(blocking_reasons),
+            "notes": notes,
+        }
+
+    @staticmethod
+    def _spatial_governance_manifest_root(workspace_root: Path) -> Path:
+        return workspace_root / "artifacts" / "spatial-governance"
+
+    def build_spatial_asset_governance_plan(self, db: Session, project: Project) -> dict[str, Any]:
+        summary = self.build_spatial_asset_governance_summary(db, project)
+        tooling = self.build_workspace_tooling_status(project)
+        validation_plan = dict(tooling.get("spatial3d_validation_plan") or {})
+        workspace_path = str(project.workspace_path or project.source_path or "").strip() or None
+        if workspace_path is None:
+            return {
+                "project_id": project.id,
+                "project_name": project.name,
+                "workspace_path": None,
+                "summary": "Spatial governance planning is blocked because the workspace path is missing.",
+                "plan_status": "blocked",
+                "repo_mode": summary.get("repo_mode"),
+                "blocking_reasons": ["workspace_path_missing"],
+                "notes": ["Mission Control cannot materialize spatial governance manifests without a real workspace."],
+            }
+
+        workspace_root = Path(workspace_path)
+        if not workspace_root.exists() or not workspace_root.is_dir():
+            return {
+                "project_id": project.id,
+                "project_name": project.name,
+                "workspace_path": workspace_path,
+                "summary": "Spatial governance planning is blocked because the workspace directory does not exist.",
+                "plan_status": "blocked",
+                "repo_mode": summary.get("repo_mode"),
+                "blocking_reasons": ["workspace_directory_missing"],
+                "notes": ["The spatial lane needs an actual repo-owned workspace before it can emit scene contracts or render plans."],
+            }
+
+        asset_paths = [str(item) for item in list(summary.get("asset_paths") or []) if str(item).strip()]
+        config_paths = [str(item) for item in list(summary.get("config_paths") or []) if str(item).strip()]
+        workflows = [str(item) for item in list(summary.get("product_workflows") or []) if str(item).strip()]
+        frameworks = [str(item) for item in list(summary.get("frameworks") or []) if str(item).strip()]
+        validation_steps = [dict(item or {}) for item in list(validation_plan.get("steps") or []) if isinstance(item, dict)]
+        blocking_reasons = self._dedupe_strings(list(summary.get("blocking_reasons") or []))
+        pending_approval_count = int(summary.get("pending_approval_count") or 0)
+        pending_question_count = int(summary.get("pending_question_count") or 0)
+        scene_paths = [str(item) for item in [summary.get("primary_scene_path")] if str(item or "").strip()]
+        mesh_like_suffixes = {".abc", ".blend", ".fbx", ".glb", ".gltf", ".obj", ".ply", ".stl", ".usd", ".usda", ".usdc"}
+        riggable_suffixes = {".blend", ".fbx", ".usd", ".usda", ".usdc"}
+        export_target_map = {
+            ".abc": "alembic",
+            ".blend": "blend",
+            ".fbx": "fbx",
+            ".glb": "glb",
+            ".gltf": "gltf",
+            ".obj": "obj",
+            ".ply": "ply",
+            ".splat": "splat",
+            ".spz": "spz",
+            ".usd": "usd",
+            ".usda": "usd",
+            ".usdc": "usd",
+        }
+        export_targets = self._dedupe_strings(
+            [export_target_map[suffix] for suffix in sorted({Path(path).suffix.lower() for path in asset_paths}) if suffix in export_target_map]
+            + (["spz"] if "splat_compression" in workflows else [])
+            + (["glb"] if "browser_renderer" in workflows else [])
+        )
+        asset_entries = [
+            {
+                "asset_path": asset_path,
+                "asset_kind": self._classify_file_graph_path(asset_path),
+                "suffix": Path(asset_path).suffix.lower() or "<no_ext>",
+                "object_id": Path(asset_path).stem or asset_path.replace("/", "_"),
+                "collection_id": str(Path(asset_path).parent).replace("\\", "/") or ".",
+            }
+            for asset_path in asset_paths
+        ]
+        quality_checks = [
+            "manifold_geometry",
+            "non_zero_area_faces",
+            "normals_consistent",
+            "uv_coverage",
+            "material_completeness",
+            "triangle_budget",
+            "naming_conventions",
+            "origin_and_pivot_sanity",
+            "export_validation",
+        ]
+
+        manifest_root = self._spatial_governance_manifest_root(workspace_root)
+        manifest_root.mkdir(parents=True, exist_ok=True)
+        scene_contract_path = manifest_root / "scene-contract.json"
+        asset_provenance_path = manifest_root / "asset-provenance.json"
+        visual_regression_plan_path = manifest_root / "visual-regression-plan.json"
+        export_validation_plan_path = manifest_root / "export-validation-plan.json"
+        approval_checkpoint_path = manifest_root / "approval-checkpoints.json"
+
+        scene_contract = {
+            "generated_by": "mission-control",
+            "repo_mode": summary.get("repo_mode"),
+            "primary_scene_path": summary.get("primary_scene_path"),
+            "asset_paths": asset_paths,
+            "config_paths": config_paths,
+            "frameworks": frameworks,
+            "product_workflows": workflows,
+            "recommended_feature_ids": list(summary.get("recommended_feature_ids") or []),
+            "transport_mode": summary.get("recommended_transport_mode"),
+            "unit_system": "meters",
+            "transform_conventions": {
+                "space": "world",
+                "origin_policy": "pivot_sanity_required",
+                "scale_policy": "unit_normalized_before_export",
+            },
+            "collections": [
+                {
+                    "collection_id": entry["collection_id"],
+                    "asset_path": entry["asset_path"],
+                    "asset_kind": entry["asset_kind"],
+                }
+                for entry in asset_entries
+            ],
+            "objects": [
+                {
+                    "object_id": entry["object_id"],
+                    "asset_path": entry["asset_path"],
+                    "asset_kind": entry["asset_kind"],
+                    "transform_review_required": True,
+                    "material_slots_required": entry["suffix"] in mesh_like_suffixes,
+                    "rigging_review_required": entry["suffix"] in riggable_suffixes,
+                }
+                for entry in asset_entries
+            ],
+            "materials": {
+                "completeness_required": True,
+                "uv_coverage_required": True,
+                "lineage_required": True,
+            },
+            "rigging": {
+                "review_required": any(entry["suffix"] in riggable_suffixes for entry in asset_entries),
+                "animation_safe_export_required": any(entry["suffix"] in riggable_suffixes for entry in asset_entries),
+            },
+            "export_targets": export_targets,
+            "scene_paths": scene_paths,
+            "quality_gate_expectations": quality_checks,
+            "approval_requirements": {
+                "pre_export_required": True,
+                "post_render_self_review_required": bool(summary.get("supports_visual_regression")),
+                "pending_approval_count": int(summary.get("pending_approval_count") or 0),
+                "pending_question_count": int(summary.get("pending_question_count") or 0),
+            },
+        }
+        asset_provenance = [
+            {
+                "asset_path": entry["asset_path"],
+                "asset_kind": entry["asset_kind"],
+                "source": "workspace",
+                "lineage_status": "needs_recording",
+                "config_paths": config_paths[:6],
+                "generation_method": (
+                    "capture_reconstruction"
+                    if "cloud_reconstruction" in workflows or entry["suffix"] in {".splat", ".spz"}
+                    else "scene_authoring"
+                    if entry["suffix"] in {".blend", ".usd", ".usda", ".usdc"}
+                    else "conversion_pipeline"
+                    if summary.get("conversion_commands")
+                    else "workspace_import"
+                ),
+                "source_commands": list(summary.get("capture_commands") or [])[:2] + list(summary.get("conversion_commands") or [])[:2],
+                "export_targets": export_targets,
+                "approval_required_before_publish": True,
+                "material_lineage_required": entry["suffix"] in mesh_like_suffixes,
+                "texture_lineage_required": entry["suffix"] in mesh_like_suffixes,
+            }
+            for entry in asset_entries
+        ]
+        visual_regression_plan = {
+            "enabled": bool(summary.get("supports_visual_regression")),
+            "browser_lane_status": summary.get("browser_lane_status"),
+            "headless_runner_status": summary.get("headless_runner_status"),
+            "evidence_targets": list(summary.get("validation_evidence_targets") or []),
+            "steps": [
+                step
+                for step in validation_steps
+                if str(step.get("type") or "").strip() in {"inspect", "benchmark", "render", "validate"}
+            ],
+            "fixed_camera_views": [
+                {"view_id": "hero", "required": True, "purpose": "primary render diff"},
+                {"view_id": "ortho_front", "required": True, "purpose": "geometry sanity"},
+                {"view_id": "ortho_top", "required": True, "purpose": "scale and pivot sanity"},
+            ],
+            "diff_thresholds": {
+                "max_pixel_ratio_delta": 0.02,
+                "max_luminance_delta": 0.03,
+            },
+            "checks": {
+                "black_frame_check": True,
+                "overlay_artifact_check": True,
+                "missing_material_check": True,
+                "camera_coverage_check": True,
+            },
+            "review_stage": "post_render_self_review_before_publish",
+        }
+        export_validation_plan = {
+            "build_commands": list(summary.get("build_commands") or []),
+            "render_commands": list(summary.get("render_commands") or []),
+            "conversion_commands": list(summary.get("conversion_commands") or []),
+            "capture_commands": list(summary.get("capture_commands") or []),
+            "benchmark_commands": list(summary.get("benchmark_commands") or []),
+            "target_extensions": list(summary.get("asset_extensions") or []),
+            "validation_status": summary.get("validation_status"),
+            "export_targets": export_targets,
+            "quality_checks": [
+                {"check_id": check_id, "required": True, "status": "pending"}
+                for check_id in quality_checks
+            ],
+            "budget_controls": {
+                "triangle_budget_required": True,
+                "material_budget_required": True,
+                "benchmark_evidence_required": bool(summary.get("benchmark_commands")),
+            },
+        }
+        approval_checkpoints = {
+            "checkpoints": [
+                {
+                    "checkpoint_id": "scene_contract_review",
+                    "stage": "preflight",
+                    "status": "ready" if asset_paths else "blocked",
+                    "reason": "Scene and asset surface must be explicit before any autonomous DCC execution.",
+                },
+                {
+                    "checkpoint_id": "provenance_review",
+                    "stage": "preflight",
+                    "status": "ready" if asset_paths and config_paths else "partial",
+                    "reason": "Asset lineage needs to be reviewable before publish so generated meshes and textures do not arrive with amnesia.",
+                },
+                {
+                    "checkpoint_id": "visual_regression_review",
+                    "stage": "validation",
+                    "status": "ready" if summary.get("supports_visual_regression") else "partial",
+                    "reason": "Render regression should be reviewed before publish or export.",
+                },
+                {
+                    "checkpoint_id": "export_validation_review",
+                    "stage": "export",
+                    "status": "ready" if str(summary.get("validation_status") or "") == "ready" else "partial",
+                    "reason": "Export validation must clear geometry, material, and budget checks before artifacts ship.",
+                },
+                {
+                    "checkpoint_id": "publish_gate",
+                    "stage": "publish",
+                    "status": "blocked" if (blocking_reasons or pending_approval_count > 0 or pending_question_count > 0) else "ready",
+                    "reason": "Publishing spatial output stays blocked until current governance blockers are cleared.",
+                },
+            ]
+        }
+
+        scene_contract_path.write_text(json.dumps(scene_contract, indent=2), encoding="utf-8")
+        asset_provenance_path.write_text(json.dumps(asset_provenance, indent=2), encoding="utf-8")
+        visual_regression_plan_path.write_text(json.dumps(visual_regression_plan, indent=2), encoding="utf-8")
+        export_validation_plan_path.write_text(json.dumps(export_validation_plan, indent=2), encoding="utf-8")
+        approval_checkpoint_path.write_text(json.dumps(approval_checkpoints, indent=2), encoding="utf-8")
+
+        notes = self._dedupe_strings(
+            [
+                "Generated spatial governance manifests for scene contract, asset provenance, visual regression, export validation, and publish checkpoints.",
+                (
+                    "Visual regression is enabled in the plan because the workspace already exposes render evidence or browser validation."
+                    if summary.get("supports_visual_regression")
+                    else "Visual regression is still only partially wired, so the plan records the missing lane honestly."
+                ),
+                (
+                    f"{len(validation_steps)} validation step(s) from the spatial validation plan were folded into the planner."
+                    if validation_steps
+                    else "No explicit spatial validation steps were exposed, so the planner fell back to summary metadata."
+                ),
+                (
+                    f"{pending_approval_count} approval checkpoint(s) and {pending_question_count} question(s) still keep publish review staged."
+                    if pending_approval_count > 0 or pending_question_count > 0
+                    else None
+                ),
+            ]
+            + [str(item) for item in list(summary.get("notes") or [])[:3]]
+        )[:8]
+        plan_status = (
+            "ready"
+            if not blocking_reasons
+            and pending_approval_count == 0
+            and pending_question_count == 0
+            and str(summary.get("validation_status") or "") == "ready"
+            else "partial"
+            if asset_paths
+            else "blocked"
+        )
+        result_summary = (
+            f"Generated a governed spatial asset plan with {len(asset_paths)} asset path(s), "
+            f"{len(workflows)} workflow(s), and {len(validation_steps)} validation step(s)."
+        )
+        return {
+            "project_id": project.id,
+            "project_name": project.name,
+            "workspace_path": workspace_path,
+            "summary": result_summary,
+            "plan_status": plan_status,
+            "selected_target_id": str(summary.get("selected_target_id") or "").strip() or None,
+            "repo_mode": summary.get("repo_mode"),
+            "asset_count": len(asset_paths),
+            "workflow_count": len(workflows),
+            "validation_step_count": len(validation_steps),
+            "manifest_root": manifest_root.relative_to(workspace_root).as_posix(),
+            "scene_contract_path": scene_contract_path.relative_to(workspace_root).as_posix(),
+            "asset_provenance_path": asset_provenance_path.relative_to(workspace_root).as_posix(),
+            "visual_regression_plan_path": visual_regression_plan_path.relative_to(workspace_root).as_posix(),
+            "export_validation_plan_path": export_validation_plan_path.relative_to(workspace_root).as_posix(),
+            "approval_checkpoint_path": approval_checkpoint_path.relative_to(workspace_root).as_posix(),
+            "blocking_reasons": blocking_reasons,
+            "notes": notes,
+        }
+
+    def build_spatial_asset_governance_summary(self, db: Session, project: Project) -> dict[str, Any]:
+        tooling = self.build_workspace_tooling_status(project)
+        repo_mode = dict(tooling.get("spatial3d_repo") or {})
+        validation_plan = dict(tooling.get("spatial3d_validation_plan") or {})
+        if not repo_mode:
+            repo_mode = detect_spatial3d_repo_mode(project.workspace_path or project.source_path)
+        if not validation_plan:
+            validation_plan = build_spatial3d_validation_plan(project.workspace_path or project.source_path)
+
+        platform_runners = self.build_platform_runner_summary(db, project)
+        artifact_transport = self.build_artifact_transport_summary(db, project)
+        quality_gates = self.build_quality_gate_summary(db, project)
+        decision_audit = self.build_decision_audit_summary(db, project)
+
+        workflows = [str(item) for item in list(repo_mode.get("product_workflows") or []) if str(item).strip()]
+        scene_paths = self._dedupe_strings([str(item) for item in list(repo_mode.get("scene_paths") or []) if str(item).strip()])
+        asset_paths = self._dedupe_strings(
+            [str(item) for item in list(repo_mode.get("asset_paths") or []) if str(item).strip()] + scene_paths
+        )
+        asset_extensions = sorted({Path(path).suffix.lower() or "<no_ext>" for path in asset_paths})
+        config_paths = self._dedupe_strings([str(item) for item in list(repo_mode.get("config_paths") or []) if str(item).strip()])
+
+        workflow_feature_map = {
+            "three_d_asset_pipeline": "asset_pipeline",
+            "splat_compression": "spz_conversion",
+            "blender_automation": "blender_integration",
+            "usd_scene_graph": "houdini_usd",
+            "codec_pipeline": "codec_video_pipeline",
+            "browser_renderer": "browser_renderer",
+            "lod_streaming": "lod_streaming",
+            "geospatial_gis": "geospatial_gis",
+            "drone_capture": "drone_capture",
+            "mobile_capture": "mobile_capture",
+            "cloud_reconstruction": "cloud_reconstruction",
+            "simulation_real2sim": "simulation_real2sim",
+            "asset_provenance": "provenance_watermarking",
+            "digital_preservation": "digital_preservation",
+            "neural_graphics_benchmarking": "neural_graphics_benchmarking",
+            "research_to_code": "research_to_code",
+            "scene_authoring": "scene_authoring",
+            "virtual_production": "virtual_production",
+            "dataset_quality": "dataset_quality",
+            "visual_regression": "visual_regression_3d",
+        }
+        recommended_feature_ids = self._dedupe_strings(
+            (["asset_pipeline"] if asset_paths else [])
+            + [workflow_feature_map[workflow] for workflow in workflows if workflow in workflow_feature_map]
+        )
+
+        lanes = {str(item.get("lane_id") or ""): item for item in list(platform_runners.get("lanes") or [])}
+        selected_target_id = str(platform_runners.get("selected_target_id") or "").strip() or None
+        selected_ready_lane_ids = {
+            str(item).strip()
+            for item in list(platform_runners.get("selected_ready_lane_ids") or [])
+            if str(item).strip()
+        }
+
+        def _selected_headless_lane_status(lane_id: str) -> str:
+            lane = dict(lanes.get(lane_id) or {})
+            base_status = str(lane.get("status") or "unavailable")
+            if not selected_target_id:
+                return base_status
+            if lane_id in selected_ready_lane_ids:
+                return "ready"
+            selected_lane_targets = {
+                str(item).strip() for item in list(lane.get("selected_target_ids") or []) if str(item).strip()
+            }
+            if selected_target_id in selected_lane_targets:
+                return base_status
+            return "unavailable"
+
+        browser_lane_status = str((lanes.get("browser") or {}).get("status") or "unavailable")
+        headless_statuses = [
+            _selected_headless_lane_status(lane_id)
+            for lane_id in ("linux", "windows", "macos")
+        ]
+        if any(status == "ready" for status in headless_statuses):
+            headless_runner_status = "ready"
+        elif any(status == "partial" for status in headless_statuses):
+            headless_runner_status = "partial"
+        else:
+            headless_runner_status = "unavailable"
+
+        requires_browser_lane = any(workflow in {"browser_renderer", "lod_streaming"} for workflow in workflows)
+        requires_headless_lane = any(
+            workflow in {"blender_automation", "usd_scene_graph", "virtual_production", "simulation_real2sim", "scene_authoring"}
+            for workflow in workflows
+        )
+        transport_mode = str(artifact_transport.get("recommended_transport_mode") or "discovery_needed")
+        quality_gate_blocker_count = int(quality_gates.get("blocking_gate_count") or 0)
+        quality_gate_missing_evidence_count = int(quality_gates.get("missing_evidence_count") or 0)
+        pending_approval_count = int(decision_audit.get("pending_approval_count") or 0)
+        pending_question_count = int(decision_audit.get("pending_question_count") or 0)
+
+        hard_blockers = self._dedupe_strings([str(item) for item in list(validation_plan.get("blockers") or []) if str(item).strip()])
+        if requires_browser_lane and browser_lane_status == "unavailable":
+            hard_blockers.append("Browser renderer workflows are detected, but no browser runner lane is currently available.")
+        if requires_headless_lane and headless_runner_status == "unavailable":
+            hard_blockers.append(
+                "Headless scene validation is required here, but no Linux, Windows, or macOS runner lane is bound to the selected broker target."
+                if selected_target_id
+                else "Headless scene validation is required here, but no Linux, Windows, or macOS runner lane is ready."
+            )
+        if quality_gate_blocker_count > 0:
+            hard_blockers.append(f"{quality_gate_blocker_count} quality gate blocker(s) still prevent spatial publish review.")
+        hard_blockers = self._dedupe_strings(hard_blockers)
+
+        lane_degraded = (
+            (requires_browser_lane and browser_lane_status == "partial")
+            or (requires_headless_lane and headless_runner_status == "partial")
+        )
+        approval_pressure = pending_approval_count > 0
+        question_pressure = pending_question_count > 0
+        repo_mode_enabled = bool(repo_mode.get("enabled"))
+        validation_status = str(validation_plan.get("status") or ("ready" if repo_mode_enabled else "not_applicable"))
+        if not repo_mode_enabled:
+            governance_status = "not_applicable"
+        elif hard_blockers or validation_status == "blocked":
+            governance_status = "blocked"
+        elif lane_degraded or approval_pressure or question_pressure:
+            governance_status = "partial"
+        else:
+            governance_status = "ready"
+
+        recommended_fixes = self._dedupe_strings(
+            [str(item) for item in list(validation_plan.get("recommended_fixes") or []) if str(item).strip()]
+            + (
+                ["Wire a browser-capable lane with Playwright-grade validation so browser 3D changes stop shipping on vibes."]
+                if requires_browser_lane and browser_lane_status != "ready"
+                else []
+            )
+            + (
+                [
+                    (
+                        "Bind the selected broker target to a ready Linux, Windows, or macOS runner lane before pretending Blender or USD work is governed."
+                        if selected_target_id
+                        else "Expose a ready Linux, Windows, or macOS runner lane for headless scene validation before pretending Blender or USD work is governed."
+                    )
+                ]
+                if requires_headless_lane and headless_runner_status != "ready"
+                else []
+            )
+            + (
+                ["Configure a usable artifact root or connector lane so spatial evidence can move without ad-hoc filesystem chaos."]
+                if transport_mode in {"blocked", "discovery_needed"}
+                else []
+            )
+            + (
+                ["Resolve required project quality gates before treating this spatial pipeline as publish-ready."]
+                if quality_gate_blocker_count > 0
+                else []
+            )
+            + (
+                ["Clear pending spatial approval checkpoints before publishing or exporting generated assets."]
+                if pending_approval_count > 0
+                else []
+            )
+            + (
+                ["Resolve pending spatial governance questions before approving export or publish."]
+                if pending_question_count > 0
+                else []
+            )
+        )[:12]
+
+        notes = self._dedupe_strings(
+            [str(item) for item in list(repo_mode.get("validation_notes") or []) if str(item).strip()]
+            + [str(item) for item in list(artifact_transport.get("notes") or [])[:3]]
+            + (
+                [f"Browser lane is `{browser_lane_status}` for browser-rendered scene checks."]
+                if requires_browser_lane
+                else []
+            )
+            + (
+                [f"Headless runner surface is `{headless_runner_status}` across Linux/Windows/macOS lanes."]
+                if requires_headless_lane
+                else []
+            )
+            + (
+                [f"Selected broker target is `{selected_target_id}` for spatial execution."]
+                if requires_headless_lane and selected_target_id
+                else []
+            )
+            + (
+                [f"{quality_gate_blocker_count} project quality gate(s) still block a clean handoff."]
+                if quality_gate_blocker_count > 0
+                else []
+            )
+            + (
+                [f"{pending_approval_count} approval(s) and {pending_question_count} question(s) are still open in the project ledger."]
+                if pending_approval_count > 0 or pending_question_count > 0
+                else []
+            )
+        )[:10]
+
+        if not repo_mode_enabled:
+            summary = "Spatial asset governance is not applicable because this workspace does not currently expose repo-owned 3D scene, splat, or capture signals."
+        else:
+            summary = (
+                f"Spatial asset governance is `{governance_status}` for mode `{repo_mode.get('mode') or 'unknown'}` with "
+                f"{len(workflows)} workflow(s), {len(asset_paths)} asset path(s), validation `{validation_status}`, "
+                f"browser lane `{browser_lane_status}`, and headless lane `{headless_runner_status}`."
+            )
+
+        return {
+            "project_id": project.id,
+            "project_name": project.name,
+            "workspace_path": project.workspace_path,
+            "summary": summary,
+            "governance_status": governance_status,
+            "selected_target_id": selected_target_id,
+            "repo_mode_enabled": repo_mode_enabled,
+            "repo_mode": repo_mode.get("mode"),
+            "frameworks": [str(item) for item in list(repo_mode.get("frameworks") or []) if str(item).strip()],
+            "product_workflows": workflows,
+            "recommended_feature_ids": recommended_feature_ids,
+            "asset_count": len(asset_paths),
+            "asset_paths": asset_paths,
+            "asset_extensions": asset_extensions,
+            "config_paths": config_paths,
+            "primary_scene_path": scene_paths[0] if scene_paths else None,
+            "headless_runner_status": headless_runner_status,
+            "browser_lane_status": browser_lane_status,
+            "recommended_transport_mode": transport_mode,
+            "build_commands": [str(item) for item in list(repo_mode.get("build_commands") or []) if str(item).strip()],
+            "render_commands": [str(item) for item in list(repo_mode.get("render_commands") or []) if str(item).strip()],
+            "conversion_commands": [str(item) for item in list(repo_mode.get("conversion_commands") or []) if str(item).strip()],
+            "capture_commands": [str(item) for item in list(repo_mode.get("capture_commands") or []) if str(item).strip()],
+            "benchmark_commands": [str(item) for item in list(repo_mode.get("benchmark_commands") or []) if str(item).strip()],
+            "validation_status": validation_status,
+            "validation_available": bool(validation_plan.get("available")),
+            "validation_step_count": len(list(validation_plan.get("steps") or [])),
+            "validation_evidence_targets": [str(item) for item in list(validation_plan.get("evidence_targets") or []) if str(item).strip()],
+            "supports_visual_regression": "visual_regression" in workflows or "visual_regression_3d" in recommended_feature_ids,
+            "quality_gate_blocker_count": quality_gate_blocker_count,
+            "quality_gate_missing_evidence_count": quality_gate_missing_evidence_count,
+            "pending_approval_count": pending_approval_count,
+            "pending_question_count": pending_question_count,
+            "blocking_reasons": hard_blockers,
+            "recommended_fixes": recommended_fixes,
+            "notes": notes,
+            "platform_runners": platform_runners,
+            "artifact_transport": artifact_transport,
+        }
+
+    @staticmethod
+    def _collect_relative_paths(root: Path, patterns: list[str], *, limit: int = 12) -> list[str]:
+        paths: list[str] = []
+        seen: set[str] = set()
+        for pattern in patterns:
+            try:
+                matches = root.rglob(pattern)
+            except OSError:
+                continue
+            for path in matches:
+                try:
+                    relative = str(path.relative_to(root)).replace("\\", "/")
+                except ValueError:
+                    continue
+                if relative in seen:
+                    continue
+                seen.add(relative)
+                paths.append(relative)
+                if len(paths) >= limit:
+                    return paths
+        return paths
+
+    def _build_game_engine_workspace_profile(self, project: Project) -> dict[str, Any]:
+        root_path = project.workspace_path or project.source_path
+        if not root_path:
+            return {
+                "detected_engines": [],
+                "unity_detected": False,
+                "unreal_detected": False,
+                "detected_project_paths": [],
+                "scene_or_map_paths": [],
+                "automation_signal_paths": [],
+                "screenshot_artifact_paths": [],
+            }
+        root = Path(root_path)
+        if not root.exists() or not root.is_dir():
+            return {
+                "detected_engines": [],
+                "unity_detected": False,
+                "unreal_detected": False,
+                "detected_project_paths": [],
+                "scene_or_map_paths": [],
+                "automation_signal_paths": [],
+                "screenshot_artifact_paths": [],
+            }
+
+        unity_marker_paths = [
+            relative_path
+            for relative_path in (
+                "Assets",
+                "ProjectSettings",
+                "ProjectSettings/ProjectVersion.txt",
+                "Packages",
+                "Packages/manifest.json",
+            )
+            if (root / relative_path).exists()
+        ]
+        unity_scene_paths = self._collect_relative_paths(root, ["*.unity", "*.prefab", "*.asmdef"], limit=10)
+
+        unreal_marker_paths = [
+            relative_path
+            for relative_path in (
+                "Config",
+                "Content",
+                "Source",
+                "Plugins",
+            )
+            if (root / relative_path).exists()
+        ] + self._collect_relative_paths(root, ["*.uproject", "*.uplugin"], limit=6)
+        unreal_scene_paths = self._collect_relative_paths(root, ["*.umap", "*.uasset"], limit=10)
+
+        automation_signal_paths = self._collect_relative_paths(
+            root,
+            [
+                "*Test*.cs",
+                "*Tests*.cs",
+                "*Automation*.cs",
+                "*Spec*.cpp",
+                "*Test*.cpp",
+                "*Tests*.cpp",
+                "Tests/*",
+                "Assets/Tests/*",
+                "Content/Tests/*",
+            ],
+            limit=10,
+        )
+        screenshot_artifact_paths = self._collect_relative_paths(
+            root,
+            [
+                "*screenshot*.png",
+                "*screen*.png",
+                "*frame*.png",
+                "*render*.png",
+                "*screenshot*.jpg",
+                "*frame*.jpg",
+            ],
+            limit=10,
+        )
+
+        unity_detected = bool(unity_marker_paths or unity_scene_paths)
+        unreal_detected = bool(unreal_marker_paths or unreal_scene_paths)
+        detected_engines = []
+        if unity_detected:
+            detected_engines.append("unity")
+        if unreal_detected:
+            detected_engines.append("unreal")
+        detected_project_paths = self._dedupe_strings(unity_marker_paths + unreal_marker_paths)
+        scene_or_map_paths = self._dedupe_strings(unity_scene_paths + unreal_scene_paths)
+
+        return {
+            "detected_engines": detected_engines,
+            "unity_detected": unity_detected,
+            "unreal_detected": unreal_detected,
+            "detected_project_paths": detected_project_paths,
+            "scene_or_map_paths": scene_or_map_paths,
+            "automation_signal_paths": self._dedupe_strings(automation_signal_paths),
+            "screenshot_artifact_paths": self._dedupe_strings(screenshot_artifact_paths),
+        }
+
+    @staticmethod
+    def _resolve_workspace_artifact_path(workspace_root: Path, relative_path: str) -> Path:
+        cleaned = str(relative_path or "").replace("\\", "/").strip().lstrip("/")
+        return workspace_root / Path(cleaned)
+
+    @staticmethod
+    def _coerce_numeric(value: Any) -> float:
+        try:
+            return float(str(value or "0").strip())
+        except (TypeError, ValueError):
+            return 0.0
+
+    @staticmethod
+    def _coerce_int(value: Any) -> int:
+        try:
+            return int(float(str(value or "0").strip()))
+        except (TypeError, ValueError):
+            return 0
+
+    def _parse_game_engine_junit_summary(
+        self,
+        workspace_root: Path,
+        *,
+        engine: str,
+        source_path: str,
+        output_artifact: str,
+    ) -> dict[str, Any]:
+        artifact_path = self._resolve_workspace_artifact_path(workspace_root, source_path)
+        summary_path = self._resolve_workspace_artifact_path(workspace_root, output_artifact)
+        summary_path.parent.mkdir(parents=True, exist_ok=True)
+        payload: dict[str, Any] = {
+            "status": "missing",
+            "engine": engine,
+            "evidence_kind": "engine_native_test_results",
+            "source_path": source_path,
+            "output_artifact": output_artifact,
+            "pass_signal": False,
+            "failure_count": 0,
+            "warning_count": 0,
+            "tests": 0,
+            "errors": 0,
+            "skipped": 0,
+            "duration_seconds": 0.0,
+            "exists": artifact_path.exists(),
+        }
+        if not artifact_path.exists():
+            payload["notes"] = ["Expected test result XML is missing."]
+            summary_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+            return payload
+        try:
+            root = ET.parse(artifact_path).getroot()
+            suites = [root] if root.tag == "testsuite" else list(root.findall(".//testsuite")) if root.tag == "testsuites" else []
+            testcase_count = sum(len(suite.findall(".//testcase")) for suite in suites) if suites else len(root.findall(".//testcase"))
+            tests = sum(self._coerce_int(suite.attrib.get("tests")) for suite in suites) or testcase_count
+            failures = sum(self._coerce_int(suite.attrib.get("failures")) for suite in suites)
+            errors = sum(self._coerce_int(suite.attrib.get("errors")) for suite in suites)
+            skipped = sum(self._coerce_int(suite.attrib.get("skipped")) for suite in suites)
+            duration_seconds = round(sum(self._coerce_numeric(suite.attrib.get("time")) for suite in suites), 3)
+            if not failures:
+                failures = len(root.findall(".//failure"))
+            if not errors:
+                errors = len(root.findall(".//error"))
+            if not skipped:
+                skipped = len(root.findall(".//skipped"))
+            pass_signal = tests > 0 and failures == 0 and errors == 0
+            status = "passed" if pass_signal else "failed" if failures or errors else "partial"
+            payload.update(
+                {
+                    "status": status,
+                    "pass_signal": pass_signal,
+                    "failure_count": failures + errors,
+                    "tests": tests,
+                    "errors": errors,
+                    "skipped": skipped,
+                    "duration_seconds": duration_seconds,
+                    "suite_count": len(suites) or 1,
+                    "notes": ["JUnit-style engine test results were normalized into a publish-review summary."],
+                }
+            )
+        except ET.ParseError as exc:
+            payload.update(
+                {
+                    "status": "parse_error",
+                    "failure_count": 1,
+                    "parse_error": str(exc),
+                    "notes": ["Engine test result XML could not be parsed."],
+                }
+            )
+        summary_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        return payload
+
+    def _parse_game_engine_log_summary(
+        self,
+        workspace_root: Path,
+        *,
+        engine: str,
+        evidence_kind: str,
+        source_path: str,
+        output_artifact: str,
+        success_markers: list[str],
+        failure_markers: list[str],
+    ) -> dict[str, Any]:
+        artifact_path = self._resolve_workspace_artifact_path(workspace_root, source_path)
+        summary_path = self._resolve_workspace_artifact_path(workspace_root, output_artifact)
+        summary_path.parent.mkdir(parents=True, exist_ok=True)
+        payload: dict[str, Any] = {
+            "status": "missing",
+            "engine": engine,
+            "evidence_kind": evidence_kind,
+            "source_path": source_path,
+            "output_artifact": output_artifact,
+            "pass_signal": False,
+            "failure_count": 0,
+            "warning_count": 0,
+            "exists": artifact_path.exists(),
+        }
+        if not artifact_path.exists():
+            payload["notes"] = ["Expected engine log is missing."]
+            summary_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+            return payload
+        text = artifact_path.read_text(encoding="utf-8", errors="ignore")
+        lines = text.splitlines()
+        matched_success = [
+            marker
+            for marker in success_markers
+            if marker and any(marker in line for line in lines)
+        ]
+        matched_failure = [
+            marker
+            for marker in failure_markers
+            if marker and any(marker in line and not any(success in line for success in success_markers) for line in lines)
+        ]
+        warnings = len([line for line in lines if "warning" in line.lower()])
+        fatal_errors = len([line for line in lines if "fatal error" in line.lower()])
+        passed_tests = len(re.findall(r"Result=\{Succeeded\}", text))
+        failed_tests = len(re.findall(r"Result=\{Failed\}", text))
+        duration_hints = [line.strip() for line in lines if "duration" in line.lower()][:5]
+        build_phase_lines = [
+            line.strip()
+            for line in lines
+            if any(token in line.lower() for token in ("build", "cook", "stage", "pak", "package"))
+        ][:20]
+        failure_count = len(matched_failure) + fatal_errors + failed_tests
+        pass_signal = bool(matched_success) and failure_count == 0
+        status = "passed" if pass_signal else "failed" if failure_count else "partial"
+        payload.update(
+            {
+                "status": status,
+                "pass_signal": pass_signal,
+                "failure_count": failure_count,
+                "warning_count": warnings,
+                "matched_success_markers": matched_success,
+                "matched_failure_markers": matched_failure,
+                "passed_tests": passed_tests,
+                "failed_tests": failed_tests,
+                "fatal_errors": fatal_errors,
+                "duration_hints": duration_hints,
+                "build_phases": build_phase_lines,
+                "notes": ["Engine automation/build logs were normalized with keyword and phase scanning."],
+            }
+        )
+        summary_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        return payload
+
+    def _parse_game_engine_capture_summary(
+        self,
+        workspace_root: Path,
+        *,
+        input_paths: list[str],
+    ) -> dict[str, Any]:
+        existing_paths = [
+            path
+            for path in input_paths
+            if self._resolve_workspace_artifact_path(workspace_root, path).exists()
+        ]
+        image_paths = [
+            path
+            for path in existing_paths
+            if Path(path).suffix.lower() in {".png", ".jpg", ".jpeg"}
+        ]
+        log_paths = [
+            path
+            for path in existing_paths
+            if Path(path).suffix.lower() in {".log", ".txt"}
+        ]
+        capture_errors: list[str] = []
+        black_frame_signals: list[str] = []
+        for path in log_paths:
+            text = self._resolve_workspace_artifact_path(workspace_root, path).read_text(encoding="utf-8", errors="ignore")
+            lowered = text.lower()
+            if "error" in lowered or "failed" in lowered:
+                capture_errors.append(path)
+            if "black frame" in lowered or "blank frame" in lowered:
+                black_frame_signals.append(path)
+        for path in image_paths:
+            artifact_path = self._resolve_workspace_artifact_path(workspace_root, path)
+            if artifact_path.stat().st_size == 0:
+                black_frame_signals.append(path)
+        pass_signal = bool(image_paths) and not capture_errors
+        return {
+            "status": "passed" if pass_signal else "partial" if existing_paths else "missing",
+            "engine": "multi_engine",
+            "evidence_kind": "golden_path_capture",
+            "source_path": existing_paths[0] if existing_paths else "",
+            "output_artifact": "artifacts/game-engine-governance/golden-path-capture-summary.json",
+            "pass_signal": pass_signal,
+            "failure_count": len(capture_errors),
+            "warning_count": len(black_frame_signals),
+            "frame_count": len(image_paths),
+            "image_paths": image_paths,
+            "capture_errors": capture_errors,
+            "black_frame_signals": black_frame_signals,
+            "notes": ["Golden-path capture evidence was normalized from render artifacts and capture logs."],
+        }
+
+    def _materialize_game_engine_normalized_results(
+        self,
+        workspace_root: Path,
+        *,
+        result_normalization_plan: dict[str, Any],
+    ) -> dict[str, Any]:
+        summaries: list[dict[str, Any]] = []
+        for normalizer in list(result_normalization_plan.get("normalizers") or []):
+            if not normalizer.get("enabled"):
+                continue
+            source_path = str((normalizer.get("input_paths") or [""])[0])
+            output_artifact = str(normalizer.get("output_artifact") or "")
+            parser_strategy = str(normalizer.get("parser_strategy") or "")
+            engine = str(normalizer.get("engine") or "unknown")
+            if parser_strategy == "junit_xml_suite_summary":
+                summaries.append(
+                    self._parse_game_engine_junit_summary(
+                        workspace_root,
+                        engine=engine,
+                        source_path=source_path,
+                        output_artifact=output_artifact,
+                    )
+                )
+            else:
+                summaries.append(
+                    self._parse_game_engine_log_summary(
+                        workspace_root,
+                        engine=engine,
+                        evidence_kind="engine_native_test_results" if "automation" in str(normalizer.get("normalizer_id") or "") else "build_result",
+                        source_path=source_path,
+                        output_artifact=output_artifact,
+                        success_markers=[str(item) for item in list(normalizer.get("success_markers") or []) if str(item).strip()],
+                        failure_markers=[str(item) for item in list(normalizer.get("failure_markers") or []) if str(item).strip()],
+                    )
+                )
+        for capture_normalizer in list(result_normalization_plan.get("capture_normalizers") or []):
+            if not capture_normalizer.get("enabled"):
+                continue
+            capture_summary = self._parse_game_engine_capture_summary(
+                workspace_root,
+                input_paths=[str(item) for item in list(capture_normalizer.get("input_paths") or []) if str(item).strip()],
+            )
+            output_path = self._resolve_workspace_artifact_path(workspace_root, str(capture_summary.get("output_artifact") or ""))
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            output_path.write_text(json.dumps(capture_summary, indent=2), encoding="utf-8")
+            summaries.append(capture_summary)
+
+        blocking_statuses = {
+            str(item).strip()
+            for item in list((result_normalization_plan.get("normalized_output_contract") or {}).get("publish_blocking_statuses") or [])
+            if str(item).strip()
+        }
+        rollup = build_normalized_result_rollup(
+            summaries=summaries,
+            blocking_statuses=list(blocking_statuses),
+            metadata={
+                "selected_target_id": result_normalization_plan.get("selected_target_id"),
+                "recommended_runner_lane": result_normalization_plan.get("recommended_runner_lane"),
+                "detected_engines": list(result_normalization_plan.get("detected_engines") or []),
+            },
+        )
+        write_normalized_result_rollup(
+            workspace_root,
+            str((result_normalization_plan.get("normalized_output_contract") or {}).get("rollup_artifact") or ""),
+            rollup,
+        )
+        return rollup
+
+    def _load_game_engine_normalized_results_summary(self, workspace_root: Path) -> dict[str, Any]:
+        return load_normalized_result_rollup_summary(
+            workspace_root,
+            "artifacts/game-engine-governance/normalized-results-summary.json",
+        )
+
+    @staticmethod
+    def _remote_execution_normalized_summary_artifact(remote_execution_payload: dict[str, Any] | None) -> str:
+        result_contract = dict((remote_execution_payload or {}).get("result_contract") or {})
+        artifact_path = str(result_contract.get("normalized_summary_artifact") or "").strip()
+        return artifact_path or "artifacts/remote-execution-governance/normalized-execution-summary.json"
+
+    def _remote_execution_expected_evidence_categories(
+        self,
+        *,
+        result_contract: dict[str, Any] | None,
+        policy: dict[str, Any] | None,
+        broker_contract: dict[str, Any] | None,
+    ) -> list[str]:
+        contract_payload = dict(result_contract or {})
+        expected_categories = [
+            str(item)
+            for item in list(contract_payload.get("expected_evidence_categories") or [])
+            if str(item).strip()
+        ]
+        if expected_categories:
+            return expected_categories
+
+        policy_payload = dict(policy or {})
+        broker_payload = dict(broker_contract or {})
+        required_result_formats = [
+            str(item)
+            for item in list(policy_payload.get("required_result_formats") or [])
+            if str(item).strip()
+        ]
+        required_command_families = [
+            str(item)
+            for item in list(policy_payload.get("required_command_families") or [])
+            if str(item).strip()
+        ]
+        target_result_formats = [
+            str(item)
+            for item in list(broker_payload.get("target_result_formats") or [])
+            if str(item).strip()
+        ]
+        target_command_families = [
+            str(item)
+            for item in list(broker_payload.get("target_command_families") or [])
+            if str(item).strip()
+        ]
+        expected_categories = ["logs"]
+        if any(fmt in {"junit_xml", "xcresult", "json"} for fmt in required_result_formats + target_result_formats):
+            expected_categories.append("coverage")
+        if any(family in {"browser", "playwright"} for family in required_command_families + target_command_families):
+            expected_categories.extend(["screenshots", "traces"])
+        if any(family in {"unity_batchmode", "unreal_commandlet"} for family in required_command_families + target_command_families):
+            expected_categories.append("screenshots")
+        if any(
+            token in family
+            for family in required_command_families + target_command_families
+            for token in ("benchmark", "perf", "profile")
+        ):
+            expected_categories.append("performance")
+        return self._dedupe_strings(expected_categories)
+
+    @staticmethod
+    def _remote_execution_run_rollup_status(report_status: str) -> str:
+        normalized_status = str(report_status or "").strip().lower()
+        if normalized_status == "done":
+            return "passed"
+        if normalized_status in {"blocked", "error", "needs_review"}:
+            return "failed"
+        return "missing"
+
+    def _collect_remote_execution_signal_sources(
+        self,
+        run: AgentRun,
+        envelope: RunnerResultEnvelope,
+    ) -> list[str]:
+        sources: list[str] = []
+        report = envelope.report
+        sources.extend([str(item) for item in list(report.files_changed or []) if str(item).strip()])
+        sources.extend([str(item) for item in list(report.tests_run or []) if str(item).strip()])
+        sources.extend([str(item) for item in list(envelope.files_changed or []) if str(item).strip()])
+        sources.extend([str(item) for item in list(envelope.tests_run or []) if str(item).strip()])
+        sources.extend([str(item) for item in list(envelope.commands_attempted or []) if str(item).strip()])
+        sources.extend([str(item) for item in list(envelope.diagnostics or []) if str(item).strip()])
+        sources.extend([str(item) for item in list(envelope.blockers or []) if str(item).strip()])
+        sources.extend([str(item) for item in list(envelope.risks or []) if str(item).strip()])
+        sources.extend([str(item.path) for item in list(envelope.edits or []) if str(getattr(item, "path", "")).strip()])
+        for evidence in list(envelope.evidence or []):
+            if getattr(evidence, "source_path", None):
+                sources.append(str(evidence.source_path))
+            if getattr(evidence, "command", None):
+                sources.append(str(evidence.command))
+            if getattr(evidence, "summary", None):
+                sources.append(str(evidence.summary))
+        for path_value in (run.logs_path, run.stdout_path, run.stderr_path, run.event_log_path):
+            if str(path_value or "").strip():
+                sources.append(str(path_value))
+        return self._dedupe_strings(sources)
+
+    def _persist_remote_execution_normalized_results_summary(
+        self,
+        project: Project,
+        run: AgentRun,
+        envelope: RunnerResultEnvelope,
+    ) -> dict[str, Any] | None:
+        workspace_path = project.workspace_path or project.source_path
+        if not workspace_path:
+            return None
+        workspace_root = Path(workspace_path).expanduser()
+        if not workspace_root.exists() or not workspace_root.is_dir():
+            return None
+
+        effective_settings = dict(run.effective_settings_json or {}) if isinstance(run.effective_settings_json, dict) else {}
+        remote_execution = dict(effective_settings.get("remote_execution") or {})
+        policy = dict(remote_execution.get("policy") or {})
+        selected_target = dict(remote_execution.get("selected_target") or {})
+        broker_contract = dict(remote_execution.get("broker_contract") or {})
+        result_contract = dict(remote_execution.get("result_contract") or {})
+        if not remote_execution or (not bool(policy.get("enabled")) and not selected_target and not result_contract):
+            return None
+
+        normalized_summary_artifact = self._remote_execution_normalized_summary_artifact(remote_execution)
+        existing_rollup = load_normalized_result_rollup(workspace_root, normalized_summary_artifact) or {}
+        previous_summaries = [
+            dict(item)
+            for item in list(existing_rollup.get("summaries") or [])
+            if isinstance(item, dict) and self._coerce_int(item.get("run_id")) != run.id
+        ]
+        expected_evidence_categories = self._remote_execution_expected_evidence_categories(
+            result_contract=result_contract,
+            policy=policy,
+            broker_contract=broker_contract,
+        )
+        evidence_inventory = classify_evidence_artifacts(self._collect_remote_execution_signal_sources(run, envelope))
+        observed_evidence_categories = [
+            str(item)
+            for item in list(evidence_inventory.get("categories_present") or [])
+            if str(item).strip()
+        ]
+        run_summary = {
+            "run_id": run.id,
+            "task_id": run.task_id,
+            "agent_id": run.agent_id,
+            "agent": envelope.report.agent,
+            "runner_type": run.runner_type,
+            "runner_status": str(envelope.status or ""),
+            "report_status": envelope.report.status,
+            "status": self._remote_execution_run_rollup_status(envelope.report.status),
+            "summary": envelope.report.summary,
+            "selected_target_id": str(selected_target.get("id") or "").strip() or None,
+            "selected_transport": str(selected_target.get("transport") or "").strip() or None,
+            "selected_os_family": str(selected_target.get("os_family") or "").strip() or None,
+            "required_runner_family": str(
+                remote_execution.get("required_runner_family")
+                or broker_contract.get("required_runner_family")
+                or "external_adapter"
+            ),
+            "expected_evidence_categories": expected_evidence_categories,
+            "observed_evidence_categories": observed_evidence_categories,
+            "evidence_category_paths": dict(evidence_inventory.get("categories") or {}),
+            "files_changed": [str(item) for item in list(envelope.report.files_changed or []) if str(item).strip()][:25],
+            "tests_run": [str(item) for item in list(envelope.report.tests_run or []) if str(item).strip()][:25],
+            "commands_attempted": [str(item) for item in list(envelope.commands_attempted or []) if str(item).strip()][:25],
+            "blockers": [str(item) for item in list(envelope.report.blockers or []) if str(item).strip()][:10],
+            "risks": [str(item) for item in list(envelope.report.risks or []) if str(item).strip()][:10],
+            "failure_classification": envelope.failure_classification,
+            "finished_at": self._normalize_report_datetime(run.finished_at).isoformat()
+            if self._normalize_report_datetime(run.finished_at)
+            else None,
+        }
+        summaries = previous_summaries + [run_summary]
+        summaries.sort(
+            key=lambda item: (
+                str(item.get("finished_at") or ""),
+                self._coerce_int(item.get("run_id")),
+            )
+        )
+        summaries = summaries[-50:]
+        rollup = build_normalized_result_rollup(
+            summaries=summaries,
+            blocking_statuses=["failed", "missing", "parse_error"],
+            metadata={
+                "project_id": project.id,
+                "project_name": project.name,
+                "selected_target_id": str(selected_target.get("id") or "").strip() or None,
+                "selected_transport": str(selected_target.get("transport") or "").strip() or None,
+                "selected_os_family": str(selected_target.get("os_family") or "").strip() or None,
+                "required_runner_family": str(
+                    remote_execution.get("required_runner_family")
+                    or broker_contract.get("required_runner_family")
+                    or "external_adapter"
+                ),
+                "expected_evidence_categories": expected_evidence_categories,
+                "observed_evidence_categories": self._dedupe_strings(
+                    [
+                        str(category)
+                        for summary in summaries
+                        for category in list(summary.get("observed_evidence_categories") or [])
+                        if str(category).strip()
+                    ]
+                ),
+                "latest_run_id": run.id,
+                "latest_report_status": envelope.report.status,
+                "latest_failure_classification": envelope.failure_classification,
+            },
+        )
+        write_normalized_result_rollup(workspace_root, normalized_summary_artifact, rollup)
+        return rollup
+
+    def _load_remote_execution_normalized_results_summary(
+        self,
+        workspace_root: Path,
+        normalized_summary_artifact: str,
+    ) -> dict[str, Any]:
+        summary = load_normalized_result_rollup_summary(workspace_root, normalized_summary_artifact)
+        rollup = load_normalized_result_rollup(workspace_root, normalized_summary_artifact) or {}
+        return {
+            **summary,
+            "expected_evidence_categories": [
+                str(item)
+                for item in list(rollup.get("expected_evidence_categories") or [])
+                if str(item).strip()
+            ],
+            "observed_evidence_categories": [
+                str(item)
+                for item in list(rollup.get("observed_evidence_categories") or [])
+                if str(item).strip()
+            ],
+            "latest_run_id": self._coerce_int(rollup.get("latest_run_id")) or None,
+            "latest_report_status": str(rollup.get("latest_report_status") or "").strip() or None,
+            "latest_failure_classification": str(rollup.get("latest_failure_classification") or "").strip() or None,
+        }
+
+    def build_game_engine_governance_summary(self, db: Session, project: Project) -> dict[str, Any]:
+        workspace_profile = self._build_game_engine_workspace_profile(project)
+        platform_runners = self.build_platform_runner_summary(db, project)
+        design_transfer = self.build_design_transfer_summary(db, project)
+        spatial_governance = self.build_spatial_asset_governance_summary(db, project)
+        quality_gates = self.build_quality_gate_summary(db, project)
+        decision_audit = self.build_decision_audit_summary(db, project)
+
+        lanes = {str(item.get("lane_id") or ""): item for item in list(platform_runners.get("lanes") or [])}
+        selected_target_id = str(platform_runners.get("selected_target_id") or "").strip() or None
+        selected_ready_lane_ids = {
+            str(item).strip()
+            for item in list(platform_runners.get("selected_ready_lane_ids") or [])
+            if str(item).strip()
+        }
+
+        def _lane_status_for_selected(lane_id: str) -> str:
+            lane = dict(lanes.get(lane_id) or {})
+            base_status = str(lane.get("status") or "unavailable")
+            if not selected_target_id:
+                return base_status
+            if lane_id in selected_ready_lane_ids:
+                return "ready"
+            selected_lane_targets = {
+                str(item).strip() for item in list(lane.get("selected_target_ids") or []) if str(item).strip()
+            }
+            if selected_target_id in selected_lane_targets:
+                return base_status
+            return "unavailable"
+
+        unity_lane_status = _lane_status_for_selected("unity")
+        unreal_lane_status = _lane_status_for_selected("unreal")
+        browser_lane_status = str((lanes.get("browser") or {}).get("status") or "unavailable")
+
+        unity_detected = bool(workspace_profile.get("unity_detected"))
+        unreal_detected = bool(workspace_profile.get("unreal_detected"))
+        detected_engines = [str(item) for item in list(workspace_profile.get("detected_engines") or []) if str(item).strip()]
+        scene_or_map_paths = [str(item) for item in list(workspace_profile.get("scene_or_map_paths") or []) if str(item).strip()]
+        automation_signal_paths = [str(item) for item in list(workspace_profile.get("automation_signal_paths") or []) if str(item).strip()]
+        screenshot_artifact_paths = [str(item) for item in list(workspace_profile.get("screenshot_artifact_paths") or []) if str(item).strip()]
+        workspace_root = Path(project.workspace_path or project.source_path) if (project.workspace_path or project.source_path) else None
+        normalized_results_summary = (
+            self._load_game_engine_normalized_results_summary(workspace_root)
+            if workspace_root and workspace_root.exists() and workspace_root.is_dir()
+            else {
+                "normalized_results_summary_path": None,
+                "normalized_summary_count": 0,
+                "normalized_passed_count": 0,
+                "normalized_failed_count": 0,
+                "normalized_missing_count": 0,
+                "normalized_publish_ready": False,
+            }
+        )
+        normalized_results_available = bool(normalized_results_summary.get("normalized_results_summary_path"))
+        normalized_publish_ready = bool(normalized_results_summary.get("normalized_publish_ready"))
+
+        if not detected_engines:
+            normalized_results_status = "not_applicable"
+        elif normalized_publish_ready:
+            normalized_results_status = "ready"
+        elif normalized_results_available:
+            normalized_results_status = "partial"
+        else:
+            normalized_results_status = "missing"
+
+        visual_regression_ready = bool(design_transfer.get("supports_visual_regression")) or bool(
+            spatial_governance.get("supports_visual_regression")
+        ) or bool(screenshot_artifact_paths)
+
+        if not detected_engines:
+            playable_contract_status = "not_applicable"
+        elif scene_or_map_paths and visual_regression_ready and (
+            unity_lane_status == "ready" or unreal_lane_status == "ready"
+        ):
+            playable_contract_status = "ready"
+        elif scene_or_map_paths and (
+            visual_regression_ready or unity_lane_status in {"ready", "partial"} or unreal_lane_status in {"ready", "partial"}
+        ):
+            playable_contract_status = "partial"
+        else:
+            playable_contract_status = "missing"
+
+        if unity_detected and unity_lane_status in {"ready", "partial"}:
+            recommended_runner_lane = "unity"
+        elif unreal_detected and unreal_lane_status in {"ready", "partial"}:
+            recommended_runner_lane = "unreal"
+        elif browser_lane_status in {"ready", "partial"} and detected_engines:
+            recommended_runner_lane = "browser"
+        else:
+            recommended_runner_lane = "discovery_needed"
+
+        blocking_reasons = self._dedupe_strings(
+            (
+                [
+                    (
+                        "Unity project signals are present, but no Unity runner lane is bound to the selected broker target."
+                        if selected_target_id
+                        else "Unity project signals are present, but no Unity runner lane is currently available."
+                    )
+                ]
+                if unity_detected and unity_lane_status == "unavailable"
+                else []
+            )
+            + (
+                [
+                    (
+                        "Unreal project signals are present, but no Unreal runner lane is bound to the selected broker target."
+                        if selected_target_id
+                        else "Unreal project signals are present, but no Unreal runner lane is currently available."
+                    )
+                ]
+                if unreal_detected and unreal_lane_status == "unavailable"
+                else []
+            )
+            + (
+                ["No scene or map assets were detected, so Mission Control cannot infer a playable validation target yet."]
+                if detected_engines and not scene_or_map_paths
+                else []
+            )
+        )
+
+        if not detected_engines:
+            asset_lock_status = "not_applicable"
+        elif scene_or_map_paths:
+            asset_lock_status = "ready"
+        else:
+            asset_lock_status = "partial"
+
+        if not detected_engines:
+            task_routing_status = "not_applicable"
+        elif recommended_runner_lane in {"unity", "unreal"}:
+            task_routing_status = "ready"
+        elif recommended_runner_lane == "browser" or automation_signal_paths:
+            task_routing_status = "partial"
+        else:
+            task_routing_status = "blocked"
+
+        if not detected_engines:
+            engine_test_matrix_status = "not_applicable"
+        elif recommended_runner_lane in {"unity", "unreal"} and normalized_publish_ready:
+            engine_test_matrix_status = "ready"
+        elif recommended_runner_lane in {"unity", "unreal", "browser"} or automation_signal_paths:
+            engine_test_matrix_status = "partial"
+        else:
+            engine_test_matrix_status = "blocked"
+
+        quality_gate_blocker_count = int(quality_gates.get("blocking_gate_count") or 0)
+
+        if not detected_engines:
+            publish_gate_status = "not_applicable"
+        elif (
+            blocking_reasons
+            or playable_contract_status != "ready"
+            or not normalized_publish_ready
+            or quality_gate_blocker_count > 0
+        ):
+            publish_gate_status = "blocked"
+        else:
+            publish_gate_status = "ready"
+
+        publish_blockers = self._dedupe_strings(
+            (
+                ["No scene or map target is available, so publish has no governed playable surface to validate."]
+                if detected_engines and not scene_or_map_paths
+                else []
+            )
+            + (
+                ["No Unity or Unreal validation lane is selected for publish review yet."]
+                if detected_engines and recommended_runner_lane not in {"unity", "unreal"}
+                else []
+            )
+            + (
+                ["No normalized Unity/Unreal result rollup exists yet, so publish evidence is still missing."]
+                if detected_engines and not normalized_results_available
+                else []
+            )
+            + (
+                ["Normalized Unity/Unreal result rollups still contain missing, failed, or parse-error evidence."]
+                if detected_engines and normalized_results_available and not normalized_publish_ready
+                else []
+            )
+            + (
+                ["Playable contract coverage is not ready yet, so publish would still be approving a guess."]
+                if detected_engines and playable_contract_status != "ready"
+                else []
+            )
+            + (
+                [f"{quality_gate_blocker_count} quality gate blocker(s) still prevent publish review."]
+                if detected_engines and quality_gate_blocker_count > 0
+                else []
+            )
+        )
+
+        if not detected_engines:
+            governance_status = "not_applicable"
+        elif blocking_reasons:
+            governance_status = "blocked"
+        elif normalized_results_status in {"partial", "missing"}:
+            governance_status = "partial"
+        elif playable_contract_status == "ready" and quality_gate_blocker_count == 0:
+            governance_status = "ready"
+        else:
+            governance_status = "partial"
+
+        recommended_fixes = self._dedupe_strings(
+            (
+                [
+                    (
+                        "Bind the selected broker target to a Unity-capable runner lane so EditMode or PlayMode tests can run through Mission Control."
+                        if selected_target_id
+                        else "Add or connect a Unity-capable runner lane so EditMode or PlayMode tests can run through Mission Control."
+                    )
+                ]
+                if unity_detected and unity_lane_status != "ready"
+                else []
+            )
+            + (
+                [
+                    (
+                        "Bind the selected broker target to an Unreal-capable runner lane so commandlets or Automation Tests can run through Mission Control."
+                        if selected_target_id
+                        else "Add or connect an Unreal-capable runner lane so commandlets or Automation Tests can run through Mission Control."
+                    )
+                ]
+                if unreal_detected and unreal_lane_status != "ready"
+                else []
+            )
+            + (
+                ["Add engine-native scene, map, or prefab assets so the playable validation target stops being theoretical."]
+                if detected_engines and not scene_or_map_paths
+                else []
+            )
+            + (
+                ["Add screenshot, frame-diff, or browser evidence lanes so game-engine validation is not just 'it built on my machine' theater."]
+                if detected_engines and not visual_regression_ready
+                else []
+            )
+            + (
+                ["Add repo-owned automation tests or smoke scenes so Mission Control can validate game loops with bounded evidence instead of vibes."]
+                if detected_engines and not automation_signal_paths
+                else []
+            )
+            + (
+                ["Refresh or repair normalized Unity/Unreal evidence artifacts before treating the game pipeline as publish-ready."]
+                if detected_engines and normalized_results_available and not normalized_publish_ready
+                else []
+            )
+            + (
+                ["Generate normalized Unity/Unreal result rollups before publish so the engine lane has a governed pass/fail artifact instead of raw logs and vibes."]
+                if detected_engines and not normalized_results_available
+                else []
+            )
+            + (
+                ["Resolve required project quality gates before treating the game pipeline as publish-ready."]
+                if detected_engines and quality_gate_blocker_count > 0
+                else []
+            )
+        )[:10]
+
+        notes = self._dedupe_strings(
+            [
+                f"Playable contract status is inferred from repo-owned scenes/maps, runner readiness, and visual evidence lanes, not from semantic gameplay understanding.",
+                (
+                    f"Unity lane is `{unity_lane_status}` and Unreal lane is `{unreal_lane_status}`."
+                    if detected_engines
+                    else "No Unity or Unreal project markers were detected in the workspace."
+                ),
+                (
+                    f"Selected broker target is `{selected_target_id}`."
+                    if detected_engines and selected_target_id
+                    else ""
+                ),
+                (
+                    f"Browser lane is `{browser_lane_status}` for screenshot, trace, or web-build evidence."
+                    if browser_lane_status != "unavailable"
+                    else "No browser evidence lane is currently exposed."
+                ),
+                (
+                    f"{quality_gates.get('blocking_gate_count', 0)} quality gate(s) and {decision_audit.get('pending_question_count', 0)} pending question(s) still affect handoff confidence."
+                    if detected_engines
+                    else ""
+                ),
+                (
+                    f"Asset-lock status is `{asset_lock_status}`, task routing is `{task_routing_status}`, and publish gate is `{publish_gate_status}`."
+                    if detected_engines
+                    else ""
+                ),
+                (
+                    f"Normalized result status is `{normalized_results_status}` with {len(publish_blockers)} publish blocker(s)."
+                    if detected_engines
+                    else ""
+                ),
+                (
+                    "Normalized engine evidence exists but is not publish-ready yet."
+                    if detected_engines and normalized_results_available and not normalized_publish_ready
+                    else "Normalized engine evidence is currently publish-ready."
+                    if detected_engines and normalized_results_available
+                    else "Normalized engine evidence is missing, so publish review has no rollup to trust yet."
+                    if detected_engines
+                    else ""
+                ),
+            ]
+            + [str(item) for item in list(spatial_governance.get("notes") or [])[:2]]
+            + [str(item) for item in list(design_transfer.get("notes") or [])[:2]]
+        )[:10]
+
+        if not detected_engines:
+            summary = "Game-engine governance is not applicable because the workspace does not currently look like a Unity or Unreal project."
+        else:
+            summary = (
+                f"Game-engine governance is `{governance_status}` for {', '.join(detected_engines)} with "
+                f"{len(scene_or_map_paths)} scene/map asset(s), {len(automation_signal_paths)} automation signal(s), "
+                f"runner recommendation `{recommended_runner_lane}`, and normalized publish readiness `{normalized_publish_ready}`."
+            )
+
+        return {
+            "project_id": project.id,
+            "project_name": project.name,
+            "workspace_path": project.workspace_path,
+            "summary": summary,
+            "governance_status": governance_status,
+            "selected_target_id": selected_target_id,
+            "detected_engines": detected_engines,
+            "unity_detected": unity_detected,
+            "unreal_detected": unreal_detected,
+            "detected_project_paths": [str(item) for item in list(workspace_profile.get("detected_project_paths") or []) if str(item).strip()],
+            "scene_or_map_count": len(scene_or_map_paths),
+            "scene_or_map_paths": scene_or_map_paths,
+            "automation_signal_count": len(automation_signal_paths),
+            "automation_signal_paths": automation_signal_paths,
+            "screenshot_artifact_count": len(screenshot_artifact_paths),
+            "screenshot_artifact_paths": screenshot_artifact_paths,
+            "playable_contract_status": playable_contract_status,
+            "asset_lock_status": asset_lock_status,
+            "task_routing_status": task_routing_status,
+            "engine_test_matrix_status": engine_test_matrix_status,
+            "publish_gate_status": publish_gate_status,
+            "normalized_results_status": normalized_results_status,
+            "publish_blocker_count": len(publish_blockers),
+            "publish_blockers": publish_blockers,
+            "repo_owned_tests_required": bool(detected_engines),
+            "content_task_asset_lock_required": bool(detected_engines),
+            "mixed_task_publish_review_required": bool(detected_engines),
+            "visual_regression_ready": visual_regression_ready,
+            "normalized_results_summary_path": normalized_results_summary.get("normalized_results_summary_path"),
+            "normalized_summary_count": int(normalized_results_summary.get("normalized_summary_count") or 0),
+            "normalized_passed_count": int(normalized_results_summary.get("normalized_passed_count") or 0),
+            "normalized_failed_count": int(normalized_results_summary.get("normalized_failed_count") or 0),
+            "normalized_missing_count": int(normalized_results_summary.get("normalized_missing_count") or 0),
+            "normalized_publish_ready": bool(normalized_results_summary.get("normalized_publish_ready")),
+            "unity_lane_status": unity_lane_status,
+            "unreal_lane_status": unreal_lane_status,
+            "browser_lane_status": browser_lane_status,
+            "recommended_runner_lane": recommended_runner_lane,
+            "quality_gate_blocker_count": quality_gate_blocker_count,
+            "pending_question_count": int(decision_audit.get("pending_question_count") or 0),
+            "blocking_reasons": blocking_reasons,
+            "recommended_fixes": recommended_fixes,
+            "notes": notes,
+            "platform_runners": platform_runners,
+            "design_transfer": design_transfer,
+            "spatial_governance": spatial_governance,
+        }
+
+    @staticmethod
+    def _game_engine_governance_manifest_root(workspace_root: Path) -> Path:
+        return workspace_root / "artifacts" / "game-engine-governance"
+
+    def build_game_engine_governance_plan(self, db: Session, project: Project) -> dict[str, Any]:
+        summary = self.build_game_engine_governance_summary(db, project)
+        workspace_path = project.workspace_path or project.source_path
+        if not workspace_path:
+            raise MissionControlError("Workspace path is required to generate game-engine governance manifests.")
+        workspace_root = Path(workspace_path).expanduser()
+        if not workspace_root.exists() or not workspace_root.is_dir():
+            raise MissionControlError("Workspace path must exist before generating game-engine governance manifests.")
+
+        manifest_root = self._game_engine_governance_manifest_root(workspace_root)
+        manifest_root.mkdir(parents=True, exist_ok=True)
+
+        playable_definition_path = manifest_root / "playable-definition.json"
+        scene_governance_path = manifest_root / "scene-governance.json"
+        asset_lock_plan_path = manifest_root / "asset-lock-plan.json"
+        task_routing_plan_path = manifest_root / "task-routing-plan.json"
+        content_budget_plan_path = manifest_root / "content-budget-plan.json"
+        automation_pack_path = manifest_root / "automation-pack.json"
+        engine_test_matrix_path = manifest_root / "engine-test-matrix.json"
+        validation_lane_plan_path = manifest_root / "validation-lane-plan.json"
+        evidence_contract_path = manifest_root / "evidence-contract.json"
+        result_normalization_plan_path = manifest_root / "result-normalization-plan.json"
+        screenshot_regression_plan_path = manifest_root / "screenshot-regression-plan.json"
+        publish_gate_path = manifest_root / "publish-gates.json"
+        approval_checkpoint_path = manifest_root / "approval-checkpoints.json"
+
+        detected_engines = [str(item) for item in list(summary.get("detected_engines") or []) if str(item).strip()]
+        scene_or_map_paths = [str(item) for item in list(summary.get("scene_or_map_paths") or []) if str(item).strip()]
+        automation_signal_paths = [str(item) for item in list(summary.get("automation_signal_paths") or []) if str(item).strip()]
+        screenshot_artifact_paths = [str(item) for item in list(summary.get("screenshot_artifact_paths") or []) if str(item).strip()]
+        blocking_reasons = self._dedupe_strings([str(item) for item in list(summary.get("blocking_reasons") or []) if str(item).strip()])
+        recommended_runner_lane = str(summary.get("recommended_runner_lane") or "discovery_needed")
+        unity_lane_status = str(summary.get("unity_lane_status") or "unavailable")
+        unreal_lane_status = str(summary.get("unreal_lane_status") or "unavailable")
+        browser_lane_status = str(summary.get("browser_lane_status") or "unavailable")
+        visual_regression_ready = bool(summary.get("visual_regression_ready"))
+        detected_project_paths = [str(item) for item in list(summary.get("detected_project_paths") or []) if str(item).strip()]
+        lock_required_asset_suffixes = [".unity", ".umap", ".uasset", ".prefab", ".mat", ".anim"]
+        platform_runners = dict(summary.get("platform_runners") or {})
+        selected_target_id = str(platform_runners.get("selected_target_id") or "").strip() or None
+        platform_lane_map = {
+            str(item.get("lane_id") or ""): dict(item or {})
+            for item in list(platform_runners.get("lanes") or [])
+            if str(item.get("lane_id") or "").strip()
+        }
+        unity_lane = dict(platform_lane_map.get("unity") or {})
+        unreal_lane = dict(platform_lane_map.get("unreal") or {})
+        unity_project_file = next((path for path in detected_project_paths if path.lower() == "projectsettings/projectversion.txt"), None)
+        unreal_project_file = next((path for path in detected_project_paths if path.lower().endswith(".uproject")), None)
+        unity_primary_scene = next((path for path in scene_or_map_paths if path.lower().endswith(".unity")), None)
+        unreal_primary_map = next((path for path in scene_or_map_paths if path.lower().endswith(".umap")), None)
+        code_owned_path_globs = [
+            "Assets/**/*.cs",
+            "Packages/**/*.cs",
+            "ProjectSettings/*.asset",
+            "Source/**/*.cpp",
+            "Source/**/*.h",
+            "Plugins/**/Source/**/*",
+            "Config/*.ini",
+            "Build/**/*.cs",
+        ]
+        content_owned_path_globs = [
+            "Assets/**/*.unity",
+            "Assets/**/*.prefab",
+            "Assets/**/*.mat",
+            "Assets/**/*.anim",
+            "Assets/**/*.fbx",
+            "Content/**/*.umap",
+            "Content/**/*.uasset",
+            "Content/**/*.fbx",
+        ]
+        shared_review_path_globs = [
+            "Assets/Scenes/**/*",
+            "Content/Maps/**/*",
+            "Plugins/**/*",
+        ]
+
+        def _engine_lane_commands(engine: str) -> list[dict[str, Any]]:
+            if engine == "unity":
+                return [
+                    {
+                        "bundle_id": "unity_editmode_tests",
+                        "title": "Unity EditMode tests",
+                        "required": True,
+                        "command": "Unity -batchmode -projectPath . -runTests -testPlatform EditMode "
+                        "-testResults artifacts/game-engine-governance/unity-editmode-results.xml "
+                        "-logFile artifacts/game-engine-governance/unity-editmode.log -quit",
+                        "working_directory": ".",
+                        "expected_outputs": [
+                            "artifacts/game-engine-governance/unity-editmode-results.xml",
+                            "artifacts/game-engine-governance/unity-editmode.log",
+                        ],
+                    },
+                    {
+                        "bundle_id": "unity_playmode_tests",
+                        "title": "Unity PlayMode tests",
+                        "required": True,
+                        "command": "Unity -batchmode -projectPath . -runTests -testPlatform PlayMode "
+                        "-testResults artifacts/game-engine-governance/unity-playmode-results.xml "
+                        "-logFile artifacts/game-engine-governance/unity-playmode.log -quit",
+                        "working_directory": ".",
+                        "expected_outputs": [
+                            "artifacts/game-engine-governance/unity-playmode-results.xml",
+                            "artifacts/game-engine-governance/unity-playmode.log",
+                        ],
+                    },
+                    {
+                        "bundle_id": "unity_golden_path_capture",
+                        "title": "Unity golden-path capture review",
+                        "required": bool(unity_primary_scene),
+                        "command": "Unity -batchmode -projectPath . -executeMethod MissionControl.CaptureGoldenPath "
+                        "-logFile artifacts/game-engine-governance/unity-golden-path-capture.log -quit",
+                        "working_directory": ".",
+                        "expected_outputs": [
+                            "artifacts/game-engine-governance/unity-golden-path-capture.log",
+                            "artifacts/renders/",
+                        ],
+                    },
+                ]
+            if engine == "unreal":
+                unreal_project_arg = unreal_project_file or "<project>.uproject"
+                return [
+                    {
+                        "bundle_id": "unreal_automation_tests",
+                        "title": "Unreal automation tests",
+                        "required": True,
+                        "command": f'UnrealEditor-Cmd.exe "{unreal_project_arg}" -ExecCmds="Automation RunTests Project; Quit" '
+                        '-testexit="Automation Test Queue Empty" -unattended -nop4 -nosplash '
+                        "-log=artifacts/game-engine-governance/unreal-automation.log",
+                        "working_directory": ".",
+                        "expected_outputs": [
+                            "artifacts/game-engine-governance/unreal-automation.log",
+                        ],
+                    },
+                    {
+                        "bundle_id": "unreal_buildcookrun_smoke",
+                        "title": "Unreal BuildCookRun smoke lane",
+                        "required": True,
+                        "command": f'RunUAT BuildCookRun -project="{unreal_project_arg}" -nop4 -build -cook -stage -pak -utf8output',
+                        "working_directory": ".",
+                        "expected_outputs": [
+                            "artifacts/game-engine-governance/unreal-buildcookrun.log",
+                        ],
+                    },
+                    {
+                        "bundle_id": "unreal_golden_path_capture",
+                        "title": "Unreal golden-path screenshot/comparison lane",
+                        "required": bool(unreal_primary_map),
+                        "command": f'UnrealEditor-Cmd.exe "{unreal_project_arg}" -game -map="{unreal_primary_map or "<golden-path>"}" '
+                        "-RenderOffscreen -unattended -log=artifacts/game-engine-governance/unreal-golden-path.log",
+                        "working_directory": ".",
+                        "expected_outputs": [
+                            "artifacts/game-engine-governance/unreal-golden-path.log",
+                            "artifacts/renders/",
+                        ],
+                    },
+                ]
+            return []
+
+        engine_lane_matrix = [
+            {
+                "engine": "unity",
+                "detected": "unity" in detected_engines,
+                "lane_status": unity_lane_status,
+                "selected_for_validation": recommended_runner_lane == "unity",
+                "scene_or_map_count": len(scene_or_map_paths),
+            },
+            {
+                "engine": "unreal",
+                "detected": "unreal" in detected_engines,
+                "lane_status": unreal_lane_status,
+                "selected_for_validation": recommended_runner_lane == "unreal",
+                "scene_or_map_count": len(scene_or_map_paths),
+            },
+            {
+                "engine": "browser",
+                "detected": bool(detected_engines),
+                "lane_status": browser_lane_status,
+                "selected_for_validation": recommended_runner_lane == "browser",
+                "scene_or_map_count": len(scene_or_map_paths),
+            },
+        ]
+
+        playable_definition = {
+            "detected_engines": detected_engines,
+            "playable_contract_status": summary.get("playable_contract_status"),
+            "recommended_runner_lane": recommended_runner_lane,
+            "scene_or_map_paths": scene_or_map_paths,
+            "required_checks": [
+                "boot",
+                "menu",
+                "input",
+                "save_load",
+                "core_loop",
+                "golden_path_map",
+            ],
+            "playable_targets": [
+                {
+                    "path": path,
+                    "kind": "scene_or_map",
+                    "validation_lane": recommended_runner_lane,
+                }
+                for path in scene_or_map_paths
+            ],
+            "lane_statuses": {
+                "unity": unity_lane_status,
+                "unreal": unreal_lane_status,
+                "browser": browser_lane_status,
+            },
+            "engine_lane_matrix": engine_lane_matrix,
+        }
+        scene_governance = {
+            "detected_engines": detected_engines,
+            "recommended_runner_lane": recommended_runner_lane,
+            "scene_or_map_count": len(scene_or_map_paths),
+            "scene_targets": [
+                {
+                    "path": path,
+                    "engine": (
+                        "unity"
+                        if path.lower().endswith((".unity", ".prefab"))
+                        else "unreal"
+                        if path.lower().endswith((".umap", ".uasset"))
+                        else "unknown"
+                    ),
+                    "lock_required": True,
+                    "publish_review_required": True,
+                    "golden_path_candidate": index == 0,
+                }
+                for index, path in enumerate(scene_or_map_paths)
+            ],
+            "ownership_rules": {
+                "lock_required_asset_suffixes": lock_required_asset_suffixes,
+                "content_task_requires_asset_lock_review": True,
+                "code_task_requires_engine_native_validation": True,
+                "mixed_code_content_changes_require_publish_review": True,
+            },
+            "play_level_governance": {
+                "golden_path_scene_required": True,
+                "smoke_scene_required": True,
+                "isolated_test_level_required": True,
+                "scene_budget_review_required": True,
+            },
+            "lane_statuses": {
+                "unity": unity_lane_status,
+                "unreal": unreal_lane_status,
+                "browser": browser_lane_status,
+            },
+        }
+        asset_lock_plan = {
+            "detected_engines": detected_engines,
+            "recommended_runner_lane": recommended_runner_lane,
+            "scene_or_map_count": len(scene_or_map_paths),
+            "lock_rules": {
+                "lock_required_asset_suffixes": lock_required_asset_suffixes,
+                "content_task_requires_asset_lock_review": True,
+                "code_task_requires_engine_native_validation": True,
+                "mixed_code_content_changes_require_publish_review": True,
+                "required_review_roles": ["content_owner", "engine_reviewer"],
+            },
+            "ownership_zones": {
+                "code_owned_path_globs": code_owned_path_globs,
+                "content_owned_path_globs": content_owned_path_globs,
+                "shared_review_path_globs": shared_review_path_globs,
+            },
+            "scene_targets": [
+                {
+                    "path": path,
+                    "engine": (
+                        "unity"
+                        if path.lower().endswith((".unity", ".prefab"))
+                        else "unreal"
+                        if path.lower().endswith((".umap", ".uasset"))
+                        else "unknown"
+                    ),
+                    "lock_scope": "exclusive_content_lock",
+                    "publish_review_required": True,
+                }
+                for path in scene_or_map_paths
+            ],
+            "escalation_rules": [
+                "Any scene, map, prefab, or asset-material mutation requires an explicit asset-lock review before publish.",
+                "Mixed code and content changes require both engine-native validation evidence and publish-gate review.",
+            ],
+        }
+        task_routing_plan = {
+            "detected_engines": detected_engines,
+            "recommended_runner_lane": recommended_runner_lane,
+            "routing_profiles": [
+                {
+                    "task_type": "code",
+                    "owner_lane": "engine_code",
+                    "allowed_path_globs": code_owned_path_globs,
+                    "required_gates": ["engine_test_matrix_review", "engine_lane_ready_review"],
+                    "required_evidence_ids": ["engine_native_test_results"],
+                    "content_lock_required": False,
+                },
+                {
+                    "task_type": "content",
+                    "owner_lane": "engine_content",
+                    "allowed_path_globs": content_owned_path_globs,
+                    "required_gates": ["scene_governance_review", "screenshot_regression_review"],
+                    "required_evidence_ids": ["golden_path_capture", "visual_regression_review"],
+                    "content_lock_required": True,
+                },
+                {
+                    "task_type": "mixed",
+                    "owner_lane": "engine_publish_review",
+                    "allowed_path_globs": shared_review_path_globs,
+                    "required_gates": ["scene_governance_review", "engine_test_matrix_review", "screenshot_regression_review", "publish_gate"],
+                    "required_evidence_ids": ["engine_native_test_results", "golden_path_capture", "visual_regression_review"],
+                    "content_lock_required": True,
+                    "publish_review_required": True,
+                },
+            ],
+            "handoff_rules": {
+                "content_tasks_cannot_close_without_asset_lock_review": True,
+                "code_tasks_cannot_close_without_engine_test_evidence": True,
+                "mixed_tasks_require_explicit_publish_gate": True,
+                "content_tasks_must_not_ship_without_budget_review": True,
+            },
+        }
+        content_budget_plan = {
+            "detected_project_paths": detected_project_paths,
+            "scene_or_map_count": len(scene_or_map_paths),
+            "automation_signal_count": len(automation_signal_paths),
+            "budget_categories": [
+                "draw_calls",
+                "texture_memory",
+                "shader_variants",
+                "build_size",
+                "load_times",
+            ],
+            "screenshot_artifact_count": len(screenshot_artifact_paths),
+            "quality_gate_blocker_count": int(summary.get("quality_gate_blocker_count") or 0),
+            "budget_requirements": {
+                "performance_budget_required": True,
+                "content_ownership_required": True,
+                "golden_path_required": True,
+            },
+            "engine_targets": detected_engines,
+        }
+        automation_pack = {
+            "engines": detected_engines,
+            "recommended_runner_lane": recommended_runner_lane,
+            "automation_signal_paths": automation_signal_paths,
+            "engine_native_lanes": [
+                {
+                    "engine": "unity",
+                    "enabled": "unity" in detected_engines,
+                    "lane_status": unity_lane_status,
+                    "commands": ["-runTests -batchmode"],
+                    "required_test_modes": ["EditMode", "PlayMode"],
+                },
+                {
+                    "engine": "unreal",
+                    "enabled": "unreal" in detected_engines,
+                    "lane_status": unreal_lane_status,
+                    "commands": ["Automation Test Framework", "Editor commandlet"],
+                    "required_test_modes": ["AutomationTests", "Commandlet"],
+                },
+            ],
+            "publish_requirements": {
+                "repo_owned_tests_required": True,
+                "golden_path_validation_required": True,
+                "approval_required_before_publish": True,
+            },
+        }
+        engine_test_matrix = {
+            "recommended_runner_lane": recommended_runner_lane,
+            "engines": [
+                {
+                    "engine": "unity",
+                    "enabled": "unity" in detected_engines,
+                    "lane_status": unity_lane_status,
+                    "commands": [
+                        "Unity -batchmode -runTests",
+                        "Unity -batchmode -quit -projectPath .",
+                    ],
+                    "required_test_modes": ["EditMode", "PlayMode"],
+                    "plugin_pack_required": False,
+                    "screenshot_regression_supported": visual_regression_ready,
+                    "repo_test_signal_paths": [
+                        path for path in automation_signal_paths if path.lower().endswith((".cs", ".unity"))
+                    ],
+                },
+                {
+                    "engine": "unreal",
+                    "enabled": "unreal" in detected_engines,
+                    "lane_status": unreal_lane_status,
+                    "commands": [
+                        "UnrealEditor-Cmd.exe -RunAutomationTests",
+                        "RunUAT BuildCookRun",
+                    ],
+                    "required_test_modes": ["AutomationTests", "Commandlet", "ScreenshotComparison"],
+                    "plugin_pack_required": True,
+                    "screenshot_regression_supported": visual_regression_ready,
+                    "repo_test_signal_paths": [
+                        path for path in automation_signal_paths if path.lower().endswith((".uplugin", ".uproject", ".py"))
+                    ],
+                },
+            ],
+            "task_boundaries": {
+                "content_tasks_must_not_skip_asset_lock_review": True,
+                "code_tasks_must_not_skip_engine_native_tests": True,
+                "mixed_code_and_content_publish_requires_extra_review": True,
+            },
+            "regression_requirements": {
+                "screenshot_diff_required": True,
+                "replay_or_commandlet_evidence_required_for_publish": "unreal" in detected_engines,
+                "engine_native_test_evidence_required": True,
+            },
+        }
+        validation_lanes = [
+            {
+                "engine": "unity",
+                "status": unity_lane_status,
+                "selected_target_ids": list(unity_lane.get("selected_target_ids") or []),
+                "target_ids": list(unity_lane.get("target_ids") or []),
+                "project_file_path": unity_project_file,
+                "golden_path_target": unity_primary_scene,
+                "required_test_modes": ["EditMode", "PlayMode"],
+                "repo_test_signal_paths": [
+                    path for path in automation_signal_paths if path.lower().endswith((".cs", ".unity", ".asmdef"))
+                ],
+                "command_bundles": _engine_lane_commands("unity"),
+            },
+            {
+                "engine": "unreal",
+                "status": unreal_lane_status,
+                "selected_target_ids": list(unreal_lane.get("selected_target_ids") or []),
+                "target_ids": list(unreal_lane.get("target_ids") or []),
+                "project_file_path": unreal_project_file,
+                "golden_path_target": unreal_primary_map,
+                "required_test_modes": ["AutomationTests", "Commandlet", "ScreenshotComparison"],
+                "repo_test_signal_paths": [
+                    path for path in automation_signal_paths if path.lower().endswith((".cpp", ".uplugin", ".uproject", ".py"))
+                ],
+                "command_bundles": _engine_lane_commands("unreal"),
+            },
+        ]
+        validation_lane_plan = {
+            "selected_target_id": selected_target_id,
+            "recommended_runner_lane": recommended_runner_lane,
+            "detected_engines": detected_engines,
+            "ready_execution_lane_ids": [
+                lane["engine"]
+                for lane in validation_lanes
+                if str(lane.get("status") or "") == "ready"
+            ],
+            "partial_execution_lane_ids": [
+                lane["engine"]
+                for lane in validation_lanes
+                if str(lane.get("status") or "") == "partial"
+            ],
+            "execution_lanes": validation_lanes,
+        }
+        evidence_contract = {
+            "selected_target_id": selected_target_id,
+            "recommended_runner_lane": recommended_runner_lane,
+            "required_evidence": [
+                {
+                    "evidence_id": "engine_native_test_results",
+                    "required": True,
+                    "accepted_outputs": [
+                        "artifacts/game-engine-governance/unity-editmode-results.xml",
+                        "artifacts/game-engine-governance/unity-playmode-results.xml",
+                        "artifacts/game-engine-governance/unreal-automation.log",
+                    ],
+                },
+                {
+                    "evidence_id": "golden_path_capture",
+                    "required": bool(scene_or_map_paths),
+                    "accepted_outputs": [
+                        "artifacts/renders/",
+                        "artifacts/game-engine-governance/unity-golden-path-capture.log",
+                        "artifacts/game-engine-governance/unreal-golden-path.log",
+                    ],
+                },
+                {
+                    "evidence_id": "visual_regression_review",
+                    "required": visual_regression_ready,
+                    "accepted_outputs": screenshot_artifact_paths or ["artifacts/renders/"],
+                },
+                {
+                    "evidence_id": "performance_budget_review",
+                    "required": True,
+                    "accepted_outputs": [
+                        "artifacts/game-engine-governance/content-budget-plan.json",
+                    ],
+                },
+            ],
+            "engine_expectations": {
+                "unity": {
+                    "project_file_path": unity_project_file,
+                    "golden_path_target": unity_primary_scene,
+                    "required_test_modes": ["EditMode", "PlayMode"],
+                },
+                "unreal": {
+                    "project_file_path": unreal_project_file,
+                    "golden_path_target": unreal_primary_map,
+                    "required_test_modes": ["AutomationTests", "Commandlet", "ScreenshotComparison"],
+                    "plugin_pack_required": True,
+                },
+            },
+        }
+        result_normalization_plan = {
+            "selected_target_id": selected_target_id,
+            "recommended_runner_lane": recommended_runner_lane,
+            "detected_engines": detected_engines,
+            "normalizers": [
+                {
+                    "normalizer_id": "unity_editmode_results",
+                    "engine": "unity",
+                    "enabled": "unity" in detected_engines,
+                    "result_format": "junit_xml",
+                    "input_paths": ["artifacts/game-engine-governance/unity-editmode-results.xml"],
+                    "parser_strategy": "junit_xml_suite_summary",
+                    "extract_fields": ["tests", "failures", "errors", "skipped", "duration_seconds"],
+                    "output_artifact": "artifacts/game-engine-governance/unity-editmode-summary.json",
+                    "required_for_publish": True,
+                },
+                {
+                    "normalizer_id": "unity_playmode_results",
+                    "engine": "unity",
+                    "enabled": "unity" in detected_engines,
+                    "result_format": "junit_xml",
+                    "input_paths": ["artifacts/game-engine-governance/unity-playmode-results.xml"],
+                    "parser_strategy": "junit_xml_suite_summary",
+                    "extract_fields": ["tests", "failures", "errors", "skipped", "duration_seconds"],
+                    "output_artifact": "artifacts/game-engine-governance/unity-playmode-summary.json",
+                    "required_for_publish": True,
+                },
+                {
+                    "normalizer_id": "unreal_automation_log",
+                    "engine": "unreal",
+                    "enabled": "unreal" in detected_engines,
+                    "result_format": "automation_log",
+                    "input_paths": ["artifacts/game-engine-governance/unreal-automation.log"],
+                    "parser_strategy": "keyword_and_phase_scan",
+                    "extract_fields": ["passed_tests", "failed_tests", "warnings", "fatal_errors", "duration_hints"],
+                    "success_markers": ["Automation Test Queue Empty", "Test Completed. Result={Succeeded}"],
+                    "failure_markers": ["Fatal error:", "RunTests failed", "Result={Failed}"],
+                    "output_artifact": "artifacts/game-engine-governance/unreal-automation-summary.json",
+                    "required_for_publish": True,
+                },
+                {
+                    "normalizer_id": "unreal_buildcookrun_log",
+                    "engine": "unreal",
+                    "enabled": "unreal" in detected_engines,
+                    "result_format": "build_log",
+                    "input_paths": ["artifacts/game-engine-governance/unreal-buildcookrun.log"],
+                    "parser_strategy": "keyword_and_phase_scan",
+                    "extract_fields": ["build_phases", "cook_failures", "stage_failures", "packaging_failures", "warnings"],
+                    "success_markers": ["BUILD SUCCESSFUL", "AutomationTool exiting with ExitCode=0"],
+                    "failure_markers": ["AutomationTool exiting with ExitCode=", "ERROR:", "Cook failed."],
+                    "output_artifact": "artifacts/game-engine-governance/unreal-buildcookrun-summary.json",
+                    "required_for_publish": True,
+                },
+            ],
+            "capture_normalizers": [
+                {
+                    "normalizer_id": "golden_path_capture",
+                    "enabled": bool(scene_or_map_paths),
+                    "input_paths": [
+                        "artifacts/game-engine-governance/unity-golden-path-capture.log",
+                        "artifacts/game-engine-governance/unreal-golden-path.log",
+                        *screenshot_artifact_paths,
+                    ],
+                    "parser_strategy": "capture_presence_and_frame_inventory",
+                    "extract_fields": ["frame_count", "image_paths", "capture_errors", "black_frame_signals"],
+                    "required_for_publish": True,
+                }
+            ],
+            "normalized_output_contract": {
+                "required_summary_fields": ["status", "engine", "evidence_kind", "source_path", "pass_signal", "failure_count", "warning_count"],
+                "publish_blocking_statuses": ["failed", "missing", "parse_error"],
+                "rollup_artifact": "artifacts/game-engine-governance/normalized-results-summary.json",
+            },
+        }
+        normalized_results_rollup = self._materialize_game_engine_normalized_results(
+            workspace_root,
+            result_normalization_plan=result_normalization_plan,
+        )
+        normalized_publish_ready = bool(normalized_results_rollup.get("publish_ready"))
+        quality_gate_blocker_count = int(summary.get("quality_gate_blocker_count") or 0)
+        normalized_blocking_summary_ids = [
+            str(item)
+            for item in list(normalized_results_rollup.get("blocking_summary_ids") or [])
+            if str(item).strip()
+        ]
+        validation_lane_publish_blockers = self._dedupe_strings(
+            (
+                ["No scene or map target is available, so publish has no governed playable surface to validate."]
+                if detected_engines and not scene_or_map_paths
+                else []
+            )
+            + (
+                ["No Unity or Unreal validation lane is selected for publish review yet."]
+                if detected_engines and recommended_runner_lane not in {"unity", "unreal"}
+                else []
+            )
+            + (
+                ["Normalized Unity/Unreal result rollups still contain missing, failed, or parse-error evidence."]
+                if detected_engines and not normalized_publish_ready
+                else []
+            )
+            + (
+                ["Playable contract coverage is not ready yet, so publish would still be approving a guess."]
+                if detected_engines and str(summary.get("playable_contract_status") or "") != "ready"
+                else []
+            )
+            + (
+                [f"{quality_gate_blocker_count} quality gate blocker(s) still prevent publish review."]
+                if detected_engines and quality_gate_blocker_count > 0
+                else []
+            )
+        )
+        publish_ready = (
+            not validation_lane_publish_blockers
+            and normalized_publish_ready
+            and str(summary.get("playable_contract_status") or "") == "ready"
+            and quality_gate_blocker_count == 0
+        )
+        validation_lane_plan["publish_blockers"] = validation_lane_publish_blockers
+        screenshot_regression_plan = {
+            "visual_regression_ready": visual_regression_ready,
+            "browser_lane_status": browser_lane_status,
+            "screenshot_artifact_paths": screenshot_artifact_paths,
+            "evidence_requirements": {
+                "fixed_camera_required": True,
+                "diff_threshold_review_required": True,
+                "black_frame_review_required": True,
+                "replay_capture_review_required": bool(detected_engines),
+            },
+            "review_strategy": "Use fixed-camera screenshots or captured frame artifacts before publish.",
+        }
+        publish_gates = {
+            "gates": [
+                {
+                    "gate_id": "scene_governance_review",
+                    "stage": "preflight",
+                    "status": "ready" if scene_or_map_paths else "blocked",
+                    "reason": "Scene and map ownership rules need to be explicit before content-heavy engine changes pretend they are governed.",
+                },
+                {
+                    "gate_id": "playable_definition_review",
+                    "stage": "preflight",
+                    "status": "ready" if scene_or_map_paths else "blocked",
+                    "reason": "Game changes need an explicit playable target before Mission Control should ship anything.",
+                },
+                {
+                    "gate_id": "automation_pack_review",
+                    "stage": "validation",
+                    "status": "ready" if automation_signal_paths else "partial",
+                    "reason": "Repo-owned automation evidence should exist before claiming engine validation is governed.",
+                },
+                {
+                    "gate_id": "engine_test_matrix_review",
+                    "stage": "validation",
+                    "status": "ready" if recommended_runner_lane in {"unity", "unreal"} and normalized_publish_ready else "partial",
+                    "reason": (
+                        "Engine-native test packs are explicit and normalized evidence is currently publish-safe."
+                        if recommended_runner_lane in {"unity", "unreal"} and normalized_publish_ready
+                        else "Engine-native test packs need normalized results before Unity and Unreal validation stops being generic CI cosplay."
+                    ),
+                },
+                {
+                    "gate_id": "result_normalization_review",
+                    "stage": "validation",
+                    "status": "ready" if normalized_publish_ready else "blocked",
+                    "reason": (
+                        "Normalized engine evidence currently clears publish blockers."
+                        if normalized_publish_ready
+                        else "Normalized engine evidence still shows failed, missing, or parse-error artifacts, so publish remains blocked."
+                    ),
+                },
+                {
+                    "gate_id": "screenshot_regression_review",
+                    "stage": "validation",
+                    "status": "ready" if visual_regression_ready else "partial",
+                    "reason": "Playable validation needs screenshot or frame-diff evidence before anyone calls it shippable.",
+                },
+                {
+                    "gate_id": "publish_gate",
+                    "stage": "publish",
+                    "status": "ready" if publish_ready else "blocked",
+                    "reason": (
+                        "Publishing stays blocked until runner, playable-contract, normalized evidence, and project quality-gate blockers are cleared."
+                        if not publish_ready
+                        else "Publishing is cleared by runner readiness, playable-contract coverage, normalized evidence, and project quality-gate review."
+                    ),
+                },
+            ]
+        }
+        approval_checkpoints = {
+            "checkpoints": [
+                {
+                    "checkpoint_id": "engine_lane_ready_review",
+                    "stage": "lane",
+                    "status": "ready" if recommended_runner_lane in {"unity", "unreal"} else "blocked",
+                    "reason": "Mission Control should not greenlight engine work without a concrete Unity or Unreal validation lane.",
+                },
+                {
+                    "checkpoint_id": "golden_path_target_review",
+                    "stage": "target",
+                    "status": "ready" if scene_or_map_paths else "blocked",
+                    "reason": "A golden-path scene or map has to exist before engine validation stops being interpretive dance.",
+                },
+                {
+                    "checkpoint_id": "evidence_contract_review",
+                    "stage": "evidence",
+                    "status": "ready" if (visual_regression_ready or automation_signal_paths) and normalized_publish_ready else "partial",
+                    "reason": "Engine validation needs explicit evidence outputs and normalized results, not a promise that screenshots probably happened.",
+                },
+                {
+                    "checkpoint_id": "normalized_results_review",
+                    "stage": "evidence",
+                    "status": "ready" if normalized_publish_ready else "blocked",
+                    "reason": (
+                        "Normalized engine result summaries currently support publish review."
+                        if normalized_publish_ready
+                        else "Normalized engine result summaries still contain blocking failures, parse errors, or missing artifacts."
+                    ),
+                },
+                {
+                    "checkpoint_id": "publish_readiness_review",
+                    "stage": "publish",
+                    "status": "ready" if publish_ready else "blocked",
+                    "reason": "Publishing remains blocked until engine-native test, scene governance, normalized evidence, screenshot requirements, and project quality gates are all satisfied.",
+                },
+            ]
+        }
+
+        playable_definition_path.write_text(json.dumps(playable_definition, indent=2), encoding="utf-8")
+        scene_governance_path.write_text(json.dumps(scene_governance, indent=2), encoding="utf-8")
+        asset_lock_plan_path.write_text(json.dumps(asset_lock_plan, indent=2), encoding="utf-8")
+        task_routing_plan_path.write_text(json.dumps(task_routing_plan, indent=2), encoding="utf-8")
+        content_budget_plan_path.write_text(json.dumps(content_budget_plan, indent=2), encoding="utf-8")
+        automation_pack_path.write_text(json.dumps(automation_pack, indent=2), encoding="utf-8")
+        engine_test_matrix_path.write_text(json.dumps(engine_test_matrix, indent=2), encoding="utf-8")
+        validation_lane_plan_path.write_text(json.dumps(validation_lane_plan, indent=2), encoding="utf-8")
+        evidence_contract_path.write_text(json.dumps(evidence_contract, indent=2), encoding="utf-8")
+        result_normalization_plan_path.write_text(json.dumps(result_normalization_plan, indent=2), encoding="utf-8")
+        screenshot_regression_plan_path.write_text(json.dumps(screenshot_regression_plan, indent=2), encoding="utf-8")
+        publish_gate_path.write_text(json.dumps(publish_gates, indent=2), encoding="utf-8")
+        approval_checkpoint_path.write_text(json.dumps(approval_checkpoints, indent=2), encoding="utf-8")
+
+        notes = self._dedupe_strings(
+            [
+                "Generated game-engine governance manifests for playable definition, scene governance, asset locks, task routing, content budgets, automation packs, engine-native test matrices, validation lane plans, evidence contracts, screenshot regression, publish gates, and approval checkpoints.",
+                "Engine result normalization is explicit, so Unity XML and Unreal automation logs can be rolled up into publish-grade evidence instead of sitting there like decorative debris.",
+                (
+                    f"Normalized engine evidence currently reports {normalized_results_rollup.get('passed_count', 0)} passed, "
+                    f"{normalized_results_rollup.get('failed_count', 0)} failed, and {normalized_results_rollup.get('missing_count', 0)} missing summary item(s)."
+                ),
+                (
+                    f"Blocking normalized evidence artifacts: {', '.join(normalized_blocking_summary_ids[:4])}."
+                    if normalized_blocking_summary_ids
+                    else "Normalized engine evidence is currently publish-safe."
+                ),
+                (
+                    "Visual regression is wired into the plan because the workspace already exposes screenshot or render evidence."
+                    if bool(summary.get("visual_regression_ready"))
+                    else "Visual regression is still weak here, so the planner records the gap instead of hand-waving it away."
+                ),
+                (
+                    f"{len(automation_signal_paths)} automation signal(s) were folded into the engine automation pack."
+                    if automation_signal_paths
+                    else "No automation test signals were detected, so the engine automation pack is mostly scaffolding right now."
+                ),
+            ]
+            + [str(item) for item in list(summary.get("notes") or [])[:3]]
+        )[:8]
+        plan_status = (
+            "ready"
+            if publish_ready
+            else "partial"
+            if detected_engines
+            else "blocked"
+        )
+        plan_publish_gate_status = (
+            "not_applicable"
+            if not detected_engines
+            else "ready"
+            if publish_ready
+            else "blocked"
+        )
+        result_summary = (
+            f"Generated a governed game-engine plan with {len(detected_engines)} engine(s), "
+            f"{len(scene_or_map_paths)} scene/map asset(s), and {len(automation_signal_paths)} automation signal(s)."
+        )
+        command_bundle_count = sum(len(list(lane.get("command_bundles") or [])) for lane in validation_lanes)
+        ready_execution_lane_count = sum(1 for lane in validation_lanes if str(lane.get("status") or "") == "ready")
+        normalized_results_summary_path = str((result_normalization_plan.get("normalized_output_contract") or {}).get("rollup_artifact") or "")
+        return {
+            "project_id": project.id,
+            "project_name": project.name,
+            "workspace_path": workspace_path,
+            "summary": result_summary,
+            "plan_status": plan_status,
+            "selected_target_id": selected_target_id,
+            "detected_engines": detected_engines,
+            "engine_count": len(detected_engines),
+            "playable_contract_status": summary.get("playable_contract_status"),
+            "ready_execution_lane_count": ready_execution_lane_count,
+            "command_bundle_count": command_bundle_count,
+            "manifest_root": manifest_root.relative_to(workspace_root).as_posix(),
+            "playable_definition_path": playable_definition_path.relative_to(workspace_root).as_posix(),
+            "scene_governance_path": scene_governance_path.relative_to(workspace_root).as_posix(),
+            "asset_lock_plan_path": asset_lock_plan_path.relative_to(workspace_root).as_posix(),
+            "task_routing_plan_path": task_routing_plan_path.relative_to(workspace_root).as_posix(),
+            "content_budget_plan_path": content_budget_plan_path.relative_to(workspace_root).as_posix(),
+            "automation_pack_path": automation_pack_path.relative_to(workspace_root).as_posix(),
+            "engine_test_matrix_path": engine_test_matrix_path.relative_to(workspace_root).as_posix(),
+            "validation_lane_plan_path": validation_lane_plan_path.relative_to(workspace_root).as_posix(),
+            "evidence_contract_path": evidence_contract_path.relative_to(workspace_root).as_posix(),
+            "result_normalization_plan_path": result_normalization_plan_path.relative_to(workspace_root).as_posix(),
+            "normalized_results_summary_path": normalized_results_summary_path,
+            "normalized_summary_count": int(normalized_results_rollup.get("summary_count") or 0),
+            "normalized_passed_count": int(normalized_results_rollup.get("passed_count") or 0),
+            "normalized_failed_count": int(normalized_results_rollup.get("failed_count") or 0),
+            "normalized_missing_count": int(normalized_results_rollup.get("missing_count") or 0),
+            "normalized_publish_ready": bool(normalized_results_rollup.get("publish_ready")),
+            "publish_gate_status": plan_publish_gate_status,
+            "publish_blocker_count": len(validation_lane_publish_blockers),
+            "publish_blockers": validation_lane_publish_blockers,
+            "screenshot_regression_plan_path": screenshot_regression_plan_path.relative_to(workspace_root).as_posix(),
+            "publish_gate_path": publish_gate_path.relative_to(workspace_root).as_posix(),
+            "approval_checkpoint_path": approval_checkpoint_path.relative_to(workspace_root).as_posix(),
+            "blocking_reasons": blocking_reasons,
+            "notes": notes,
+        }
+
+    def build_dataset_governance_summary(self, db: Session, project: Project) -> dict[str, Any]:
+        tooling = self.build_workspace_tooling_status(project)
+        artifact_registry = self.build_project_artifact_registry(project)
+        file_governance = self.build_file_governance_summary(db, project)
+        nvidia_governance = self.build_nvidia_execution_governance_summary(db, project)
+        quality_gates = self.build_quality_gate_summary(db, project)
+        decision_audit = self.build_decision_audit_summary(db, project)
+
+        tf_repo = dict(tooling.get("tensorflow_repo") or {})
+        tf_plan = dict(tooling.get("tensorflow_validation_plan") or {})
+        pt_repo = dict(tooling.get("pytorch_repo") or {})
+        pt_runtime = dict(tooling.get("pytorch_runtime_status") or {})
+        pt_plan = dict(tooling.get("pytorch_validation_plan") or {})
+
+        tensorflow_enabled = bool(tf_repo.get("enabled") or tf_plan.get("repo_mode_enabled"))
+        pytorch_enabled = bool(pt_repo.get("enabled") or pt_plan.get("repo_mode_enabled"))
+        repo_mode_enabled = tensorflow_enabled or pytorch_enabled
+
+        detected_frameworks = self._dedupe_strings(
+            (["TensorFlow"] if tensorflow_enabled else [])
+            + (["PyTorch"] if pytorch_enabled else [])
+            + [str(item) for item in list(tf_repo.get("frameworks") or []) if str(item).strip()]
+            + [str(item) for item in list(pt_repo.get("frameworks") or []) if str(item).strip()]
+        )
+        detected_product_workflows = self._dedupe_strings(
+            [str(item) for item in list(tf_repo.get("product_workflows") or []) if str(item).strip()]
+            + [str(item) for item in list(tf_plan.get("product_workflows") or []) if str(item).strip()]
+            + [str(item) for item in list(pt_repo.get("product_workflows") or []) if str(item).strip()]
+            + [str(item) for item in list(pt_plan.get("product_workflows") or []) if str(item).strip()]
+        )
+
+        dataset_extensions = {
+            ".arrow",
+            ".bin",
+            ".ckpt",
+            ".csv",
+            ".feather",
+            ".h5",
+            ".json",
+            ".jsonl",
+            ".keras",
+            ".npy",
+            ".npz",
+            ".onnx",
+            ".parquet",
+            ".pb",
+            ".pt",
+            ".pth",
+            ".record",
+            ".records",
+            ".safetensors",
+            ".tar",
+            ".tfrecord",
+            ".tfrecords",
+            ".tflite",
+            ".tsv",
+            ".zip",
+        }
+        checkpoint_extensions = {".ckpt", ".pt", ".pth", ".safetensors"}
+        schema_tokens = ("schema", "manifest", "metadata", "label", "feature", "config", "transform", "pipeline")
+        dataset_hint_tokens = (
+            "artifact",
+            "batch",
+            "checkpoint",
+            "data",
+            "dataset",
+            "eval",
+            "model",
+            "record",
+            "sample",
+            "saved_model",
+            "savedmodel",
+            "test",
+            "train",
+            "val",
+            "weights",
+        )
+
+        artifact_paths = [
+            str(item)
+            for item in list(artifact_registry.get("artifact_paths") or [])
+            if str(item).strip()
+        ]
+        dataset_artifact_paths = self._dedupe_strings(
+            [
+                path
+                for path in artifact_paths
+                if Path(path).suffix.lower() in dataset_extensions
+                or any(token in path.lower() for token in dataset_hint_tokens)
+            ]
+            + [str(item) for item in list(tf_repo.get("existing_savedmodel_artifacts") or []) if str(item).strip()]
+            + [str(item) for item in list(tf_repo.get("existing_tflite_artifacts") or []) if str(item).strip()]
+            + [str(item) for item in list(pt_repo.get("existing_onnx_artifacts") or []) if str(item).strip()]
+            + [str(item) for item in list(pt_repo.get("existing_torchscript_artifacts") or []) if str(item).strip()]
+            + [str(item) for item in list(pt_repo.get("checkpoint_paths") or []) if str(item).strip()]
+        )
+        checkpoint_artifact_paths = self._dedupe_strings(
+            [str(item) for item in list(pt_repo.get("checkpoint_paths") or []) if str(item).strip()]
+            + [
+                path
+                for path in dataset_artifact_paths
+                if Path(path).suffix.lower() in checkpoint_extensions or "checkpoint" in path.lower()
+            ]
+        )
+        dataset_artifact_extensions = sorted({Path(path).suffix.lower() or "<no_ext>" for path in dataset_artifact_paths})
+
+        schema_or_config_paths = self._dedupe_strings(
+            [str(item) for item in list(artifact_registry.get("config_review_paths") or []) if str(item).strip()]
+            + [str(item) for item in list(tf_repo.get("config_paths") or []) if str(item).strip()]
+            + [str(item) for item in list(pt_repo.get("config_paths") or []) if str(item).strip()]
+            + [
+                path
+                for path in (
+                    [str(item) for item in list(tf_repo.get("important_paths") or []) if str(item).strip()]
+                    + [str(item) for item in list(pt_repo.get("important_paths") or []) if str(item).strip()]
+                )
+                if any(token in path.lower() for token in schema_tokens)
+            ]
+        )
+        governance_signal_sources = self._dedupe_strings(
+            schema_or_config_paths
+            + dataset_artifact_paths
+            + [str(item) for item in list(artifact_registry.get("execution_entrypoints") or []) if str(item).strip()]
+            + [str(item) for item in list(tooling.get("validation_evidence_targets") or []) if str(item).strip()]
+            + [str(item) for item in list(tf_repo.get("important_paths") or []) if str(item).strip()]
+            + [str(item) for item in list(pt_repo.get("important_paths") or []) if str(item).strip()]
+            + detected_product_workflows
+        )
+        provenance_tokens = ("manifest", "metadata", "provenance", "lineage", "catalog", "datasource", "data_source")
+        split_tokens = ("train", "val", "valid", "test", "split", "fold", "partition", "shard")
+        evaluation_tokens = ("eval", "metric", "benchmark", "score", "report", "confusion", "validation")
+        pii_tokens = ("pii", "privacy", "redact", "redaction", "deidentify", "de-ident", "anonym")
+        duplication_tokens = ("dedupe", "dedup", "duplicate", "near_dup", "near-dup", "overlap")
+        corruption_tokens = ("corrupt", "corruption", "checksum", "integrity", "bad_record", "sanity")
+        label_tokens = ("label", "labels", "class_map", "taxonomy", "ontology", "annotation")
+        provenance_signals = self._dedupe_strings(
+            [signal for signal in governance_signal_sources if any(token in signal.lower() for token in provenance_tokens)]
+        )[:10]
+        split_signals = self._dedupe_strings(
+            [signal for signal in governance_signal_sources if any(token in signal.lower() for token in split_tokens)]
+        )[:10]
+        evaluation_signals = self._dedupe_strings(
+            [signal for signal in governance_signal_sources if any(token in signal.lower() for token in evaluation_tokens)]
+        )[:10]
+        pii_signals = self._dedupe_strings(
+            [signal for signal in governance_signal_sources if any(token in signal.lower() for token in pii_tokens)]
+        )[:10]
+        duplication_signals = self._dedupe_strings(
+            [signal for signal in governance_signal_sources if any(token in signal.lower() for token in duplication_tokens)]
+        )[:10]
+        corruption_signals = self._dedupe_strings(
+            [signal for signal in governance_signal_sources if any(token in signal.lower() for token in corruption_tokens)]
+        )[:10]
+        label_coverage_signals = self._dedupe_strings(
+            [signal for signal in governance_signal_sources if any(token in signal.lower() for token in label_tokens)]
+        )[:10]
+
+        tf_steps = list(tf_plan.get("steps") or [])
+        pt_steps = list(pt_plan.get("steps") or [])
+        validation_step_count = len(tf_steps) + len(pt_steps)
+        validation_evidence_targets = self._dedupe_strings(
+            [str(item) for item in list(tooling.get("validation_evidence_targets") or []) if str(item).strip()]
+            + [str(item) for item in list(tf_plan.get("evidence_targets") or []) if str(item).strip()]
+            + [str(item) for item in list(pt_plan.get("evidence_targets") or []) if str(item).strip()]
+        )[:14]
+
+        tf_blockers = [str(item) for item in list(tf_plan.get("blockers") or []) if str(item).strip()] if tensorflow_enabled else []
+        pt_blockers = (
+            [str(item) for item in list(pt_plan.get("blockers") or []) if str(item).strip()]
+            + [str(item) for item in list(pt_runtime.get("blockers") or []) if str(item).strip()]
+        ) if pytorch_enabled else []
+        tf_ready = tensorflow_enabled and str(tf_plan.get("status") or "not_applicable") == "ready"
+        pt_runtime_status = str(pt_runtime.get("status") or "missing") if pytorch_enabled else "not_applicable"
+        pt_ready = pytorch_enabled and str(pt_plan.get("status") or "not_applicable") == "ready" and pt_runtime_status not in {"blocked", "missing"}
+        ready_frameworks = self._dedupe_strings(
+            (["TensorFlow"] if tf_ready else []) + (["PyTorch"] if pt_ready else [])
+        )
+        blocked_frameworks = self._dedupe_strings(
+            (["TensorFlow"] if tensorflow_enabled and tf_blockers else [])
+            + (
+                ["PyTorch"]
+                if pytorch_enabled and (pt_blockers or pt_runtime_status == "blocked")
+                else []
+            )
+        )
+
+        quality_gate_blocker_count = int(quality_gates.get("blocking_gate_count") or 0)
+        pending_question_count = int(decision_audit.get("pending_question_count") or 0)
+
+        runtime_candidates = [
+            pt_runtime_status,
+            str(nvidia_governance.get("local_runtime_status") or "missing"),
+        ]
+        runtime_candidates = [status for status in runtime_candidates if status not in {"", "not_applicable"}]
+        if not repo_mode_enabled:
+            runtime_status = "not_applicable"
+        elif "blocked" in runtime_candidates:
+            runtime_status = "blocked"
+        elif "ready" in runtime_candidates:
+            runtime_status = "ready"
+        elif "partial" in runtime_candidates:
+            runtime_status = "partial"
+        else:
+            runtime_status = "missing"
+
+        has_schema_contract = bool(schema_or_config_paths)
+        has_provenance_signal = bool(provenance_signals)
+        has_split_signal = bool(split_signals)
+        has_evaluation_signal = bool(evaluation_signals) or validation_step_count > 0
+        has_pii_signal = bool(pii_signals)
+        has_duplication_signal = bool(duplication_signals)
+        has_corruption_signal = bool(corruption_signals)
+        has_label_coverage_signal = bool(label_coverage_signals)
+        if not repo_mode_enabled:
+            dataset_contract_status = "not_applicable"
+        elif has_schema_contract and has_split_signal and has_evaluation_signal and (has_provenance_signal or bool(dataset_artifact_paths)):
+            dataset_contract_status = "ready"
+        elif has_schema_contract or has_split_signal or has_evaluation_signal or has_provenance_signal:
+            dataset_contract_status = "partial"
+        else:
+            dataset_contract_status = "missing"
+        if not repo_mode_enabled:
+            data_hygiene_status = "not_applicable"
+        elif has_pii_signal and has_duplication_signal and has_corruption_signal and has_label_coverage_signal:
+            data_hygiene_status = "ready"
+        elif has_pii_signal or has_duplication_signal or has_corruption_signal or has_label_coverage_signal:
+            data_hygiene_status = "partial"
+        else:
+            data_hygiene_status = "missing"
+
+        if not repo_mode_enabled:
+            validation_status = "not_applicable"
+        elif ready_frameworks and not blocked_frameworks:
+            validation_status = "ready"
+        elif validation_step_count > 0 or validation_evidence_targets:
+            validation_status = "partial"
+        else:
+            validation_status = "blocked" if blocked_frameworks else "partial"
+
+        recommended_execution_lane = str(nvidia_governance.get("recommended_execution_lane") or "").strip()
+        if not recommended_execution_lane or recommended_execution_lane == "discovery_needed":
+            recommended_execution_lane = str(file_governance.get("recommended_operation_mode") or "discovery_needed")
+
+        supports_gpu_execution = bool(
+            nvidia_governance.get("cuda_repo_enabled")
+            or int(nvidia_governance.get("ready_remote_gpu_target_count") or 0) > 0
+            or int(nvidia_governance.get("available_provider_count") or 0) > 0
+            or str(nvidia_governance.get("local_runtime_status") or "") in {"ready", "partial"}
+        )
+        supports_bulk_file_governance = bool(file_governance.get("supports_bulk_planning"))
+
+        blocking_reasons = self._dedupe_strings(
+            tf_blockers
+            + pt_blockers
+            + (
+                ["No repo-owned TensorFlow or PyTorch validation steps were discovered, so this lane still lacks an honest execution contract."]
+                if repo_mode_enabled and validation_step_count == 0
+                else []
+            )
+            + (
+                ["No dataset schema or config artifacts were detected yet, so data validation would still rely on oral history."]
+                if repo_mode_enabled and not schema_or_config_paths
+                else []
+            )
+            + (
+                ["No dataset provenance or lineage signals were detected, so Mission Control cannot prove where the data contract actually comes from."]
+                if repo_mode_enabled and not has_provenance_signal
+                else []
+            )
+            + (
+                ["No train/validation/test split signals were detected, so dataset partitioning is still a trust-me-bro story."]
+                if repo_mode_enabled and not has_split_signal
+                else []
+            )
+            + (
+                ["No evaluation or metric signal was detected, so dataset quality claims still lack an evidence-bearing review lane."]
+                if repo_mode_enabled and not has_evaluation_signal
+                else []
+            )
+            + (
+                ["No PII or privacy-governance signal was detected, so sensitive-data handling is still undocumented theater."]
+                if repo_mode_enabled and not has_pii_signal
+                else []
+            )
+            + (
+                ["No duplication or dedupe signal was detected, so Mission Control cannot tell whether the dataset is bloated with repeat samples."]
+                if repo_mode_enabled and not has_duplication_signal
+                else []
+            )
+            + (
+                ["No corruption or integrity signal was detected, so bad-record detection is still guesswork."]
+                if repo_mode_enabled and not has_corruption_signal
+                else []
+            )
+            + (
+                ["No label-coverage signal was detected, so class or annotation completeness still lacks a repo-owned audit path."]
+                if repo_mode_enabled and not has_label_coverage_signal
+                else []
+            )
+        )
+
+        if not repo_mode_enabled:
+            governance_status = "not_applicable"
+        elif (
+            ready_frameworks
+            and quality_gate_blocker_count == 0
+            and pending_question_count == 0
+            and not blocked_frameworks
+            and not blocking_reasons
+            and dataset_contract_status == "ready"
+            and data_hygiene_status == "ready"
+        ):
+            governance_status = "ready"
+        elif blocked_frameworks and not ready_frameworks and validation_step_count == 0:
+            governance_status = "blocked"
+        else:
+            governance_status = "partial"
+
+        recommended_fixes = self._dedupe_strings(
+            [str(item) for item in list(tf_plan.get("recommended_fixes") or []) if str(item).strip()]
+            + [str(item) for item in list(pt_plan.get("recommended_fixes") or []) if str(item).strip()]
+            + [str(item) for item in list(pt_runtime.get("recommended_fixes") or []) if str(item).strip()]
+            + (
+                ["Add repo-owned dataset schema, manifest, or transform config files so data validation stops being improvised."]
+                if repo_mode_enabled and not schema_or_config_paths
+                else []
+            )
+            + (
+                ["Add dataset manifest, metadata, or provenance artifacts so Mission Control can trace where the data contract came from instead of hallucinating lineage."]
+                if repo_mode_enabled and not has_provenance_signal
+                else []
+            )
+            + (
+                ["Document or check in explicit train/validation/test split definitions so dataset evaluation stops depending on filename folklore."]
+                if repo_mode_enabled and not has_split_signal
+                else []
+            )
+            + (
+                ["Add repo-owned evaluation or metric outputs so dataset quality claims can be verified with evidence instead of vibes."]
+                if repo_mode_enabled and not has_evaluation_signal
+                else []
+            )
+            + (
+                ["Add a repo-owned privacy or PII review artifact so Mission Control can prove the data lane was screened for sensitive content."]
+                if repo_mode_enabled and not has_pii_signal
+                else []
+            )
+            + (
+                ["Add dedupe or overlap reports so Mission Control can catch repeated samples instead of pretending dataset uniqueness is obvious."]
+                if repo_mode_enabled and not has_duplication_signal
+                else []
+            )
+            + (
+                ["Add corruption or integrity scan outputs so bad-record detection becomes evidence-based instead of superstition."]
+                if repo_mode_enabled and not has_corruption_signal
+                else []
+            )
+            + (
+                ["Add label maps, taxonomy coverage, or annotation audit outputs so label completeness can be verified without spelunking random notebooks."]
+                if repo_mode_enabled and not has_label_coverage_signal
+                else []
+            )
+            + (
+                ["Expose dataset, checkpoint, or export artifact paths through the workspace or connector layer so Mission Control can verify outputs instead of just code paths."]
+                if repo_mode_enabled and not dataset_artifact_paths
+                else []
+            )
+            + (
+                ["Wire a governed execution lane for this repo because the current recommendation is still `discovery_needed`."]
+                if repo_mode_enabled and recommended_execution_lane == "discovery_needed"
+                else []
+            )
+        )[:14]
+
+        notes = self._dedupe_strings(
+            [
+                (
+                    f"Detected frameworks: {', '.join(detected_frameworks)}."
+                    if detected_frameworks
+                    else "No TensorFlow or PyTorch framework markers were detected."
+                ),
+                f"Dataset contract status is `{dataset_contract_status}` with {len(provenance_signals)} provenance signal(s), {len(split_signals)} split signal(s), and {len(evaluation_signals)} evaluation signal(s).",
+                f"Data hygiene status is `{data_hygiene_status}` with {len(pii_signals)} privacy signal(s), {len(duplication_signals)} dedupe signal(s), {len(corruption_signals)} integrity signal(s), and {len(label_coverage_signals)} label-coverage signal(s).",
+                f"Validation status is `{validation_status}` across {validation_step_count} repo-owned step(s).",
+                f"Runtime status is `{runtime_status}` and recommended execution lane is `{recommended_execution_lane}`.",
+                f"File governance currently resolves to `{file_governance.get('recommended_operation_mode')}` for dataset ingress or bulk artifact review.",
+                (
+                    f"NVIDIA governance is `{nvidia_governance.get('governance_status')}` with lane `{nvidia_governance.get('recommended_execution_lane')}`."
+                    if supports_gpu_execution
+                    else "No GPU-first execution lane is currently required or ready for this dataset workflow."
+                ),
+                (
+                    f"{quality_gate_blocker_count} quality gate(s) and {pending_question_count} pending question(s) still affect handoff confidence."
+                    if repo_mode_enabled
+                    else ""
+                ),
+            ]
+            + [str(item) for item in list(file_governance.get("notes") or [])[:2]]
+            + [str(item) for item in list(nvidia_governance.get("notes") or [])[:2]]
+        )[:10]
+
+        if not repo_mode_enabled:
+            summary = "Dataset governance is not applicable because the workspace does not currently look like a TensorFlow or PyTorch product lane."
+        else:
+            summary = (
+                f"Dataset governance is `{governance_status}` for {', '.join(detected_frameworks or ['ml'])} with "
+                f"{len(dataset_artifact_paths)} dataset/model artifact(s), {validation_step_count} validation step(s), "
+                f"and execution recommendation `{recommended_execution_lane}`."
+            )
+
+        return {
+            "project_id": project.id,
+            "project_name": project.name,
+            "workspace_path": project.workspace_path,
+            "summary": summary,
+            "governance_status": governance_status,
+            "dataset_contract_status": dataset_contract_status,
+            "data_hygiene_status": data_hygiene_status,
+            "repo_mode_enabled": repo_mode_enabled,
+            "tensorflow_enabled": tensorflow_enabled,
+            "pytorch_enabled": pytorch_enabled,
+            "detected_frameworks": detected_frameworks,
+            "detected_product_workflows": detected_product_workflows,
+            "dataset_artifact_count": len(dataset_artifact_paths),
+            "dataset_artifact_paths": dataset_artifact_paths,
+            "dataset_artifact_extensions": dataset_artifact_extensions,
+            "schema_or_config_count": len(schema_or_config_paths),
+            "schema_or_config_paths": schema_or_config_paths,
+            "checkpoint_artifact_count": len(checkpoint_artifact_paths),
+            "checkpoint_artifact_paths": checkpoint_artifact_paths,
+            "provenance_signal_count": len(provenance_signals),
+            "provenance_signals": provenance_signals,
+            "split_signal_count": len(split_signals),
+            "split_signals": split_signals,
+            "evaluation_signal_count": len(evaluation_signals),
+            "evaluation_signals": evaluation_signals,
+            "pii_signal_count": len(pii_signals),
+            "pii_signals": pii_signals,
+            "duplication_signal_count": len(duplication_signals),
+            "duplication_signals": duplication_signals,
+            "corruption_signal_count": len(corruption_signals),
+            "corruption_signals": corruption_signals,
+            "label_coverage_signal_count": len(label_coverage_signals),
+            "label_coverage_signals": label_coverage_signals,
+            "validation_status": validation_status,
+            "runtime_status": runtime_status,
+            "validation_step_count": validation_step_count,
+            "validation_evidence_targets": validation_evidence_targets,
+            "recommended_execution_lane": recommended_execution_lane,
+            "supports_gpu_execution": supports_gpu_execution,
+            "supports_bulk_file_governance": supports_bulk_file_governance,
+            "quality_gate_blocker_count": quality_gate_blocker_count,
+            "pending_question_count": pending_question_count,
+            "blocking_reasons": blocking_reasons,
+            "recommended_fixes": recommended_fixes,
+            "notes": notes,
+            "file_governance": file_governance,
+            "nvidia_governance": nvidia_governance,
+        }
+
+    @staticmethod
+    def _dataset_governance_manifest_root(workspace_root: Path) -> Path:
+        return workspace_root / "artifacts" / "dataset-governance"
+
+    def build_dataset_governance_plan(self, db: Session, project: Project) -> dict[str, Any]:
+        summary = self.build_dataset_governance_summary(db, project)
+        workspace_path = project.workspace_path or project.source_path
+        if not workspace_path:
+            raise MissionControlError("Workspace path is required to generate dataset governance manifests.")
+        workspace_root = Path(workspace_path).expanduser()
+        if not workspace_root.exists() or not workspace_root.is_dir():
+            raise MissionControlError("Workspace path must exist before generating dataset governance manifests.")
+
+        manifest_root = self._dataset_governance_manifest_root(workspace_root)
+        manifest_root.mkdir(parents=True, exist_ok=True)
+
+        dataset_contract_path = manifest_root / "dataset-contract.json"
+        data_profile_path = manifest_root / "data-profile.json"
+        pii_review_path = manifest_root / "pii-review.json"
+        split_plan_path = manifest_root / "split-plan.json"
+        duplication_audit_path = manifest_root / "duplication-audit.json"
+        corruption_audit_path = manifest_root / "corruption-audit.json"
+        evaluation_plan_path = manifest_root / "evaluation-plan.json"
+        approval_checkpoint_path = manifest_root / "approval-checkpoints.json"
+
+        detected_frameworks = [str(item) for item in list(summary.get("detected_frameworks") or []) if str(item).strip()]
+        dataset_artifact_paths = [str(item) for item in list(summary.get("dataset_artifact_paths") or []) if str(item).strip()]
+        schema_or_config_paths = [str(item) for item in list(summary.get("schema_or_config_paths") or []) if str(item).strip()]
+        checkpoint_artifact_paths = [str(item) for item in list(summary.get("checkpoint_artifact_paths") or []) if str(item).strip()]
+        provenance_signals = [str(item) for item in list(summary.get("provenance_signals") or []) if str(item).strip()]
+        split_signals = [str(item) for item in list(summary.get("split_signals") or []) if str(item).strip()]
+        evaluation_signals = [str(item) for item in list(summary.get("evaluation_signals") or []) if str(item).strip()]
+        pii_signals = [str(item) for item in list(summary.get("pii_signals") or []) if str(item).strip()]
+        duplication_signals = [str(item) for item in list(summary.get("duplication_signals") or []) if str(item).strip()]
+        corruption_signals = [str(item) for item in list(summary.get("corruption_signals") or []) if str(item).strip()]
+        label_coverage_signals = [str(item) for item in list(summary.get("label_coverage_signals") or []) if str(item).strip()]
+        blocking_reasons = self._dedupe_strings([str(item) for item in list(summary.get("blocking_reasons") or []) if str(item).strip()])
+        file_governance = dict(summary.get("file_governance") or {})
+        nvidia_governance = dict(summary.get("nvidia_governance") or {})
+        validation_step_count = int(summary.get("validation_step_count") or 0)
+        dataset_extensions = [str(item) for item in list(summary.get("dataset_artifact_extensions") or []) if str(item).strip()]
+        quality_gate_blocker_count = int(summary.get("quality_gate_blocker_count") or 0)
+        pending_question_count = int(summary.get("pending_question_count") or 0)
+
+        dataset_contract = {
+            "dataset_contract_status": summary.get("dataset_contract_status"),
+            "data_hygiene_status": summary.get("data_hygiene_status"),
+            "repo_mode_enabled": bool(summary.get("repo_mode_enabled")),
+            "detected_frameworks": detected_frameworks,
+            "detected_product_workflows": list(summary.get("detected_product_workflows") or []),
+            "schema_or_config_paths": schema_or_config_paths,
+            "dataset_artifact_paths": dataset_artifact_paths,
+            "dataset_artifact_extensions": dataset_extensions,
+            "provenance_signals": provenance_signals,
+            "split_signals": split_signals,
+            "label_coverage_signals": label_coverage_signals,
+            "contract_requirements": {
+                "schema_required": True,
+                "provenance_required": True,
+                "split_definition_required": True,
+                "label_coverage_required": True,
+                "approval_required_before_publish": True,
+            },
+            "schema_expectations": {
+                "stats_required": True,
+                "pii_review_required": True,
+                "duplication_review_required": True,
+                "corruption_review_required": True,
+            },
+        }
+        data_profile = {
+            "dataset_artifact_count": int(summary.get("dataset_artifact_count") or 0),
+            "dataset_artifact_paths": dataset_artifact_paths,
+            "dataset_artifact_extensions": dataset_extensions,
+            "checkpoint_artifact_paths": checkpoint_artifact_paths,
+            "supports_bulk_file_governance": bool(summary.get("supports_bulk_file_governance")),
+            "recommended_operation_mode": file_governance.get("recommended_operation_mode"),
+            "storage_lane_support": {
+                "supports_bulk_planning": bool(file_governance.get("supports_bulk_planning")),
+                "destructive_actions_require_approval": bool(file_governance.get("destructive_actions_require_approval", True)),
+            },
+            "profile_expectations": {
+                "row_count_required": True,
+                "split_stats_required": True,
+                "label_distribution_required": True,
+                "artifact_inventory_required": True,
+            },
+        }
+        pii_review = {
+            "pii_signal_count": int(summary.get("pii_signal_count") or 0),
+            "pii_signals": pii_signals,
+            "governance_status": summary.get("governance_status"),
+            "review_required": bool(summary.get("repo_mode_enabled")),
+            "approval_required_for_bulk_mutation": bool(file_governance.get("destructive_actions_require_approval", True)),
+            "screening_scope": {
+                "dataset_artifact_count": int(summary.get("dataset_artifact_count") or 0),
+                "schema_or_config_count": int(summary.get("schema_or_config_count") or 0),
+            },
+        }
+        split_plan = {
+            "split_signal_count": int(summary.get("split_signal_count") or 0),
+            "split_signals": split_signals,
+            "detected_product_workflows": list(summary.get("detected_product_workflows") or []),
+            "validation_evidence_targets": list(summary.get("validation_evidence_targets") or []),
+            "required_splits": ["train", "validation", "test"],
+            "split_integrity_checks": ["overlap_detection", "label_balance_review", "leakage_review"],
+        }
+        duplication_audit = {
+            "duplication_signal_count": int(summary.get("duplication_signal_count") or 0),
+            "duplication_signals": duplication_signals,
+            "supports_bulk_file_governance": bool(summary.get("supports_bulk_file_governance")),
+            "recommended_operation_mode": file_governance.get("recommended_operation_mode"),
+            "dry_run_required_before_mutation": True,
+            "cluster_review_required": True,
+        }
+        corruption_audit = {
+            "corruption_signal_count": int(summary.get("corruption_signal_count") or 0),
+            "corruption_signals": corruption_signals,
+            "quality_gate_blocker_count": int(summary.get("quality_gate_blocker_count") or 0),
+            "integrity_checks": ["schema_parse", "missing_payload_scan", "checksum_or_decode_review"],
+        }
+        evaluation_plan = {
+            "validation_status": summary.get("validation_status"),
+            "runtime_status": summary.get("runtime_status"),
+            "validation_step_count": validation_step_count,
+            "validation_evidence_targets": list(summary.get("validation_evidence_targets") or []),
+            "recommended_execution_lane": summary.get("recommended_execution_lane"),
+            "supports_gpu_execution": bool(summary.get("supports_gpu_execution")),
+            "nvidia_execution_lane": nvidia_governance.get("recommended_execution_lane"),
+            "nvidia_governance_status": nvidia_governance.get("governance_status"),
+            "evaluation_signals": evaluation_signals,
+            "checkpoint_artifact_paths": checkpoint_artifact_paths,
+            "baseline_compare_required": True,
+            "rollback_ready": bool(checkpoint_artifact_paths),
+            "quality_thresholds": {
+                "metric_delta_review_required": True,
+                "data_split_coverage_required": True,
+                "label_coverage_review_required": bool(label_coverage_signals),
+            },
+        }
+        approval_checkpoints = {
+            "checkpoints": [
+                {
+                    "checkpoint_id": "dataset_contract_review",
+                    "stage": "preflight",
+                    "status": "ready" if schema_or_config_paths else "blocked",
+                    "reason": "A repo-owned dataset contract should exist before Mission Control mutates or validates large datasets.",
+                },
+                {
+                    "checkpoint_id": "provenance_review",
+                    "stage": "preflight",
+                    "status": "ready" if provenance_signals else "partial",
+                    "reason": "Dataset provenance should be reviewed before large refactors or bulk file operations start pretending lineage is obvious.",
+                },
+                {
+                    "checkpoint_id": "data_hygiene_review",
+                    "stage": "validation",
+                    "status": "ready" if str(summary.get("data_hygiene_status") or "") == "ready" else "partial",
+                    "reason": "Privacy, dedupe, corruption, and label coverage should be reviewed before publish or large-scale refactors.",
+                },
+                {
+                    "checkpoint_id": "evaluation_gate_review",
+                    "stage": "evaluation",
+                    "status": "ready" if str(summary.get("validation_status") or "") == "ready" and evaluation_signals else "partial",
+                    "reason": "Dataset changes only count when evaluation evidence exists and can be compared against a baseline.",
+                },
+                {
+                    "checkpoint_id": "publish_gate",
+                    "stage": "publish",
+                    "status": "blocked" if (blocking_reasons or quality_gate_blocker_count > 0 or pending_question_count > 0) else "ready",
+                    "reason": "Publishing stays blocked until current dataset governance blockers are cleared.",
+                },
+            ]
+        }
+
+        dataset_contract_path.write_text(json.dumps(dataset_contract, indent=2), encoding="utf-8")
+        data_profile_path.write_text(json.dumps(data_profile, indent=2), encoding="utf-8")
+        pii_review_path.write_text(json.dumps(pii_review, indent=2), encoding="utf-8")
+        split_plan_path.write_text(json.dumps(split_plan, indent=2), encoding="utf-8")
+        duplication_audit_path.write_text(json.dumps(duplication_audit, indent=2), encoding="utf-8")
+        corruption_audit_path.write_text(json.dumps(corruption_audit, indent=2), encoding="utf-8")
+        evaluation_plan_path.write_text(json.dumps(evaluation_plan, indent=2), encoding="utf-8")
+        approval_checkpoint_path.write_text(json.dumps(approval_checkpoints, indent=2), encoding="utf-8")
+
+        notes = self._dedupe_strings(
+            [
+                "Generated dataset governance manifests for contract, profile, privacy, splits, dedupe, corruption, evaluation, and publish checkpoints.",
+                (
+                    "GPU-aware evaluation is captured in the plan because the governance summary already exposes a usable execution lane."
+                    if bool(summary.get("supports_gpu_execution"))
+                    else "GPU-aware evaluation is still weak here, so the planner records the gap instead of pretending CUDA will save it."
+                ),
+                (
+                    f"{validation_step_count} repo-owned validation step(s) were folded into the evaluation plan."
+                    if validation_step_count
+                    else "No repo-owned validation steps were exposed, so the evaluation plan is currently more contract than execution."
+                ),
+                (
+                    f"{quality_gate_blocker_count} quality gate(s) and {pending_question_count} pending question(s) still keep publish review staged."
+                    if quality_gate_blocker_count > 0 or pending_question_count > 0
+                    else None
+                ),
+            ]
+            + [str(item) for item in list(summary.get("notes") or [])[:3]]
+        )[:8]
+        plan_status = (
+            "ready"
+            if not blocking_reasons
+            and quality_gate_blocker_count == 0
+            and pending_question_count == 0
+            and str(summary.get("dataset_contract_status") or "") == "ready"
+            and str(summary.get("data_hygiene_status") or "") == "ready"
+            and str(summary.get("validation_status") or "") == "ready"
+            else "partial"
+            if detected_frameworks
+            else "blocked"
+        )
+        result_summary = (
+            f"Generated a governed dataset plan with {len(detected_frameworks)} framework lane(s), "
+            f"{len(dataset_artifact_paths)} dataset/model artifact(s), and {validation_step_count} validation step(s)."
+        )
+        return {
+            "project_id": project.id,
+            "project_name": project.name,
+            "workspace_path": workspace_path,
+            "summary": result_summary,
+            "plan_status": plan_status,
+            "detected_frameworks": detected_frameworks,
+            "validation_step_count": validation_step_count,
+            "manifest_root": manifest_root.relative_to(workspace_root).as_posix(),
+            "dataset_contract_path": dataset_contract_path.relative_to(workspace_root).as_posix(),
+            "data_profile_path": data_profile_path.relative_to(workspace_root).as_posix(),
+            "pii_review_path": pii_review_path.relative_to(workspace_root).as_posix(),
+            "split_plan_path": split_plan_path.relative_to(workspace_root).as_posix(),
+            "duplication_audit_path": duplication_audit_path.relative_to(workspace_root).as_posix(),
+            "corruption_audit_path": corruption_audit_path.relative_to(workspace_root).as_posix(),
+            "evaluation_plan_path": evaluation_plan_path.relative_to(workspace_root).as_posix(),
+            "approval_checkpoint_path": approval_checkpoint_path.relative_to(workspace_root).as_posix(),
+            "blocking_reasons": blocking_reasons,
+            "notes": notes,
+        }
+
+    def build_model_refactor_governance_summary(self, db: Session, project: Project) -> dict[str, Any]:
+        tooling = self.build_workspace_tooling_status(project)
+        artifact_registry = self.build_project_artifact_registry(project)
+        dataset_governance = self.build_dataset_governance_summary(db, project)
+        nvidia_governance = self.build_nvidia_execution_governance_summary(db, project)
+
+        tf_repo = dict(tooling.get("tensorflow_repo") or {})
+        pt_repo = dict(tooling.get("pytorch_repo") or {})
+        tf_plan = dict(tooling.get("tensorflow_validation_plan") or {})
+        pt_plan = dict(tooling.get("pytorch_validation_plan") or {})
+        pt_runtime = dict(tooling.get("pytorch_runtime_status") or {})
+
+        repo_mode_enabled = bool(
+            tf_repo.get("enabled")
+            or pt_repo.get("enabled")
+            or tf_plan.get("repo_mode_enabled")
+            or pt_plan.get("repo_mode_enabled")
+        )
+        detected_frameworks = self._dedupe_strings(
+            (["TensorFlow"] if tf_repo.get("enabled") else [])
+            + (["PyTorch"] if pt_repo.get("enabled") else [])
+            + [str(item) for item in list(tf_repo.get("frameworks") or []) if str(item).strip()]
+            + [str(item) for item in list(pt_repo.get("frameworks") or []) if str(item).strip()]
+        )
+
+        artifact_paths = [str(item) for item in list(artifact_registry.get("artifact_paths") or []) if str(item).strip()]
+        model_extensions = {".onnx", ".pb", ".pt", ".pth", ".tflite", ".ckpt", ".safetensors", ".keras", ".h5"}
+        model_artifact_paths = self._dedupe_strings(
+            [
+                path
+                for path in artifact_paths
+                if Path(path).suffix.lower() in model_extensions
+                or any(token in path.lower() for token in ("model", "checkpoint", "saved_model", "savedmodel", "weights"))
+            ]
+            + [str(item) for item in list(tf_repo.get("existing_savedmodel_artifacts") or []) if str(item).strip()]
+            + [str(item) for item in list(tf_repo.get("existing_tflite_artifacts") or []) if str(item).strip()]
+            + [str(item) for item in list(pt_repo.get("existing_onnx_artifacts") or []) if str(item).strip()]
+            + [str(item) for item in list(pt_repo.get("existing_torchscript_artifacts") or []) if str(item).strip()]
+            + [str(item) for item in list(pt_repo.get("checkpoint_paths") or []) if str(item).strip()]
+        )
+        model_artifact_extensions = sorted({Path(path).suffix.lower() or "<no_ext>" for path in model_artifact_paths})
+
+        signal_sources = self._dedupe_strings(
+            [str(item) for item in list(artifact_registry.get("config_review_paths") or []) if str(item).strip()]
+            + [str(item) for item in list(artifact_registry.get("execution_entrypoints") or []) if str(item).strip()]
+            + [str(item) for item in list(artifact_registry.get("validation_evidence_targets") or []) if str(item).strip()]
+            + [str(item) for item in list(tooling.get("validation_commands") or []) if str(item).strip()]
+            + [str(item) for item in list(tooling.get("observability_commands") or []) if str(item).strip()]
+            + [str(item) for item in list(tooling.get("checkpoint_commands") or []) if str(item).strip()]
+            + [str(item) for item in list(tooling.get("execution_entrypoints") or []) if str(item).strip()]
+            + [str(item) for item in list(tf_repo.get("important_paths") or []) if str(item).strip()]
+            + [str(item) for item in list(pt_repo.get("important_paths") or []) if str(item).strip()]
+            + [str(item) for item in list(tf_plan.get("evidence_targets") or []) if str(item).strip()]
+            + [str(item) for item in list(pt_plan.get("evidence_targets") or []) if str(item).strip()]
+            + model_artifact_paths
+        )
+        compatibility_tokens = ("api", "contract", "schema", "signature", "serve", "serving", "endpoint", "interface", "compat")
+        benchmark_tokens = ("benchmark", "metrics", "metric", "profile", "latency", "throughput", "accuracy", "score")
+        rollback_tokens = ("checkpoint", "rollback", "resume", "baseline", "snapshot", "restore", "recovery")
+        validation_tokens = ("test", "eval", "validation", "smoke", "sanity")
+
+        compatibility_signals = self._dedupe_strings(
+            [signal for signal in signal_sources if any(token in signal.lower() for token in compatibility_tokens)]
+        )[:10]
+        benchmark_signals = self._dedupe_strings(
+            [signal for signal in signal_sources if any(token in signal.lower() for token in benchmark_tokens)]
+        )[:10]
+        rollback_signals = self._dedupe_strings(
+            [signal for signal in signal_sources if any(token in signal.lower() for token in rollback_tokens)]
+        )[:10]
+        validation_signals = self._dedupe_strings(
+            [signal for signal in signal_sources if any(token in signal.lower() for token in validation_tokens)]
+        )[:10]
+
+        compatibility_contract_status = (
+            "not_applicable"
+            if not repo_mode_enabled
+            else "ready"
+            if compatibility_signals
+            else "missing"
+        )
+        benchmark_readiness_status = (
+            "not_applicable"
+            if not repo_mode_enabled
+            else "ready"
+            if benchmark_signals
+            else "missing"
+        )
+        rollback_readiness_status = (
+            "not_applicable"
+            if not repo_mode_enabled
+            else "ready"
+            if rollback_signals
+            else "missing"
+        )
+        dataset_governance_status = str(dataset_governance.get("governance_status") or "not_applicable")
+        dataset_quality_gate_blocker_count = int(dataset_governance.get("quality_gate_blocker_count") or 0)
+        dataset_pending_question_count = int(dataset_governance.get("pending_question_count") or 0)
+
+        evaluation_first_ready = bool(
+            repo_mode_enabled
+            and dataset_governance_status == "ready"
+            and str(dataset_governance.get("validation_status") or "") == "ready"
+            and compatibility_contract_status == "ready"
+            and benchmark_readiness_status == "ready"
+            and validation_signals
+        )
+        recommended_execution_lane = str(dataset_governance.get("recommended_execution_lane") or "discovery_needed")
+        if recommended_execution_lane == "discovery_needed":
+            recommended_execution_lane = str(nvidia_governance.get("recommended_execution_lane") or "discovery_needed")
+
+        blocking_reasons = self._dedupe_strings(
+            (
+                ["No compatibility contract signal was detected, so API or serving regressions would still be guesswork."]
+                if repo_mode_enabled and compatibility_contract_status != "ready"
+                else []
+            )
+            + (
+                ["No benchmark evidence signal was detected, so model refactor claims still lack baseline-backed comparison."]
+                if repo_mode_enabled and benchmark_readiness_status != "ready"
+                else []
+            )
+            + (
+                ["No rollback or checkpoint signal was detected, so model recovery after a bad refactor is still vibes-based."]
+                if repo_mode_enabled and rollback_readiness_status != "ready"
+                else []
+            )
+            + (
+                ["Dataset validation is not ready, so evaluation-first refactor governance is still blocked upstream."]
+                if repo_mode_enabled and str(dataset_governance.get("validation_status") or "") != "ready"
+                else []
+            )
+            + (
+                [f"{dataset_quality_gate_blocker_count} dataset quality gate blocker(s) still prevent evaluation-first refactor review."]
+                if repo_mode_enabled and dataset_quality_gate_blocker_count > 0
+                else []
+            )
+            + (
+                [f"{dataset_pending_question_count} pending dataset governance question(s) still keep refactor publish review staged."]
+                if repo_mode_enabled and dataset_pending_question_count > 0
+                else []
+            )
+            + (
+                [f"Dataset governance is `{dataset_governance_status}`, so evaluation-first refactor governance is still staged upstream."]
+                if repo_mode_enabled
+                and dataset_governance_status not in {"ready", "not_applicable"}
+                and dataset_quality_gate_blocker_count == 0
+                and dataset_pending_question_count == 0
+                else []
+            )
+            + (
+                ["No model artifacts were detected, so Mission Control cannot inspect or compare outputs across refactor attempts."]
+                if repo_mode_enabled and not model_artifact_paths
+                else []
+            )
+        )
+
+        if not repo_mode_enabled:
+            governance_status = "not_applicable"
+        elif (
+            compatibility_contract_status == "ready"
+            and benchmark_readiness_status == "ready"
+            and rollback_readiness_status == "ready"
+            and evaluation_first_ready
+            and not blocking_reasons
+        ):
+            governance_status = "ready"
+        elif compatibility_signals or benchmark_signals or rollback_signals or model_artifact_paths:
+            governance_status = "partial"
+        else:
+            governance_status = "blocked"
+
+        recommended_fixes = self._dedupe_strings(
+            (
+                ["Add repo-owned API contract or serving-interface checks so refactors can prove compatibility instead of hoping for the best."]
+                if repo_mode_enabled and compatibility_contract_status != "ready"
+                else []
+            )
+            + (
+                ["Add benchmark or metric comparison outputs so Mission Control can judge refactors against a baseline instead of narrative bias."]
+                if repo_mode_enabled and benchmark_readiness_status != "ready"
+                else []
+            )
+            + (
+                ["Add checkpoint, snapshot, or rollback artifacts so bad model refactors can be unwound without archaeology."]
+                if repo_mode_enabled and rollback_readiness_status != "ready"
+                else []
+            )
+            + (
+                ["Promote evaluation-first validation upstream because refactors should not count until dataset and model evidence agree."]
+                if repo_mode_enabled and not evaluation_first_ready
+                else []
+            )
+            + (
+                ["Resolve required dataset quality gates before treating model refactors as evaluation-first ready."]
+                if repo_mode_enabled and dataset_quality_gate_blocker_count > 0
+                else []
+            )
+            + (
+                ["Resolve pending dataset-governance questions before approving model refactor publish review."]
+                if repo_mode_enabled and dataset_pending_question_count > 0
+                else []
+            )
+        )[:12]
+
+        notes = self._dedupe_strings(
+            [
+                (
+                    f"Detected frameworks: {', '.join(detected_frameworks)}."
+                    if detected_frameworks
+                    else "No TensorFlow or PyTorch refactor lane was detected."
+                ),
+                f"Compatibility is `{compatibility_contract_status}`, benchmark readiness is `{benchmark_readiness_status}`, and rollback readiness is `{rollback_readiness_status}`.",
+                f"Evaluation-first readiness is `{str(evaluation_first_ready).lower()}` and execution recommendation is `{recommended_execution_lane}`.",
+                f"Dataset governance is `{dataset_governance_status}` and NVIDIA governance is `{nvidia_governance.get('governance_status')}`.",
+                (
+                    f"Upstream dataset lane still carries {dataset_quality_gate_blocker_count} quality gate(s) and {dataset_pending_question_count} pending question(s)."
+                    if dataset_quality_gate_blocker_count > 0 or dataset_pending_question_count > 0
+                    else None
+                ),
+            ]
+            + [str(item) for item in list(dataset_governance.get("notes") or [])[:2]]
+            + [str(item) for item in list(nvidia_governance.get("notes") or [])[:2]]
+        )[:10]
+
+        if not repo_mode_enabled:
+            summary = "Model refactor governance is not applicable because the workspace does not currently expose a TensorFlow or PyTorch lane."
+        else:
+            summary = (
+                f"Model refactor governance is `{governance_status}` with compatibility `{compatibility_contract_status}`, "
+                f"benchmark readiness `{benchmark_readiness_status}`, rollback readiness `{rollback_readiness_status}`, "
+                f"and execution recommendation `{recommended_execution_lane}`."
+            )
+
+        return {
+            "project_id": project.id,
+            "project_name": project.name,
+            "workspace_path": project.workspace_path,
+            "summary": summary,
+            "governance_status": governance_status,
+            "repo_mode_enabled": repo_mode_enabled,
+            "detected_frameworks": detected_frameworks,
+            "compatibility_contract_status": compatibility_contract_status,
+            "benchmark_readiness_status": benchmark_readiness_status,
+            "rollback_readiness_status": rollback_readiness_status,
+            "evaluation_first_ready": evaluation_first_ready,
+            "recommended_execution_lane": recommended_execution_lane,
+            "model_artifact_count": len(model_artifact_paths),
+            "model_artifact_paths": model_artifact_paths,
+            "model_artifact_extensions": model_artifact_extensions,
+            "compatibility_signal_count": len(compatibility_signals),
+            "compatibility_signals": compatibility_signals,
+            "benchmark_signal_count": len(benchmark_signals),
+            "benchmark_signals": benchmark_signals,
+            "rollback_signal_count": len(rollback_signals),
+            "rollback_signals": rollback_signals,
+            "validation_signal_count": len(validation_signals),
+            "validation_signals": validation_signals,
+            "blocking_reasons": blocking_reasons,
+            "recommended_fixes": recommended_fixes,
+            "notes": notes,
+            "dataset_governance": dataset_governance,
+            "nvidia_governance": nvidia_governance,
+        }
+
+    @staticmethod
+    def _model_refactor_governance_manifest_root(workspace_root: Path) -> Path:
+        return workspace_root / "artifacts" / "model-refactor-governance"
+
+    def build_model_refactor_governance_plan(self, db: Session, project: Project) -> dict[str, Any]:
+        summary = self.build_model_refactor_governance_summary(db, project)
+        workspace_path = project.workspace_path or project.source_path
+        if not workspace_path:
+            raise MissionControlError("Workspace path is required to generate model refactor governance manifests.")
+        workspace_root = Path(workspace_path).expanduser()
+        if not workspace_root.exists() or not workspace_root.is_dir():
+            raise MissionControlError("Workspace path must exist before generating model refactor governance manifests.")
+
+        manifest_root = self._model_refactor_governance_manifest_root(workspace_root)
+        manifest_root.mkdir(parents=True, exist_ok=True)
+
+        compatibility_contract_path = manifest_root / "compatibility-contract.json"
+        benchmark_comparison_path = manifest_root / "benchmark-comparison.json"
+        rollback_bundle_path = manifest_root / "rollback-bundle.json"
+        validation_plan_path = manifest_root / "validation-plan.json"
+        evaluation_gate_path = manifest_root / "evaluation-gates.json"
+        approval_checkpoint_path = manifest_root / "approval-checkpoints.json"
+
+        detected_frameworks = [str(item) for item in list(summary.get("detected_frameworks") or []) if str(item).strip()]
+        model_artifact_paths = [str(item) for item in list(summary.get("model_artifact_paths") or []) if str(item).strip()]
+        compatibility_signals = [str(item) for item in list(summary.get("compatibility_signals") or []) if str(item).strip()]
+        benchmark_signals = [str(item) for item in list(summary.get("benchmark_signals") or []) if str(item).strip()]
+        rollback_signals = [str(item) for item in list(summary.get("rollback_signals") or []) if str(item).strip()]
+        validation_signals = [str(item) for item in list(summary.get("validation_signals") or []) if str(item).strip()]
+        blocking_reasons = self._dedupe_strings([str(item) for item in list(summary.get("blocking_reasons") or []) if str(item).strip()])
+        dataset_governance = dict(summary.get("dataset_governance") or {})
+        nvidia_governance = dict(summary.get("nvidia_governance") or {})
+        model_artifact_extensions = [str(item) for item in list(summary.get("model_artifact_extensions") or []) if str(item).strip()]
+
+        compatibility_contract = {
+            "compatibility_contract_status": summary.get("compatibility_contract_status"),
+            "compatibility_signal_count": int(summary.get("compatibility_signal_count") or 0),
+            "compatibility_signals": compatibility_signals,
+            "detected_frameworks": detected_frameworks,
+            "recommended_execution_lane": summary.get("recommended_execution_lane"),
+            "model_artifact_paths": model_artifact_paths,
+            "contract_requirements": {
+                "api_signature_required": True,
+                "serving_interface_required": True,
+                "schema_compatibility_required": True,
+                "approval_required_before_publish": True,
+            },
+        }
+        benchmark_comparison = {
+            "benchmark_readiness_status": summary.get("benchmark_readiness_status"),
+            "benchmark_signal_count": int(summary.get("benchmark_signal_count") or 0),
+            "benchmark_signals": benchmark_signals,
+            "evaluation_first_ready": bool(summary.get("evaluation_first_ready")),
+            "dataset_validation_status": dataset_governance.get("validation_status"),
+            "baseline_compare_required": True,
+            "quality_thresholds": {
+                "latency_regression_review_required": True,
+                "accuracy_regression_review_required": True,
+                "throughput_regression_review_required": True,
+            },
+        }
+        rollback_bundle = {
+            "rollback_readiness_status": summary.get("rollback_readiness_status"),
+            "rollback_signal_count": int(summary.get("rollback_signal_count") or 0),
+            "rollback_signals": rollback_signals,
+            "model_artifact_paths": model_artifact_paths,
+            "checkpoint_artifact_paths": list(dataset_governance.get("checkpoint_artifact_paths") or []),
+            "model_artifact_extensions": model_artifact_extensions,
+            "rollback_requirements": {
+                "checkpoint_required": True,
+                "snapshot_required": True,
+                "restore_drill_required": True,
+            },
+        }
+        validation_plan = {
+            "validation_signal_count": int(summary.get("validation_signal_count") or 0),
+            "validation_signals": validation_signals,
+            "evaluation_first_ready": bool(summary.get("evaluation_first_ready")),
+            "dataset_governance_status": dataset_governance.get("governance_status"),
+            "nvidia_execution_lane": nvidia_governance.get("recommended_execution_lane"),
+            "nvidia_governance_status": nvidia_governance.get("governance_status"),
+            "validation_evidence_targets": list(dataset_governance.get("validation_evidence_targets") or []),
+            "gpu_lane_required": bool(nvidia_governance.get("recommended_execution_lane")),
+        }
+        evaluation_gates = {
+            "gates": [
+                {
+                    "gate_id": "compatibility_contract_review",
+                    "stage": "preflight",
+                    "status": "ready" if str(summary.get("compatibility_contract_status") or "") == "ready" else "blocked",
+                    "reason": "Model refactors need an explicit API or serving contract before they count as safe.",
+                },
+                {
+                    "gate_id": "benchmark_comparison_review",
+                    "stage": "validation",
+                    "status": "ready" if str(summary.get("benchmark_readiness_status") or "") == "ready" else "partial",
+                    "reason": "Refactors should be compared against a baseline instead of accepted on narrative alone.",
+                },
+                {
+                    "gate_id": "rollback_bundle_review",
+                    "stage": "recovery",
+                    "status": "ready" if str(summary.get("rollback_readiness_status") or "") == "ready" else "partial",
+                    "reason": "Rollback needs to exist before an ambitious refactor gets to ship.",
+                },
+                {
+                    "gate_id": "dataset_validation_alignment",
+                    "stage": "evaluation",
+                    "status": "ready" if str(dataset_governance.get("validation_status") or "") == "ready" else "partial",
+                    "reason": "Model refactors only count when dataset validation evidence still agrees with the new output surface.",
+                },
+            ]
+        }
+        approval_checkpoints = {
+            "checkpoints": [
+                {
+                    "checkpoint_id": "evaluation_first_gate",
+                    "stage": "validation",
+                    "status": "ready" if bool(summary.get("evaluation_first_ready")) else "blocked",
+                    "reason": "Model changes do not count until compatibility, benchmarks, and validation all agree.",
+                },
+                {
+                    "checkpoint_id": "rollback_rehearsal_gate",
+                    "stage": "recovery",
+                    "status": "ready" if str(summary.get("rollback_readiness_status") or "") == "ready" else "partial",
+                    "reason": "Rollback should be rehearsable before publish so a bad refactor does not become a history lesson.",
+                },
+                {
+                    "checkpoint_id": "publish_gate",
+                    "stage": "publish",
+                    "status": "blocked" if blocking_reasons else "ready",
+                    "reason": "Publishing stays blocked until current model-refactor governance blockers are cleared.",
+                },
+            ]
+        }
+
+        compatibility_contract_path.write_text(json.dumps(compatibility_contract, indent=2), encoding="utf-8")
+        benchmark_comparison_path.write_text(json.dumps(benchmark_comparison, indent=2), encoding="utf-8")
+        rollback_bundle_path.write_text(json.dumps(rollback_bundle, indent=2), encoding="utf-8")
+        validation_plan_path.write_text(json.dumps(validation_plan, indent=2), encoding="utf-8")
+        evaluation_gate_path.write_text(json.dumps(evaluation_gates, indent=2), encoding="utf-8")
+        approval_checkpoint_path.write_text(json.dumps(approval_checkpoints, indent=2), encoding="utf-8")
+
+        notes = self._dedupe_strings(
+            [
+                "Generated model-refactor governance manifests for compatibility, benchmarks, rollback, validation, evaluation gates, and publish checkpoints.",
+                (
+                    "Evaluation-first gating is captured in the plan because upstream dataset governance is already feeding real validation evidence."
+                    if bool(summary.get("evaluation_first_ready"))
+                    else "Evaluation-first gating is still weak here, so the planner records the gap instead of pretending the refactor already earned trust."
+                ),
+                (
+                    f"{len(model_artifact_paths)} model artifact(s) were folded into the rollback and validation manifests."
+                    if model_artifact_paths
+                    else "No model artifacts were exposed, so the rollback bundle is mostly a contract stub right now."
+                ),
+            ]
+            + [str(item) for item in list(summary.get("notes") or [])[:3]]
+        )[:8]
+        plan_status = (
+            "ready"
+            if not blocking_reasons
+            and str(summary.get("compatibility_contract_status") or "") == "ready"
+            and str(summary.get("benchmark_readiness_status") or "") == "ready"
+            and str(summary.get("rollback_readiness_status") or "") == "ready"
+            and bool(summary.get("evaluation_first_ready"))
+            else "partial"
+            if detected_frameworks
+            else "blocked"
+        )
+        result_summary = (
+            f"Generated a governed model-refactor plan with {len(detected_frameworks)} framework lane(s), "
+            f"{len(model_artifact_paths)} model artifact(s), and evaluation-first readiness `{str(bool(summary.get('evaluation_first_ready'))).lower()}`."
+        )
+        return {
+            "project_id": project.id,
+            "project_name": project.name,
+            "workspace_path": workspace_path,
+            "summary": result_summary,
+            "plan_status": plan_status,
+            "detected_frameworks": detected_frameworks,
+            "manifest_root": manifest_root.relative_to(workspace_root).as_posix(),
+            "compatibility_contract_path": compatibility_contract_path.relative_to(workspace_root).as_posix(),
+            "benchmark_comparison_path": benchmark_comparison_path.relative_to(workspace_root).as_posix(),
+            "rollback_bundle_path": rollback_bundle_path.relative_to(workspace_root).as_posix(),
+            "validation_plan_path": validation_plan_path.relative_to(workspace_root).as_posix(),
+            "evaluation_gate_path": evaluation_gate_path.relative_to(workspace_root).as_posix(),
+            "approval_checkpoint_path": approval_checkpoint_path.relative_to(workspace_root).as_posix(),
+            "blocking_reasons": blocking_reasons,
+            "notes": notes,
+        }
+
+    def build_native_app_validation_governance_summary(self, db: Session, project: Project) -> dict[str, Any]:
+        artifact_registry = self.build_project_artifact_registry(project)
+        platform_runners = self.build_platform_runner_summary(db, project)
+        artifact_transport = self.build_artifact_transport_summary(db, project)
+        game_engine_governance = self.build_game_engine_governance_summary(db, project)
+        remote_execution = self.preview_project_remote_execution(db, project)
+
+        artifact_paths = [str(item) for item in list(artifact_registry.get("artifact_paths") or []) if str(item).strip()]
+        lane_map = {str(item.get("lane_id") or ""): item for item in list(platform_runners.get("lanes") or [])}
+        remote_policy = dict(remote_execution.get("policy") or {})
+        remote_artifact_contract = dict(remote_execution.get("artifact_contract") or {})
+        remote_broker_contract = dict(remote_execution.get("broker_contract") or {})
+        remote_result_contract = dict(remote_execution.get("result_contract") or {})
+        remote_selected_target = dict(remote_execution.get("selected_target") or {})
+        remote_session_recording_contract = build_remote_session_recording_contract(
+            selected_target=remote_selected_target or None,
+            policy_payload=remote_policy,
+            artifact_contract=remote_artifact_contract,
+            broker_contract=remote_broker_contract,
+        )
+        selected_target_id = (
+            str(platform_runners.get("selected_target_id") or "").strip()
+            or str(remote_execution.get("selected_target_id") or "").strip()
+            or None
+        )
+        selected_ready_lane_ids = {
+            str(item).strip()
+            for item in list(platform_runners.get("selected_ready_lane_ids") or [])
+            if str(item).strip()
+        }
+        fallback_session_recording_required = bool(remote_session_recording_contract.get("session_recording_required"))
+        fallback_session_recording_enabled = bool(remote_session_recording_contract.get("session_recording_enabled"))
+        fallback_session_recording_artifact_paths = self._dedupe_strings(
+            [
+                str(item)
+                for item in list(remote_result_contract.get("session_recording_artifact_paths") or [])
+                if str(item).strip()
+            ]
+            + [str(item) for item in list(remote_session_recording_contract.get("artifact_paths") or []) if str(item).strip()]
+        )
+        fallback_remote_session_recording_artifact_paths = self._dedupe_strings(
+            [
+                str(item)
+                for item in list(remote_result_contract.get("remote_session_recording_artifact_paths") or [])
+                if str(item).strip()
+            ]
+            + [
+                str(item)
+                for item in list(remote_session_recording_contract.get("remote_artifact_paths") or [])
+                if str(item).strip()
+            ]
+        )
+        session_recording_required = bool(
+            artifact_transport.get("session_recording_required", fallback_session_recording_required)
+        )
+        session_recording_artifact_paths = self._dedupe_strings(
+            [
+                str(item)
+                for item in list(
+                    artifact_transport.get("session_recording_artifact_paths") or fallback_session_recording_artifact_paths
+                )
+                if str(item).strip()
+            ]
+        )
+        produced_session_recording_artifact_paths = self._dedupe_strings(
+            [
+                str(item)
+                for item in list(artifact_transport.get("produced_session_recording_artifact_paths") or [])
+                if str(item).strip()
+            ]
+        )
+        missing_session_recording_artifact_paths = self._dedupe_strings(
+            [
+                str(item)
+                for item in list(artifact_transport.get("missing_session_recording_artifact_paths") or [])
+                if str(item).strip()
+            ]
+        )
+        remote_session_recording_artifact_paths = self._dedupe_strings(
+            [
+                str(item)
+                for item in list(
+                    artifact_transport.get("remote_session_recording_artifact_paths")
+                    or fallback_remote_session_recording_artifact_paths
+                )
+                if str(item).strip()
+            ]
+        )
+        session_recording_status = str(
+            artifact_transport.get(
+                "session_recording_status",
+                (
+                    "not_applicable"
+                    if not session_recording_required
+                    else "ready"
+                    if fallback_session_recording_enabled and bool(remote_session_recording_artifact_paths)
+                    else "partial"
+                    if fallback_session_recording_enabled
+                    else "blocked"
+                ),
+            )
+            or "not_applicable"
+        )
+        transport_recording_delivery_known = any(
+            key in artifact_transport
+            for key in (
+                "session_recording_status",
+                "produced_session_recording_artifact_paths",
+                "missing_session_recording_artifact_paths",
+            )
+        )
+        usable_session_recording_artifact_paths = (
+            produced_session_recording_artifact_paths
+            if transport_recording_delivery_known
+            else fallback_session_recording_artifact_paths
+        )
+
+        def _lane_status_for_selected(lane_id: str) -> str:
+            lane = dict(lane_map.get(lane_id) or {})
+            base_status = str(lane.get("status") or "unavailable")
+            if not selected_target_id:
+                return base_status
+            if lane_id in selected_ready_lane_ids:
+                return "ready"
+            selected_lane_targets = {
+                str(item).strip() for item in list(lane.get("selected_target_ids") or []) if str(item).strip()
+            }
+            if selected_target_id in selected_lane_targets:
+                return base_status
+            return "unavailable"
+
+        game_engine_surface_ids = [str(item) for item in list(game_engine_governance.get("detected_engines") or []) if str(item).strip()]
+        game_engine_screenshot_paths = [
+            str(item) for item in list(game_engine_governance.get("screenshot_artifact_paths") or []) if str(item).strip()
+        ]
+        game_engine_scene_paths = [str(item) for item in list(game_engine_governance.get("scene_or_map_paths") or []) if str(item).strip()]
+        game_engine_automation_paths = [
+            str(item) for item in list(game_engine_governance.get("automation_signal_paths") or []) if str(item).strip()
+        ]
+        game_engine_normalized_results_summary_path = str(
+            game_engine_governance.get("normalized_results_summary_path") or ""
+        ).strip()
+        game_engine_normalized_summary_count = int(game_engine_governance.get("normalized_summary_count") or 0)
+        game_engine_normalized_passed_count = int(game_engine_governance.get("normalized_passed_count") or 0)
+        game_engine_normalized_failed_count = int(game_engine_governance.get("normalized_failed_count") or 0)
+        game_engine_normalized_missing_count = int(game_engine_governance.get("normalized_missing_count") or 0)
+        game_engine_normalized_publish_ready = bool(game_engine_governance.get("normalized_publish_ready"))
+        game_engine_normalized_results_status = str(game_engine_governance.get("normalized_results_status") or "not_applicable")
+        game_engine_publish_gate_status = str(game_engine_governance.get("publish_gate_status") or "not_applicable")
+        game_engine_publish_blockers = self._dedupe_strings(
+            [str(item) for item in list(game_engine_governance.get("publish_blockers") or []) if str(item).strip()]
+        )
+        game_engine_normalized_results_available = bool(
+            game_engine_normalized_results_summary_path
+            or game_engine_normalized_summary_count
+            or game_engine_normalized_passed_count
+            or game_engine_normalized_failed_count
+            or game_engine_normalized_missing_count
+        )
+        surface_lane_ids = ("android", "ios", "macos", "windows", "linux", "browser", "unity", "unreal")
+
+        platform_extension_map = {
+            "android": {".apk", ".aab"},
+            "ios": {".ipa"},
+            "macos": {".app", ".dmg", ".pkg", ".xcarchive"},
+            "windows": {".exe", ".msi"},
+            "linux": {".appimage", ".deb", ".rpm"},
+            "browser": {".html", ".htm"},
+        }
+        installable_artifact_paths = self._dedupe_strings(
+            [
+                path
+                for path in artifact_paths
+                if Path(path).suffix.lower() in {ext for exts in platform_extension_map.values() for ext in exts}
+            ]
+        )
+        installable_artifact_extensions = sorted({Path(path).suffix.lower() or "<no_ext>" for path in installable_artifact_paths})
+
+        signal_sources = self._dedupe_strings(
+            artifact_paths
+            + [str(item) for item in list(artifact_registry.get("validation_evidence_targets") or []) if str(item).strip()]
+            + [str(item) for item in list(artifact_registry.get("execution_entrypoints") or []) if str(item).strip()]
+            + usable_session_recording_artifact_paths
+            + game_engine_screenshot_paths
+            + game_engine_scene_paths
+            + game_engine_automation_paths
+        )
+        evidence_inventory = classify_evidence_artifacts(signal_sources)
+        log_artifact_paths = list((evidence_inventory.get("categories") or {}).get("logs") or [])
+        screenshot_artifact_paths = list((evidence_inventory.get("categories") or {}).get("screenshots") or [])
+        trace_artifact_paths = list((evidence_inventory.get("categories") or {}).get("traces") or [])
+        crash_artifact_paths = list((evidence_inventory.get("categories") or {}).get("crashes") or [])
+        coverage_artifact_paths = list((evidence_inventory.get("categories") or {}).get("coverage") or [])
+        performance_artifact_paths = list((evidence_inventory.get("categories") or {}).get("performance") or [])
+
+        detected_platforms = self._dedupe_strings(
+            [
+                platform
+                for platform, extensions in platform_extension_map.items()
+                if any(Path(path).suffix.lower() in extensions for path in artifact_paths)
+            ]
+            + [
+                lane_id
+                for lane_id in ("android", "ios", "macos", "windows", "linux", "browser")
+                if lane_id in lane_map and _lane_status_for_selected(lane_id) != "unavailable"
+            ]
+        )
+        ready_runner_lanes = [
+            lane_id for lane_id in surface_lane_ids if _lane_status_for_selected(lane_id) == "ready"
+        ]
+        partial_runner_lanes = [
+            lane_id for lane_id in surface_lane_ids if _lane_status_for_selected(lane_id) == "partial"
+        ]
+        unavailable_runner_lanes = [
+            lane_id for lane_id in surface_lane_ids if _lane_status_for_selected(lane_id) == "unavailable"
+        ]
+        governed_surfaces = self._dedupe_strings(detected_platforms + game_engine_surface_ids)
+
+        evidence_categories_present = len(list(evidence_inventory.get("categories_present") or []))
+        if not game_engine_surface_ids:
+            game_engine_normalization_status = "not_applicable"
+        elif game_engine_normalized_publish_ready:
+            game_engine_normalization_status = "ready"
+        elif game_engine_normalized_results_available:
+            game_engine_normalization_status = "partial"
+        else:
+            game_engine_normalization_status = "missing"
+
+        if not governed_surfaces:
+            evidence_pipeline_status = "not_applicable"
+        elif (
+            evidence_categories_present >= 3
+            and game_engine_normalization_status in {"not_applicable", "ready"}
+            and session_recording_status in {"not_applicable", "ready"}
+        ):
+            evidence_pipeline_status = "ready"
+        elif (
+            evidence_categories_present > 0
+            or game_engine_normalization_status in {"partial", "ready"}
+            or session_recording_status in {"partial", "ready"}
+        ):
+            evidence_pipeline_status = "partial"
+        else:
+            evidence_pipeline_status = "missing"
+
+        recommended_runner_lanes = [lane for lane in governed_surfaces if lane in ready_runner_lanes]
+        if not recommended_runner_lanes:
+            recommended_runner_lanes = [lane for lane in governed_surfaces if lane in partial_runner_lanes]
+        if not recommended_runner_lanes and governed_surfaces and not selected_target_id:
+            recommended_runner_lanes = governed_surfaces[:3]
+        unavailable_governed_surfaces = [lane for lane in governed_surfaces if lane in unavailable_runner_lanes]
+
+        blocking_reasons = self._dedupe_strings(
+            (
+                ["No installable app artifacts were detected, so platform validation still lacks something concrete to ship to a runner."]
+                if detected_platforms and not installable_artifact_paths
+                else []
+            )
+            + (
+                [
+                    (
+                        f"Selected broker target `{selected_target_id}` is not bound to runner lanes for detected app surfaces: {', '.join(unavailable_governed_surfaces)}."
+                        if selected_target_id
+                        else f"No ready or partial platform runner lane matches the detected app surfaces: {', '.join(unavailable_governed_surfaces)}."
+                    )
+                ]
+                if unavailable_governed_surfaces
+                else []
+            )
+            + (
+                ["Artifact transport is blocked, so even valid app artifacts cannot be moved to the right platform lane safely."]
+                if governed_surfaces and str(artifact_transport.get("recommended_transport_mode") or "") == "blocked"
+                else []
+            )
+            + (
+                ["Evidence pipeline is missing, so app validation would still end with trust-me-bro status instead of logs, traces, crashes, and coverage."]
+                if governed_surfaces and evidence_pipeline_status == "missing"
+                else []
+            )
+            + (
+                ["Session recording is required for the selected brokered validation lane, but the workspace is still missing the produced recording artifact."]
+                if governed_surfaces and session_recording_required and missing_session_recording_artifact_paths
+                else ["Session recording is required for the selected brokered validation lane, but no remote recording artifact path is currently declared."]
+                if governed_surfaces and session_recording_required and session_recording_status != "ready"
+                else []
+            )
+            + (
+                [
+                    "Game-engine evidence is not normalized and publish-ready yet, so native app validation would still be guessing about Unity or Unreal outcomes."
+                ]
+                if game_engine_surface_ids and game_engine_normalization_status != "ready"
+                else []
+            )
+            + (
+                [f"Game-engine publish blockers still exist: {'; '.join(game_engine_publish_blockers[:3])}."]
+                if game_engine_publish_blockers
+                else []
+            )
+        )
+
+        if not governed_surfaces:
+            governance_status = "not_applicable"
+        elif not blocking_reasons and evidence_pipeline_status == "ready" and any(
+            lane in ready_runner_lanes for lane in recommended_runner_lanes
+        ):
+            governance_status = "ready"
+        elif installable_artifact_paths or recommended_runner_lanes or evidence_categories_present or game_engine_surface_ids:
+            governance_status = "partial"
+        else:
+            governance_status = "blocked"
+
+        recommended_fixes = self._dedupe_strings(
+            (
+                ["Produce repo-owned installable artifacts such as .apk, .ipa, .app, .exe, or browser bundles before calling the platform lane real."]
+                if detected_platforms and not installable_artifact_paths
+                else []
+            )
+            + (
+                [
+                    (
+                        f"Bind the selected broker target to runner lanes for: {', '.join(unavailable_governed_surfaces)}."
+                        if selected_target_id
+                        else f"Wire matching runner lanes for: {', '.join(unavailable_governed_surfaces)}."
+                    )
+                ]
+                if unavailable_governed_surfaces
+                else []
+            )
+            + (
+                ["Capture logs, screenshots, traces, crashes, coverage, and perf artifacts so native app validation stops ending in vibes."]
+                if governed_surfaces and evidence_pipeline_status != "ready"
+                else []
+            )
+            + (
+                ["Declare and ship the brokered session-recording artifact path so native app validation includes the actual remote execution trail instead of a Boolean sticker."]
+                if governed_surfaces and session_recording_required and session_recording_status != "ready"
+                else []
+            )
+            + (
+                ["Produce the missing session recording artifact paths inside the workspace before treating the validation bundle as publishable."]
+                if governed_surfaces and missing_session_recording_artifact_paths
+                else []
+            )
+            + (
+                [
+                    "Generate normalized Unity or Unreal result rollups before publish so engine validation has an actual pass/fail contract instead of raw artifact confetti."
+                ]
+                if game_engine_surface_ids and game_engine_normalization_status != "ready"
+                else []
+            )
+            + (
+                ["Unblock artifact transport so installables and evidence bundles can move through governed lanes instead of ad-hoc copy theater."]
+                if governed_surfaces and str(artifact_transport.get("recommended_transport_mode") or "") == "blocked"
+                else []
+            )
+            + [str(item) for item in list(game_engine_governance.get("recommended_fixes") or [])[:2]]
+        )[:10]
+
+        notes = self._dedupe_strings(
+            [
+                (
+                    f"Detected app surfaces: {', '.join(detected_platforms)}."
+                    if detected_platforms
+                    else "No native app platform surfaces were detected from the current artifacts and runner lanes."
+                ),
+                (
+                    f"Detected game-engine surfaces: {', '.join(game_engine_surface_ids)}."
+                    if game_engine_surface_ids
+                    else "No Unity or Unreal surface is currently folded into native app validation."
+                ),
+                f"Evidence pipeline is `{evidence_pipeline_status}` across {evidence_categories_present} evidence category(ies).",
+                (
+                    f"Game-engine normalization is `{game_engine_normalization_status}` with rollup `{game_engine_normalized_results_summary_path or '<missing>'}`."
+                    if game_engine_surface_ids
+                    else "No game-engine normalization rollup is required for the current native app validation surface."
+                ),
+                (
+                    f"Game-engine publish gate is `{game_engine_publish_gate_status}` with {len(game_engine_publish_blockers)} blocker(s)."
+                    if game_engine_surface_ids
+                    else "No game-engine publish-gate state is required for the current native app validation surface."
+                ),
+                (
+                    f"Selected broker target is `{selected_target_id}`."
+                    if selected_target_id
+                    else "No broker target is currently selected for native app validation."
+                ),
+                (
+                    f"Brokered session recording is `{session_recording_status}` with {len(produced_session_recording_artifact_paths or session_recording_artifact_paths)} usable artifact path(s)."
+                    if session_recording_required
+                    else "Brokered session recording is not required for the current native app validation lane."
+                ),
+                f"Artifact transport currently resolves to `{artifact_transport.get('recommended_transport_mode')}`.",
+                (
+                    f"Recommended runner lanes: {', '.join(recommended_runner_lanes)}."
+                    if recommended_runner_lanes
+                    else "No runner lane is currently recommended."
+                ),
+            ]
+            + [str(item) for item in list(artifact_transport.get("notes") or [])[:2]]
+            + [str(item) for item in list(game_engine_governance.get("notes") or [])[:1]]
+        )[:8]
+
+        if not governed_surfaces:
+            summary = "Native app validation governance is not applicable because no mobile, desktop, browser, Unity, or Unreal validation surface is currently detectable."
+        else:
+            summary = (
+                f"Native app validation governance is `{governance_status}` for {', '.join(governed_surfaces)} with "
+                f"{len(installable_artifact_paths)} installable artifact(s), evidence pipeline `{evidence_pipeline_status}`, "
+                f"and transport mode `{artifact_transport.get('recommended_transport_mode')}`."
+            )
+
+        return {
+            "project_id": project.id,
+            "project_name": project.name,
+            "workspace_path": project.workspace_path,
+            "summary": summary,
+            "governance_status": governance_status,
+            "selected_target_id": selected_target_id,
+            "detected_platforms": detected_platforms,
+            "governed_surface_count": len(governed_surfaces),
+            "game_engine_surface_count": len(game_engine_surface_ids),
+            "game_engine_surface_ids": game_engine_surface_ids,
+            "game_engine_governance_status": str(game_engine_governance.get("governance_status") or "not_applicable"),
+            "game_engine_playable_contract_status": str(game_engine_governance.get("playable_contract_status") or "not_applicable"),
+            "game_engine_scene_or_map_count": len(game_engine_scene_paths),
+            "game_engine_scene_or_map_paths": game_engine_scene_paths,
+            "game_engine_automation_signal_count": len(game_engine_automation_paths),
+            "game_engine_automation_signal_paths": game_engine_automation_paths,
+            "game_engine_screenshot_artifact_count": len(game_engine_screenshot_paths),
+            "game_engine_screenshot_artifact_paths": game_engine_screenshot_paths,
+            "game_engine_normalized_results_summary_path": game_engine_normalized_results_summary_path or None,
+            "game_engine_normalized_summary_count": game_engine_normalized_summary_count,
+            "game_engine_normalized_passed_count": game_engine_normalized_passed_count,
+            "game_engine_normalized_failed_count": game_engine_normalized_failed_count,
+            "game_engine_normalized_missing_count": game_engine_normalized_missing_count,
+            "game_engine_normalized_publish_ready": game_engine_normalized_publish_ready,
+            "game_engine_normalized_results_status": game_engine_normalized_results_status,
+            "game_engine_publish_gate_status": game_engine_publish_gate_status,
+            "game_engine_publish_blocker_count": len(game_engine_publish_blockers),
+            "game_engine_publish_blockers": game_engine_publish_blockers,
+            "ready_runner_lanes": ready_runner_lanes,
+            "partial_runner_lanes": partial_runner_lanes,
+            "unavailable_runner_lanes": unavailable_runner_lanes,
+            "installable_artifact_count": len(installable_artifact_paths),
+            "installable_artifact_paths": installable_artifact_paths,
+            "installable_artifact_extensions": installable_artifact_extensions,
+            "log_artifact_count": len(log_artifact_paths),
+            "log_artifact_paths": log_artifact_paths,
+            "screenshot_artifact_count": len(screenshot_artifact_paths),
+            "screenshot_artifact_paths": screenshot_artifact_paths,
+            "trace_artifact_count": len(trace_artifact_paths),
+            "trace_artifact_paths": trace_artifact_paths,
+            "crash_artifact_count": len(crash_artifact_paths),
+            "crash_artifact_paths": crash_artifact_paths,
+            "coverage_artifact_count": len(coverage_artifact_paths),
+            "coverage_artifact_paths": coverage_artifact_paths,
+            "performance_artifact_count": len(performance_artifact_paths),
+            "performance_artifact_paths": performance_artifact_paths,
+            "session_recording_status": session_recording_status,
+            "session_recording_required": session_recording_required,
+            "session_recording_artifact_count": len(session_recording_artifact_paths),
+            "session_recording_artifact_paths": session_recording_artifact_paths,
+            "produced_session_recording_artifact_count": len(produced_session_recording_artifact_paths),
+            "produced_session_recording_artifact_paths": produced_session_recording_artifact_paths,
+            "missing_session_recording_artifact_count": len(missing_session_recording_artifact_paths),
+            "missing_session_recording_artifact_paths": missing_session_recording_artifact_paths,
+            "remote_session_recording_artifact_paths": remote_session_recording_artifact_paths,
+            "evidence_pipeline_status": evidence_pipeline_status,
+            "recommended_runner_lanes": recommended_runner_lanes,
+            "recommended_transport_mode": str(artifact_transport.get("recommended_transport_mode") or "discovery_needed"),
+            "blocking_reasons": blocking_reasons,
+            "recommended_fixes": recommended_fixes,
+            "notes": notes,
+            "platform_runners": platform_runners,
+            "artifact_transport": artifact_transport,
+        }
+
+    @staticmethod
+    def _native_app_validation_governance_manifest_root(workspace_root: Path) -> Path:
+        return workspace_root / "artifacts" / "native-app-validation-governance"
+
+    def build_native_app_validation_governance_plan(self, db: Session, project: Project) -> dict[str, Any]:
+        summary = self.build_native_app_validation_governance_summary(db, project)
+        workspace_path = project.workspace_path or project.source_path
+        if not workspace_path:
+            raise MissionControlError("Workspace path is required to generate native app validation governance manifests.")
+        workspace_root = Path(workspace_path).expanduser()
+        if not workspace_root.exists() or not workspace_root.is_dir():
+            raise MissionControlError("Workspace path must exist before generating native app validation governance manifests.")
+
+        manifest_root = self._native_app_validation_governance_manifest_root(workspace_root)
+        manifest_root.mkdir(parents=True, exist_ok=True)
+
+        platform_matrix_path = manifest_root / "platform-matrix.json"
+        artifact_shipping_plan_path = manifest_root / "artifact-shipping-plan.json"
+        install_flow_plan_path = manifest_root / "install-flow-plan.json"
+        runner_lane_plan_path = manifest_root / "runner-lane-plan.json"
+        evidence_bundle_plan_path = manifest_root / "evidence-bundle-plan.json"
+        approval_checkpoint_path = manifest_root / "approval-checkpoints.json"
+
+        detected_platforms = [str(item) for item in list(summary.get("detected_platforms") or []) if str(item).strip()]
+        selected_target_id = str(summary.get("selected_target_id") or "").strip() or None
+        game_engine_surface_ids = [str(item) for item in list(summary.get("game_engine_surface_ids") or []) if str(item).strip()]
+        governed_surfaces = self._dedupe_strings(detected_platforms + game_engine_surface_ids)
+        game_engine_scene_or_map_paths = [
+            str(item) for item in list(summary.get("game_engine_scene_or_map_paths") or []) if str(item).strip()
+        ]
+        game_engine_automation_signal_paths = [
+            str(item) for item in list(summary.get("game_engine_automation_signal_paths") or []) if str(item).strip()
+        ]
+        game_engine_screenshot_artifact_paths = [
+            str(item) for item in list(summary.get("game_engine_screenshot_artifact_paths") or []) if str(item).strip()
+        ]
+        installable_artifact_paths = [str(item) for item in list(summary.get("installable_artifact_paths") or []) if str(item).strip()]
+        recommended_runner_lanes = [str(item) for item in list(summary.get("recommended_runner_lanes") or []) if str(item).strip()]
+        ready_runner_lanes = [str(item) for item in list(summary.get("ready_runner_lanes") or []) if str(item).strip()]
+        partial_runner_lanes = [str(item) for item in list(summary.get("partial_runner_lanes") or []) if str(item).strip()]
+        unavailable_runner_lanes = [str(item) for item in list(summary.get("unavailable_runner_lanes") or []) if str(item).strip()]
+        installable_artifact_extensions = [str(item) for item in list(summary.get("installable_artifact_extensions") or []) if str(item).strip()]
+        blocking_reasons = self._dedupe_strings([str(item) for item in list(summary.get("blocking_reasons") or []) if str(item).strip()])
+        artifact_transport = dict(summary.get("artifact_transport") or {})
+        platform_runners = dict(summary.get("platform_runners") or {})
+        log_artifact_paths = [str(item) for item in list(summary.get("log_artifact_paths") or []) if str(item).strip()]
+        screenshot_artifact_paths = [str(item) for item in list(summary.get("screenshot_artifact_paths") or []) if str(item).strip()]
+        trace_artifact_paths = [str(item) for item in list(summary.get("trace_artifact_paths") or []) if str(item).strip()]
+        crash_artifact_paths = [str(item) for item in list(summary.get("crash_artifact_paths") or []) if str(item).strip()]
+        coverage_artifact_paths = [str(item) for item in list(summary.get("coverage_artifact_paths") or []) if str(item).strip()]
+        performance_artifact_paths = [str(item) for item in list(summary.get("performance_artifact_paths") or []) if str(item).strip()]
+        session_recording_status = str(summary.get("session_recording_status") or "not_applicable")
+        session_recording_required = bool(summary.get("session_recording_required"))
+        session_recording_artifact_paths = [
+            str(item) for item in list(summary.get("session_recording_artifact_paths") or []) if str(item).strip()
+        ]
+        produced_session_recording_artifact_paths = [
+            str(item)
+            for item in list(summary.get("produced_session_recording_artifact_paths") or [])
+            if str(item).strip()
+        ]
+        missing_session_recording_artifact_paths = [
+            str(item)
+            for item in list(summary.get("missing_session_recording_artifact_paths") or [])
+            if str(item).strip()
+        ]
+        summary_recording_delivery_known = (
+            "produced_session_recording_artifact_paths" in summary
+            or "missing_session_recording_artifact_paths" in summary
+        )
+        remote_session_recording_artifact_paths = [
+            str(item)
+            for item in list(summary.get("remote_session_recording_artifact_paths") or [])
+            if str(item).strip()
+        ]
+        recommended_transport_mode = str(summary.get("recommended_transport_mode") or "discovery_needed")
+        evidence_pipeline_status = str(summary.get("evidence_pipeline_status") or "not_applicable")
+        game_engine_normalized_results_summary_path = str(summary.get("game_engine_normalized_results_summary_path") or "").strip()
+        game_engine_normalized_summary_count = int(summary.get("game_engine_normalized_summary_count") or 0)
+        game_engine_normalized_passed_count = int(summary.get("game_engine_normalized_passed_count") or 0)
+        game_engine_normalized_failed_count = int(summary.get("game_engine_normalized_failed_count") or 0)
+        game_engine_normalized_missing_count = int(summary.get("game_engine_normalized_missing_count") or 0)
+        game_engine_normalized_publish_ready = bool(summary.get("game_engine_normalized_publish_ready"))
+        game_engine_normalized_results_status = str(summary.get("game_engine_normalized_results_status") or "not_applicable")
+        game_engine_publish_gate_status = str(summary.get("game_engine_publish_gate_status") or "not_applicable")
+        game_engine_publish_blockers = self._dedupe_strings(
+            [str(item) for item in list(summary.get("game_engine_publish_blockers") or []) if str(item).strip()]
+        )
+
+        platform_extension_map = {
+            "android": {".apk", ".aab"},
+            "ios": {".ipa"},
+            "macos": {".app", ".dmg", ".pkg", ".xcarchive"},
+            "windows": {".exe", ".msi"},
+            "linux": {".appimage", ".deb", ".rpm"},
+            "browser": {".html", ".htm"},
+            "unity": set(),
+            "unreal": set(),
+        }
+        install_surface_map = {
+            "android": "adb_install",
+            "ios": "ios_installer",
+            "macos": "desktop_installer",
+            "windows": "desktop_installer",
+            "linux": "desktop_installer",
+            "browser": "browser_navigation",
+            "unity": "engine_batchmode",
+            "unreal": "engine_commandlet",
+        }
+        validation_step_map = {
+            "android": ["install", "launch", "smoke", "capture_evidence"],
+            "ios": ["install", "launch", "smoke", "capture_evidence"],
+            "macos": ["install", "launch", "smoke", "capture_evidence"],
+            "windows": ["install", "launch", "smoke", "capture_evidence"],
+            "linux": ["install", "launch", "smoke", "capture_evidence"],
+            "browser": ["serve_or_open", "navigate", "smoke", "capture_evidence"],
+            "unity": ["engine_native_tests", "golden_path_capture", "capture_evidence"],
+            "unreal": ["engine_native_tests", "golden_path_capture", "capture_evidence"],
+        }
+        evidence_categories = [
+            ("logs", log_artifact_paths),
+            ("screenshots", screenshot_artifact_paths),
+            ("traces", trace_artifact_paths),
+            ("crashes", crash_artifact_paths),
+            ("coverage", coverage_artifact_paths),
+            ("performance", performance_artifact_paths),
+        ]
+        if session_recording_required:
+            evidence_categories.append(
+                (
+                    "session_recordings",
+                    produced_session_recording_artifact_paths
+                    if summary_recording_delivery_known
+                    else session_recording_artifact_paths,
+                )
+            )
+        categories_present = [category for category, paths in evidence_categories if paths]
+        all_evidence_paths = self._dedupe_strings(
+            [
+                *log_artifact_paths,
+                *screenshot_artifact_paths,
+                *trace_artifact_paths,
+                *crash_artifact_paths,
+                *coverage_artifact_paths,
+                *performance_artifact_paths,
+                *(
+                    produced_session_recording_artifact_paths
+                    if summary_recording_delivery_known
+                    else session_recording_artifact_paths
+                ),
+            ]
+        )
+        engine_validation_inputs = self._dedupe_strings(
+            game_engine_scene_or_map_paths + game_engine_automation_signal_paths + game_engine_screenshot_artifact_paths
+        )
+        engine_dispatch_inputs_available = bool(game_engine_surface_ids and engine_validation_inputs)
+        has_ready_recommended_runner_lane = any(lane in ready_runner_lanes for lane in recommended_runner_lanes)
+
+        platform_records: list[dict[str, Any]] = []
+        lane_dispatch: list[dict[str, Any]] = []
+        platform_install_flows: list[dict[str, Any]] = []
+        target_lane_matrix: list[dict[str, Any]] = []
+
+        for platform in governed_surfaces:
+            platform_artifacts = [
+                path
+                for path in installable_artifact_paths
+                if Path(path).suffix.lower() in platform_extension_map.get(platform, set())
+            ]
+            platform_extensions = sorted({Path(path).suffix.lower() or "<no_ext>" for path in platform_artifacts})
+            platform_engine_validation_inputs = (
+                self._dedupe_strings(
+                    game_engine_scene_or_map_paths + game_engine_automation_signal_paths + game_engine_screenshot_artifact_paths
+                )
+                if platform in {"unity", "unreal"}
+                else []
+            )
+            if platform in ready_runner_lanes:
+                lane_status = "ready"
+            elif platform in partial_runner_lanes:
+                lane_status = "partial"
+            elif platform in unavailable_runner_lanes:
+                lane_status = "unavailable"
+            else:
+                lane_status = "unknown"
+
+            platform_record = {
+                "platform": platform,
+                "surface_type": "engine" if platform in {"unity", "unreal"} else "platform",
+                "runner_lane_status": lane_status,
+                "recommended_for_validation": platform in recommended_runner_lanes,
+                "installable_artifact_count": len(platform_artifacts),
+                "installable_artifacts": platform_artifacts,
+                "installable_artifact_extensions": platform_extensions,
+                "engine_validation_input_count": len(platform_engine_validation_inputs),
+                "engine_validation_inputs": platform_engine_validation_inputs,
+                "evidence_categories_present": categories_present,
+            }
+            platform_records.append(platform_record)
+            lane_dispatch.append(
+                {
+                    "lane_id": platform,
+                    "status": lane_status,
+                    "selected_for_validation": platform in recommended_runner_lanes,
+                    "installable_artifact_count": len(platform_artifacts),
+                    "engine_validation_input_count": len(platform_engine_validation_inputs),
+                    "transport_mode": recommended_transport_mode,
+                    "requires_approval": True,
+                }
+            )
+            platform_install_flows.append(
+                {
+                    "platform": platform,
+                    "install_surface": install_surface_map.get(platform, "manual"),
+                    "runner_lane_status": lane_status,
+                    "installable_artifacts": platform_artifacts,
+                    "engine_validation_inputs": platform_engine_validation_inputs,
+                    "required_steps": list(validation_step_map.get(platform, ["install", "launch", "smoke", "capture_evidence"])),
+                    "validation_expectations": [
+                        "engine_native_tests" if platform in {"unity", "unreal"} else "boot_or_launch",
+                        "golden_path_capture" if platform in {"unity", "unreal"} else "core_path_smoke",
+                        "evidence_bundle_capture",
+                    ],
+                    "required_evidence_categories": [
+                        "logs",
+                        "screenshots",
+                        "traces",
+                        "crashes",
+                        "coverage",
+                        "performance",
+                        *(
+                            ["session_recordings"]
+                            if session_recording_required and platform not in {"unity", "unreal"}
+                            else []
+                        ),
+                    ],
+                }
+            )
+            target_lane_matrix.append(
+                {
+                    "platform": platform,
+                    "transport_mode": recommended_transport_mode,
+                    "runner_lane_status": lane_status,
+                    "ready_for_dispatch": lane_status in {"ready", "partial"} and bool(
+                        platform_artifacts or platform_engine_validation_inputs
+                    ),
+                    "installable_artifacts": platform_artifacts,
+                    "engine_validation_inputs": platform_engine_validation_inputs,
+                    "evidence_paths": all_evidence_paths,
+                }
+            )
+
+        platform_matrix = {
+            "selected_target_id": selected_target_id,
+            "detected_platforms": detected_platforms,
+            "game_engine_surface_ids": game_engine_surface_ids,
+            "game_engine_scene_or_map_count": len(game_engine_scene_or_map_paths),
+            "game_engine_scene_or_map_paths": game_engine_scene_or_map_paths,
+            "game_engine_automation_signal_count": len(game_engine_automation_signal_paths),
+            "game_engine_automation_signal_paths": game_engine_automation_signal_paths,
+            "game_engine_screenshot_artifact_count": len(game_engine_screenshot_artifact_paths),
+            "game_engine_screenshot_artifact_paths": game_engine_screenshot_artifact_paths,
+            "game_engine_normalized_results_summary_path": game_engine_normalized_results_summary_path or None,
+            "game_engine_normalized_summary_count": game_engine_normalized_summary_count,
+            "game_engine_normalized_passed_count": game_engine_normalized_passed_count,
+            "game_engine_normalized_failed_count": game_engine_normalized_failed_count,
+            "game_engine_normalized_missing_count": game_engine_normalized_missing_count,
+            "game_engine_normalized_publish_ready": game_engine_normalized_publish_ready,
+            "game_engine_normalized_results_status": game_engine_normalized_results_status,
+            "game_engine_publish_gate_status": game_engine_publish_gate_status,
+            "game_engine_publish_blocker_count": len(game_engine_publish_blockers),
+            "game_engine_publish_blockers": game_engine_publish_blockers,
+            "governed_surface_count": len(governed_surfaces),
+            "ready_runner_lanes": ready_runner_lanes,
+            "partial_runner_lanes": partial_runner_lanes,
+            "unavailable_runner_lanes": unavailable_runner_lanes,
+            "recommended_runner_lanes": recommended_runner_lanes,
+            "evidence_pipeline_status": evidence_pipeline_status,
+            "recommended_transport_mode": recommended_transport_mode,
+            "installable_artifact_count": len(installable_artifact_paths),
+            "platforms": platform_records,
+        }
+        artifact_shipping_plan = {
+            "selected_target_id": selected_target_id,
+            "recommended_transport_mode": recommended_transport_mode,
+            "installable_artifact_paths": installable_artifact_paths,
+            "evidence_artifact_paths": all_evidence_paths,
+            "artifact_transport_summary": artifact_transport.get("summary"),
+            "ready_platform_lanes": list(artifact_transport.get("ready_platform_lanes") or []),
+            "partial_platform_lanes": list(artifact_transport.get("partial_platform_lanes") or []),
+            "shipping_requirements": {
+                "installable_artifact_required": bool(detected_platforms),
+                "engine_validation_input_required": bool(game_engine_surface_ids),
+                "dispatch_inputs_required": True,
+                "evidence_bundle_required": True,
+                "session_recording_artifact_required": session_recording_required,
+                "session_recording_delivery_status": session_recording_status,
+                "approval_required_before_dispatch": True,
+                "transport_mode": recommended_transport_mode,
+            },
+            "target_lane_matrix": target_lane_matrix,
+        }
+        install_flow_plan = {
+            "selected_target_id": selected_target_id,
+            "detected_platforms": detected_platforms,
+            "game_engine_surface_ids": game_engine_surface_ids,
+            "installable_artifact_extensions": installable_artifact_extensions,
+            "installable_artifact_paths": installable_artifact_paths,
+            "recommended_runner_lanes": recommended_runner_lanes,
+            "required_tool_families": ["adb", "xcodebuild", "browser", "desktop_installer", "unity_batchmode", "unreal_commandlet"],
+            "platform_install_flows": platform_install_flows,
+        }
+        runner_lane_plan = {
+            "selected_target_id": selected_target_id,
+            "recommended_runner_lanes": recommended_runner_lanes,
+            "platform_runner_summary": platform_runners.get("summary"),
+            "ready_lane_ids": list(platform_runners.get("ready_lane_ids") or []),
+            "partial_lane_ids": list(platform_runners.get("partial_lane_ids") or []),
+            "unavailable_lane_ids": list(platform_runners.get("unavailable_lane_ids") or []),
+            "lane_dispatch": lane_dispatch,
+            "dispatch_requirements": {
+                "approval_required": True,
+                "installable_artifact_required": bool(detected_platforms),
+                "engine_validation_input_required": bool(game_engine_surface_ids),
+                "session_recording_review_required": session_recording_required,
+                "transport_review_required": True,
+            },
+        }
+        evidence_bundle_plan = {
+            "selected_target_id": selected_target_id,
+            "evidence_pipeline_status": evidence_pipeline_status,
+            "categories_present": categories_present,
+            "publish_ready": (
+                not blocking_reasons
+                and has_ready_recommended_runner_lane
+                and evidence_pipeline_status == "ready"
+                and session_recording_status in {"not_applicable", "ready"}
+                and (
+                    not game_engine_surface_ids
+                    or (
+                        game_engine_normalized_publish_ready
+                        and game_engine_publish_gate_status == "ready"
+                    )
+                )
+            ),
+            "game_engine_scene_or_map_count": len(game_engine_scene_or_map_paths),
+            "game_engine_scene_or_map_paths": game_engine_scene_or_map_paths,
+            "game_engine_automation_signal_count": len(game_engine_automation_signal_paths),
+            "game_engine_automation_signal_paths": game_engine_automation_signal_paths,
+            "game_engine_screenshot_artifact_count": len(game_engine_screenshot_artifact_paths),
+            "game_engine_screenshot_artifact_paths": game_engine_screenshot_artifact_paths,
+            "game_engine_normalized_results_summary_path": game_engine_normalized_results_summary_path or None,
+            "game_engine_normalized_summary_count": game_engine_normalized_summary_count,
+            "game_engine_normalized_passed_count": game_engine_normalized_passed_count,
+            "game_engine_normalized_failed_count": game_engine_normalized_failed_count,
+            "game_engine_normalized_missing_count": game_engine_normalized_missing_count,
+            "game_engine_normalized_publish_ready": game_engine_normalized_publish_ready,
+            "game_engine_normalized_results_status": game_engine_normalized_results_status,
+            "game_engine_publish_gate_status": game_engine_publish_gate_status,
+            "game_engine_publish_blocker_count": len(game_engine_publish_blockers),
+            "game_engine_publish_blockers": game_engine_publish_blockers,
+            "session_recording_status": session_recording_status,
+            "session_recording_required": session_recording_required,
+            "session_recording_artifact_count": len(session_recording_artifact_paths),
+            "session_recording_artifact_paths": session_recording_artifact_paths,
+            "produced_session_recording_artifact_count": len(produced_session_recording_artifact_paths),
+            "produced_session_recording_artifact_paths": produced_session_recording_artifact_paths,
+            "missing_session_recording_artifact_count": len(missing_session_recording_artifact_paths),
+            "missing_session_recording_artifact_paths": missing_session_recording_artifact_paths,
+            "remote_session_recording_artifact_paths": remote_session_recording_artifact_paths,
+            "required_categories": [
+                "logs",
+                "screenshots",
+                "traces",
+                "crashes",
+                "coverage",
+                "performance",
+                *(["session_recordings"] if session_recording_required else []),
+            ],
+            "evidence_categories": [
+                {
+                    "category": category,
+                    "path_count": len(paths),
+                    "paths": paths,
+                    "required": category != "session_recordings" or session_recording_required,
+                }
+                for category, paths in evidence_categories
+            ],
+            "log_artifact_paths": log_artifact_paths,
+            "screenshot_artifact_paths": screenshot_artifact_paths,
+            "trace_artifact_paths": trace_artifact_paths,
+            "crash_artifact_paths": crash_artifact_paths,
+            "coverage_artifact_paths": coverage_artifact_paths,
+            "performance_artifact_paths": performance_artifact_paths,
+        }
+        approval_checkpoints = {
+            "selected_target_id": selected_target_id,
+            "checkpoints": [
+                {
+                    "checkpoint_id": "installable_artifact_review",
+                    "stage": "preflight",
+                    "status": "ready" if (installable_artifact_paths or engine_dispatch_inputs_available) else "blocked",
+                    "reason": "Platform validation needs either a repo-owned installable or engine-native scene, automation, or screenshot inputs before Mission Control can claim anything useful.",
+                },
+                {
+                    "checkpoint_id": "runner_lane_review",
+                    "stage": "dispatch",
+                    "status": (
+                        "ready"
+                        if has_ready_recommended_runner_lane
+                        else "partial"
+                        if recommended_runner_lanes
+                        else "blocked"
+                    ),
+                    "reason": "A matching runner lane must exist before shipping artifacts into platform validation.",
+                },
+                {
+                    "checkpoint_id": "transport_review",
+                    "stage": "dispatch",
+                    "status": "ready" if recommended_transport_mode != "blocked" else "blocked",
+                    "reason": "Artifact transport stays explicit so installables and evidence do not get copied around with YOLO shell nonsense.",
+                },
+                {
+                    "checkpoint_id": "session_recording_review",
+                    "stage": "validation",
+                    "status": session_recording_status,
+                    "reason": "Brokered native app validation lanes should retain the declared session-recording artifact before publish turns into forensic improv.",
+                },
+                {
+                    "checkpoint_id": "evidence_bundle_review",
+                    "stage": "validation",
+                    "status": (
+                        "ready"
+                        if evidence_pipeline_status == "ready" and session_recording_status in {"not_applicable", "ready"}
+                        else "partial"
+                    ),
+                    "reason": "Logs, screenshots, traces, crashes, coverage, perf, and any engine normalization rollups should exist before publish.",
+                },
+                {
+                    "checkpoint_id": "game_engine_normalization_review",
+                    "stage": "validation",
+                    "status": (
+                        "not_applicable"
+                        if not game_engine_surface_ids
+                        else "ready"
+                        if game_engine_normalized_publish_ready
+                        else "partial"
+                        if game_engine_normalized_results_summary_path
+                        else "blocked"
+                    ),
+                    "reason": "Unity and Unreal surfaces need normalized result rollups before native app publish can pretend to be governed.",
+                },
+                {
+                    "checkpoint_id": "publish_gate",
+                    "stage": "publish",
+                    "status": (
+                        "blocked"
+                        if blocking_reasons
+                        else "ready"
+                        if evidence_pipeline_status == "ready"
+                        and has_ready_recommended_runner_lane
+                        and (not game_engine_surface_ids or game_engine_publish_gate_status == "ready")
+                        else "partial"
+                    ),
+                    "reason": "Publishing stays blocked until current native app governance blockers are cleared.",
+                },
+            ]
+        }
+
+        platform_matrix_path.write_text(json.dumps(platform_matrix, indent=2), encoding="utf-8")
+        artifact_shipping_plan_path.write_text(json.dumps(artifact_shipping_plan, indent=2), encoding="utf-8")
+        install_flow_plan_path.write_text(json.dumps(install_flow_plan, indent=2), encoding="utf-8")
+        runner_lane_plan_path.write_text(json.dumps(runner_lane_plan, indent=2), encoding="utf-8")
+        evidence_bundle_plan_path.write_text(json.dumps(evidence_bundle_plan, indent=2), encoding="utf-8")
+        approval_checkpoint_path.write_text(json.dumps(approval_checkpoints, indent=2), encoding="utf-8")
+
+        notes = self._dedupe_strings(
+            [
+                "Generated native app validation manifests for platform matrix, artifact shipping, install flows, runner lanes, evidence bundles, and publish checkpoints.",
+                (
+                    "Evidence bundles are captured cleanly because the current governance summary already exposes a meaningful validation surface."
+                    if str(summary.get("evidence_pipeline_status") or "") == "ready"
+                    else "Evidence bundles are still incomplete here, so the planner records the gap instead of pretending screenshots equal validation."
+                ),
+                (
+                    f"Session recording is `{session_recording_status}` with {len(session_recording_artifact_paths)} declared artifact path(s)."
+                    if session_recording_required
+                    else "Session recording is not required for the current native app validation lane."
+                ),
+                (
+                    f"{len(recommended_runner_lanes)} runner lane(s) were folded into the dispatch plan."
+                    if recommended_runner_lanes
+                    else "No runner lane is currently recommended, so the dispatch plan is mostly an escalation notice."
+                ),
+            ]
+            + [str(item) for item in list(summary.get("notes") or [])[:3]]
+        )[:8]
+        plan_status = (
+            "ready"
+            if not blocking_reasons
+            and str(summary.get("evidence_pipeline_status") or "") == "ready"
+            and has_ready_recommended_runner_lane
+            and bool(installable_artifact_paths or game_engine_surface_ids)
+            and session_recording_status in {"not_applicable", "ready"}
+            and (not game_engine_surface_ids or game_engine_publish_gate_status == "ready")
+            else "partial"
+            if governed_surfaces
+            else "blocked"
+        )
+        result_summary = (
+            f"Generated a governed native app validation plan for {len(governed_surfaces)} validation surface(s), "
+            f"{len(installable_artifact_paths)} installable artifact(s), and evidence pipeline `{summary.get('evidence_pipeline_status')}`."
+        )
+        return {
+            "project_id": project.id,
+            "project_name": project.name,
+            "workspace_path": workspace_path,
+            "summary": result_summary,
+            "plan_status": plan_status,
+            "selected_target_id": selected_target_id,
+            "detected_platforms": detected_platforms,
+            "governed_surface_count": len(governed_surfaces),
+            "game_engine_surface_count": len(game_engine_surface_ids),
+            "game_engine_surface_ids": game_engine_surface_ids,
+            "game_engine_scene_or_map_count": len(game_engine_scene_or_map_paths),
+            "game_engine_scene_or_map_paths": game_engine_scene_or_map_paths,
+            "game_engine_automation_signal_count": len(game_engine_automation_signal_paths),
+            "game_engine_automation_signal_paths": game_engine_automation_signal_paths,
+            "game_engine_screenshot_artifact_count": len(game_engine_screenshot_artifact_paths),
+            "game_engine_screenshot_artifact_paths": game_engine_screenshot_artifact_paths,
+            "evidence_pipeline_status": str(summary.get("evidence_pipeline_status") or "not_applicable"),
+            "ready_runner_lanes": ready_runner_lanes,
+            "partial_runner_lanes": partial_runner_lanes,
+            "unavailable_runner_lanes": unavailable_runner_lanes,
+            "recommended_runner_lanes": recommended_runner_lanes,
+            "recommended_transport_mode": recommended_transport_mode,
+            "installable_artifact_count": len(installable_artifact_paths),
+            "installable_artifact_paths": installable_artifact_paths,
+            "installable_artifact_extensions": installable_artifact_extensions,
+            "game_engine_normalized_results_summary_path": game_engine_normalized_results_summary_path or None,
+            "game_engine_normalized_summary_count": game_engine_normalized_summary_count,
+            "game_engine_normalized_passed_count": game_engine_normalized_passed_count,
+            "game_engine_normalized_failed_count": game_engine_normalized_failed_count,
+            "game_engine_normalized_missing_count": game_engine_normalized_missing_count,
+            "game_engine_normalized_publish_ready": game_engine_normalized_publish_ready,
+            "game_engine_normalized_results_status": game_engine_normalized_results_status,
+            "game_engine_publish_gate_status": game_engine_publish_gate_status,
+            "game_engine_publish_blocker_count": len(game_engine_publish_blockers),
+            "game_engine_publish_blockers": game_engine_publish_blockers,
+            "session_recording_status": session_recording_status,
+            "session_recording_required": session_recording_required,
+            "session_recording_artifact_count": len(session_recording_artifact_paths),
+            "session_recording_artifact_paths": session_recording_artifact_paths,
+            "produced_session_recording_artifact_count": len(produced_session_recording_artifact_paths),
+            "produced_session_recording_artifact_paths": produced_session_recording_artifact_paths,
+            "missing_session_recording_artifact_count": len(missing_session_recording_artifact_paths),
+            "missing_session_recording_artifact_paths": missing_session_recording_artifact_paths,
+            "remote_session_recording_artifact_paths": remote_session_recording_artifact_paths,
+            "manifest_root": manifest_root.relative_to(workspace_root).as_posix(),
+            "platform_matrix_path": platform_matrix_path.relative_to(workspace_root).as_posix(),
+            "artifact_shipping_plan_path": artifact_shipping_plan_path.relative_to(workspace_root).as_posix(),
+            "install_flow_plan_path": install_flow_plan_path.relative_to(workspace_root).as_posix(),
+            "runner_lane_plan_path": runner_lane_plan_path.relative_to(workspace_root).as_posix(),
+            "evidence_bundle_plan_path": evidence_bundle_plan_path.relative_to(workspace_root).as_posix(),
+            "approval_checkpoint_path": approval_checkpoint_path.relative_to(workspace_root).as_posix(),
+            "blocking_reasons": blocking_reasons,
+            "notes": notes,
+        }
+
+    def build_remote_execution_governance_summary(self, db: Session, project: Project) -> dict[str, Any]:
+        remote_execution = self.preview_project_remote_execution(db, project)
+        device_broker = self.build_device_broker_summary(db, project)
+        artifact_transport = self.build_artifact_transport_summary(db, project)
+        platform_runners = self.build_platform_runner_summary(db, project)
+
+        policy = dict(remote_execution.get("policy") or {})
+        artifact_contract = dict(remote_execution.get("artifact_contract") or {})
+        connector_contract = dict(remote_execution.get("connector_contract") or {})
+        broker_contract = dict(remote_execution.get("broker_contract") or {})
+        result_contract = dict(remote_execution.get("result_contract") or {})
+        selected_target = dict(remote_execution.get("selected_target") or {})
+        session_recording_contract = build_remote_session_recording_contract(
+            selected_target=selected_target or None,
+            policy_payload=policy,
+            artifact_contract=artifact_contract,
+            broker_contract=broker_contract,
+        )
+        fallback_session_recording_artifact_paths = self._dedupe_strings(
+            [str(item) for item in list(result_contract.get("session_recording_artifact_paths") or []) if str(item).strip()]
+            + [str(item) for item in list(session_recording_contract.get("artifact_paths") or []) if str(item).strip()]
+        )
+        fallback_remote_session_recording_artifact_paths = self._dedupe_strings(
+            [
+                str(item)
+                for item in list(result_contract.get("remote_session_recording_artifact_paths") or [])
+                if str(item).strip()
+            ]
+            + [str(item) for item in list(session_recording_contract.get("remote_artifact_paths") or []) if str(item).strip()]
+        )
+        required_repo_roots = [str(item) for item in list(policy.get("required_repo_roots") or []) if str(item).strip()]
+        required_path_prefixes = [str(item) for item in list(policy.get("required_path_prefixes") or []) if str(item).strip()]
+        required_result_formats = [str(item) for item in list(policy.get("required_result_formats") or []) if str(item).strip()]
+        required_command_families = [str(item) for item in list(policy.get("required_command_families") or []) if str(item).strip()]
+        required_toolchains = [str(item) for item in list(policy.get("required_toolchains") or []) if str(item).strip()]
+        target_repo_roots = [str(item) for item in list(broker_contract.get("target_repo_roots") or []) if str(item).strip()]
+        target_path_prefixes = [str(item) for item in list(broker_contract.get("target_path_prefixes") or []) if str(item).strip()]
+        target_result_formats = [str(item) for item in list(broker_contract.get("target_result_formats") or []) if str(item).strip()]
+        target_command_families = [str(item) for item in list(broker_contract.get("target_command_families") or []) if str(item).strip()]
+        target_toolchains = [str(item) for item in list(broker_contract.get("target_toolchains") or []) if str(item).strip()]
+        target_command_runtime_seconds = broker_contract.get("target_command_runtime_seconds")
+        target_file_transfer_quota_mb = broker_contract.get("target_file_transfer_quota_mb")
+        expected_evidence_categories = self._remote_execution_expected_evidence_categories(
+            result_contract=result_contract,
+            policy=policy,
+            broker_contract=broker_contract,
+        )
+        observed_evidence_categories = [str(item) for item in list(result_contract.get("observed_evidence_categories") or []) if str(item).strip()]
+        normalized_summary_artifact = self._remote_execution_normalized_summary_artifact(remote_execution)
+        normalized_results_summary_path: str | None = None
+        normalized_summary_count = 0
+        normalized_passed_count = 0
+        normalized_failed_count = 0
+        normalized_missing_count = 0
+        normalized_publish_ready = False
+        normalized_results_rollup: dict[str, Any] = {}
+        workspace_path = project.workspace_path or project.source_path
+        if workspace_path:
+            workspace_root = Path(workspace_path).expanduser()
+            if workspace_root.exists() and workspace_root.is_dir():
+                normalized_results_rollup = self._load_remote_execution_normalized_results_summary(
+                    workspace_root,
+                    normalized_summary_artifact,
+                )
+                normalized_results_summary_path = normalized_results_rollup.get("normalized_results_summary_path")
+                normalized_summary_count = int(normalized_results_rollup.get("normalized_summary_count") or 0)
+                normalized_passed_count = int(normalized_results_rollup.get("normalized_passed_count") or 0)
+                normalized_failed_count = int(normalized_results_rollup.get("normalized_failed_count") or 0)
+                normalized_missing_count = int(normalized_results_rollup.get("normalized_missing_count") or 0)
+                normalized_publish_ready = bool(normalized_results_rollup.get("normalized_publish_ready"))
+                observed_evidence_categories = self._dedupe_strings(
+                    observed_evidence_categories
+                    + [
+                        str(item)
+                        for item in list(normalized_results_rollup.get("observed_evidence_categories") or [])
+                        if str(item).strip()
+                    ]
+                )
+
+        policy_enabled = bool(policy.get("enabled"))
+        selected_target_id = str(remote_execution.get("selected_target_id") or "").strip() or None
+        selected_transport = str(selected_target.get("transport") or "").strip() or None
+        selected_os_family = str(selected_target.get("os_family") or "").strip() or None
+        required_runner_family = str(remote_execution.get("required_runner_family") or "external_adapter")
+        platform_lane_map = {
+            str(item.get("lane_id") or ""): dict(item or {})
+            for item in list(platform_runners.get("lanes") or [])
+            if str(item.get("lane_id") or "").strip()
+        }
+        ready_lane_ids = [str(item) for item in list(platform_runners.get("ready_lane_ids") or []) if str(item).strip()]
+        selected_ready_lane_ids = [
+            str(item) for item in list(platform_runners.get("selected_ready_lane_ids") or []) if str(item).strip()
+        ]
+        if selected_target_id and not selected_ready_lane_ids:
+            selected_ready_lane_ids = [
+                lane_id
+                for lane_id, lane in platform_lane_map.items()
+                if str(lane.get("status") or "unavailable") == "ready"
+                and selected_target_id
+                in {
+                    str(item).strip()
+                    for item in list(lane.get("selected_target_ids") or [])
+                    if str(item).strip()
+                }
+            ]
+
+        ready_transport_modes = {"brokered_sync", "remote_artifact_root", "workspace_relative_sync", "connector_only"}
+        transport_status = (
+            "not_applicable"
+            if not policy_enabled and not selected_target_id
+            else "ready"
+            if str(artifact_transport.get("recommended_transport_mode") or "") in ready_transport_modes
+            and not list(artifact_transport.get("blocking_reasons") or [])
+            else "blocked"
+            if str(artifact_transport.get("recommended_transport_mode") or "") == "blocked"
+            else "partial"
+        )
+        broker_contract_status = (
+            "not_applicable"
+            if not policy_enabled and not selected_target_id
+            else "ready"
+            if bool(remote_execution.get("preflight_ready")) and not list(remote_execution.get("blocking_reasons") or [])
+            else "partial"
+            if selected_target_id or int(remote_execution.get("eligible_target_count") or 0) > 0
+            else "blocked"
+        )
+        artifact_contract_status = (
+            "not_applicable"
+            if not bool(policy.get("artifact_sync_enabled", True)) and not bool(policy.get("artifact_required"))
+            else "ready"
+            if bool(artifact_contract.get("preflight_ready")) and not list(artifact_contract.get("blocking_reasons") or [])
+            else "blocked"
+        )
+        connector_contract_status = (
+            "not_applicable"
+            if not list(policy.get("required_connector_families") or [])
+            else "ready"
+            if bool(connector_contract.get("preflight_ready")) and not list(connector_contract.get("missing_required_families") or [])
+            else "blocked"
+        )
+        session_recording_required = bool(policy.get("require_session_recording")) or bool(broker_contract.get("require_session_recording"))
+        session_recording_runtime_manifest_count = int(artifact_transport.get("session_recording_runtime_manifest_count") or 0)
+        transport_recording_delivery_known = any(
+            key in artifact_transport
+            for key in (
+                "session_recording_status",
+                "session_recording_artifact_paths",
+                "produced_session_recording_artifact_paths",
+                "missing_session_recording_artifact_paths",
+            )
+        )
+        session_recording_artifact_paths = self._dedupe_strings(
+            [
+                str(item)
+                for item in list(
+                    artifact_transport.get("session_recording_artifact_paths") or fallback_session_recording_artifact_paths
+                )
+                if str(item).strip()
+            ]
+        )
+        produced_session_recording_artifact_paths = self._dedupe_strings(
+            [
+                str(item)
+                for item in list(artifact_transport.get("produced_session_recording_artifact_paths") or [])
+                if str(item).strip()
+            ]
+        )
+        missing_session_recording_artifact_paths = self._dedupe_strings(
+            [
+                str(item)
+                for item in list(artifact_transport.get("missing_session_recording_artifact_paths") or [])
+                if str(item).strip()
+            ]
+        )
+        remote_session_recording_artifact_paths = self._dedupe_strings(
+            [
+                str(item)
+                for item in list(
+                    artifact_transport.get("remote_session_recording_artifact_paths")
+                    or fallback_remote_session_recording_artifact_paths
+                )
+                if str(item).strip()
+            ]
+        )
+        fallback_session_recording_status = (
+            "not_applicable"
+            if not session_recording_required
+            else "ready"
+            if bool(broker_contract.get("session_recording_enabled")) and bool(remote_session_recording_artifact_paths)
+            else "partial"
+            if bool(broker_contract.get("session_recording_enabled"))
+            else "blocked"
+        )
+        session_recording_status = (
+            str(artifact_transport.get("session_recording_status") or fallback_session_recording_status)
+            if transport_recording_delivery_known and session_recording_runtime_manifest_count > 0
+            else fallback_session_recording_status
+        )
+        path_sandbox_required = bool(policy.get("require_target_workspace_root")) or bool(policy.get("required_repo_roots")) or bool(policy.get("required_path_prefixes"))
+        path_sandbox_status = (
+            "not_applicable"
+            if not path_sandbox_required
+            else "ready"
+            if bool(broker_contract.get("preflight_ready"))
+            and (not required_repo_roots or _required_prefixes_satisfied(required_repo_roots, target_repo_roots))
+            and (not required_path_prefixes or _required_prefixes_satisfied(required_path_prefixes, target_path_prefixes))
+            else "blocked"
+        )
+        result_contract_required = bool(policy.get("required_result_formats")) or bool(policy.get("required_command_families")) or bool(policy.get("required_toolchains"))
+        result_contract_status = (
+            "not_applicable"
+            if not result_contract_required
+            else "ready"
+            if bool(broker_contract.get("preflight_ready"))
+            and (not required_result_formats or set(required_result_formats).issubset(set(target_result_formats)))
+            and (not required_command_families or set(required_command_families).issubset(set(target_command_families)))
+            and (not required_toolchains or set(required_toolchains).issubset(set(target_toolchains)))
+            else "blocked"
+        )
+        quota_required = policy.get("minimum_command_runtime_seconds") is not None or policy.get("minimum_file_transfer_quota_mb") is not None
+        quota_status = (
+            "not_applicable"
+            if not quota_required
+            else "ready"
+            if bool(broker_contract.get("preflight_ready"))
+            and (
+                policy.get("minimum_command_runtime_seconds") is None
+                or (
+                    target_command_runtime_seconds is not None
+                    and int(target_command_runtime_seconds) >= int(policy.get("minimum_command_runtime_seconds") or 0)
+                )
+            )
+            and (
+                policy.get("minimum_file_transfer_quota_mb") is None
+                or (
+                    target_file_transfer_quota_mb is not None
+                    and int(target_file_transfer_quota_mb) >= int(policy.get("minimum_file_transfer_quota_mb") or 0)
+                )
+            )
+            else "blocked"
+        )
+
+        blocking_reasons = self._dedupe_strings(
+            [str(item) for item in list(remote_execution.get("blocking_reasons") or []) if str(item).strip()]
+            + [str(item) for item in list(artifact_contract.get("blocking_reasons") or []) if str(item).strip()]
+            + [str(item) for item in list(connector_contract.get("blocking_reasons") or []) if str(item).strip()]
+            + [str(item) for item in list(broker_contract.get("blocking_reasons") or []) if str(item).strip()]
+            + (
+                ["Remote execution policy requires session recording, but the selected target does not advertise it."]
+                if session_recording_status == "blocked"
+                else []
+            )
+            + (
+                ["Remote execution recorded a brokered run, but the session-recording artifact is still missing from the workspace."]
+                if session_recording_runtime_manifest_count > 0 and missing_session_recording_artifact_paths
+                else []
+            )
+            + (
+                ["Remote execution path sandbox requirements are not fully satisfied by the selected target."]
+                if path_sandbox_status == "blocked"
+                else []
+            )
+            + (
+                ["Remote execution result contracts are not fully satisfied by the selected target."]
+                if result_contract_status == "blocked"
+                else []
+            )
+            + (
+                ["Remote execution quota requirements are not satisfied by the selected target."]
+                if quota_status == "blocked"
+                else []
+            )
+        )
+
+        if not policy_enabled and not selected_target_id:
+            governance_status = "not_applicable"
+        elif not blocking_reasons and all(
+            status in {"ready", "not_applicable"}
+            for status in (
+                transport_status,
+                broker_contract_status,
+                artifact_contract_status,
+                connector_contract_status,
+                session_recording_status,
+                path_sandbox_status,
+                result_contract_status,
+                quota_status,
+            )
+        ):
+            governance_status = "ready"
+        elif selected_target_id or int(remote_execution.get("eligible_target_count") or 0) > 0 or ready_lane_ids:
+            governance_status = "partial"
+        else:
+            governance_status = "blocked"
+
+        recommended_fixes = self._dedupe_strings(
+            (
+                ["Enable and bind a brokered target before treating remote execution as a governed lane."]
+                if not policy_enabled and not selected_target_id
+                else []
+            )
+            + (
+                ["Turn on session recording or choose a target that supports it so remote execution has an audit trail."]
+                if session_recording_status == "blocked"
+                else []
+            )
+            + (
+                ["Materialize the missing session-recording artifact inside the workspace before treating the brokered run as fully auditable."]
+                if session_recording_runtime_manifest_count > 0 and missing_session_recording_artifact_paths
+                else []
+            )
+            + (
+                ["Tighten or satisfy required repo roots and path prefixes so workers cannot freestyle outside the intended sandbox."]
+                if path_sandbox_status == "blocked"
+                else []
+            )
+            + (
+                ["Expose the required toolchains, command families, and result formats on the selected target before using it for governed runs."]
+                if result_contract_status == "blocked"
+                else []
+            )
+            + (
+                ["Increase target runtime or file-transfer quotas, or lower the policy floor to something the lane can honestly satisfy."]
+                if quota_status == "blocked"
+                else []
+            )
+            + (
+                ["Unblock artifact or connector contracts so brokered execution can move code and evidence safely."]
+                if transport_status == "blocked" or artifact_contract_status == "blocked" or connector_contract_status == "blocked"
+                else []
+            )
+        )[:10]
+
+        notes = self._dedupe_strings(
+            [
+                f"Policy enabled is `{str(policy_enabled).lower()}` and preflight ready is `{str(bool(remote_execution.get('preflight_ready'))).lower()}`.",
+                (
+                    f"Selected target `{selected_target_id}` uses transport `{selected_transport}` on `{selected_os_family}`."
+                    if selected_target_id
+                    else "No remote target is currently selected."
+                ),
+                (
+                    f"Required runner family is `{required_runner_family}` with {len(selected_ready_lane_ids)} selected-target-ready platform lane(s) and {len(ready_lane_ids)} fleet-ready lane(s)."
+                    if selected_target_id
+                    else f"Required runner family is `{required_runner_family}` with {len(ready_lane_ids)} ready platform lane(s)."
+                ),
+                f"Transport is `{transport_status}`, broker contract is `{broker_contract_status}`, and path sandbox is `{path_sandbox_status}`.",
+                (
+                    f"Persisted remote execution rollup tracks {normalized_summary_count} completed run summary item(s) at `{normalized_results_summary_path}`."
+                    if normalized_results_summary_path
+                    else "No persisted remote execution rollup exists yet, so governance is still operating on declared contracts instead of run-backed evidence."
+                ),
+                (
+                    f"Session recording delivery reflects {session_recording_runtime_manifest_count} runtime manifest(s) with {len(produced_session_recording_artifact_paths)} produced and {len(missing_session_recording_artifact_paths)} missing artifact path(s)."
+                    if session_recording_runtime_manifest_count > 0
+                    else "No remote runtime manifest has been captured yet, so session recording is still judged from the broker contract."
+                ),
+            ]
+            + [str(item) for item in list(artifact_transport.get("notes") or [])[:2]]
+            + [str(item) for item in list(device_broker.get("blocking_reasons") or [])[:2]]
+        )[:8]
+
+        if governance_status == "not_applicable":
+            summary = "Remote execution governance is not applicable because this project is not currently using a brokered remote execution policy."
+        else:
+            summary = (
+                f"Remote execution governance is `{governance_status}` with target `{selected_target_id or 'none'}`, "
+                f"transport `{selected_transport or 'none'}`, broker contract `{broker_contract_status}`, "
+                f"and artifact transport `{transport_status}`."
+            )
+
+        return {
+            "project_id": project.id,
+            "project_name": project.name,
+            "workspace_path": project.workspace_path,
+            "summary": summary,
+            "governance_status": governance_status,
+            "policy_enabled": policy_enabled,
+            "selected_target_id": selected_target_id,
+            "selected_target_probe_status": str(remote_execution.get("selected_target_probe_status") or "unknown"),
+            "selected_transport": selected_transport,
+            "selected_os_family": selected_os_family,
+            "required_runner_family": required_runner_family,
+            "transport_status": transport_status,
+            "broker_contract_status": broker_contract_status,
+            "artifact_contract_status": artifact_contract_status,
+            "connector_contract_status": connector_contract_status,
+            "session_recording_status": session_recording_status,
+            "path_sandbox_status": path_sandbox_status,
+            "result_contract_status": result_contract_status,
+            "quota_status": quota_status,
+            "eligible_target_count": int(remote_execution.get("eligible_target_count") or 0),
+            "ready_candidate_count": int(remote_execution.get("ready_candidate_count") or 0),
+            "ready_candidate_ids": [str(item) for item in list(remote_execution.get("ready_candidate_ids") or []) if str(item).strip()],
+            "ready_target_count": int(device_broker.get("ready_target_count") or 0),
+            "ready_lane_count": int(platform_runners.get("ready_lane_count") or 0),
+            "ready_lane_ids": ready_lane_ids,
+            "selected_ready_lane_count": len(selected_ready_lane_ids),
+            "selected_ready_lane_ids": selected_ready_lane_ids,
+            "allowed_trust_levels": [str(item) for item in list(policy.get("allowed_trust_levels") or []) if str(item).strip()],
+            "required_repo_roots": required_repo_roots,
+            "required_path_prefixes": required_path_prefixes,
+            "required_result_formats": required_result_formats,
+            "required_command_families": required_command_families,
+            "required_toolchains": required_toolchains,
+            "expected_evidence_categories": expected_evidence_categories,
+            "observed_evidence_categories": observed_evidence_categories,
+            "normalized_summary_artifact": normalized_summary_artifact,
+            "normalized_results_summary_path": normalized_results_summary_path,
+            "normalized_summary_count": normalized_summary_count,
+            "normalized_passed_count": normalized_passed_count,
+            "normalized_failed_count": normalized_failed_count,
+            "normalized_missing_count": normalized_missing_count,
+            "normalized_publish_ready": normalized_publish_ready,
+            "session_recording_runtime_manifest_count": session_recording_runtime_manifest_count,
+            "session_recording_artifact_paths": session_recording_artifact_paths,
+            "produced_session_recording_artifact_paths": produced_session_recording_artifact_paths,
+            "missing_session_recording_artifact_paths": missing_session_recording_artifact_paths,
+            "remote_session_recording_artifact_paths": remote_session_recording_artifact_paths,
+            "minimum_command_runtime_seconds": policy.get("minimum_command_runtime_seconds"),
+            "minimum_file_transfer_quota_mb": policy.get("minimum_file_transfer_quota_mb"),
+            "blocking_reasons": blocking_reasons,
+            "recommended_fixes": recommended_fixes,
+            "notes": notes,
+            "device_broker": device_broker,
+            "artifact_transport": artifact_transport,
+            "platform_runners": platform_runners,
+        }
+
+    @staticmethod
+    def _remote_execution_governance_manifest_root(workspace_root: Path) -> Path:
+        return workspace_root / "artifacts" / "remote-execution-governance"
+
+    def build_remote_execution_governance_plan(self, db: Session, project: Project) -> dict[str, Any]:
+        summary = self.build_remote_execution_governance_summary(db, project)
+        remote_execution = self.preview_project_remote_execution(db, project)
+        workspace_path = project.workspace_path or project.source_path
+        if not workspace_path:
+            raise MissionControlError("Workspace path is required to generate remote execution governance manifests.")
+        workspace_root = Path(workspace_path).expanduser()
+        if not workspace_root.exists() or not workspace_root.is_dir():
+            raise MissionControlError("Workspace path must exist before generating remote execution governance manifests.")
+
+        manifest_root = self._remote_execution_governance_manifest_root(workspace_root)
+        manifest_root.mkdir(parents=True, exist_ok=True)
+
+        execution_policy_path = manifest_root / "execution-policy.json"
+        broker_contract_path = manifest_root / "broker-contract.json"
+        artifact_contract_path = manifest_root / "artifact-contract.json"
+        connector_contract_path = manifest_root / "connector-contract.json"
+        path_sandbox_plan_path = manifest_root / "path-sandbox-plan.json"
+        result_contract_path = manifest_root / "result-contract.json"
+        session_recording_plan_path = manifest_root / "session-recording-plan.json"
+        quota_plan_path = manifest_root / "quota-plan.json"
+        approval_checkpoint_path = manifest_root / "approval-checkpoints.json"
+
+        policy = dict(remote_execution.get("policy") or {})
+        artifact_contract = dict(remote_execution.get("artifact_contract") or {})
+        connector_contract = dict(remote_execution.get("connector_contract") or {})
+        broker_contract = dict(remote_execution.get("broker_contract") or {})
+        result_contract = dict(remote_execution.get("result_contract") or {})
+        selected_target = dict(remote_execution.get("selected_target") or {})
+        session_recording_contract = build_remote_session_recording_contract(
+            selected_target=selected_target or None,
+            policy_payload=policy,
+            artifact_contract=artifact_contract,
+            broker_contract=broker_contract,
+        )
+        session_recording_artifact_paths = self._dedupe_strings(
+            [str(item) for item in list(summary.get("session_recording_artifact_paths") or []) if str(item).strip()]
+            + [str(item) for item in list(result_contract.get("session_recording_artifact_paths") or []) if str(item).strip()]
+            + [str(item) for item in list(session_recording_contract.get("artifact_paths") or []) if str(item).strip()]
+        )
+        produced_session_recording_artifact_paths = [
+            str(item)
+            for item in list(summary.get("produced_session_recording_artifact_paths") or [])
+            if str(item).strip()
+        ]
+        missing_session_recording_artifact_paths = [
+            str(item)
+            for item in list(summary.get("missing_session_recording_artifact_paths") or [])
+            if str(item).strip()
+        ]
+        remote_session_recording_artifact_paths = self._dedupe_strings(
+            [
+                str(item)
+                for item in list(summary.get("remote_session_recording_artifact_paths") or [])
+                if str(item).strip()
+            ]
+            + [
+                str(item)
+                for item in list(result_contract.get("remote_session_recording_artifact_paths") or [])
+                if str(item).strip()
+            ]
+            + [str(item) for item in list(session_recording_contract.get("remote_artifact_paths") or []) if str(item).strip()]
+        )
+        blocking_reasons = self._dedupe_strings([str(item) for item in list(summary.get("blocking_reasons") or []) if str(item).strip()])
+
+        execution_policy = {
+            "policy_enabled": bool(summary.get("policy_enabled")),
+            "selected_target_id": summary.get("selected_target_id"),
+            "selected_transport": summary.get("selected_transport"),
+            "selected_os_family": summary.get("selected_os_family"),
+            "preferred_target_id": policy.get("preferred_target_id"),
+            "required_runner_family": summary.get("required_runner_family"),
+            "required_tags": [str(item) for item in list(policy.get("required_tags") or []) if str(item).strip()],
+            "required_capabilities": [str(item) for item in list(policy.get("required_capabilities") or []) if str(item).strip()],
+            "allowed_trust_levels": list(summary.get("allowed_trust_levels") or []),
+            "allowed_transports": [str(item) for item in list(policy.get("allowed_transports") or []) if str(item).strip()],
+            "allowed_os_families": [str(item) for item in list(policy.get("allowed_os_families") or []) if str(item).strip()],
+            "require_write_access": bool(policy.get("require_write_access", True)),
+            "fallback_to_local": bool(policy.get("fallback_to_local", True)),
+            "require_target_workspace_root": bool(policy.get("require_target_workspace_root")),
+            "artifact_sync_enabled": bool(policy.get("artifact_sync_enabled", True)),
+            "artifact_required": bool(policy.get("artifact_required")),
+            "artifact_path_allowlist": [str(item) for item in list(policy.get("artifact_path_allowlist") or []) if str(item).strip()],
+            "required_connector_families": [str(item) for item in list(policy.get("required_connector_families") or []) if str(item).strip()],
+            "allow_host_integrated_connectors": bool(policy.get("allow_host_integrated_connectors", True)),
+            "require_connector_authority": bool(policy.get("require_connector_authority")),
+            "require_probe_ready": bool(policy.get("require_probe_ready")),
+            "require_session_recording": bool(policy.get("require_session_recording")),
+            "required_repo_roots": list(summary.get("required_repo_roots") or []),
+            "required_path_prefixes": list(summary.get("required_path_prefixes") or []),
+            "required_result_formats": list(summary.get("required_result_formats") or []),
+            "required_command_families": list(summary.get("required_command_families") or []),
+            "required_toolchains": list(summary.get("required_toolchains") or []),
+            "minimum_command_runtime_seconds": summary.get("minimum_command_runtime_seconds"),
+            "minimum_file_transfer_quota_mb": summary.get("minimum_file_transfer_quota_mb"),
+        }
+        broker_contract_plan = {
+            "broker_contract_status": summary.get("broker_contract_status"),
+            "selected_target": selected_target,
+            "selected_target_probe_status": summary.get("selected_target_probe_status"),
+            "target_gpu": broker_contract.get("target_gpu"),
+            "target_toolchains": list(broker_contract.get("target_toolchains") or []),
+            "target_command_families": list(broker_contract.get("target_command_families") or []),
+            "target_result_formats": list(broker_contract.get("target_result_formats") or []),
+            "target_repo_roots": list(broker_contract.get("target_repo_roots") or []),
+            "target_path_prefixes": list(broker_contract.get("target_path_prefixes") or []),
+            "target_command_runtime_seconds": broker_contract.get("target_command_runtime_seconds"),
+            "target_file_transfer_quota_mb": broker_contract.get("target_file_transfer_quota_mb"),
+            "session_recording_enabled": bool(broker_contract.get("session_recording_enabled")),
+            "blocking_reasons": list(broker_contract.get("blocking_reasons") or []),
+            "preflight_ready": bool(broker_contract.get("preflight_ready")),
+        }
+        artifact_contract_plan = {
+            "artifact_contract_status": summary.get("artifact_contract_status"),
+            "sync_enabled": bool(artifact_contract.get("sync_enabled")),
+            "required": bool(artifact_contract.get("required")),
+            "selected_artifact_root": artifact_contract.get("selected_artifact_root"),
+            "remote_workspace_root": artifact_contract.get("remote_workspace_root"),
+            "preflight_ready": bool(artifact_contract.get("preflight_ready")),
+        }
+        connector_contract_plan = {
+            "connector_contract_status": summary.get("connector_contract_status"),
+            "required_connector_families": list(connector_contract.get("required_connector_families") or []),
+            "available_families": list(connector_contract.get("available_families") or []),
+            "missing_required_families": list(connector_contract.get("missing_required_families") or []),
+            "preflight_ready": bool(connector_contract.get("preflight_ready")),
+        }
+        path_sandbox_plan = {
+            "path_sandbox_status": summary.get("path_sandbox_status"),
+            "required_repo_roots": list(summary.get("required_repo_roots") or []),
+            "required_path_prefixes": list(summary.get("required_path_prefixes") or []),
+            "target_repo_roots": list(broker_contract.get("target_repo_roots") or []),
+            "target_path_prefixes": list(broker_contract.get("target_path_prefixes") or []),
+        }
+        result_contract_plan = {
+            "result_contract_status": summary.get("result_contract_status"),
+            "required_result_formats": list(summary.get("required_result_formats") or []),
+            "required_command_families": list(summary.get("required_command_families") or []),
+            "required_toolchains": list(summary.get("required_toolchains") or []),
+            "target_result_formats": list(broker_contract.get("target_result_formats") or []),
+            "target_command_families": list(broker_contract.get("target_command_families") or []),
+            "target_toolchains": list(broker_contract.get("target_toolchains") or []),
+            "missing_required_result_formats": list(result_contract.get("missing_required_result_formats") or []),
+            "missing_required_command_families": list(result_contract.get("missing_required_command_families") or []),
+            "missing_required_toolchains": list(result_contract.get("missing_required_toolchains") or []),
+            "expected_evidence_categories": list(summary.get("expected_evidence_categories") or []),
+            "observed_evidence_categories": list(summary.get("observed_evidence_categories") or []),
+            "evidence_category_paths": dict(result_contract.get("evidence_category_paths") or {}),
+            "validation_evidence_targets": list(result_contract.get("validation_evidence_targets") or []),
+            "artifact_paths": list(result_contract.get("artifact_paths") or []),
+            "execution_entrypoints": list(result_contract.get("execution_entrypoints") or []),
+            "normalized_summary_artifact": summary.get("normalized_summary_artifact"),
+            "session_recording_artifact_format": result_contract.get("session_recording_artifact_format")
+            or session_recording_contract.get("artifact_format"),
+            "session_recording_artifact_paths": session_recording_artifact_paths,
+            "produced_session_recording_artifact_paths": produced_session_recording_artifact_paths,
+            "missing_session_recording_artifact_paths": missing_session_recording_artifact_paths,
+            "remote_session_recording_artifact_paths": remote_session_recording_artifact_paths,
+            "normalized_results_summary_path": summary.get("normalized_results_summary_path"),
+            "normalized_summary_count": summary.get("normalized_summary_count"),
+            "normalized_passed_count": summary.get("normalized_passed_count"),
+            "normalized_failed_count": summary.get("normalized_failed_count"),
+            "normalized_missing_count": summary.get("normalized_missing_count"),
+            "normalized_publish_ready": summary.get("normalized_publish_ready"),
+            "preflight_ready": bool(result_contract.get("preflight_ready")),
+        }
+        session_recording_plan = {
+            "session_recording_status": summary.get("session_recording_status"),
+            "require_session_recording": bool(policy.get("require_session_recording")) or bool(broker_contract.get("require_session_recording")),
+            "session_recording_enabled": bool(broker_contract.get("session_recording_enabled")),
+            "selected_target_id": summary.get("selected_target_id"),
+            "artifact_format": result_contract.get("session_recording_artifact_format")
+            or session_recording_contract.get("artifact_format"),
+            "session_recording_artifact_paths": session_recording_artifact_paths,
+            "produced_session_recording_artifact_paths": produced_session_recording_artifact_paths,
+            "missing_session_recording_artifact_paths": missing_session_recording_artifact_paths,
+            "remote_session_recording_artifact_paths": remote_session_recording_artifact_paths,
+        }
+        quota_plan = {
+            "quota_status": summary.get("quota_status"),
+            "minimum_command_runtime_seconds": summary.get("minimum_command_runtime_seconds"),
+            "minimum_file_transfer_quota_mb": summary.get("minimum_file_transfer_quota_mb"),
+            "target_command_runtime_seconds": broker_contract.get("target_command_runtime_seconds"),
+            "target_file_transfer_quota_mb": broker_contract.get("target_file_transfer_quota_mb"),
+        }
+        governance_ready = not blocking_reasons and all(
+            str(status or "not_applicable") in {"ready", "not_applicable"}
+            for status in (
+                summary.get("transport_status"),
+                summary.get("broker_contract_status"),
+                summary.get("artifact_contract_status"),
+                summary.get("connector_contract_status"),
+                summary.get("session_recording_status"),
+                summary.get("path_sandbox_status"),
+                summary.get("result_contract_status"),
+                summary.get("quota_status"),
+            )
+        )
+        approval_checkpoints = {
+            "checkpoints": [
+                {
+                    "checkpoint_id": "broker_contract_review",
+                    "stage": "preflight",
+                    "status": "ready" if str(summary.get("broker_contract_status") or "") == "ready" else "blocked",
+                    "reason": "Remote targets need a real broker contract before workers should be trusted near them.",
+                },
+                {
+                    "checkpoint_id": "artifact_and_connector_review",
+                    "stage": "transfer",
+                    "status": "ready" if str(summary.get("artifact_contract_status") or "") == "ready" and str(summary.get("connector_contract_status") or "") in {"ready", "not_applicable"} else "partial",
+                    "reason": "Brokered execution should move code and evidence through governed artifact and connector lanes, not copy-paste chaos.",
+                },
+                {
+                    "checkpoint_id": "session_recording_review",
+                    "stage": "audit",
+                    "status": "ready" if str(summary.get("session_recording_status") or "") in {"ready", "not_applicable"} else "blocked",
+                    "reason": "Remote execution should have an audit trail when policy requires one.",
+                },
+                {
+                    "checkpoint_id": "result_contract_review",
+                    "stage": "evidence",
+                    "status": "ready" if str(summary.get("result_contract_status") or "") in {"ready", "not_applicable"} else "blocked",
+                    "reason": "Brokered execution should define normalized outputs and evidence categories before remote results get trusted.",
+                },
+                {
+                    "checkpoint_id": "publish_gate",
+                    "stage": "publish",
+                    "status": "ready" if governance_ready else "blocked",
+                    "reason": "Publishing stays blocked until current remote execution governance blockers are cleared.",
+                },
+            ]
+        }
+
+        execution_policy_path.write_text(json.dumps(execution_policy, indent=2), encoding="utf-8")
+        broker_contract_path.write_text(json.dumps(broker_contract_plan, indent=2), encoding="utf-8")
+        artifact_contract_path.write_text(json.dumps(artifact_contract_plan, indent=2), encoding="utf-8")
+        connector_contract_path.write_text(json.dumps(connector_contract_plan, indent=2), encoding="utf-8")
+        path_sandbox_plan_path.write_text(json.dumps(path_sandbox_plan, indent=2), encoding="utf-8")
+        result_contract_path.write_text(json.dumps(result_contract_plan, indent=2), encoding="utf-8")
+        session_recording_plan_path.write_text(json.dumps(session_recording_plan, indent=2), encoding="utf-8")
+        quota_plan_path.write_text(json.dumps(quota_plan, indent=2), encoding="utf-8")
+        approval_checkpoint_path.write_text(json.dumps(approval_checkpoints, indent=2), encoding="utf-8")
+
+        notes = self._dedupe_strings(
+            [
+                "Generated remote execution governance manifests for policy, broker, artifact, connector, sandbox, result, recording, quota, and publish checkpoints.",
+                (
+                    "Session recording requirements are captured cleanly because the current target already advertises an audit surface."
+                    if str(summary.get("session_recording_status") or "") in {"ready", "not_applicable"}
+                    else "Session recording is still weak here, so the planner records the gap instead of pretending tailnet trust equals auditability."
+                ),
+                (
+                    f"Selected target `{summary.get('selected_target_id')}` and transport `{summary.get('selected_transport')}` were folded into the broker plan."
+                    if summary.get("selected_target_id")
+                    else "No target is currently selected, so the broker plan is mostly an escalation path."
+                ),
+            ]
+            + [str(item) for item in list(summary.get("notes") or [])[:3]]
+        )[:8]
+        plan_status = (
+            "ready"
+            if governance_ready
+            else "partial"
+            if summary.get("selected_target_id") or bool(summary.get("policy_enabled"))
+            else "blocked"
+        )
+        result_summary = (
+            f"Generated a governed remote execution plan for target `{summary.get('selected_target_id') or 'none'}` "
+            f"with transport `{summary.get('selected_transport') or 'none'}` and broker contract `{summary.get('broker_contract_status')}`."
+        )
+        return {
+            "project_id": project.id,
+            "project_name": project.name,
+            "workspace_path": workspace_path,
+            "summary": result_summary,
+            "plan_status": plan_status,
+            "selected_target_id": summary.get("selected_target_id"),
+            "selected_transport": summary.get("selected_transport"),
+            "required_runner_family": str(summary.get("required_runner_family") or "external_adapter"),
+            "selected_ready_lane_count": int(summary.get("selected_ready_lane_count") or 0),
+            "selected_ready_lane_ids": [str(item) for item in list(summary.get("selected_ready_lane_ids") or []) if str(item).strip()],
+            "manifest_root": manifest_root.relative_to(workspace_root).as_posix(),
+            "execution_policy_path": execution_policy_path.relative_to(workspace_root).as_posix(),
+            "broker_contract_path": broker_contract_path.relative_to(workspace_root).as_posix(),
+            "artifact_contract_path": artifact_contract_path.relative_to(workspace_root).as_posix(),
+            "connector_contract_path": connector_contract_path.relative_to(workspace_root).as_posix(),
+            "path_sandbox_plan_path": path_sandbox_plan_path.relative_to(workspace_root).as_posix(),
+            "result_contract_path": result_contract_path.relative_to(workspace_root).as_posix(),
+            "session_recording_plan_path": session_recording_plan_path.relative_to(workspace_root).as_posix(),
+            "quota_plan_path": quota_plan_path.relative_to(workspace_root).as_posix(),
+            "approval_checkpoint_path": approval_checkpoint_path.relative_to(workspace_root).as_posix(),
+            "session_recording_runtime_manifest_count": int(summary.get("session_recording_runtime_manifest_count") or 0),
+            "session_recording_artifact_paths": session_recording_artifact_paths,
+            "produced_session_recording_artifact_paths": produced_session_recording_artifact_paths,
+            "missing_session_recording_artifact_paths": missing_session_recording_artifact_paths,
+            "remote_session_recording_artifact_paths": remote_session_recording_artifact_paths,
+            "blocking_reasons": blocking_reasons,
+            "notes": notes,
+        }
 
     def list_projects(self, db: Session, *, include_archived: bool = False) -> list[dict[str, Any]]:
         return [self._serialize_project_card(db, project) for project in self._ordered_projects(db, include_archived=include_archived)]
@@ -11333,6 +22042,17 @@ class MissionControlService:
             .where(OrchestrationSession.project_id == project.id)
             .order_by(OrchestrationSession.updated_at.desc(), OrchestrationSession.id.desc())
         )
+
+    def _schedule_orchestration_follow_up(self, db: Session, project: Project, *, reason: str) -> None:
+        session = self._latest_project_orchestration(db, project)
+        if session is None or session.status not in {"initializing", "planning", "running"}:
+            return
+        session.status = "planning"
+        session.manager_status = "Mission Control is continuing after recorded worker progress."
+        session.updated_at = utc_now()
+        from orchestration import coordinator
+
+        coordinator._schedule_background_turn(session.id, reason)
 
     def build_operator_snapshot(self, db: Session, project: Project) -> dict[str, Any]:
         tasks = list(db.scalars(select(Task).where(Task.project_id == project.id).order_by(Task.priority.asc(), Task.id.asc())))
@@ -11981,6 +22701,319 @@ class MissionControlService:
             "review_gate_count": len(review_gates),
         }
 
+    def build_quality_gate_summary(self, db: Session, project: Project) -> dict[str, Any]:
+        tasks = list(db.scalars(select(Task).where(Task.project_id == project.id).order_by(Task.priority.asc(), Task.id.asc())))
+        degraded_notices = self._workspace_degraded_notices_preview(project)
+        current_action = self._derive_current_action_preview(db, project, degraded_notices)
+        overview = self._project_overview(db, project, tasks, current_action)
+        preferences = project.swarm_preferences or self._swarm_preferences(project)
+        review_gates = self._preview_review_gates(
+            db,
+            project,
+            tasks=tasks,
+            overview=overview,
+            testing_depth=preferences.testing_depth,
+            conflicts=self._preview_conflicts(db, project),
+        )
+        evidence = self.list_handoff_evidence(db, project)
+        gate_status_counts = self._count_string_values([str(entry.status or "") for entry in review_gates])
+        gate_type_counts = self._count_string_values([str(entry.gate_type or "") for entry in review_gates])
+        blocking_gates = [entry.title for entry in review_gates if entry.required and entry.status != "passed"]
+        evidence_type_counts = self._count_string_values([str(item.evidence_type or "") for item in evidence])
+        missing_evidence = self._missing_handoff_evidence(review_gates, evidence)
+        summary = (
+            f"{len(review_gates)} quality gate(s) tracked; "
+            f"{len(blocking_gates)} required gate(s) still block a clean handoff."
+        )
+        return {
+            "project_id": project.id,
+            "project_name": project.name,
+            "summary": summary,
+            "gate_count": len(review_gates),
+            "required_gate_count": len([entry for entry in review_gates if entry.required]),
+            "passed_gate_count": len([entry for entry in review_gates if entry.status == "passed"]),
+            "failed_gate_count": len([entry for entry in review_gates if entry.status == "failed"]),
+            "pending_gate_count": len([entry for entry in review_gates if entry.required and entry.status == "pending"]),
+            "review_gate_count": len(review_gates),
+            "gate_status_counts": gate_status_counts,
+            "gate_type_counts": gate_type_counts,
+            "blocking_gate_titles": blocking_gates[:12],
+            "blocking_gate_count": len(blocking_gates),
+            "evidence_item_count": len(evidence),
+            "evidence_type_counts": evidence_type_counts,
+            "missing_evidence": [str(item) for item in missing_evidence[:12]],
+            "missing_evidence_count": len(missing_evidence),
+        }
+
+    @staticmethod
+    def _quality_gate_manifest_root(workspace_root: Path) -> Path:
+        return workspace_root / "artifacts" / "quality-gates"
+
+    def build_quality_gate_plan(self, db: Session, project: Project) -> dict[str, Any]:
+        summary = self.build_quality_gate_summary(db, project)
+        workspace_path = project.workspace_path or project.source_path
+        if not workspace_path:
+            raise MissionControlError("Workspace path is required to generate quality gate manifests.")
+        workspace_root = Path(workspace_path).expanduser()
+        if not workspace_root.exists() or not workspace_root.is_dir():
+            raise MissionControlError("Workspace path must exist before generating quality gate manifests.")
+
+        manifest_root = self._quality_gate_manifest_root(workspace_root)
+        manifest_root.mkdir(parents=True, exist_ok=True)
+
+        gate_rollup_path = manifest_root / "gate-rollup.json"
+        evidence_requirements_path = manifest_root / "evidence-requirements.json"
+        handoff_checkpoint_path = manifest_root / "handoff-checkpoints.json"
+
+        gate_rollup = {
+            "gate_count": int(summary.get("gate_count") or 0),
+            "required_gate_count": int(summary.get("required_gate_count") or 0),
+            "passed_gate_count": int(summary.get("passed_gate_count") or 0),
+            "failed_gate_count": int(summary.get("failed_gate_count") or 0),
+            "pending_gate_count": int(summary.get("pending_gate_count") or 0),
+            "review_gate_count": int(summary.get("review_gate_count") or 0),
+            "gate_status_counts": dict(summary.get("gate_status_counts") or {}),
+            "gate_type_counts": dict(summary.get("gate_type_counts") or {}),
+            "blocking_gate_titles": list(summary.get("blocking_gate_titles") or []),
+        }
+        evidence_requirements = {
+            "evidence_item_count": int(summary.get("evidence_item_count") or 0),
+            "evidence_type_counts": dict(summary.get("evidence_type_counts") or {}),
+            "missing_evidence": list(summary.get("missing_evidence") or []),
+            "missing_evidence_count": int(summary.get("missing_evidence_count") or 0),
+        }
+        blocking_gate_count = int(summary.get("blocking_gate_count") or 0)
+        missing_evidence_count = int(summary.get("missing_evidence_count") or 0)
+        handoff_checkpoints = {
+            "checkpoints": [
+                {
+                    "checkpoint_id": "required_gate_review",
+                    "stage": "validation",
+                    "status": "ready" if blocking_gate_count == 0 else "blocked",
+                    "reason": "Required gates should be cleared before Mission Control claims a clean handoff.",
+                },
+                {
+                    "checkpoint_id": "evidence_review",
+                    "stage": "evidence",
+                    "status": "ready" if missing_evidence_count == 0 else "partial",
+                    "reason": "Missing evidence should be resolved before signoff stops being ceremonial.",
+                },
+            ]
+        }
+
+        gate_rollup_path.write_text(json.dumps(gate_rollup, indent=2), encoding="utf-8")
+        evidence_requirements_path.write_text(json.dumps(evidence_requirements, indent=2), encoding="utf-8")
+        handoff_checkpoint_path.write_text(json.dumps(handoff_checkpoints, indent=2), encoding="utf-8")
+
+        blocking_reasons = self._dedupe_strings(
+            (
+                ["required_quality_gates_blocking"] if blocking_gate_count > 0 else []
+            )
+            + (
+                ["handoff_evidence_missing"] if missing_evidence_count > 0 else []
+            )
+        )
+        notes = self._dedupe_strings(
+            [
+                "Generated quality gate manifests for rollups, evidence requirements, and handoff checkpoints.",
+                (
+                    "No required gates are currently blocking, so the quality plan reflects an actually passable handoff surface."
+                    if blocking_gate_count == 0
+                    else "Required gates are still blocking, so the planner records the stop signs instead of pretending they are suggestions."
+                ),
+                (
+                    "Evidence requirements are complete."
+                    if missing_evidence_count == 0
+                    else f"{missing_evidence_count} evidence item(s) are still missing from the handoff surface."
+                ),
+            ]
+        )[:8]
+        plan_status = (
+            "ready"
+            if blocking_gate_count == 0 and missing_evidence_count == 0 and int(summary.get("gate_count") or 0) > 0
+            else "partial"
+            if int(summary.get("gate_count") or 0) > 0
+            else "blocked"
+        )
+        result_summary = (
+            f"Generated a quality gate plan with {int(summary.get('gate_count') or 0)} gate(s), "
+            f"{blocking_gate_count} blocking gate(s), and {missing_evidence_count} missing evidence item(s)."
+        )
+        return {
+            "project_id": project.id,
+            "project_name": project.name,
+            "workspace_path": workspace_path,
+            "summary": result_summary,
+            "plan_status": plan_status,
+            "gate_count": int(summary.get("gate_count") or 0),
+            "blocking_gate_count": blocking_gate_count,
+            "missing_evidence_count": missing_evidence_count,
+            "manifest_root": manifest_root.relative_to(workspace_root).as_posix(),
+            "gate_rollup_path": gate_rollup_path.relative_to(workspace_root).as_posix(),
+            "evidence_requirements_path": evidence_requirements_path.relative_to(workspace_root).as_posix(),
+            "handoff_checkpoint_path": handoff_checkpoint_path.relative_to(workspace_root).as_posix(),
+            "blocking_reasons": blocking_reasons,
+            "notes": notes,
+        }
+
+    def build_decision_audit_summary(self, db: Session, project: Project) -> dict[str, Any]:
+        decisions = self._preview_decision_records(db, project)
+        audits = list(
+            db.scalars(
+                select(ApprovalAuditLog)
+                .where(ApprovalAuditLog.project_id == project.id)
+                .order_by(ApprovalAuditLog.created_at.desc(), ApprovalAuditLog.id.desc())
+            )
+        )
+        pending_approvals = self.list_pending_approvals(db, project)
+        pending_questions = self.list_pending_questions(db, project, mutate=False)
+        decision_type_counts = self._count_string_values([str(entry.decision_type or "") for entry in decisions])
+        approval_decision_counts = self._count_string_values([str(entry.decision or "") for entry in audits])
+        approval_actor_counts = self._count_string_values([str(entry.decided_by or "") for entry in audits])
+        recent_decision_titles = [str(entry.title or "") for entry in decisions[:8] if str(entry.title or "").strip()]
+        recent_audit_actions = [str(entry.action_type or "") for entry in audits[:8] if str(entry.action_type or "").strip()]
+        summary = (
+            f"{len(decisions)} decision ledger item(s) and {len(audits)} approval audit event(s) are recorded; "
+            f"{len(pending_approvals)} approval(s) and {len(pending_questions)} question(s) are still open."
+        )
+        return {
+            "project_id": project.id,
+            "project_name": project.name,
+            "summary": summary,
+            "decision_count": len(decisions),
+            "decision_type_counts": decision_type_counts,
+            "approval_audit_count": len(audits),
+            "approval_decision_counts": approval_decision_counts,
+            "approval_actor_counts": approval_actor_counts,
+            "pending_approval_count": len(pending_approvals),
+            "pending_question_count": len(pending_questions),
+            "reversible_decision_count": len([entry for entry in decisions if entry.reversible]),
+            "superseded_decision_count": len([entry for entry in decisions if entry.superseded_by is not None]),
+            "recent_decision_titles": recent_decision_titles,
+            "recent_audit_actions": recent_audit_actions,
+        }
+
+    @staticmethod
+    def _decision_audit_manifest_root(workspace_root: Path) -> Path:
+        return workspace_root / "artifacts" / "decision-audit"
+
+    def build_decision_audit_plan(self, db: Session, project: Project) -> dict[str, Any]:
+        summary = self.build_decision_audit_summary(db, project)
+        workspace_path = project.workspace_path or project.source_path
+        if not workspace_path:
+            raise MissionControlError("Workspace path is required to generate decision audit manifests.")
+        workspace_root = Path(workspace_path).expanduser()
+        if not workspace_root.exists() or not workspace_root.is_dir():
+            raise MissionControlError("Workspace path must exist before generating decision audit manifests.")
+
+        manifest_root = self._decision_audit_manifest_root(workspace_root)
+        manifest_root.mkdir(parents=True, exist_ok=True)
+
+        decision_ledger_path = manifest_root / "decision-ledger.json"
+        approval_audit_path = manifest_root / "approval-audit.json"
+        pending_actions_path = manifest_root / "pending-actions.json"
+        reversibility_review_path = manifest_root / "reversibility-review.json"
+        approval_checkpoint_path = manifest_root / "approval-checkpoints.json"
+
+        decision_ledger = {
+            "decision_count": int(summary.get("decision_count") or 0),
+            "decision_type_counts": dict(summary.get("decision_type_counts") or {}),
+            "recent_decision_titles": list(summary.get("recent_decision_titles") or []),
+        }
+        approval_audit = {
+            "approval_audit_count": int(summary.get("approval_audit_count") or 0),
+            "approval_decision_counts": dict(summary.get("approval_decision_counts") or {}),
+            "approval_actor_counts": dict(summary.get("approval_actor_counts") or {}),
+            "recent_audit_actions": list(summary.get("recent_audit_actions") or []),
+        }
+        pending_approval_count = int(summary.get("pending_approval_count") or 0)
+        pending_question_count = int(summary.get("pending_question_count") or 0)
+        pending_actions = {
+            "pending_approval_count": pending_approval_count,
+            "pending_question_count": pending_question_count,
+            "total_pending_count": pending_approval_count + pending_question_count,
+        }
+        reversibility_review = {
+            "reversible_decision_count": int(summary.get("reversible_decision_count") or 0),
+            "superseded_decision_count": int(summary.get("superseded_decision_count") or 0),
+            "decision_count": int(summary.get("decision_count") or 0),
+        }
+        approval_checkpoints = {
+            "checkpoints": [
+                {
+                    "checkpoint_id": "pending_approval_review",
+                    "stage": "approval",
+                    "status": "ready" if pending_approval_count == 0 else "blocked",
+                    "reason": "Open approvals should be resolved before the ledger is treated as clean.",
+                },
+                {
+                    "checkpoint_id": "pending_question_review",
+                    "stage": "question",
+                    "status": "ready" if pending_question_count == 0 else "partial",
+                    "reason": "Open questions should be resolved before handoff confidence stops being fake.",
+                },
+            ]
+        }
+
+        decision_ledger_path.write_text(json.dumps(decision_ledger, indent=2), encoding="utf-8")
+        approval_audit_path.write_text(json.dumps(approval_audit, indent=2), encoding="utf-8")
+        pending_actions_path.write_text(json.dumps(pending_actions, indent=2), encoding="utf-8")
+        reversibility_review_path.write_text(json.dumps(reversibility_review, indent=2), encoding="utf-8")
+        approval_checkpoint_path.write_text(json.dumps(approval_checkpoints, indent=2), encoding="utf-8")
+
+        blocking_reasons = self._dedupe_strings(
+            (
+                ["pending_approvals_open"] if pending_approval_count > 0 else []
+            )
+            + (
+                ["pending_questions_open"] if pending_question_count > 0 else []
+            )
+        )
+        notes = self._dedupe_strings(
+            [
+                "Generated decision audit manifests for ledger rollups, approval audits, pending actions, reversibility review, and approval checkpoints.",
+                (
+                    "No approvals are pending, so the audit plan reflects a clean approval surface."
+                    if pending_approval_count == 0
+                    else f"{pending_approval_count} approval(s) are still open in the audit surface."
+                ),
+                (
+                    "No open questions remain."
+                    if pending_question_count == 0
+                    else f"{pending_question_count} pending question(s) still need answers before the ledger is settled."
+                ),
+            ]
+        )[:8]
+        plan_status = (
+            "ready"
+            if pending_approval_count == 0 and pending_question_count == 0 and int(summary.get("decision_count") or 0) > 0
+            else "partial"
+            if int(summary.get("decision_count") or 0) > 0 or int(summary.get("approval_audit_count") or 0) > 0
+            else "blocked"
+        )
+        result_summary = (
+            f"Generated a decision audit plan with {int(summary.get('decision_count') or 0)} decision(s), "
+            f"{pending_approval_count} pending approval(s), and {pending_question_count} pending question(s)."
+        )
+        return {
+            "project_id": project.id,
+            "project_name": project.name,
+            "workspace_path": workspace_path,
+            "summary": result_summary,
+            "plan_status": plan_status,
+            "decision_count": int(summary.get("decision_count") or 0),
+            "pending_approval_count": pending_approval_count,
+            "pending_question_count": pending_question_count,
+            "manifest_root": manifest_root.relative_to(workspace_root).as_posix(),
+            "decision_ledger_path": decision_ledger_path.relative_to(workspace_root).as_posix(),
+            "approval_audit_path": approval_audit_path.relative_to(workspace_root).as_posix(),
+            "pending_actions_path": pending_actions_path.relative_to(workspace_root).as_posix(),
+            "reversibility_review_path": reversibility_review_path.relative_to(workspace_root).as_posix(),
+            "approval_checkpoint_path": approval_checkpoint_path.relative_to(workspace_root).as_posix(),
+            "blocking_reasons": blocking_reasons,
+            "notes": notes,
+        }
+
     def build_workspace_tooling_status(self, project: Project) -> dict[str, Any]:
         payload = detect_workspace_tooling(project.workspace_path or project.source_path, project_name=project.name)
         tools = list(payload.get("tools") or [])
@@ -12054,6 +23087,1887 @@ class MissionControlService:
             "command_count": len(commands),
             "commands": commands,
             **payload,
+        }
+
+    @staticmethod
+    def _count_string_values(values: list[str]) -> dict[str, int]:
+        counts: dict[str, int] = {}
+        for value in values:
+            text = str(value or "").strip()
+            if not text:
+                continue
+            counts[text] = counts.get(text, 0) + 1
+        return counts
+
+    @staticmethod
+    def _load_json_object(path: Path) -> dict[str, Any] | None:
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return None
+        return payload if isinstance(payload, dict) else None
+
+    @staticmethod
+    def _looks_like_session_recording_artifact(path_text: str) -> bool:
+        normalized = str(path_text or "").strip().lower()
+        if not normalized:
+            return False
+        recording_markers = ("record", "session", "ttyrec", "asciinema", ".cast", ".webm", ".mp4")
+        return any(marker in normalized for marker in recording_markers)
+
+    def _collect_remote_runtime_manifest_records(self, workspace_root: Path) -> list[dict[str, Any]]:
+        runtime_root = workspace_root / "artifacts" / "remote-execution-governance" / "runtime"
+        if not runtime_root.exists() or not runtime_root.is_dir():
+            return []
+
+        records: list[dict[str, Any]] = []
+        for candidate in sorted(runtime_root.glob("*.json")):
+            if not candidate.is_file():
+                continue
+            try:
+                relative_path = candidate.relative_to(workspace_root).as_posix()
+            except ValueError:
+                continue
+            payload = self._load_json_object(candidate) or {}
+            normalized_summary_artifact = str(payload.get("normalized_summary_artifact") or "").strip()
+            remote_artifact_paths = [
+                str(item)
+                for item in list(payload.get("remote_artifact_paths") or [])
+                if str(item).strip()
+            ]
+            session_recording_artifact_paths = [
+                str(item)
+                for item in list(payload.get("session_recording_artifact_paths") or [])
+                if str(item).strip()
+            ]
+            remote_session_recording_artifact_paths = [
+                str(item)
+                for item in list(payload.get("remote_session_recording_artifact_paths") or [])
+                if str(item).strip()
+            ]
+            validation_targets = ([normalized_summary_artifact] if normalized_summary_artifact else []) + remote_artifact_paths
+            command_preview = str(payload.get("command_preview") or "").strip()
+            session_recording_required = bool(payload.get("session_recording_required"))
+            session_recording_enabled = bool(payload.get("session_recording_enabled"))
+            session_recording_artifact_declared = bool(session_recording_artifact_paths or remote_session_recording_artifact_paths) or any(
+                self._looks_like_session_recording_artifact(item) for item in remote_artifact_paths
+            )
+            produced_session_recording_artifact_paths: list[str] = []
+            missing_session_recording_artifact_paths: list[str] = []
+            for artifact_path in session_recording_artifact_paths:
+                resolved_artifact_path = self._resolve_workspace_artifact_path(workspace_root, artifact_path)
+                if resolved_artifact_path.exists() and resolved_artifact_path.is_file():
+                    produced_session_recording_artifact_paths.append(artifact_path)
+                else:
+                    missing_session_recording_artifact_paths.append(artifact_path)
+            session_recording_artifact_registered = bool(produced_session_recording_artifact_paths)
+            session_recording_artifact_status = (
+                "not_applicable"
+                if not session_recording_required
+                else "blocked"
+                if not session_recording_enabled
+                else "missing"
+                if not session_recording_artifact_declared
+                else "ready"
+                if session_recording_artifact_registered
+                else "declared_only"
+            )
+            records.append(
+                {
+                    "path": relative_path,
+                    "run_id": str(payload.get("run_id") or "").strip(),
+                    "target_id": str(payload.get("target_id") or "").strip(),
+                    "target_label": str(payload.get("target_label") or "").strip(),
+                    "transport": str(payload.get("transport") or "").strip(),
+                    "host": str(payload.get("host") or "").strip(),
+                    "remote_workspace_root": str(payload.get("remote_workspace_root") or "").strip(),
+                    "allowed_relative_paths": [
+                        str(item) for item in list(payload.get("allowed_relative_paths") or []) if str(item).strip()
+                    ],
+                    "allowed_remote_paths": [
+                        str(item) for item in list(payload.get("allowed_remote_paths") or []) if str(item).strip()
+                    ],
+                    "allowed_repo_roots": [
+                        str(item) for item in list(payload.get("allowed_repo_roots") or []) if str(item).strip()
+                    ],
+                    "remote_artifact_paths": remote_artifact_paths,
+                    "session_recording_artifact_paths": session_recording_artifact_paths,
+                    "remote_session_recording_artifact_paths": remote_session_recording_artifact_paths,
+                    "connector_families": [
+                        str(item) for item in list(payload.get("connector_families") or []) if str(item).strip()
+                    ],
+                    "expected_evidence_categories": [
+                        str(item) for item in list(payload.get("expected_evidence_categories") or []) if str(item).strip()
+                    ],
+                    "normalized_summary_artifact": normalized_summary_artifact,
+                    "command_preview": command_preview,
+                    "validation_targets": self._dedupe_strings(validation_targets),
+                    "session_recording_required": session_recording_required,
+                    "session_recording_enabled": session_recording_enabled,
+                    "session_recording_artifact_declared": session_recording_artifact_declared,
+                    "session_recording_artifact_registered": session_recording_artifact_registered,
+                    "session_recording_artifact_status": session_recording_artifact_status,
+                    "produced_session_recording_artifact_paths": self._dedupe_strings(
+                        produced_session_recording_artifact_paths
+                    ),
+                    "missing_session_recording_artifact_paths": self._dedupe_strings(
+                        missing_session_recording_artifact_paths
+                    ),
+                }
+            )
+        return records
+
+    def _build_remote_runtime_manifest_registry_overlay(self, workspace_root: Path) -> dict[str, list[str]]:
+        overlay = {
+            "artifact_paths": [],
+            "artifact_kind_summaries": [],
+            "config_review_paths": [],
+            "validation_evidence_targets": [],
+            "execution_entrypoints": [],
+            "recommended_next_steps": [],
+        }
+        records = self._collect_remote_runtime_manifest_records(workspace_root)
+        if not records:
+            return overlay
+
+        runtime_manifest_paths = [str(item.get("path") or "").strip() for item in records if str(item.get("path") or "").strip()]
+        validation_targets = [
+            str(target)
+            for item in records
+            for target in list(item.get("validation_targets") or [])
+            if str(target).strip()
+        ]
+        execution_entrypoints = [
+            str(item.get("command_preview") or "").strip()
+            for item in records
+            if str(item.get("command_preview") or "").strip()
+        ]
+        recommended_next_steps: list[str] = []
+        for item in records:
+            if bool(item.get("session_recording_required")) and bool(item.get("session_recording_enabled")) and not bool(
+                item.get("session_recording_artifact_registered")
+            ):
+                recommended_next_steps.append(
+                    "Materialize the declared session-recording artifact inside the workspace before treating the brokered execution trail as fully auditable."
+                )
+
+        overlay["artifact_paths"] = runtime_manifest_paths
+        overlay["artifact_kind_summaries"] = [f"remote_execution_runtime_manifest:{len(runtime_manifest_paths)}"]
+        overlay["config_review_paths"] = runtime_manifest_paths
+        overlay["validation_evidence_targets"] = self._dedupe_strings(validation_targets)
+        overlay["execution_entrypoints"] = self._dedupe_strings(execution_entrypoints)
+        overlay["recommended_next_steps"] = self._dedupe_strings(recommended_next_steps)
+        return overlay
+
+    def build_project_artifact_registry(self, project: Project) -> dict[str, Any]:
+        payload = detect_workspace_tooling(project.workspace_path or project.source_path, project_name=project.name)
+        artifact_paths = [str(item) for item in list(payload.get("artifact_paths") or []) if str(item).strip()]
+        workspace_root_text = str(payload.get("workspace_path") or project.workspace_path or project.source_path or "").strip()
+        runtime_overlay = {
+            "artifact_paths": [],
+            "artifact_kind_summaries": [],
+            "config_review_paths": [],
+            "validation_evidence_targets": [],
+            "execution_entrypoints": [],
+            "recommended_next_steps": [],
+        }
+        if workspace_root_text:
+            workspace_root = Path(workspace_root_text)
+            artifact_root = workspace_root / "artifacts"
+            if artifact_root.exists() and artifact_root.is_dir():
+                discovered_artifact_paths: list[str] = []
+                for candidate in sorted(artifact_root.rglob("*")):
+                    if not candidate.is_file():
+                        continue
+                    try:
+                        discovered_artifact_paths.append(candidate.relative_to(workspace_root).as_posix())
+                    except ValueError:
+                        continue
+                artifact_paths = self._dedupe_strings(artifact_paths + discovered_artifact_paths)
+            runtime_overlay = self._build_remote_runtime_manifest_registry_overlay(workspace_root)
+            artifact_paths = self._dedupe_strings(artifact_paths + list(runtime_overlay.get("artifact_paths") or []))
+        artifact_kind_summaries = self._dedupe_strings(
+            [str(item) for item in list(payload.get("artifact_kind_summaries") or []) if str(item).strip()]
+            + list(runtime_overlay.get("artifact_kind_summaries") or [])
+        )
+        artifact_kind_counts: dict[str, int] = {}
+        for entry in artifact_kind_summaries:
+            kind, _, count_text = entry.partition(":")
+            kind = kind.strip()
+            if not kind:
+                continue
+            try:
+                artifact_kind_counts[kind] = int(count_text.strip())
+            except ValueError:
+                artifact_kind_counts[kind] = artifact_kind_counts.get(kind, 0) + 1
+        artifact_extensions = sorted({Path(path).suffix.lower() or "<no_ext>" for path in artifact_paths})
+        inspection_commands = [str(item) for item in list(payload.get("artifact_inspection_commands") or []) if str(item).strip()]
+        config_review_paths = self._dedupe_strings(
+            [str(item) for item in list(payload.get("config_review_paths") or []) if str(item).strip()]
+            + list(runtime_overlay.get("config_review_paths") or [])
+        )
+        config_review_commands = [str(item) for item in list(payload.get("config_review_commands") or []) if str(item).strip()]
+        validation_targets = self._dedupe_strings(
+            [str(item) for item in list(payload.get("validation_evidence_targets") or []) if str(item).strip()]
+            + list(runtime_overlay.get("validation_evidence_targets") or [])
+        )
+        execution_entrypoints = self._dedupe_strings(
+            [str(item) for item in list(payload.get("execution_entrypoints") or []) if str(item).strip()]
+            + list(runtime_overlay.get("execution_entrypoints") or [])
+        )
+        notebook_paths = [str(item) for item in list(payload.get("notebook_paths") or []) if str(item).strip()]
+        recommended_next_steps = self._dedupe_strings(
+            list(payload.get("recommended_next_steps") or []) + list(runtime_overlay.get("recommended_next_steps") or [])
+        )
+        summary = (
+            f"{len(artifact_paths)} artifact path(s), "
+            f"{len(artifact_kind_counts)} artifact kind bucket(s), and "
+            f"{len(inspection_commands)} inspection command(s) are registered for this workspace."
+        )
+        return {
+            "project_id": project.id,
+            "project_name": project.name,
+            "workspace_path": payload.get("workspace_path"),
+            "available": bool(payload.get("available")),
+            "summary": summary,
+            "artifact_count": len(artifact_paths),
+            "artifact_paths": artifact_paths,
+            "artifact_extensions": artifact_extensions,
+            "artifact_extension_count": len(artifact_extensions),
+            "artifact_kind_summaries": artifact_kind_summaries,
+            "artifact_kind_counts": artifact_kind_counts,
+            "artifact_kind_count": len(artifact_kind_counts),
+            "inspection_command_count": len(inspection_commands),
+            "inspection_commands": inspection_commands,
+            "config_review_path_count": len(config_review_paths),
+            "config_review_paths": config_review_paths,
+            "config_review_command_count": len(config_review_commands),
+            "config_review_commands": config_review_commands,
+            "validation_evidence_target_count": len(validation_targets),
+            "validation_evidence_targets": validation_targets,
+            "execution_entrypoint_count": len(execution_entrypoints),
+            "execution_entrypoints": execution_entrypoints,
+            "notebook_path_count": len(notebook_paths),
+            "notebook_paths": notebook_paths,
+            "recommended_next_steps": recommended_next_steps,
+            "recommended_next_step_count": len(recommended_next_steps),
+        }
+
+    @staticmethod
+    def _artifact_registry_manifest_root(workspace_root: Path) -> Path:
+        return workspace_root / "artifacts" / "artifact-registry"
+
+    def build_artifact_registry_plan(self, project: Project) -> dict[str, Any]:
+        summary = self.build_project_artifact_registry(project)
+        workspace_path = project.workspace_path or project.source_path
+        if not workspace_path:
+            raise MissionControlError("Workspace path is required to generate artifact registry manifests.")
+        workspace_root = Path(workspace_path).expanduser()
+        if not workspace_root.exists() or not workspace_root.is_dir():
+            raise MissionControlError("Workspace path must exist before generating artifact registry manifests.")
+
+        manifest_root = self._artifact_registry_manifest_root(workspace_root)
+        manifest_root.mkdir(parents=True, exist_ok=True)
+
+        inventory_path = manifest_root / "inventory.json"
+        kind_rollup_path = manifest_root / "kind-rollup.json"
+        inspection_plan_path = manifest_root / "inspection-plan.json"
+        validation_targets_path = manifest_root / "validation-targets.json"
+        execution_surface_path = manifest_root / "execution-surface.json"
+        remote_runtime_rollup_path = manifest_root / "remote-runtime-rollup.json"
+
+        inventory_payload = {
+            "artifact_count": int(summary.get("artifact_count") or 0),
+            "artifact_paths": list(summary.get("artifact_paths") or []),
+            "artifact_extensions": list(summary.get("artifact_extensions") or []),
+            "artifact_extension_count": int(summary.get("artifact_extension_count") or 0),
+            "workspace_path": summary.get("workspace_path"),
+        }
+        kind_rollup_payload = {
+            "artifact_kind_summaries": list(summary.get("artifact_kind_summaries") or []),
+            "artifact_kind_counts": dict(summary.get("artifact_kind_counts") or {}),
+            "artifact_kind_count": int(summary.get("artifact_kind_count") or 0),
+        }
+        inspection_plan_payload = {
+            "inspection_command_count": int(summary.get("inspection_command_count") or 0),
+            "inspection_commands": list(summary.get("inspection_commands") or []),
+            "config_review_path_count": int(summary.get("config_review_path_count") or 0),
+            "config_review_paths": list(summary.get("config_review_paths") or []),
+            "config_review_command_count": int(summary.get("config_review_command_count") or 0),
+            "config_review_commands": list(summary.get("config_review_commands") or []),
+        }
+        validation_targets_payload = {
+            "validation_evidence_target_count": int(summary.get("validation_evidence_target_count") or 0),
+            "validation_evidence_targets": list(summary.get("validation_evidence_targets") or []),
+            "recommended_next_step_count": int(summary.get("recommended_next_step_count") or 0),
+            "recommended_next_steps": list(summary.get("recommended_next_steps") or []),
+        }
+        execution_surface_payload = {
+            "available": bool(summary.get("available")),
+            "execution_entrypoint_count": int(summary.get("execution_entrypoint_count") or 0),
+            "execution_entrypoints": list(summary.get("execution_entrypoints") or []),
+            "notebook_path_count": int(summary.get("notebook_path_count") or 0),
+            "notebook_paths": list(summary.get("notebook_paths") or []),
+        }
+        runtime_manifest_records = self._collect_remote_runtime_manifest_records(workspace_root)
+        runtime_manifest_paths = [
+            str(item.get("path") or "").strip() for item in runtime_manifest_records if str(item.get("path") or "").strip()
+        ]
+        session_recording_gap_paths = [
+            str(item.get("path") or "").strip()
+            for item in runtime_manifest_records
+            if bool(item.get("session_recording_required"))
+            and bool(item.get("session_recording_enabled"))
+            and not bool(item.get("session_recording_artifact_registered"))
+            and str(item.get("path") or "").strip()
+        ]
+        produced_session_recording_artifact_paths = self._dedupe_strings(
+            [
+                str(path)
+                for item in runtime_manifest_records
+                for path in list(item.get("produced_session_recording_artifact_paths") or [])
+                if str(path).strip()
+            ]
+        )
+        missing_session_recording_artifact_paths = self._dedupe_strings(
+            [
+                str(path)
+                for item in runtime_manifest_records
+                for path in list(item.get("missing_session_recording_artifact_paths") or [])
+                if str(path).strip()
+            ]
+        )
+        remote_runtime_rollup_payload = {
+            "runtime_manifest_count": len(runtime_manifest_records),
+            "runtime_manifest_paths": runtime_manifest_paths,
+            "target_ids": self._dedupe_strings(
+                [str(item.get("target_id") or "").strip() for item in runtime_manifest_records if str(item.get("target_id") or "").strip()]
+            ),
+            "transport_counts": self._count_string_values(
+                [str(item.get("transport") or "").strip() for item in runtime_manifest_records]
+            ),
+            "session_recording_required_count": len([item for item in runtime_manifest_records if bool(item.get("session_recording_required"))]),
+            "session_recording_enabled_count": len([item for item in runtime_manifest_records if bool(item.get("session_recording_enabled"))]),
+            "session_recording_declared_count": len(
+                [item for item in runtime_manifest_records if bool(item.get("session_recording_artifact_declared"))]
+            ),
+            "session_recording_artifact_present_count": len(
+                [item for item in runtime_manifest_records if bool(item.get("session_recording_artifact_registered"))]
+            ),
+            "session_recording_artifact_gap_count": len(session_recording_gap_paths),
+            "session_recording_artifact_gap_paths": session_recording_gap_paths,
+            "produced_session_recording_artifact_paths": produced_session_recording_artifact_paths,
+            "missing_session_recording_artifact_paths": missing_session_recording_artifact_paths,
+            "normalized_summary_artifacts": self._dedupe_strings(
+                [
+                    str(item.get("normalized_summary_artifact") or "").strip()
+                    for item in runtime_manifest_records
+                    if str(item.get("normalized_summary_artifact") or "").strip()
+                ]
+            ),
+            "remote_artifact_paths": self._dedupe_strings(
+                [
+                    str(path)
+                    for item in runtime_manifest_records
+                    for path in list(item.get("remote_artifact_paths") or [])
+                    if str(path).strip()
+                ]
+            ),
+            "session_recording_artifact_paths": self._dedupe_strings(
+                [
+                    str(path)
+                    for item in runtime_manifest_records
+                    for path in list(item.get("session_recording_artifact_paths") or [])
+                    if str(path).strip()
+                ]
+            ),
+            "remote_session_recording_artifact_paths": self._dedupe_strings(
+                [
+                    str(path)
+                    for item in runtime_manifest_records
+                    for path in list(item.get("remote_session_recording_artifact_paths") or [])
+                    if str(path).strip()
+                ]
+            ),
+            "execution_entrypoints": self._dedupe_strings(
+                [
+                    str(item.get("command_preview") or "").strip()
+                    for item in runtime_manifest_records
+                    if str(item.get("command_preview") or "").strip()
+                ]
+            ),
+            "manifests": runtime_manifest_records,
+        }
+
+        inventory_path.write_text(json.dumps(inventory_payload, indent=2), encoding="utf-8")
+        kind_rollup_path.write_text(json.dumps(kind_rollup_payload, indent=2), encoding="utf-8")
+        inspection_plan_path.write_text(json.dumps(inspection_plan_payload, indent=2), encoding="utf-8")
+        validation_targets_path.write_text(json.dumps(validation_targets_payload, indent=2), encoding="utf-8")
+        execution_surface_path.write_text(json.dumps(execution_surface_payload, indent=2), encoding="utf-8")
+        remote_runtime_rollup_path.write_text(json.dumps(remote_runtime_rollup_payload, indent=2), encoding="utf-8")
+
+        artifact_count = int(summary.get("artifact_count") or 0)
+        inspection_surface_count = int(summary.get("inspection_command_count") or 0) + int(
+            summary.get("config_review_command_count") or 0
+        ) + int(summary.get("config_review_path_count") or 0)
+        validation_target_count = int(summary.get("validation_evidence_target_count") or 0)
+        execution_surface_count = int(summary.get("execution_entrypoint_count") or 0) + int(
+            summary.get("notebook_path_count") or 0
+        )
+        runtime_manifest_count = len(runtime_manifest_records)
+        session_recording_gap_count = len(session_recording_gap_paths)
+
+        blocking_reasons = self._dedupe_strings(
+            (["artifact_registry_unavailable"] if not bool(summary.get("available")) else [])
+            + (["no_artifacts_detected"] if artifact_count == 0 else [])
+            + (["no_artifact_review_surface"] if inspection_surface_count == 0 else [])
+            + (["no_validation_evidence_targets"] if validation_target_count == 0 else [])
+            + (["remote_session_recording_artifact_gap"] if session_recording_gap_count > 0 else [])
+        )
+        notes = self._dedupe_strings(
+            [
+                "Generated artifact inventory, kind rollups, inspection planning, validation targets, execution surface, and remote runtime rollup manifests.",
+                (
+                    "Artifact inventory is populated, so downstream lanes have something real to reason about."
+                    if artifact_count > 0
+                    else "No artifact paths were detected, so the planner recorded the empty state instead of pretending the workspace is stocked."
+                ),
+                (
+                    "Validation targets are present for evidence-based follow-up."
+                    if validation_target_count > 0
+                    else "No validation evidence targets were detected, so publish-time confidence would still be fake."
+                ),
+                (
+                    "Inspection or config review surfaces are available."
+                    if inspection_surface_count > 0
+                    else "No inspection or config review surface was detected yet."
+                ),
+                (
+                    "Execution entrypoints or notebooks are registered for artifact-driven follow-up."
+                    if execution_surface_count > 0
+                    else "No execution entrypoints or notebooks were detected for follow-up runs."
+                ),
+                (
+                    f"Captured {runtime_manifest_count} remote runtime manifest(s) for brokered execution audit."
+                    if runtime_manifest_count > 0
+                    else "No remote runtime manifests were detected for brokered execution audit."
+                ),
+                (
+                    "Some brokered runs require session recording but do not yet register a recording artifact."
+                    if session_recording_gap_count > 0
+                    else "Remote runtime manifests do not currently show a session-recording artifact gap."
+                ),
+            ]
+        )[:8]
+        plan_status = (
+            "ready"
+            if artifact_count > 0
+            and validation_target_count > 0
+            and inspection_surface_count > 0
+            and session_recording_gap_count == 0
+            else "partial"
+            if artifact_count > 0
+            else "blocked"
+        )
+        result_summary = (
+            f"Generated an artifact registry plan with {artifact_count} artifact path(s), "
+            f"{int(summary.get('artifact_kind_count') or 0)} artifact kind bucket(s), and "
+            f"{validation_target_count} validation evidence target(s)."
+        )
+        return {
+            "project_id": project.id,
+            "project_name": project.name,
+            "workspace_path": workspace_path,
+            "summary": result_summary,
+            "plan_status": plan_status,
+            "artifact_count": artifact_count,
+            "artifact_kind_count": int(summary.get("artifact_kind_count") or 0),
+            "inspection_command_count": int(summary.get("inspection_command_count") or 0),
+            "validation_evidence_target_count": validation_target_count,
+            "manifest_root": manifest_root.relative_to(workspace_root).as_posix(),
+            "inventory_path": inventory_path.relative_to(workspace_root).as_posix(),
+            "kind_rollup_path": kind_rollup_path.relative_to(workspace_root).as_posix(),
+            "inspection_plan_path": inspection_plan_path.relative_to(workspace_root).as_posix(),
+            "validation_targets_path": validation_targets_path.relative_to(workspace_root).as_posix(),
+            "execution_surface_path": execution_surface_path.relative_to(workspace_root).as_posix(),
+            "remote_runtime_rollup_path": remote_runtime_rollup_path.relative_to(workspace_root).as_posix(),
+            "blocking_reasons": blocking_reasons,
+            "notes": notes,
+        }
+
+    def get_connector_registry(self, db: Session) -> dict[str, Any]:
+        profile = self._app_profile_preview(db)
+        registry = normalize_integration_registry(
+            profile.integration_registry_json,
+            profile.connected_accounts_json,
+        )
+        if dict(profile.integration_registry_json or {}) != registry:
+            profile.integration_registry_json = registry
+            db.flush()
+        health = build_integration_health(profile.integration_registry_json)
+        catalog = build_integration_catalog_with_connections(profile.integration_registry_json)
+        connections = list_connections(profile.integration_registry_json)
+        ready_families = [str(item.get("family") or "") for item in catalog if str(item.get("status") or "") == "connected"]
+        provider_counts = self._count_string_values(
+            [str(provider) for item in catalog for provider in list(item.get("providers") or [])]
+        )
+        category_counts = self._count_string_values([str(item.get("category") or "") for item in catalog])
+        source_counts = self._count_string_values([str(item.get("connection_source") or "") for item in connections])
+        action_count = sum(len(list(item.get("available_action_ids") or [])) for item in catalog)
+        summary = (
+            f"{health.get('connection_count', 0)} connector lane(s) across {health.get('family_count', 0)} family bucket(s); "
+            f"{len(ready_families)} family lane(s) are currently connected."
+        )
+        return {
+            "summary": summary,
+            "family_count": int(health.get("family_count") or 0),
+            "connection_count": int(health.get("connection_count") or 0),
+            "authoritative_connection_count": int(health.get("authoritative_connection_count") or 0),
+            "host_imported_count": int(health.get("host_imported_count") or 0),
+            "status_counts": dict(health.get("status_counts") or {}),
+            "host_import_roots": dict(health.get("host_import_roots") or {}),
+            "recent_action_failures": list(health.get("recent_action_failures") or []),
+            "ready_family_count": len([item for item in catalog if str(item.get("status") or "") == "connected"]),
+            "ready_families": [family for family in ready_families if family],
+            "provider_counts": provider_counts,
+            "provider_count": len(provider_counts),
+            "category_counts": category_counts,
+            "category_count": len(category_counts),
+            "connection_source_counts": source_counts,
+            "connection_source_count": len(source_counts),
+            "available_action_count": action_count,
+            "catalog": catalog,
+            "connections": connections,
+        }
+
+    def build_connector_governance_summary(self, db: Session, project: Project) -> dict[str, Any]:
+        integrations = self.build_project_integrations(db, project)
+        connector_registry = self.get_connector_registry(db)
+        raw_families = list(integrations.get("families") or [])
+
+        ready_family_ids: list[str] = []
+        partial_family_ids: list[str] = []
+        needs_setup_family_ids: list[str] = []
+        connected_family_ids: list[str] = []
+        live_family_ids: list[str] = []
+        authoritative_family_ids: list[str] = []
+        host_imported_family_ids: list[str] = []
+        discovery_ready_family_ids: list[str] = []
+        execution_ready_family_ids: list[str] = []
+        previewable_execution_family_ids: list[str] = []
+        safe_command_family_ids: list[str] = []
+        mutating_execution_family_ids: list[str] = []
+        provider_context_verified_family_ids: list[str] = []
+        providers: list[str] = []
+        categories: list[str] = []
+        families: list[dict[str, Any]] = []
+
+        for raw_item in raw_families:
+            item = dict(raw_item or {})
+            family_id = str(item.get("family") or "").strip()
+            if not family_id:
+                continue
+
+            status = str(item.get("status") or "unknown")
+            connection_status = str(item.get("connection_status") or "disconnected")
+            connection_source = str(item.get("connection_source") or "mission_control")
+            category = str(item.get("category") or "unknown")
+            resolved_provider = str(item.get("resolved_provider") or "").strip() or None
+            provider_resolution_state = str(item.get("provider_resolution_state") or "unresolved")
+            provider_context_status = str(item.get("provider_context_status") or "missing")
+            host_imported = bool(item.get("host_imported"))
+            authoritative = (
+                connection_source in AUTHORITATIVE_CONNECTION_SOURCES
+                and not host_imported
+                and connection_status != "disconnected"
+            )
+            available_action_count = int(item.get("available_action_count") or 0)
+            blocked_action_count = int(item.get("blocked_action_count") or 0)
+            available_execution_action_count = int(item.get("available_execution_action_count") or 0)
+            preview_supported_execution_action_count = int(item.get("preview_supported_execution_action_count") or 0)
+            safe_command_action_count = int(item.get("safe_command_action_count") or 0)
+            available_non_mutating_action_count = int(item.get("available_non_mutating_action_count") or 0)
+            available_mutating_action_count = int(item.get("available_mutating_action_count") or 0)
+            ready_to_execute_action_count = int(item.get("ready_to_execute_action_count") or 0)
+            provider_context_verified = bool(item.get("provider_context_verified"))
+
+            if status == "ready":
+                ready_family_ids.append(family_id)
+            elif status == "partial":
+                partial_family_ids.append(family_id)
+            elif status == "needs_setup":
+                needs_setup_family_ids.append(family_id)
+
+            if connection_status not in {"disconnected", "unknown"} or status in {"ready", "partial"}:
+                connected_family_ids.append(family_id)
+            if connection_status == "connected":
+                live_family_ids.append(family_id)
+            if authoritative:
+                authoritative_family_ids.append(family_id)
+            if host_imported:
+                host_imported_family_ids.append(family_id)
+            if provider_context_verified:
+                provider_context_verified_family_ids.append(family_id)
+            if preview_supported_execution_action_count > 0:
+                previewable_execution_family_ids.append(family_id)
+            if safe_command_action_count > 0:
+                safe_command_family_ids.append(family_id)
+            if available_mutating_action_count > 0:
+                mutating_execution_family_ids.append(family_id)
+
+            if category and category != "unknown":
+                categories.append(category)
+            providers.extend(
+                [
+                    str(provider)
+                    for provider in list(item.get("providers") or [])
+                    if str(provider).strip()
+                ]
+            )
+            if resolved_provider:
+                providers.append(resolved_provider)
+
+            discovery_ready = available_action_count > 0 and (
+                available_non_mutating_action_count > 0
+                or preview_supported_execution_action_count > 0
+                or safe_command_action_count > 0
+                or connection_status in {"connected", "host_detected"}
+            )
+            execution_ready = available_execution_action_count > 0 and (
+                preview_supported_execution_action_count > 0
+                or safe_command_action_count > 0
+                or ready_to_execute_action_count > 0
+            )
+            if discovery_ready:
+                discovery_ready_family_ids.append(family_id)
+            if execution_ready:
+                execution_ready_family_ids.append(family_id)
+
+            families.append(
+                {
+                    "family": family_id,
+                    "name": str(item.get("name") or family_id.replace("_", " ").title()),
+                    "category": category,
+                    "status": status,
+                    "connection_status": connection_status,
+                    "connection_source": connection_source,
+                    "resolved_provider": resolved_provider,
+                    "provider_resolution_state": provider_resolution_state,
+                    "provider_context_status": provider_context_status,
+                    "host_imported": host_imported,
+                    "authoritative": authoritative,
+                    "available_action_count": available_action_count,
+                    "blocked_action_count": blocked_action_count,
+                    "available_execution_action_count": available_execution_action_count,
+                    "preview_supported_execution_action_count": preview_supported_execution_action_count,
+                    "safe_command_action_count": safe_command_action_count,
+                    "available_non_mutating_action_count": available_non_mutating_action_count,
+                    "available_mutating_action_count": available_mutating_action_count,
+                    "discovery_ready": discovery_ready,
+                    "execution_ready": execution_ready,
+                    "blockers": self._dedupe_strings(
+                        [str(value) for value in list(item.get("blockers") or []) if str(value).strip()]
+                    )[:6],
+                    "recommended_fixes": self._dedupe_strings(
+                        [
+                            str(value)
+                            for value in list(item.get("recommended_fixes") or [])
+                            if str(value).strip()
+                        ]
+                    )[:6],
+                    "notes": self._dedupe_strings(
+                        [str(value) for value in list(item.get("notes") or []) if str(value).strip()]
+                    )[:6],
+                }
+            )
+
+        providers = self._dedupe_strings(providers)
+        categories = self._dedupe_strings(categories)
+
+        blocking_reasons = self._dedupe_strings(
+            [str(item) for item in list(integrations.get("blocking_reasons") or []) if str(item).strip()]
+            + [str(item) for item in list(integrations.get("blocker_values") or []) if str(item).strip()]
+            + (
+                ["no_authoritative_connector_lane"]
+                if not authoritative_family_ids and host_imported_family_ids
+                else []
+            )
+            + (
+                ["no_bounded_connector_discovery_lane"]
+                if raw_families and not discovery_ready_family_ids
+                else []
+            )
+        )
+        recommended_fixes = self._dedupe_strings(
+            [str(item) for item in list(integrations.get("recommended_fixes") or []) if str(item).strip()]
+            + [str(item) for item in list(integrations.get("recommended_fix_values") or []) if str(item).strip()]
+            + (
+                [
+                    "Reconnect host-imported lanes through Mission Control-owned auth before treating them as authoritative."
+                ]
+                if host_imported_family_ids and not authoritative_family_ids
+                else []
+            )
+            + (
+                [
+                    "Prefer previewable or safe-command connector actions before enabling mutation-heavy discovery flows."
+                ]
+                if discovery_ready_family_ids and not execution_ready_family_ids
+                else []
+            )
+        )[:10]
+
+        if execution_ready_family_ids and authoritative_family_ids:
+            recommended_operation_mode = "governed_connector_actions"
+        elif discovery_ready_family_ids and authoritative_family_ids:
+            recommended_operation_mode = "read_only_connector_discovery"
+        elif host_imported_family_ids:
+            recommended_operation_mode = "review_host_imports"
+        elif families:
+            recommended_operation_mode = "guided_connector_setup"
+        elif project.workspace_path or project.source_path:
+            recommended_operation_mode = "artifact_first"
+        else:
+            recommended_operation_mode = "discovery_needed"
+
+        if not families and int(connector_registry.get("connection_count") or 0) == 0:
+            governance_status = "blocked" if (project.workspace_path or project.source_path) else "not_applicable"
+        elif authoritative_family_ids and (discovery_ready_family_ids or execution_ready_family_ids):
+            governance_status = "ready" if not blocking_reasons else "partial"
+        elif connected_family_ids or host_imported_family_ids or discovery_ready_family_ids:
+            governance_status = "partial"
+        else:
+            governance_status = "blocked"
+
+        notes = self._dedupe_strings(
+            [
+                "Connector governance should answer authority, bounded discovery, and execution safety in one pass, not make callers diff fifty counters like a clown show.",
+                (
+                    f"{len(authoritative_family_ids)} authoritative family lane(s) are currently available."
+                    if authoritative_family_ids
+                    else "No authoritative family lane is currently available."
+                ),
+                (
+                    f"{len(host_imported_family_ids)} family lane(s) are host-imported and should stay advisory until Mission Control owns the auth path."
+                    if host_imported_family_ids
+                    else "No family lane currently relies on host-imported authority."
+                ),
+                (
+                    f"Recommended connector mode resolves to `{recommended_operation_mode}`."
+                    if recommended_operation_mode
+                    else "Recommended connector mode is still unresolved."
+                ),
+            ]
+            + [str(item) for item in list(integrations.get("notes") or [])[:3]]
+            + [str(item) for item in list(integrations.get("note_values") or [])[:3]]
+        )[:10]
+        summary = (
+            f"Connector governance is `{governance_status}` with {len(families)} family lane(s), "
+            f"{len(authoritative_family_ids)} authoritative lane(s), {len(discovery_ready_family_ids)} discovery-ready lane(s), "
+            f"and {len(execution_ready_family_ids)} execution-ready lane(s)."
+        )
+
+        return {
+            "project_id": project.id,
+            "project_name": project.name,
+            "workspace_path": project.workspace_path,
+            "summary": summary,
+            "governance_status": governance_status,
+            "recommended_operation_mode": recommended_operation_mode,
+            "family_count": len(families),
+            "connected_family_count": len(connected_family_ids),
+            "live_family_count": len(live_family_ids),
+            "ready_family_count": len(ready_family_ids),
+            "partial_family_count": len(partial_family_ids),
+            "needs_setup_family_count": len(needs_setup_family_ids),
+            "authoritative_family_count": len(authoritative_family_ids),
+            "host_imported_family_count": len(host_imported_family_ids),
+            "discovery_ready_family_count": len(discovery_ready_family_ids),
+            "execution_ready_family_count": len(execution_ready_family_ids),
+            "previewable_execution_family_count": len(previewable_execution_family_ids),
+            "safe_command_family_count": len(safe_command_family_ids),
+            "mutating_execution_family_count": len(mutating_execution_family_ids),
+            "provider_context_verified_family_count": len(provider_context_verified_family_ids),
+            "provider_count": len(providers),
+            "providers": providers,
+            "category_count": len(categories),
+            "categories": categories,
+            "connected_family_ids": connected_family_ids,
+            "live_family_ids": live_family_ids,
+            "authoritative_family_ids": authoritative_family_ids,
+            "host_imported_family_ids": host_imported_family_ids,
+            "discovery_ready_family_ids": discovery_ready_family_ids,
+            "execution_ready_family_ids": execution_ready_family_ids,
+            "blocking_reasons": blocking_reasons,
+            "recommended_fixes": recommended_fixes,
+            "notes": notes,
+            "families": families,
+            "connector_registry": connector_registry,
+        }
+
+    @staticmethod
+    def _connector_governance_manifest_root(workspace_root: Path) -> Path:
+        return workspace_root / "artifacts" / "connector-governance"
+
+    def build_connector_governance_plan(self, db: Session, project: Project) -> dict[str, Any]:
+        summary = self.build_connector_governance_summary(db, project)
+        workspace_path = project.workspace_path or project.source_path
+        if not workspace_path:
+            raise MissionControlError("Workspace path is required to generate connector governance manifests.")
+        workspace_root = Path(workspace_path).expanduser()
+        if not workspace_root.exists() or not workspace_root.is_dir():
+            raise MissionControlError("Workspace path must exist before generating connector governance manifests.")
+
+        manifest_root = self._connector_governance_manifest_root(workspace_root)
+        manifest_root.mkdir(parents=True, exist_ok=True)
+
+        family_rollup_path = manifest_root / "family-rollup.json"
+        discovery_lanes_path = manifest_root / "discovery-lanes.json"
+        execution_lanes_path = manifest_root / "execution-lanes.json"
+        provider_context_path = manifest_root / "provider-context.json"
+        approval_guardrails_path = manifest_root / "approval-guardrails.json"
+        connector_registry_path = manifest_root / "connector-registry.json"
+
+        families = [dict(item or {}) for item in list(summary.get("families") or [])]
+        provider_context_missing_family_ids = sorted(
+            {
+                str(item.get("family") or "").strip()
+                for item in families
+                if str(item.get("family") or "").strip()
+                and (
+                    not bool(item.get("provider_context_verified"))
+                    or "provider_context_missing" in [str(value) for value in list(item.get("blockers") or [])]
+                )
+            }
+        )
+        mutation_guard_family_ids = sorted(
+            {
+                str(item.get("family") or "").strip()
+                for item in families
+                if str(item.get("family") or "").strip()
+                and int(item.get("available_mutating_action_count") or 0) > 0
+            }
+        )
+        previewable_execution_family_ids = sorted(
+            {
+                str(item.get("family") or "").strip()
+                for item in families
+                if str(item.get("family") or "").strip()
+                and int(item.get("preview_supported_execution_action_count") or 0) > 0
+            }
+        )
+        safe_command_family_ids = sorted(
+            {
+                str(item.get("family") or "").strip()
+                for item in families
+                if str(item.get("family") or "").strip()
+                and int(item.get("safe_command_action_count") or 0) > 0
+            }
+        )
+        provider_context_verified_family_ids = sorted(
+            {
+                str(item.get("family") or "").strip()
+                for item in families
+                if str(item.get("family") or "").strip() and bool(item.get("provider_context_verified"))
+            }
+        )
+        unresolved_provider_family_ids = sorted(
+            {
+                str(item.get("family") or "").strip()
+                for item in families
+                if str(item.get("family") or "").strip()
+                and str(item.get("provider_resolution_state") or "unresolved") != "resolved"
+            }
+        )
+        family_status_counts = self._count_string_values(
+            [str(item.get("status") or "") for item in families if str(item.get("status") or "").strip()]
+        )
+        connection_status_counts = self._count_string_values(
+            [
+                str(item.get("connection_status") or "")
+                for item in families
+                if str(item.get("connection_status") or "").strip()
+            ]
+        )
+
+        family_rollup_payload = {
+            "family_count": int(summary.get("family_count") or 0),
+            "connected_family_count": int(summary.get("connected_family_count") or 0),
+            "live_family_count": int(summary.get("live_family_count") or 0),
+            "ready_family_count": int(summary.get("ready_family_count") or 0),
+            "partial_family_count": int(summary.get("partial_family_count") or 0),
+            "needs_setup_family_count": int(summary.get("needs_setup_family_count") or 0),
+            "authoritative_family_count": int(summary.get("authoritative_family_count") or 0),
+            "host_imported_family_count": int(summary.get("host_imported_family_count") or 0),
+            "provider_count": int(summary.get("provider_count") or 0),
+            "providers": list(summary.get("providers") or []),
+            "category_count": int(summary.get("category_count") or 0),
+            "categories": list(summary.get("categories") or []),
+            "status_counts": family_status_counts,
+            "connection_status_counts": connection_status_counts,
+            "connected_family_ids": list(summary.get("connected_family_ids") or []),
+            "live_family_ids": list(summary.get("live_family_ids") or []),
+            "authoritative_family_ids": list(summary.get("authoritative_family_ids") or []),
+            "host_imported_family_ids": list(summary.get("host_imported_family_ids") or []),
+            "discovery_ready_family_ids": list(summary.get("discovery_ready_family_ids") or []),
+            "execution_ready_family_ids": list(summary.get("execution_ready_family_ids") or []),
+            "families": [
+                {
+                    "family": str(item.get("family") or ""),
+                    "name": str(item.get("name") or ""),
+                    "category": str(item.get("category") or ""),
+                    "status": str(item.get("status") or "unknown"),
+                    "connection_status": str(item.get("connection_status") or "disconnected"),
+                    "connection_source": str(item.get("connection_source") or "mission_control"),
+                }
+                for item in families
+            ],
+        }
+        discovery_lanes_payload = {
+            "recommended_operation_mode": str(summary.get("recommended_operation_mode") or "discovery_needed"),
+            "discovery_ready_family_count": int(summary.get("discovery_ready_family_count") or 0),
+            "discovery_ready_family_ids": list(summary.get("discovery_ready_family_ids") or []),
+            "connected_family_ids": list(summary.get("connected_family_ids") or []),
+            "live_family_ids": list(summary.get("live_family_ids") or []),
+            "authoritative_family_ids": list(summary.get("authoritative_family_ids") or []),
+            "host_imported_family_ids": list(summary.get("host_imported_family_ids") or []),
+            "discovery_requirements": {
+                "authoritative_lane_required_for_publish": True,
+                "bounded_read_only_preferred": True,
+                "provider_context_review_required": bool(provider_context_missing_family_ids),
+                "host_import_review_required": bool(list(summary.get("host_imported_family_ids") or [])),
+            },
+            "discovery_ready_families": [
+                {
+                    "family": str(item.get("family") or ""),
+                    "status": str(item.get("status") or "unknown"),
+                    "connection_status": str(item.get("connection_status") or "disconnected"),
+                    "connection_source": str(item.get("connection_source") or "mission_control"),
+                    "authoritative": bool(item.get("authoritative")),
+                    "host_imported": bool(item.get("host_imported")),
+                    "provider_context_status": str(item.get("provider_context_status") or "missing"),
+                    "available_action_count": int(item.get("available_action_count") or 0),
+                    "available_non_mutating_action_count": int(item.get("available_non_mutating_action_count") or 0),
+                    "blockers": list(item.get("blockers") or []),
+                }
+                for item in families
+                if bool(item.get("discovery_ready"))
+            ],
+        }
+        execution_lanes_payload = {
+            "execution_ready_family_count": int(summary.get("execution_ready_family_count") or 0),
+            "execution_ready_family_ids": list(summary.get("execution_ready_family_ids") or []),
+            "previewable_execution_family_count": int(summary.get("previewable_execution_family_count") or 0),
+            "safe_command_family_count": int(summary.get("safe_command_family_count") or 0),
+            "mutating_execution_family_count": int(summary.get("mutating_execution_family_count") or 0),
+            "mutation_guard_family_ids": mutation_guard_family_ids,
+            "previewable_execution_family_ids": previewable_execution_family_ids,
+            "safe_command_family_ids": safe_command_family_ids,
+            "execution_requirements": {
+                "preview_or_safe_command_required": True,
+                "mutating_actions_require_guardrails": bool(mutation_guard_family_ids),
+                "provider_context_review_required": bool(provider_context_missing_family_ids),
+            },
+            "execution_ready_families": [
+                {
+                    "family": str(item.get("family") or ""),
+                    "status": str(item.get("status") or "unknown"),
+                    "authoritative": bool(item.get("authoritative")),
+                    "provider_context_status": str(item.get("provider_context_status") or "missing"),
+                    "available_execution_action_count": int(item.get("available_execution_action_count") or 0),
+                    "preview_supported_execution_action_count": int(item.get("preview_supported_execution_action_count") or 0),
+                    "safe_command_action_count": int(item.get("safe_command_action_count") or 0),
+                    "available_mutating_action_count": int(item.get("available_mutating_action_count") or 0),
+                    "blockers": list(item.get("blockers") or []),
+                }
+                for item in families
+                if bool(item.get("execution_ready")) or int(item.get("available_mutating_action_count") or 0) > 0
+            ],
+        }
+        provider_context_payload = {
+            "provider_context_verified_family_count": int(summary.get("provider_context_verified_family_count") or 0),
+            "provider_context_missing_family_count": len(provider_context_missing_family_ids),
+            "provider_context_missing_family_ids": provider_context_missing_family_ids,
+            "provider_context_verified_family_ids": provider_context_verified_family_ids,
+            "unresolved_provider_family_ids": unresolved_provider_family_ids,
+            "providers": list(summary.get("providers") or []),
+            "provider_resolution_requirements": {
+                "resolved_provider_required_for_authoritative_lane": True,
+                "provider_context_review_required_before_mutation": True,
+                "host_import_reauth_required": bool(list(summary.get("host_imported_family_ids") or [])),
+            },
+            "connector_registry_summary": dict(summary.get("connector_registry") or {}),
+        }
+        approval_guardrails_payload = {
+            "blocking_reasons": list(summary.get("blocking_reasons") or []),
+            "recommended_fixes": list(summary.get("recommended_fixes") or []),
+            "notes": list(summary.get("notes") or []),
+            "authoritative_family_ids": list(summary.get("authoritative_family_ids") or []),
+            "host_imported_family_ids": list(summary.get("host_imported_family_ids") or []),
+            "provider_context_missing_family_ids": provider_context_missing_family_ids,
+            "mutation_guard_family_ids": mutation_guard_family_ids,
+            "approval_requirements": {
+                "mutating_actions_require_approval_or_preview": True,
+                "provider_context_review_required": bool(provider_context_missing_family_ids),
+                "host_import_review_required": bool(list(summary.get("host_imported_family_ids") or [])),
+                "authoritative_lane_required_for_publish": True,
+            },
+            "checkpoints": [
+                {
+                    "checkpoint_id": "authoritative_discovery_lane",
+                    "stage": "authority",
+                    "status": "ready" if int(summary.get("authoritative_family_count") or 0) > 0 else "blocked",
+                    "reason": "Mission Control should rely on brokered authoritative lanes before it starts acting clever.",
+                },
+                {
+                    "checkpoint_id": "provider_context_review",
+                    "stage": "provider_context",
+                    "status": "ready" if not provider_context_missing_family_ids else "partial",
+                    "reason": "Host-imported or unverified provider context should be reviewed before publish-time confidence gets weird.",
+                },
+                {
+                    "checkpoint_id": "mutation_guard_review",
+                    "stage": "approval",
+                    "status": (
+                        "ready"
+                        if int(summary.get("mutating_execution_family_count") or 0) == 0
+                        or int(summary.get("safe_command_family_count") or 0) > 0
+                        else "partial"
+                    ),
+                    "reason": "Mutating connector actions should stay behind preview or approval guardrails.",
+                },
+            ],
+        }
+        connector_registry_payload = dict(summary.get("connector_registry") or {})
+
+        family_rollup_path.write_text(json.dumps(family_rollup_payload, indent=2), encoding="utf-8")
+        discovery_lanes_path.write_text(json.dumps(discovery_lanes_payload, indent=2), encoding="utf-8")
+        execution_lanes_path.write_text(json.dumps(execution_lanes_payload, indent=2), encoding="utf-8")
+        provider_context_path.write_text(json.dumps(provider_context_payload, indent=2), encoding="utf-8")
+        approval_guardrails_path.write_text(json.dumps(approval_guardrails_payload, indent=2), encoding="utf-8")
+        connector_registry_path.write_text(json.dumps(connector_registry_payload, indent=2), encoding="utf-8")
+
+        family_count = int(summary.get("family_count") or 0)
+        authoritative_family_count = int(summary.get("authoritative_family_count") or 0)
+        discovery_ready_family_count = int(summary.get("discovery_ready_family_count") or 0)
+        execution_ready_family_count = int(summary.get("execution_ready_family_count") or 0)
+        blocking_reasons = self._dedupe_strings(
+            list(summary.get("blocking_reasons") or [])
+            + (["no_connector_families_detected"] if family_count == 0 else [])
+            + (["no_authoritative_connector_family"] if family_count > 0 and authoritative_family_count == 0 else [])
+            + (["no_discovery_ready_connector_family"] if family_count > 0 and discovery_ready_family_count == 0 else [])
+        )
+        notes = self._dedupe_strings(
+            [
+                "Generated connector family rollups, discovery lanes, execution lanes, provider context, approval guardrails, and registry manifests.",
+                (
+                    "Authoritative connector lanes are present for brokered operations."
+                    if authoritative_family_count > 0
+                    else "No authoritative connector lane is ready yet, so the plan records the gap instead of pretending host imports are trustworthy."
+                ),
+                (
+                    "Discovery-ready families are available for bounded crawling and ingestion."
+                    if discovery_ready_family_count > 0
+                    else "No discovery-ready connector family is available yet."
+                ),
+                (
+                    "Execution-ready families are available for brokered actions."
+                    if execution_ready_family_count > 0
+                    else "No execution-ready connector family is available yet."
+                ),
+                (
+                    "Provider context is fully verified across connector families."
+                    if not provider_context_missing_family_ids
+                    else f"{len(provider_context_missing_family_ids)} connector family(s) still need provider-context review."
+                ),
+            ]
+        )[:8]
+        plan_status = (
+            "ready"
+            if family_count > 0 and authoritative_family_count > 0 and discovery_ready_family_count > 0 and not blocking_reasons
+            else "partial"
+            if family_count > 0
+            else "blocked"
+        )
+        result_summary = (
+            f"Generated a connector governance plan with {family_count} connector family lane(s), "
+            f"{discovery_ready_family_count} discovery-ready lane(s), and "
+            f"{execution_ready_family_count} execution-ready lane(s)."
+        )
+        return {
+            "project_id": project.id,
+            "project_name": project.name,
+            "workspace_path": workspace_path,
+            "summary": result_summary,
+            "plan_status": plan_status,
+            "recommended_operation_mode": str(summary.get("recommended_operation_mode") or "discovery_needed"),
+            "family_count": family_count,
+            "discovery_ready_family_count": discovery_ready_family_count,
+            "execution_ready_family_count": execution_ready_family_count,
+            "authoritative_family_count": authoritative_family_count,
+            "manifest_root": manifest_root.relative_to(workspace_root).as_posix(),
+            "family_rollup_path": family_rollup_path.relative_to(workspace_root).as_posix(),
+            "discovery_lanes_path": discovery_lanes_path.relative_to(workspace_root).as_posix(),
+            "execution_lanes_path": execution_lanes_path.relative_to(workspace_root).as_posix(),
+            "provider_context_path": provider_context_path.relative_to(workspace_root).as_posix(),
+            "approval_guardrails_path": approval_guardrails_path.relative_to(workspace_root).as_posix(),
+            "connector_registry_path": connector_registry_path.relative_to(workspace_root).as_posix(),
+            "blocking_reasons": blocking_reasons,
+            "notes": notes,
+        }
+
+    def build_external_discovery_governance_summary(self, db: Session, project: Project) -> dict[str, Any]:
+        integrations = self.build_project_integrations(db, project)
+        connector_governance = self.build_connector_governance_summary(db, project)
+        file_governance = self.build_file_governance_summary(db, project)
+        raw_families = list(integrations.get("families") or [])
+
+        discovery_action_ids = {
+            "search",
+            "list",
+            "inspect",
+            "read",
+            "query",
+            "crawl",
+            "scan",
+            "browse",
+            "enumerate",
+            "export",
+            "preview",
+        }
+        discovery_text_tokens = (
+            "search",
+            "list",
+            "inspect",
+            "read",
+            "query",
+            "crawl",
+            "scan",
+            "browse",
+            "enumerate",
+            "export",
+            "preview",
+            "knowledge",
+            "ticket",
+            "support",
+            "drive",
+            "sharepoint",
+            "storage",
+            "design",
+        )
+        storage_tokens = (
+            "drive",
+            "sharepoint",
+            "onedrive",
+            "dropbox",
+            "box",
+            "storage",
+            "filesystem",
+            "local_fs",
+            "s3",
+            "file",
+        )
+        design_tokens = ("design", "figma", "token", "theme", "component", "style")
+        knowledge_tokens = ("knowledge", "support", "ticket", "docs", "documentation", "wiki", "help")
+
+        lanes: list[dict[str, Any]] = []
+        authoritative_lane_ids: list[str] = []
+        live_lane_ids: list[str] = []
+        host_imported_lane_ids: list[str] = []
+        discovery_ready_lane_ids: list[str] = []
+        execution_ready_lane_ids: list[str] = []
+        previewable_lane_ids: list[str] = []
+        read_only_lane_ids: list[str] = []
+        mutating_lane_ids: list[str] = []
+        confirmation_guarded_lane_ids: list[str] = []
+        safe_command_lane_ids: list[str] = []
+        paginated_lane_ids: list[str] = []
+        streaming_lane_ids: list[str] = []
+        file_output_lane_ids: list[str] = []
+        throttled_lane_ids: list[str] = []
+        storage_lane_ids: list[str] = []
+        design_lane_ids: list[str] = []
+        knowledge_lane_ids: list[str] = []
+        storage_ready_lane_ids: list[str] = []
+        design_ready_lane_ids: list[str] = []
+        knowledge_ready_lane_ids: list[str] = []
+
+        for raw_item in raw_families:
+            item = dict(raw_item or {})
+            family_id = str(item.get("family") or "").strip()
+            if not family_id:
+                continue
+
+            name = str(item.get("name") or family_id.replace("_", " ").title())
+            category = str(item.get("category") or "unknown")
+            status = str(item.get("status") or "unknown")
+            connection_status = str(item.get("connection_status") or "disconnected")
+            connection_source = str(item.get("connection_source") or "mission_control")
+            host_imported = bool(item.get("host_imported"))
+            provider_context_verified = bool(item.get("provider_context_verified"))
+            authoritative = (
+                connection_source in AUTHORITATIVE_CONNECTION_SOURCES
+                and not host_imported
+                and connection_status != "disconnected"
+            )
+            searchable_text = " ".join(
+                [
+                    family_id,
+                    name,
+                    category,
+                    str(item.get("summary") or ""),
+                    " ".join(str(provider) for provider in list(item.get("providers") or [])),
+                ]
+            ).lower()
+            is_storage = any(token in searchable_text for token in storage_tokens)
+            is_design = any(token in searchable_text for token in design_tokens)
+            is_knowledge = any(token in searchable_text for token in knowledge_tokens)
+
+            discovery_action_count = 0
+            preview_supported_action_count = 0
+            non_mutating_action_count = 0
+            mutating_action_count = 0
+            confirmation_guarded_action_count = 0
+            safe_command_action_count = 0
+            ready_to_execute_action_count = 0
+            supports_search = False
+            supports_listing = False
+            supports_export = False
+            supports_pagination = False
+            supports_streaming_output = False
+            supports_file_output = False
+            supports_throttle_controls = False
+
+            for raw_action in list(item.get("available_actions") or []):
+                action = dict(raw_action or {})
+                action_id = str(action.get("action_id") or "").strip().lower()
+                action_text = " ".join(
+                    [
+                        action_id,
+                        str(action.get("title") or ""),
+                        str(action.get("summary") or ""),
+                    ]
+                ).lower()
+                is_discovery_action = action_id in discovery_action_ids or any(
+                    token in action_text for token in discovery_text_tokens
+                )
+                if not is_discovery_action:
+                    continue
+                discovery_action_count += 1
+                if bool(action.get("preview_supported")):
+                    preview_supported_action_count += 1
+                if bool(action.get("mutates_remote_state")):
+                    mutating_action_count += 1
+                else:
+                    non_mutating_action_count += 1
+                if bool(action.get("requires_confirmation")):
+                    confirmation_guarded_action_count += 1
+                if bool(action.get("safe_command_eligible")):
+                    safe_command_action_count += 1
+                if bool(action.get("ready_to_execute")):
+                    ready_to_execute_action_count += 1
+                if bool(action.get("supports_pagination")):
+                    supports_pagination = True
+                if bool(action.get("supports_streaming_output")):
+                    supports_streaming_output = True
+                if bool(action.get("supports_file_output")):
+                    supports_file_output = True
+                if bool(action.get("supports_throttle_controls")):
+                    supports_throttle_controls = True
+                if "search" in action_text or "query" in action_text:
+                    supports_search = True
+                if any(token in action_text for token in ("list", "browse", "enumerate", "inspect", "read")):
+                    supports_listing = True
+                if "export" in action_text or "download" in action_text:
+                    supports_export = True
+
+            include_lane = bool(discovery_action_count or is_storage or is_design or is_knowledge)
+            if not include_lane:
+                continue
+
+            discovery_ready = discovery_action_count > 0 and (
+                non_mutating_action_count > 0
+                or preview_supported_action_count > 0
+                or safe_command_action_count > 0
+                or status in {"ready", "partial"}
+            )
+            execution_ready = ready_to_execute_action_count > 0 or (
+                mutating_action_count > 0
+                and confirmation_guarded_action_count >= mutating_action_count
+                and preview_supported_action_count > 0
+            )
+
+            if authoritative:
+                authoritative_lane_ids.append(family_id)
+            if connection_status == "connected":
+                live_lane_ids.append(family_id)
+            if host_imported:
+                host_imported_lane_ids.append(family_id)
+            if discovery_ready:
+                discovery_ready_lane_ids.append(family_id)
+            if execution_ready:
+                execution_ready_lane_ids.append(family_id)
+            if preview_supported_action_count > 0:
+                previewable_lane_ids.append(family_id)
+            if non_mutating_action_count > 0:
+                read_only_lane_ids.append(family_id)
+            if mutating_action_count > 0:
+                mutating_lane_ids.append(family_id)
+            if confirmation_guarded_action_count > 0:
+                confirmation_guarded_lane_ids.append(family_id)
+            if safe_command_action_count > 0:
+                safe_command_lane_ids.append(family_id)
+            if supports_pagination:
+                paginated_lane_ids.append(family_id)
+            if supports_streaming_output:
+                streaming_lane_ids.append(family_id)
+            if supports_file_output:
+                file_output_lane_ids.append(family_id)
+            if supports_throttle_controls:
+                throttled_lane_ids.append(family_id)
+            if is_storage:
+                storage_lane_ids.append(family_id)
+                if discovery_ready:
+                    storage_ready_lane_ids.append(family_id)
+            if is_design:
+                design_lane_ids.append(family_id)
+                if discovery_ready:
+                    design_ready_lane_ids.append(family_id)
+            if is_knowledge or supports_search:
+                knowledge_lane_ids.append(family_id)
+                if discovery_ready:
+                    knowledge_ready_lane_ids.append(family_id)
+
+            lanes.append(
+                {
+                    "family": family_id,
+                    "name": name,
+                    "category": category,
+                    "status": status,
+                    "connection_status": connection_status,
+                    "connection_source": connection_source,
+                    "authoritative": authoritative,
+                    "host_imported": host_imported,
+                    "provider_context_verified": provider_context_verified,
+                    "discovery_action_count": discovery_action_count,
+                    "preview_supported_action_count": preview_supported_action_count,
+                    "non_mutating_action_count": non_mutating_action_count,
+                    "mutating_action_count": mutating_action_count,
+                    "confirmation_guarded_action_count": confirmation_guarded_action_count,
+                    "safe_command_action_count": safe_command_action_count,
+                    "ready_to_execute_action_count": ready_to_execute_action_count,
+                    "supports_search": supports_search,
+                    "supports_listing": supports_listing,
+                    "supports_export": supports_export,
+                    "supports_pagination": supports_pagination,
+                    "supports_streaming_output": supports_streaming_output,
+                    "supports_file_output": supports_file_output,
+                    "supports_throttle_controls": supports_throttle_controls,
+                    "discovery_ready": discovery_ready,
+                    "execution_ready": execution_ready,
+                    "blockers": self._dedupe_strings(
+                        [str(value) for value in list(item.get("blockers") or []) if str(value).strip()]
+                    )[:6],
+                    "recommended_fixes": self._dedupe_strings(
+                        [
+                            str(value)
+                            for value in list(item.get("recommended_fixes") or [])
+                            if str(value).strip()
+                        ]
+                    )[:6],
+                    "notes": self._dedupe_strings(
+                        [str(value) for value in list(item.get("notes") or []) if str(value).strip()]
+                    )[:6],
+                }
+            )
+
+        has_lanes = bool(lanes)
+        ready_scanner_lanes = [str(item) for item in list(file_governance.get("ready_scanner_lanes") or []) if str(item).strip()]
+        selected_ready_scanner_lanes = [
+            str(item) for item in list(file_governance.get("selected_ready_scanner_lanes") or []) if str(item).strip()
+        ]
+        connected_storage_lane_count = int(file_governance.get("connected_storage_lane_count") or 0)
+
+        authoritative_connector_status = (
+            "not_applicable"
+            if not has_lanes
+            else "ready"
+            if authoritative_lane_ids
+            else "partial"
+            if host_imported_lane_ids
+            else "blocked"
+        )
+        read_only_status = (
+            "not_applicable"
+            if not has_lanes
+            else "ready"
+            if read_only_lane_ids
+            else "blocked"
+        )
+        previewability_status = (
+            "not_applicable"
+            if not has_lanes
+            else "ready"
+            if previewable_lane_ids
+            else "partial"
+            if discovery_ready_lane_ids
+            else "blocked"
+        )
+        mutation_guard_status = (
+            "not_applicable"
+            if not has_lanes
+            else "ready"
+            if not mutating_lane_ids or len(confirmation_guarded_lane_ids) >= len(mutating_lane_ids)
+            else "partial"
+            if confirmation_guarded_lane_ids
+            else "blocked"
+        )
+        pagination_status = (
+            "not_applicable"
+            if not has_lanes
+            else "ready"
+            if paginated_lane_ids
+            else "partial"
+            if discovery_ready_lane_ids
+            else "blocked"
+        )
+        streaming_status = (
+            "not_applicable"
+            if not has_lanes
+            else "ready"
+            if streaming_lane_ids
+            else "partial"
+            if discovery_ready_lane_ids
+            else "blocked"
+        )
+        file_output_status = (
+            "not_applicable"
+            if not has_lanes
+            else "ready"
+            if file_output_lane_ids
+            else "partial"
+            if discovery_ready_lane_ids
+            else "blocked"
+        )
+        throttle_control_status = (
+            "not_applicable"
+            if not has_lanes
+            else "ready"
+            if throttled_lane_ids
+            else "partial"
+            if discovery_ready_lane_ids
+            else "blocked"
+        )
+        bounded_discovery_status = (
+            "not_applicable"
+            if not has_lanes
+            else "ready"
+            if discovery_ready_lane_ids and read_only_lane_ids and previewable_lane_ids and paginated_lane_ids
+            else "partial"
+            if discovery_ready_lane_ids
+            else "blocked"
+        )
+        storage_discovery_status = (
+            "ready"
+            if storage_ready_lane_ids or connected_storage_lane_count > 0
+            else "partial"
+            if storage_lane_ids or selected_ready_scanner_lanes
+            else "blocked"
+        )
+        design_discovery_status = (
+            "ready"
+            if design_ready_lane_ids
+            else "partial"
+            if design_lane_ids
+            else "not_applicable"
+        )
+        knowledge_discovery_status = (
+            "ready"
+            if knowledge_ready_lane_ids
+            else "partial"
+            if knowledge_lane_ids
+            else "not_applicable"
+        )
+
+        if bounded_discovery_status == "ready" and authoritative_connector_status == "ready":
+            recommended_operation_mode = "bounded_connector_discovery"
+        elif storage_discovery_status == "ready" and str(file_governance.get("recommended_operation_mode") or "") in {
+            "connector_only",
+            "hybrid_connector_sync",
+        }:
+            recommended_operation_mode = "connector_plus_file_graph"
+        elif host_imported_lane_ids and not authoritative_lane_ids:
+            recommended_operation_mode = "review_host_imports"
+        elif discovery_ready_lane_ids:
+            recommended_operation_mode = "guided_connector_discovery"
+        elif selected_ready_scanner_lanes:
+            recommended_operation_mode = "brokered_remote_index"
+        elif project.workspace_path or project.source_path:
+            recommended_operation_mode = "artifact_first"
+        else:
+            recommended_operation_mode = "discovery_needed"
+
+        blocking_reasons = self._dedupe_strings(
+            [str(item) for item in list(integrations.get("blocking_reasons") or []) if str(item).strip()]
+            + [str(item) for item in list(integrations.get("blocker_values") or []) if str(item).strip()]
+            + (
+                ["no_authoritative_discovery_lane"]
+                if has_lanes and not authoritative_lane_ids
+                else []
+            )
+            + (
+                ["no_bounded_discovery_lane"]
+                if has_lanes and not discovery_ready_lane_ids
+                else []
+            )
+            + (
+                ["no_storage_connector_or_scanner_lane"]
+                if storage_discovery_status == "blocked"
+                else []
+            )
+        )
+        recommended_fixes = self._dedupe_strings(
+            [str(item) for item in list(integrations.get("recommended_fixes") or []) if str(item).strip()]
+            + [str(item) for item in list(integrations.get("recommended_fix_values") or []) if str(item).strip()]
+            + (
+                ["Reconnect host-imported discovery lanes through Mission Control auth before treating them as authoritative."]
+                if host_imported_lane_ids and not authoritative_lane_ids
+                else []
+            )
+            + (
+                ["Prefer previewable read-only connector actions before enabling mutation-heavy discovery flows."]
+                if discovery_ready_lane_ids and not previewable_lane_ids
+                else []
+            )
+            + (
+                ["Add a storage connector or brokered filesystem scanner lane before claiming large-file discovery is governed."]
+                if storage_discovery_status == "blocked"
+                else []
+            )
+        )[:10]
+
+        if not has_lanes:
+            governance_status = "blocked" if (project.workspace_path or project.source_path or selected_ready_scanner_lanes) else "not_applicable"
+        elif bounded_discovery_status == "ready" and authoritative_connector_status == "ready" and mutation_guard_status == "ready":
+            governance_status = "ready" if not blocking_reasons else "partial"
+        elif discovery_ready_lane_ids or host_imported_lane_ids or selected_ready_scanner_lanes:
+            governance_status = "partial"
+        else:
+            governance_status = "blocked"
+
+        notes = self._dedupe_strings(
+            [
+                "External discovery should stay bounded, previewable, and approval-aware instead of turning connector access into freestyle scraping nonsense.",
+                (
+                    f"{len(authoritative_lane_ids)} authoritative discovery lane(s) are currently available."
+                    if authoritative_lane_ids
+                    else "No authoritative discovery lane is currently available."
+                ),
+                (
+                    f"{len(ready_scanner_lanes)} brokered scanner lane(s) can back storage discovery."
+                    if ready_scanner_lanes
+                    else "No brokered scanner lane currently backs storage discovery."
+                ),
+                (
+                    f"{len(selected_ready_scanner_lanes)} selected-target scanner lane(s) can back storage discovery immediately."
+                    if selected_ready_scanner_lanes
+                    else "No selected-target scanner lane currently backs storage discovery."
+                ),
+                f"Recommended external-discovery mode resolves to `{recommended_operation_mode}`.",
+            ]
+            + [str(item) for item in list(integrations.get("notes") or [])[:3]]
+            + [str(item) for item in list(file_governance.get("notes") or [])[:3]]
+        )[:10]
+        summary = (
+            f"External discovery governance is `{governance_status}` with {len(lanes)} discovery lane(s), "
+            f"{len(authoritative_lane_ids)} authoritative lane(s), {len(discovery_ready_lane_ids)} discovery-ready lane(s), "
+            f"and {len(ready_scanner_lanes)} brokered scanner lane(s)."
+        )
+
+        return {
+            "project_id": project.id,
+            "project_name": project.name,
+            "workspace_path": project.workspace_path,
+            "summary": summary,
+            "governance_status": governance_status,
+            "recommended_operation_mode": recommended_operation_mode,
+            "bounded_discovery_status": bounded_discovery_status,
+            "authoritative_connector_status": authoritative_connector_status,
+            "read_only_status": read_only_status,
+            "previewability_status": previewability_status,
+            "mutation_guard_status": mutation_guard_status,
+            "pagination_status": pagination_status,
+            "streaming_status": streaming_status,
+            "file_output_status": file_output_status,
+            "throttle_control_status": throttle_control_status,
+            "storage_discovery_status": storage_discovery_status,
+            "design_discovery_status": design_discovery_status,
+            "knowledge_discovery_status": knowledge_discovery_status,
+            "lane_count": len(lanes),
+            "authoritative_lane_count": len(authoritative_lane_ids),
+            "live_lane_count": len(live_lane_ids),
+            "host_imported_lane_count": len(host_imported_lane_ids),
+            "discovery_ready_lane_count": len(discovery_ready_lane_ids),
+            "execution_ready_lane_count": len(execution_ready_lane_ids),
+            "previewable_lane_count": len(previewable_lane_ids),
+            "read_only_lane_count": len(read_only_lane_ids),
+            "mutating_lane_count": len(mutating_lane_ids),
+            "confirmation_guarded_lane_count": len(confirmation_guarded_lane_ids),
+            "safe_command_lane_count": len(safe_command_lane_ids),
+            "paginated_lane_count": len(paginated_lane_ids),
+            "streaming_lane_count": len(streaming_lane_ids),
+            "file_output_lane_count": len(file_output_lane_ids),
+            "throttled_lane_count": len(throttled_lane_ids),
+            "storage_lane_count": len(storage_lane_ids),
+            "design_lane_count": len(design_lane_ids),
+            "knowledge_lane_count": len(knowledge_lane_ids),
+            "live_lane_ids": live_lane_ids,
+            "selected_ready_scanner_lanes": selected_ready_scanner_lanes,
+            "blocking_reasons": blocking_reasons,
+            "recommended_fixes": recommended_fixes,
+            "notes": notes,
+            "lanes": lanes,
+            "connector_governance": connector_governance,
+            "file_governance": file_governance,
+        }
+
+    @staticmethod
+    def _external_discovery_manifest_root(workspace_root: Path) -> Path:
+        return workspace_root / "artifacts" / "external-discovery-governance"
+
+    def build_external_discovery_governance_plan(self, db: Session, project: Project) -> dict[str, Any]:
+        summary = self.build_external_discovery_governance_summary(db, project)
+        workspace_path = project.workspace_path or project.source_path
+        if not workspace_path:
+            raise MissionControlError("Workspace path is required to generate external discovery manifests.")
+        workspace_root = Path(workspace_path).expanduser()
+        if not workspace_root.exists() or not workspace_root.is_dir():
+            raise MissionControlError("Workspace path must exist before generating external discovery manifests.")
+
+        manifest_root = self._external_discovery_manifest_root(workspace_root)
+        manifest_root.mkdir(parents=True, exist_ok=True)
+
+        lane_inventory_path = manifest_root / "lane-inventory.json"
+        bounded_crawl_plan_path = manifest_root / "bounded-crawl-plan.json"
+        storage_sync_plan_path = manifest_root / "storage-sync-plan.json"
+        connector_contract_path = manifest_root / "connector-contract.json"
+        approval_checkpoint_path = manifest_root / "approval-checkpoints.json"
+
+        lanes = [dict(item or {}) for item in list(summary.get("lanes") or [])]
+        lane_inventory = {
+            "lane_count": int(summary.get("lane_count") or 0),
+            "authoritative_lane_count": int(summary.get("authoritative_lane_count") or 0),
+            "live_lane_count": int(summary.get("live_lane_count") or 0),
+            "host_imported_lane_count": int(summary.get("host_imported_lane_count") or 0),
+            "discovery_ready_lane_count": int(summary.get("discovery_ready_lane_count") or 0),
+            "execution_ready_lane_count": int(summary.get("execution_ready_lane_count") or 0),
+            "storage_lane_count": int(summary.get("storage_lane_count") or 0),
+            "design_lane_count": int(summary.get("design_lane_count") or 0),
+            "knowledge_lane_count": int(summary.get("knowledge_lane_count") or 0),
+            "live_lane_ids": list(summary.get("live_lane_ids") or []),
+            "lanes": lanes,
+        }
+        bounded_crawl_plan = {
+            "recommended_operation_mode": str(summary.get("recommended_operation_mode") or "discovery_needed"),
+            "governance_status": str(summary.get("governance_status") or "not_applicable"),
+            "bounded_discovery_status": str(summary.get("bounded_discovery_status") or "not_applicable"),
+            "authoritative_connector_status": str(summary.get("authoritative_connector_status") or "not_applicable"),
+            "read_only_status": str(summary.get("read_only_status") or "not_applicable"),
+            "previewability_status": str(summary.get("previewability_status") or "not_applicable"),
+            "pagination_status": str(summary.get("pagination_status") or "not_applicable"),
+            "streaming_status": str(summary.get("streaming_status") or "not_applicable"),
+            "file_output_status": str(summary.get("file_output_status") or "not_applicable"),
+            "throttle_control_status": str(summary.get("throttle_control_status") or "not_applicable"),
+            "discovery_ready_lane_ids": [
+                str(item.get("family") or "")
+                for item in lanes
+                if bool(item.get("discovery_ready")) and str(item.get("family") or "").strip()
+            ],
+            "paginated_lane_ids": [
+                str(item.get("family") or "")
+                for item in lanes
+                if bool(item.get("supports_pagination")) and str(item.get("family") or "").strip()
+            ],
+            "streaming_lane_ids": [
+                str(item.get("family") or "")
+                for item in lanes
+                if bool(item.get("supports_streaming_output")) and str(item.get("family") or "").strip()
+            ],
+            "file_output_lane_ids": [
+                str(item.get("family") or "")
+                for item in lanes
+                if bool(item.get("supports_file_output")) and str(item.get("family") or "").strip()
+            ],
+            "throttled_lane_ids": [
+                str(item.get("family") or "")
+                for item in lanes
+                if bool(item.get("supports_throttle_controls")) and str(item.get("family") or "").strip()
+            ],
+        }
+        file_governance = dict(summary.get("file_governance") or {})
+        storage_sync_plan = {
+            "storage_discovery_status": str(summary.get("storage_discovery_status") or "not_applicable"),
+            "design_discovery_status": str(summary.get("design_discovery_status") or "not_applicable"),
+            "knowledge_discovery_status": str(summary.get("knowledge_discovery_status") or "not_applicable"),
+            "file_governance_recommended_operation_mode": str(
+                file_governance.get("recommended_operation_mode") or "discovery_needed"
+            ),
+            "supports_bulk_planning": bool(file_governance.get("supports_bulk_planning")),
+            "destructive_actions_require_approval": bool(file_governance.get("destructive_actions_require_approval")),
+            "connected_storage_lane_count": int(file_governance.get("connected_storage_lane_count") or 0),
+            "ready_scanner_lane_count": int(file_governance.get("ready_scanner_lane_count") or 0),
+            "ready_scanner_lanes": list(file_governance.get("ready_scanner_lanes") or []),
+            "selected_ready_scanner_lanes": list(summary.get("selected_ready_scanner_lanes") or []),
+            "storage_providers": list(file_governance.get("storage_providers") or []),
+            "storage_lanes": list(file_governance.get("storage_lanes") or []),
+        }
+        connector_governance = dict(summary.get("connector_governance") or {})
+        connector_contract = {
+            "connector_governance_status": str(connector_governance.get("governance_status") or "not_applicable"),
+            "connector_recommended_operation_mode": str(
+                connector_governance.get("recommended_operation_mode") or "discovery_needed"
+            ),
+            "family_count": int(connector_governance.get("family_count") or 0),
+            "connected_family_count": int(connector_governance.get("connected_family_count") or 0),
+            "authoritative_family_count": int(connector_governance.get("authoritative_family_count") or 0),
+            "host_imported_family_count": int(connector_governance.get("host_imported_family_count") or 0),
+            "discovery_ready_family_count": int(connector_governance.get("discovery_ready_family_count") or 0),
+            "execution_ready_family_count": int(connector_governance.get("execution_ready_family_count") or 0),
+            "providers": list(connector_governance.get("providers") or []),
+            "categories": list(connector_governance.get("categories") or []),
+            "blocking_reasons": list(connector_governance.get("blocking_reasons") or []),
+            "recommended_fixes": list(connector_governance.get("recommended_fixes") or []),
+            "connector_registry": dict(connector_governance.get("connector_registry") or {}),
+        }
+
+        host_imported_lane_ids = [
+            str(item.get("family") or "")
+            for item in lanes
+            if bool(item.get("host_imported")) and str(item.get("family") or "").strip()
+        ]
+        mutating_lane_ids = [
+            str(item.get("family") or "")
+            for item in lanes
+            if bool(item.get("mutating_action_count")) and str(item.get("family") or "").strip()
+        ]
+        approval_checkpoints = {
+            "checkpoints": [
+                {
+                    "checkpoint_id": "authoritative_discovery_review",
+                    "stage": "authority",
+                    "status": "ready" if int(summary.get("authoritative_lane_count") or 0) > 0 else "blocked",
+                    "reason": "Bounded discovery should anchor on authoritative lanes before Mission Control starts trusting connector vibes.",
+                },
+                {
+                    "checkpoint_id": "bounded_crawl_controls_review",
+                    "stage": "crawler_controls",
+                    "status": "ready"
+                    if str(summary.get("bounded_discovery_status") or "") == "ready"
+                    else "partial"
+                    if int(summary.get("discovery_ready_lane_count") or 0) > 0
+                    else "blocked",
+                    "reason": "Pagination, previewability, and throttle controls should exist before discovery turns into freestyle scraping.",
+                },
+                {
+                    "checkpoint_id": "storage_lane_review",
+                    "stage": "storage",
+                    "status": "ready"
+                    if str(summary.get("storage_discovery_status") or "") == "ready"
+                    else "partial"
+                    if str(summary.get("storage_discovery_status") or "") == "partial"
+                    else "blocked",
+                    "reason": "Large-file organization needs either authoritative storage connectors or brokered scanner lanes.",
+                },
+                {
+                    "checkpoint_id": "host_import_review",
+                    "stage": "provider_context",
+                    "status": "ready" if not host_imported_lane_ids else "partial",
+                    "reason": "Host-imported lanes should be reviewed before they are treated like authoritative discovery rails.",
+                },
+                {
+                    "checkpoint_id": "mutation_guard_review",
+                    "stage": "approval",
+                    "status": "ready"
+                    if not mutating_lane_ids or str(summary.get("mutation_guard_status") or "") == "ready"
+                    else "partial",
+                    "reason": "Mutation-capable discovery actions should stay behind previews or explicit approval gates.",
+                },
+            ]
+        }
+
+        lane_inventory_path.write_text(json.dumps(lane_inventory, indent=2), encoding="utf-8")
+        bounded_crawl_plan_path.write_text(json.dumps(bounded_crawl_plan, indent=2), encoding="utf-8")
+        storage_sync_plan_path.write_text(json.dumps(storage_sync_plan, indent=2), encoding="utf-8")
+        connector_contract_path.write_text(json.dumps(connector_contract, indent=2), encoding="utf-8")
+        approval_checkpoint_path.write_text(json.dumps(approval_checkpoints, indent=2), encoding="utf-8")
+
+        lane_count = int(summary.get("lane_count") or 0)
+        discovery_ready_lane_count = int(summary.get("discovery_ready_lane_count") or 0)
+        authoritative_lane_count = int(summary.get("authoritative_lane_count") or 0)
+        blocking_reasons = self._dedupe_strings(
+            list(summary.get("blocking_reasons") or [])
+            + (["no_external_discovery_lanes_detected"] if lane_count == 0 else [])
+            + (
+                ["no_authoritative_discovery_lane"]
+                if lane_count > 0 and authoritative_lane_count == 0
+                else []
+            )
+            + (
+                ["no_discovery_ready_external_lane"]
+                if lane_count > 0 and discovery_ready_lane_count == 0
+                else []
+            )
+        )
+        notes = self._dedupe_strings(
+            [
+                "Generated external discovery manifests for lane inventory, bounded crawl controls, storage sync planning, connector contracts, and approval checkpoints.",
+                (
+                    "Bounded discovery controls are ready."
+                    if str(summary.get("bounded_discovery_status") or "") == "ready"
+                    else "Bounded discovery controls are not fully ready yet, so the planner records the missing guardrails instead of pretending they exist."
+                ),
+                (
+                    "Storage discovery has a governed lane."
+                    if str(summary.get("storage_discovery_status") or "") == "ready"
+                    else "Storage discovery still needs stronger connector or scanner coverage."
+                ),
+                f"Recommended external-discovery mode resolves to `{str(summary.get('recommended_operation_mode') or 'discovery_needed')}`.",
+            ]
+            + [str(item) for item in list(summary.get("notes") or [])[:4]]
+        )[:10]
+        plan_status = (
+            "ready"
+            if str(summary.get("governance_status") or "") == "ready" and lane_count > 0
+            else "partial"
+            if lane_count > 0
+            else "blocked"
+        )
+        result_summary = (
+            f"Generated an external discovery plan with {lane_count} discovery lane(s), "
+            f"{authoritative_lane_count} authoritative lane(s), and "
+            f"{discovery_ready_lane_count} discovery-ready lane(s)."
+        )
+        return {
+            "project_id": project.id,
+            "project_name": project.name,
+            "workspace_path": workspace_path,
+            "summary": result_summary,
+            "plan_status": plan_status,
+            "recommended_operation_mode": str(summary.get("recommended_operation_mode") or "discovery_needed"),
+            "lane_count": lane_count,
+            "discovery_ready_lane_count": discovery_ready_lane_count,
+            "authoritative_lane_count": authoritative_lane_count,
+            "storage_lane_count": int(summary.get("storage_lane_count") or 0),
+            "design_lane_count": int(summary.get("design_lane_count") or 0),
+            "knowledge_lane_count": int(summary.get("knowledge_lane_count") or 0),
+            "manifest_root": manifest_root.relative_to(workspace_root).as_posix(),
+            "lane_inventory_path": lane_inventory_path.relative_to(workspace_root).as_posix(),
+            "bounded_crawl_plan_path": bounded_crawl_plan_path.relative_to(workspace_root).as_posix(),
+            "storage_sync_plan_path": storage_sync_plan_path.relative_to(workspace_root).as_posix(),
+            "connector_contract_path": connector_contract_path.relative_to(workspace_root).as_posix(),
+            "approval_checkpoint_path": approval_checkpoint_path.relative_to(workspace_root).as_posix(),
+            "blocking_reasons": blocking_reasons,
+            "notes": notes,
         }
 
     def _capability_section(
@@ -14217,6 +27131,12 @@ class MissionControlService:
         settings = self._project_settings(db, project)
         provider = normalize_provider(settings.provider)
         selected = self._provider_runtime_status(settings)
+        policy, metrics, decision = self._evaluate_launch_guard(
+            db,
+            project,
+            settings=settings,
+            role="worker",
+        )
         cost_map = {
             "codex": "local_or_subscription",
             "claude_code": "paid_api_or_cli",
@@ -14232,8 +27152,16 @@ class MissionControlService:
             f"Provider: {provider}",
             f"Runtime status: {selected.get('runtime_status') or 'unknown'}",
             f"Runtime summary: {selected.get('runtime_summary') or 'No provider runtime summary is recorded.'}",
+            (
+                f"Launch guard: {decision.status} "
+                f"(tokens {metrics.total_tokens}/{policy.hard_total_token_budget}, "
+                f"launches {metrics.worker_launch_count}/{policy.hard_total_worker_launch_budget}, "
+                f"peak context {metrics.peak_context_tokens}/{policy.hard_peak_context_budget})"
+            ),
             *[f"Runtime blocker: {item}" for item in list(selected.get("runtime_blockers") or [])[:3]],
         ]
+        if decision.reason:
+            detail_lines.append(f"Launch guard reason: {decision.reason}")
         return self._capability_section(
             key="runner_cost_latency_awareness",
             title="Runner cost and latency awareness",
@@ -14245,6 +27173,7 @@ class MissionControlService:
                 "runner_mode": settings.runner_mode,
                 "estimated_cost_class": cost_map.get(provider, "unknown"),
                 "runtime_ready": bool(selected.get("runtime_ready")),
+                "launch_guard_status": decision.status,
             },
         )
 
@@ -14591,6 +27520,385 @@ class MissionControlService:
             **build_workspace_nvidia_validation_plan(project.workspace_path),
         }
 
+    def build_nvidia_execution_governance_summary(self, db: Session, project: Project) -> dict[str, Any]:
+        settings = self._project_settings(db, project)
+        selected_provider = normalize_provider(settings.provider)
+        dynamo_status = self.build_nvidia_dynamo_status(db, project)
+        nim_status = self.build_nvidia_nim_status(db, project)
+        aiq_status = self.build_nvidia_aiq_status(project)
+        gpu_diagnostics = self.build_nvidia_gpu_diagnostics(project)
+        local_runtime = self.build_nvidia_local_runtime_status(project)
+        validation_plan = self.build_nvidia_validation_plan(project)
+        platform_runners = self.build_platform_runner_summary(db, project)
+        device_broker = self.build_device_broker_summary(db, project)
+
+        gpu_targets = []
+        for target in list(device_broker.get("capability_index", {}).get("targets") or []):
+            capabilities = {str(item).strip().lower() for item in list(target.get("capabilities") or []) if str(item).strip()}
+            toolchains = {str(item).strip().lower() for item in list(target.get("toolchains") or []) if str(item).strip()}
+            has_gpu_signal = bool(target.get("gpu")) or "gpu" in capabilities or any("cuda" in item for item in toolchains)
+            if has_gpu_signal:
+                gpu_targets.append(target)
+
+        ready_gpu_targets = [target for target in gpu_targets if bool(target.get("ready"))]
+        selected_target_id = str(device_broker.get("selected_target_id") or "").strip() or None
+        selected_target = next(
+            (target for target in gpu_targets if str(target.get("target_id") or "").strip() == selected_target_id),
+            None,
+        )
+        selected_target_ready = bool(selected_target.get("ready")) if selected_target is not None else False
+        selected_ready_remote_gpu_target_count = (
+            1 if selected_target_id and selected_target is not None and selected_target_ready else 0
+        )
+        effective_ready_remote_gpu_target_count = (
+            selected_ready_remote_gpu_target_count if selected_target_id else len(ready_gpu_targets)
+        )
+
+        provider_statuses = {
+            "nvidia_dynamo": dynamo_status,
+            "nvidia_nim": nim_status,
+        }
+        provider_ready_ids = [
+            provider_id
+            for provider_id, status in provider_statuses.items()
+            if bool(status.get("available")) and bool(status.get("runtime_ready"))
+        ]
+        provider_partial_ids = [
+            provider_id
+            for provider_id, status in provider_statuses.items()
+            if provider_id not in provider_ready_ids and (bool(status.get("reachable")) or bool(status.get("endpoint_configured")))
+        ]
+
+        validation_status = str(validation_plan.get("status") or "not_applicable")
+        local_runtime_status = str(local_runtime.get("status") or "missing")
+        gpu_diagnostics_status = str(gpu_diagnostics.get("status") or "missing")
+        aiq_ready = bool(aiq_status.get("available"))
+        aiq_install_status = str(aiq_status.get("install_status") or "missing")
+        cuda_repo_enabled = bool(validation_plan.get("repo_mode_enabled") or local_runtime.get("repo_mode_enabled") or gpu_diagnostics.get("repo_mode_enabled"))
+
+        if provider_ready_ids:
+            recommended_execution_lane = provider_ready_ids[0]
+        elif selected_target_ready or (not selected_target_id and ready_gpu_targets):
+            recommended_execution_lane = "remote_gpu_runner"
+        elif local_runtime_status in {"ready", "partial"}:
+            recommended_execution_lane = "local_cuda"
+        elif aiq_ready:
+            recommended_execution_lane = "nvidia_aiq"
+        else:
+            recommended_execution_lane = "discovery_needed"
+
+        blocking_reasons = self._dedupe_strings(
+            [str(item) for item in list(validation_plan.get("blockers") or []) if str(item).strip()]
+            + [str(item) for item in list(gpu_diagnostics.get("blocking_reasons") or []) if str(item).strip()]
+            + (
+                [str(item) for item in list(dynamo_status.get("runtime_blockers") or []) if str(item).strip()]
+                if selected_provider == "nvidia_dynamo"
+                else []
+            )
+            + (
+                [str(item) for item in list(nim_status.get("runtime_blockers") or []) if str(item).strip()]
+                if selected_provider == "nvidia_nim"
+                else []
+            )
+            + (
+                ["No ready local or remote GPU execution lane is available for this CUDA-oriented workflow."]
+                if cuda_repo_enabled and local_runtime_status == "missing" and effective_ready_remote_gpu_target_count <= 0
+                else []
+            )
+        )
+
+        if not cuda_repo_enabled and not provider_ready_ids and not provider_partial_ids and not aiq_ready and not gpu_targets:
+            governance_status = "not_applicable"
+        elif validation_status == "blocked" or blocking_reasons:
+            governance_status = "blocked"
+        elif (
+            validation_status in {"needs_review"}
+            or local_runtime_status == "partial"
+            or gpu_diagnostics_status in {"warning", "unknown"}
+            or (provider_partial_ids and not provider_ready_ids)
+        ):
+            governance_status = "partial"
+        else:
+            governance_status = "ready"
+
+        recommended_fixes = self._dedupe_strings(
+            [str(item) for item in list(validation_plan.get("recommended_fixes") or []) if str(item).strip()]
+            + [str(item) for item in list(gpu_diagnostics.get("recommended_fixes") or []) if str(item).strip()]
+            + [str(item) for item in list(local_runtime.get("recommended_fixes") or []) if str(item).strip()]
+            + (
+                ["Configure a brokered GPU-capable target if you need remote CUDA execution instead of betting everything on the local workstation."]
+                if cuda_repo_enabled and effective_ready_remote_gpu_target_count <= 0 and not selected_target_id
+                else []
+            )
+            + (
+                ["Rebind the selected broker target to a ready GPU host before treating remote CUDA execution as governed."]
+                if cuda_repo_enabled and selected_target_id and selected_ready_remote_gpu_target_count <= 0
+                else []
+            )
+            + (
+                ["Expose a verified NVIDIA Dynamo or NIM lane if you want governed GPU-backed coding workers instead of ad-hoc local runs."]
+                if cuda_repo_enabled and not provider_ready_ids
+                else []
+            )
+        )[:14]
+
+        notes = self._dedupe_strings(
+            [
+                f"Validation plan is `{validation_status}`.",
+                f"Local runtime is `{local_runtime_status}` and GPU diagnostics are `{gpu_diagnostics_status}`.",
+                (
+                    f"Selected remote GPU target is `{selected_target_id}`."
+                    if selected_target_id
+                    else "No remote GPU target is currently selected by the broker."
+                ),
+                (
+                    f"Selected remote GPU target readiness is `{str(selected_target_ready).lower()}`."
+                    if selected_target_id
+                    else "No selected remote GPU target readiness is currently in play."
+                ),
+                (
+                    f"Ready provider lanes: {', '.join(provider_ready_ids)}."
+                    if provider_ready_ids
+                    else "No NVIDIA provider lane is fully ready yet."
+                ),
+            ]
+            + [str(item) for item in list(local_runtime.get("notes") or [])[:2]]
+            + [str(item) for item in list(dynamo_status.get("notes") or [])[:1]]
+            + [str(item) for item in list(nim_status.get("notes") or [])[:1]]
+            + [str(item) for item in list(aiq_status.get("notes") or [])[:1]]
+        )[:10]
+
+        if governance_status == "not_applicable":
+            summary = "NVIDIA execution governance is not currently applicable because this workspace does not expose a CUDA workflow or a ready NVIDIA execution lane."
+        else:
+            summary = (
+                f"NVIDIA execution governance is `{governance_status}` with validation `{validation_status}`, "
+                f"local runtime `{local_runtime_status}`, {effective_ready_remote_gpu_target_count} effective ready remote GPU target(s), and "
+                f"{len(provider_ready_ids)} ready NVIDIA provider lane(s)."
+            )
+
+        return {
+            "project_id": project.id,
+            "project_name": project.name,
+            "workspace_path": project.workspace_path,
+            "summary": summary,
+            "governance_status": governance_status,
+            "recommended_execution_lane": recommended_execution_lane,
+            "cuda_repo_enabled": cuda_repo_enabled,
+            "validation_status": validation_status,
+            "local_runtime_status": local_runtime_status,
+            "gpu_diagnostics_status": gpu_diagnostics_status,
+            "aiq_status": aiq_install_status,
+            "remote_gpu_target_count": len(gpu_targets),
+            "ready_remote_gpu_target_count": len(ready_gpu_targets),
+            "selected_ready_remote_gpu_target_count": selected_ready_remote_gpu_target_count,
+            "selected_remote_target_id": selected_target_id,
+            "selected_remote_target_ready": selected_target_ready,
+            "selected_remote_target_gpu": str(selected_target.get("gpu") or "").strip() or None if selected_target else None,
+            "provider_ready_ids": provider_ready_ids,
+            "provider_partial_ids": provider_partial_ids,
+            "available_provider_count": len(provider_ready_ids),
+            "sanitizer_ready": bool(validation_plan.get("sanitizer_ready")),
+            "profiler_ready": bool(validation_plan.get("profiler_ready")),
+            "container_smoke_ready": bool(validation_plan.get("container_smoke_ready")),
+            "blocking_reasons": blocking_reasons,
+            "recommended_fixes": recommended_fixes,
+            "notes": notes,
+            "dynamo_status": dynamo_status,
+            "nim_status": nim_status,
+            "aiq": aiq_status,
+            "gpu_diagnostics": gpu_diagnostics,
+            "local_runtime": local_runtime,
+            "validation_plan": validation_plan,
+            "platform_runners": platform_runners,
+            "device_broker": device_broker,
+        }
+
+    @staticmethod
+    def _nvidia_governance_manifest_root(workspace_root: Path) -> Path:
+        return workspace_root / "artifacts" / "nvidia-governance"
+
+    def build_nvidia_execution_governance_plan(self, db: Session, project: Project) -> dict[str, Any]:
+        summary = self.build_nvidia_execution_governance_summary(db, project)
+        workspace_path = str(project.workspace_path or project.source_path or "").strip() or None
+        recommended_execution_lane = str(summary.get("recommended_execution_lane") or "discovery_needed")
+        governance_status = str(summary.get("governance_status") or "not_applicable")
+        ready_remote_gpu_target_count = int(summary.get("ready_remote_gpu_target_count") or 0)
+        selected_ready_remote_gpu_target_count = int(summary.get("selected_ready_remote_gpu_target_count") or 0)
+        selected_remote_target_id = str(summary.get("selected_remote_target_id") or "").strip() or None
+        effective_ready_remote_gpu_target_count = (
+            selected_ready_remote_gpu_target_count if selected_remote_target_id else ready_remote_gpu_target_count
+        )
+        available_provider_count = int(summary.get("available_provider_count") or 0)
+        if workspace_path is None:
+            return {
+                "project_id": project.id,
+                "project_name": project.name,
+                "workspace_path": None,
+                "summary": "NVIDIA governance planning is blocked because the workspace path is missing.",
+                "plan_status": "blocked",
+                "recommended_execution_lane": recommended_execution_lane,
+                "governance_status": governance_status,
+                "ready_remote_gpu_target_count": ready_remote_gpu_target_count,
+                "selected_ready_remote_gpu_target_count": selected_ready_remote_gpu_target_count,
+                "available_provider_count": available_provider_count,
+                "blocking_reasons": ["workspace_path_missing"],
+                "recommended_fixes": ["Provide a real workspace before trying to materialize NVIDIA governance manifests."],
+                "notes": ["No workspace means no governed CUDA plan, which is a pretty fatal detail."],
+            }
+
+        workspace_root = Path(workspace_path)
+        if not workspace_root.exists() or not workspace_root.is_dir():
+            return {
+                "project_id": project.id,
+                "project_name": project.name,
+                "workspace_path": workspace_path,
+                "summary": "NVIDIA governance planning is blocked because the workspace directory does not exist.",
+                "plan_status": "blocked",
+                "recommended_execution_lane": recommended_execution_lane,
+                "governance_status": governance_status,
+                "ready_remote_gpu_target_count": ready_remote_gpu_target_count,
+                "selected_ready_remote_gpu_target_count": selected_ready_remote_gpu_target_count,
+                "available_provider_count": available_provider_count,
+                "blocking_reasons": ["workspace_directory_missing"],
+                "recommended_fixes": ["Point Mission Control at an actual repo before expecting CUDA governance manifests."],
+                "notes": ["Still no workspace, still no CUDA plan. Incredible strategy."],
+            }
+
+        manifest_root = self._nvidia_governance_manifest_root(workspace_root)
+        manifest_root.mkdir(parents=True, exist_ok=True)
+
+        execution_lane_path = manifest_root / "execution-lane-selection.json"
+        provider_runtime_path = manifest_root / "provider-runtime-matrix.json"
+        gpu_target_inventory_path = manifest_root / "gpu-target-inventory.json"
+        validation_evidence_path = manifest_root / "validation-evidence-plan.json"
+        telemetry_gate_path = manifest_root / "telemetry-and-safety-gates.json"
+        approval_checkpoint_path = manifest_root / "approval-checkpoints.json"
+
+        execution_lane_payload = {
+            "recommended_execution_lane": recommended_execution_lane,
+            "governance_status": governance_status,
+            "cuda_repo_enabled": bool(summary.get("cuda_repo_enabled")),
+            "selected_remote_target_id": selected_remote_target_id,
+            "selected_remote_target_ready": bool(summary.get("selected_remote_target_ready")),
+            "selected_ready_remote_gpu_target_count": selected_ready_remote_gpu_target_count,
+            "provider_ready_ids": list(summary.get("provider_ready_ids") or []),
+            "provider_partial_ids": list(summary.get("provider_partial_ids") or []),
+        }
+        provider_runtime_payload = {
+            "recommended_execution_lane": recommended_execution_lane,
+            "provider_ready_ids": list(summary.get("provider_ready_ids") or []),
+            "provider_partial_ids": list(summary.get("provider_partial_ids") or []),
+            "available_provider_count": available_provider_count,
+            "dynamo_status": dict(summary.get("dynamo_status") or {}),
+            "nim_status": dict(summary.get("nim_status") or {}),
+            "aiq_status": dict(summary.get("aiq") or {}),
+        }
+        gpu_target_inventory_payload = {
+            "selected_remote_target_id": selected_remote_target_id,
+            "selected_remote_target_ready": bool(summary.get("selected_remote_target_ready")),
+            "selected_remote_target_gpu": summary.get("selected_remote_target_gpu"),
+            "remote_gpu_target_count": int(summary.get("remote_gpu_target_count") or 0),
+            "ready_remote_gpu_target_count": ready_remote_gpu_target_count,
+            "selected_ready_remote_gpu_target_count": selected_ready_remote_gpu_target_count,
+            "device_broker": dict(summary.get("device_broker") or {}),
+            "platform_runners": dict(summary.get("platform_runners") or {}),
+        }
+        validation_evidence_payload = {
+            "validation_status": str(summary.get("validation_status") or "not_applicable"),
+            "sanitizer_ready": bool(summary.get("sanitizer_ready")),
+            "profiler_ready": bool(summary.get("profiler_ready")),
+            "container_smoke_ready": bool(summary.get("container_smoke_ready")),
+            "validation_plan": dict(summary.get("validation_plan") or {}),
+            "local_runtime": dict(summary.get("local_runtime") or {}),
+            "gpu_diagnostics": dict(summary.get("gpu_diagnostics") or {}),
+        }
+        telemetry_gate_payload = {
+            "governance_status": governance_status,
+            "gpu_diagnostics_status": str(summary.get("gpu_diagnostics_status") or "missing"),
+            "local_runtime_status": str(summary.get("local_runtime_status") or "missing"),
+            "aiq_status": str(summary.get("aiq_status") or "missing"),
+            "blocking_reasons": list(summary.get("blocking_reasons") or []),
+            "recommended_fixes": list(summary.get("recommended_fixes") or []),
+        }
+        approval_checkpoints = {
+            "checkpoints": [
+                {
+                    "checkpoint_id": "validation_evidence_review",
+                    "stage": "validation",
+                    "status": "ready" if str(summary.get("validation_status") or "") == "ready" else "partial",
+                    "reason": "GPU changes do not count until validation evidence exists and compares against something real.",
+                },
+                {
+                    "checkpoint_id": "gpu_lane_review",
+                    "stage": "execution_lane",
+                    "status": "ready" if effective_ready_remote_gpu_target_count > 0 or available_provider_count > 0 else "blocked",
+                    "reason": "At least one governed GPU execution lane should exist before CUDA work gets treated as runnable.",
+                },
+                {
+                    "checkpoint_id": "telemetry_gate_review",
+                    "stage": "telemetry",
+                    "status": "ready" if governance_status == "ready" else "partial" if governance_status == "partial" else "blocked",
+                    "reason": "Telemetry and runtime health need to stay explicit or the CUDA lane turns into guess-and-pray infrastructure.",
+                },
+            ]
+        }
+
+        execution_lane_path.write_text(json.dumps(execution_lane_payload, indent=2), encoding="utf-8")
+        provider_runtime_path.write_text(json.dumps(provider_runtime_payload, indent=2), encoding="utf-8")
+        gpu_target_inventory_path.write_text(json.dumps(gpu_target_inventory_payload, indent=2), encoding="utf-8")
+        validation_evidence_path.write_text(json.dumps(validation_evidence_payload, indent=2), encoding="utf-8")
+        telemetry_gate_path.write_text(json.dumps(telemetry_gate_payload, indent=2), encoding="utf-8")
+        approval_checkpoint_path.write_text(json.dumps(approval_checkpoints, indent=2), encoding="utf-8")
+
+        blocking_reasons = self._dedupe_strings(list(summary.get("blocking_reasons") or []))
+        recommended_fixes = self._dedupe_strings(list(summary.get("recommended_fixes") or []))[:12]
+        notes = self._dedupe_strings(
+            [
+                "Generated NVIDIA governance manifests for lane selection, provider runtime, GPU target inventory, validation evidence, telemetry gates, and approval checkpoints.",
+                f"NVIDIA governance resolves to `{governance_status}` with lane `{recommended_execution_lane}`.",
+            ]
+            + [str(item) for item in list(summary.get("notes") or [])[:4]]
+        )[:8]
+        plan_status = (
+            "ready"
+            if governance_status == "ready" and not blocking_reasons
+            else "partial"
+            if governance_status in {"partial", "ready", "not_applicable"}
+            and (
+                effective_ready_remote_gpu_target_count > 0
+                or available_provider_count > 0
+                or bool(summary.get("cuda_repo_enabled"))
+            )
+            else "blocked"
+        )
+        result_summary = (
+            f"Generated an NVIDIA governance plan with lane `{recommended_execution_lane}`, "
+            f"{effective_ready_remote_gpu_target_count} effective ready remote GPU target(s), and {available_provider_count} ready provider lane(s)."
+        )
+        return {
+            "project_id": project.id,
+            "project_name": project.name,
+            "workspace_path": workspace_path,
+            "summary": result_summary,
+            "plan_status": plan_status,
+            "recommended_execution_lane": recommended_execution_lane,
+            "governance_status": governance_status,
+            "ready_remote_gpu_target_count": ready_remote_gpu_target_count,
+            "selected_ready_remote_gpu_target_count": selected_ready_remote_gpu_target_count,
+            "available_provider_count": available_provider_count,
+            "manifest_root": manifest_root.relative_to(workspace_root).as_posix(),
+            "execution_lane_path": execution_lane_path.relative_to(workspace_root).as_posix(),
+            "provider_runtime_path": provider_runtime_path.relative_to(workspace_root).as_posix(),
+            "gpu_target_inventory_path": gpu_target_inventory_path.relative_to(workspace_root).as_posix(),
+            "validation_evidence_path": validation_evidence_path.relative_to(workspace_root).as_posix(),
+            "telemetry_gate_path": telemetry_gate_path.relative_to(workspace_root).as_posix(),
+            "approval_checkpoint_path": approval_checkpoint_path.relative_to(workspace_root).as_posix(),
+            "blocking_reasons": blocking_reasons,
+            "recommended_fixes": recommended_fixes,
+            "notes": notes,
+        }
+
     def get_integration_catalog(self, db: Session) -> list[dict[str, Any]]:
         profile = self._app_profile_preview(db)
         registry = normalize_integration_registry(
@@ -14741,6 +28049,67 @@ class MissionControlService:
                         continue
                     refs.append(f"{family_id}:{raw_action_id}")
             return refs
+
+        def _collect_action_refs_by_flag(flag_key: str) -> list[str]:
+            return _collect_action_refs_by_flag_for_families(flag_key)
+
+        def _collect_action_refs_by_flag_for_families(
+            flag_key: str,
+            *,
+            family_predicate: Callable[[dict[str, Any]], bool] | None = None,
+        ) -> list[str]:
+            refs: list[str] = []
+            for item in families:
+                if family_predicate is not None and not family_predicate(item):
+                    continue
+                family_id = str(item.get("family") or "")
+                if not family_id:
+                    continue
+                for raw_action in item.get("available_actions") or []:
+                    if not isinstance(raw_action, dict) or not bool(raw_action.get(flag_key)):
+                        continue
+                    action_id = raw_action.get("action_id")
+                    if action_id in (None, ""):
+                        continue
+                    refs.append(f"{family_id}:{action_id}")
+            return refs
+
+        def _family_ids_for_action_flag(flag_key: str) -> list[str]:
+            return _family_ids_for_action_flag_for_families(flag_key)
+
+        def _family_ids_for_action_flag_for_families(
+            flag_key: str,
+            *,
+            family_predicate: Callable[[dict[str, Any]], bool] | None = None,
+        ) -> list[str]:
+            family_ids: list[str] = []
+            for item in families:
+                if family_predicate is not None and not family_predicate(item):
+                    continue
+                family_id = str(item.get("family") or "")
+                if not family_id:
+                    continue
+                if any(
+                    isinstance(raw_action, dict)
+                    and raw_action.get("action_id") not in (None, "")
+                    and bool(raw_action.get(flag_key))
+                    for raw_action in item.get("available_actions") or []
+                ):
+                    family_ids.append(family_id)
+            return family_ids
+
+        def _attached_family(item: dict[str, Any]) -> bool:
+            return str(item.get("connection_status") or "disconnected") != "disconnected" or bool(item.get("host_imported"))
+
+        def _connected_family(item: dict[str, Any]) -> bool:
+            return str(item.get("connection_status") or "disconnected") == "connected"
+
+        def _authoritative_family(item: dict[str, Any]) -> bool:
+            return (
+                str(item.get("connection_source") or "mission_control") in AUTHORITATIVE_CONNECTION_SOURCES
+                and not bool(item.get("host_imported"))
+                and str(item.get("connection_status") or "disconnected") != "disconnected"
+            )
 
         def _family_ids_for_positive_count(key: str) -> list[str]:
             return [str(item.get("family") or "") for item in families if int(item.get(key) or 0) > 0]
@@ -14970,7 +28339,79 @@ class MissionControlService:
         connection_provider_family_count = len(connection_provider_family_ids)
         connection_without_provider_identity_family_count = len(connection_without_provider_identity_family_ids)
         provider_context_verified_family_count = len(provider_context_verified_family_ids)
+        attached_family_ids = [str(item.get("family") or "") for item in families if _attached_family(item)]
+        attached_family_count = len(attached_family_ids)
+        authoritative_family_ids = [str(item.get("family") or "") for item in families if _authoritative_family(item)]
+        authoritative_family_count = len(authoritative_family_ids)
         available_action_family_count = len(available_action_family_ids)
+        paginated_action_family_ids = _family_ids_for_action_flag("supports_pagination")
+        paginated_action_family_count = len(paginated_action_family_ids)
+        streaming_action_family_ids = _family_ids_for_action_flag("supports_streaming_output")
+        streaming_action_family_count = len(streaming_action_family_ids)
+        file_output_action_family_ids = _family_ids_for_action_flag("supports_file_output")
+        file_output_action_family_count = len(file_output_action_family_ids)
+        throttle_control_action_family_ids = _family_ids_for_action_flag("supports_throttle_controls")
+        throttle_control_action_family_count = len(throttle_control_action_family_ids)
+        attached_paginated_action_family_ids = _family_ids_for_action_flag_for_families(
+            "supports_pagination",
+            family_predicate=_attached_family,
+        )
+        attached_paginated_action_family_count = len(attached_paginated_action_family_ids)
+        attached_streaming_action_family_ids = _family_ids_for_action_flag_for_families(
+            "supports_streaming_output",
+            family_predicate=_attached_family,
+        )
+        attached_streaming_action_family_count = len(attached_streaming_action_family_ids)
+        attached_file_output_action_family_ids = _family_ids_for_action_flag_for_families(
+            "supports_file_output",
+            family_predicate=_attached_family,
+        )
+        attached_file_output_action_family_count = len(attached_file_output_action_family_ids)
+        attached_throttle_control_action_family_ids = _family_ids_for_action_flag_for_families(
+            "supports_throttle_controls",
+            family_predicate=_attached_family,
+        )
+        attached_throttle_control_action_family_count = len(attached_throttle_control_action_family_ids)
+        connected_paginated_action_family_ids = _family_ids_for_action_flag_for_families(
+            "supports_pagination",
+            family_predicate=_connected_family,
+        )
+        connected_paginated_action_family_count = len(connected_paginated_action_family_ids)
+        connected_streaming_action_family_ids = _family_ids_for_action_flag_for_families(
+            "supports_streaming_output",
+            family_predicate=_connected_family,
+        )
+        connected_streaming_action_family_count = len(connected_streaming_action_family_ids)
+        connected_file_output_action_family_ids = _family_ids_for_action_flag_for_families(
+            "supports_file_output",
+            family_predicate=_connected_family,
+        )
+        connected_file_output_action_family_count = len(connected_file_output_action_family_ids)
+        connected_throttle_control_action_family_ids = _family_ids_for_action_flag_for_families(
+            "supports_throttle_controls",
+            family_predicate=_connected_family,
+        )
+        connected_throttle_control_action_family_count = len(connected_throttle_control_action_family_ids)
+        authoritative_paginated_action_family_ids = _family_ids_for_action_flag_for_families(
+            "supports_pagination",
+            family_predicate=_authoritative_family,
+        )
+        authoritative_paginated_action_family_count = len(authoritative_paginated_action_family_ids)
+        authoritative_streaming_action_family_ids = _family_ids_for_action_flag_for_families(
+            "supports_streaming_output",
+            family_predicate=_authoritative_family,
+        )
+        authoritative_streaming_action_family_count = len(authoritative_streaming_action_family_ids)
+        authoritative_file_output_action_family_ids = _family_ids_for_action_flag_for_families(
+            "supports_file_output",
+            family_predicate=_authoritative_family,
+        )
+        authoritative_file_output_action_family_count = len(authoritative_file_output_action_family_ids)
+        authoritative_throttle_control_action_family_ids = _family_ids_for_action_flag_for_families(
+            "supports_throttle_controls",
+            family_predicate=_authoritative_family,
+        )
+        authoritative_throttle_control_action_family_count = len(authoritative_throttle_control_action_family_ids)
         blocked_action_family_count = len(blocked_action_family_ids)
         execution_action_family_count = len(execution_action_family_ids)
         available_execution_family_count = len(available_execution_family_ids)
@@ -15071,6 +28512,74 @@ class MissionControlService:
         provider_context_missing_action_count = _sum_int_field("provider_context_missing_action_count")
         commandless_execution_action_count = _sum_int_field("commandless_execution_action_count")
         available_action_refs = _collect_action_refs("available_action_ids")
+        paginated_action_refs = _collect_action_refs_by_flag("supports_pagination")
+        paginated_action_count = len(paginated_action_refs)
+        streaming_action_refs = _collect_action_refs_by_flag("supports_streaming_output")
+        streaming_action_count = len(streaming_action_refs)
+        file_output_action_refs = _collect_action_refs_by_flag("supports_file_output")
+        file_output_action_count = len(file_output_action_refs)
+        throttle_control_action_refs = _collect_action_refs_by_flag("supports_throttle_controls")
+        throttle_control_action_count = len(throttle_control_action_refs)
+        attached_paginated_action_refs = _collect_action_refs_by_flag_for_families(
+            "supports_pagination",
+            family_predicate=_attached_family,
+        )
+        attached_paginated_action_count = len(attached_paginated_action_refs)
+        attached_streaming_action_refs = _collect_action_refs_by_flag_for_families(
+            "supports_streaming_output",
+            family_predicate=_attached_family,
+        )
+        attached_streaming_action_count = len(attached_streaming_action_refs)
+        attached_file_output_action_refs = _collect_action_refs_by_flag_for_families(
+            "supports_file_output",
+            family_predicate=_attached_family,
+        )
+        attached_file_output_action_count = len(attached_file_output_action_refs)
+        attached_throttle_control_action_refs = _collect_action_refs_by_flag_for_families(
+            "supports_throttle_controls",
+            family_predicate=_attached_family,
+        )
+        attached_throttle_control_action_count = len(attached_throttle_control_action_refs)
+        connected_paginated_action_refs = _collect_action_refs_by_flag_for_families(
+            "supports_pagination",
+            family_predicate=_connected_family,
+        )
+        connected_paginated_action_count = len(connected_paginated_action_refs)
+        connected_streaming_action_refs = _collect_action_refs_by_flag_for_families(
+            "supports_streaming_output",
+            family_predicate=_connected_family,
+        )
+        connected_streaming_action_count = len(connected_streaming_action_refs)
+        connected_file_output_action_refs = _collect_action_refs_by_flag_for_families(
+            "supports_file_output",
+            family_predicate=_connected_family,
+        )
+        connected_file_output_action_count = len(connected_file_output_action_refs)
+        connected_throttle_control_action_refs = _collect_action_refs_by_flag_for_families(
+            "supports_throttle_controls",
+            family_predicate=_connected_family,
+        )
+        connected_throttle_control_action_count = len(connected_throttle_control_action_refs)
+        authoritative_paginated_action_refs = _collect_action_refs_by_flag_for_families(
+            "supports_pagination",
+            family_predicate=_authoritative_family,
+        )
+        authoritative_paginated_action_count = len(authoritative_paginated_action_refs)
+        authoritative_streaming_action_refs = _collect_action_refs_by_flag_for_families(
+            "supports_streaming_output",
+            family_predicate=_authoritative_family,
+        )
+        authoritative_streaming_action_count = len(authoritative_streaming_action_refs)
+        authoritative_file_output_action_refs = _collect_action_refs_by_flag_for_families(
+            "supports_file_output",
+            family_predicate=_authoritative_family,
+        )
+        authoritative_file_output_action_count = len(authoritative_file_output_action_refs)
+        authoritative_throttle_control_action_refs = _collect_action_refs_by_flag_for_families(
+            "supports_throttle_controls",
+            family_predicate=_authoritative_family,
+        )
+        authoritative_throttle_control_action_count = len(authoritative_throttle_control_action_refs)
         local_action_refs = _collect_action_refs("local_action_ids")
         guided_action_refs = _collect_action_refs("guided_action_ids")
         registry_action_refs = _collect_action_refs("registry_action_ids")
@@ -15456,6 +28965,77 @@ class MissionControlService:
         note_value_group_count = len(note_value_counts)
         note_value_families = _families_with_values("notes")
         note_value_family_count = len(note_value_families)
+        family_count_prefixes = [
+            "status",
+            "connection_status",
+            "connection_source",
+            "resolved_provider",
+            "provider_resolution_state",
+            "provider_context_source",
+            "provider_context_status",
+            "signal_source",
+            "provider",
+            "provider_candidate",
+            "cli_detected",
+            "resolved_cli_detected",
+            "workspace_config_file",
+            "workspace_token_hit",
+            "action_status",
+            "available_action_status",
+            "blocked_action_status",
+            "execution_mode",
+            "available_execution_mode",
+            "blocked_execution_mode",
+            "provider_support_mode",
+            "available_provider_support_mode",
+            "blocked_provider_support_mode",
+            "action_provider_context_status",
+            "available_action_provider_context_status",
+            "blocked_action_provider_context_status",
+            "verification_scope",
+            "available_verification_scope",
+            "blocked_verification_scope",
+            "safe_command_reason",
+            "available_safe_command_reason",
+            "blocked_safe_command_reason",
+            "context_requirement_reason",
+            "available_context_requirement_reason",
+            "blocked_context_requirement_reason",
+            "action_provider",
+            "available_action_provider",
+            "blocked_action_provider",
+            "executable_name",
+            "available_executable_name",
+            "blocked_executable_name",
+            "available_provider_context_status",
+            "blocked_provider_context_status",
+            "execution_block_reason",
+            "blocking_reason",
+            "required_permission",
+            "permission_policy",
+            "available_permission_policy",
+            "blocked_permission_policy",
+            "risk_level",
+            "available_risk_level",
+            "blocked_risk_level",
+            "execution_required_permission",
+            "execution_permission_policy",
+            "available_execution_permission_policy",
+            "blocked_execution_permission_policy",
+            "execution_risk_level",
+            "available_execution_risk_level",
+            "blocked_execution_risk_level",
+        ]
+        local_values = locals()
+        family_count_source_names = {
+            "status": "family_ids_by_status",
+        }
+        group_family_counts_payload = {
+            f"{prefix}_family_counts": _counts_from_grouped_family_ids(
+                local_values[family_count_source_names.get(prefix, f"{prefix}_family_ids")]
+            )
+            for prefix in family_count_prefixes
+        }
         return {
             "project_id": project.id,
             "project_name": project.name,
@@ -15547,6 +29127,7 @@ class MissionControlService:
             "workspace_token_hit_group_count": workspace_token_hit_group_count,
             "workspace_token_hit_family_count": workspace_token_hit_family_count,
             "workspace_token_hit_families": workspace_token_hit_families,
+            **group_family_counts_payload,
             "ready_family_count": ready_count,
             "ready_family_ids": ready_family_ids,
             "partial_family_count": partial_count,
@@ -15568,10 +29149,78 @@ class MissionControlService:
             "connection_without_provider_identity_family_ids": connection_without_provider_identity_family_ids,
             "provider_context_verified_family_count": provider_context_verified_family_count,
             "provider_context_verified_family_ids": provider_context_verified_family_ids,
+            "attached_family_count": attached_family_count,
+            "attached_family_ids": attached_family_ids,
+            "authoritative_family_count": authoritative_family_count,
+            "authoritative_family_ids": authoritative_family_ids,
             "available_action_family_count": available_action_family_count,
             "available_action_family_ids": available_action_family_ids,
             "available_action_count": available_action_count,
             "available_action_refs": available_action_refs,
+            "paginated_action_count": paginated_action_count,
+            "paginated_action_refs": paginated_action_refs,
+            "paginated_action_family_count": paginated_action_family_count,
+            "paginated_action_family_ids": paginated_action_family_ids,
+            "streaming_action_count": streaming_action_count,
+            "streaming_action_refs": streaming_action_refs,
+            "streaming_action_family_count": streaming_action_family_count,
+            "streaming_action_family_ids": streaming_action_family_ids,
+            "file_output_action_count": file_output_action_count,
+            "file_output_action_refs": file_output_action_refs,
+            "file_output_action_family_count": file_output_action_family_count,
+            "file_output_action_family_ids": file_output_action_family_ids,
+            "throttle_control_action_count": throttle_control_action_count,
+            "throttle_control_action_refs": throttle_control_action_refs,
+            "throttle_control_action_family_count": throttle_control_action_family_count,
+            "throttle_control_action_family_ids": throttle_control_action_family_ids,
+            "attached_paginated_action_count": attached_paginated_action_count,
+            "attached_paginated_action_refs": attached_paginated_action_refs,
+            "attached_paginated_action_family_count": attached_paginated_action_family_count,
+            "attached_paginated_action_family_ids": attached_paginated_action_family_ids,
+            "attached_streaming_action_count": attached_streaming_action_count,
+            "attached_streaming_action_refs": attached_streaming_action_refs,
+            "attached_streaming_action_family_count": attached_streaming_action_family_count,
+            "attached_streaming_action_family_ids": attached_streaming_action_family_ids,
+            "attached_file_output_action_count": attached_file_output_action_count,
+            "attached_file_output_action_refs": attached_file_output_action_refs,
+            "attached_file_output_action_family_count": attached_file_output_action_family_count,
+            "attached_file_output_action_family_ids": attached_file_output_action_family_ids,
+            "attached_throttle_control_action_count": attached_throttle_control_action_count,
+            "attached_throttle_control_action_refs": attached_throttle_control_action_refs,
+            "attached_throttle_control_action_family_count": attached_throttle_control_action_family_count,
+            "attached_throttle_control_action_family_ids": attached_throttle_control_action_family_ids,
+            "connected_paginated_action_count": connected_paginated_action_count,
+            "connected_paginated_action_refs": connected_paginated_action_refs,
+            "connected_paginated_action_family_count": connected_paginated_action_family_count,
+            "connected_paginated_action_family_ids": connected_paginated_action_family_ids,
+            "connected_streaming_action_count": connected_streaming_action_count,
+            "connected_streaming_action_refs": connected_streaming_action_refs,
+            "connected_streaming_action_family_count": connected_streaming_action_family_count,
+            "connected_streaming_action_family_ids": connected_streaming_action_family_ids,
+            "connected_file_output_action_count": connected_file_output_action_count,
+            "connected_file_output_action_refs": connected_file_output_action_refs,
+            "connected_file_output_action_family_count": connected_file_output_action_family_count,
+            "connected_file_output_action_family_ids": connected_file_output_action_family_ids,
+            "connected_throttle_control_action_count": connected_throttle_control_action_count,
+            "connected_throttle_control_action_refs": connected_throttle_control_action_refs,
+            "connected_throttle_control_action_family_count": connected_throttle_control_action_family_count,
+            "connected_throttle_control_action_family_ids": connected_throttle_control_action_family_ids,
+            "authoritative_paginated_action_count": authoritative_paginated_action_count,
+            "authoritative_paginated_action_refs": authoritative_paginated_action_refs,
+            "authoritative_paginated_action_family_count": authoritative_paginated_action_family_count,
+            "authoritative_paginated_action_family_ids": authoritative_paginated_action_family_ids,
+            "authoritative_streaming_action_count": authoritative_streaming_action_count,
+            "authoritative_streaming_action_refs": authoritative_streaming_action_refs,
+            "authoritative_streaming_action_family_count": authoritative_streaming_action_family_count,
+            "authoritative_streaming_action_family_ids": authoritative_streaming_action_family_ids,
+            "authoritative_file_output_action_count": authoritative_file_output_action_count,
+            "authoritative_file_output_action_refs": authoritative_file_output_action_refs,
+            "authoritative_file_output_action_family_count": authoritative_file_output_action_family_count,
+            "authoritative_file_output_action_family_ids": authoritative_file_output_action_family_ids,
+            "authoritative_throttle_control_action_count": authoritative_throttle_control_action_count,
+            "authoritative_throttle_control_action_refs": authoritative_throttle_control_action_refs,
+            "authoritative_throttle_control_action_family_count": authoritative_throttle_control_action_family_count,
+            "authoritative_throttle_control_action_family_ids": authoritative_throttle_control_action_family_ids,
             "local_action_count": local_action_count,
             "local_action_refs": local_action_refs,
             "local_action_family_count": local_action_family_count,
@@ -16407,6 +30056,16 @@ class MissionControlService:
         settings.default_worker_model = profile.default_worker_model
         settings.manager_reasoning_effort = profile.manager_reasoning_effort
         settings.default_worker_reasoning_effort = profile.default_worker_reasoning_effort
+        (
+            settings.manager_model,
+            settings.default_worker_model,
+            settings.per_role_model_overrides_json,
+        ) = clamp_codex_model_settings(
+            settings.provider,
+            manager_model=settings.manager_model,
+            default_worker_model=settings.default_worker_model,
+            per_role_model_overrides=settings.per_role_model_overrides_json,
+        )
         settings.runner_mode = runner_mode or profile.default_runner_mode or DEFAULT_RUNNER_MODE
         settings.sandbox_mode = profile.sandbox_mode
         settings.approval_policy = profile.approval_policy
@@ -16442,59 +30101,9 @@ class MissionControlService:
         return project
 
     def update_settings(self, db: Session, project: Project, payload: ProjectSettingsUpdate) -> ProjectSettings:
-        settings = self._ensure_project_settings(db, project)
-        updates = payload.model_dump(exclude_unset=True)
-        fields_set = set(getattr(payload, "model_fields_set", set(updates.keys())))
-
-        provider_changed = "provider" in fields_set and payload.provider is not None
-        if provider_changed:
-            settings.provider = normalize_provider(payload.provider)
-        if "manager_model" in fields_set:
-            settings.manager_model = payload.manager_model.strip() if payload.manager_model and payload.manager_model.strip() else None
-        if "default_worker_model" in fields_set:
-            settings.default_worker_model = payload.default_worker_model.strip() if payload.default_worker_model and payload.default_worker_model.strip() else None
-        if "manager_reasoning_effort" in fields_set:
-            settings.manager_reasoning_effort = payload.manager_reasoning_effort
-        if "default_worker_reasoning_effort" in fields_set:
-            settings.default_worker_reasoning_effort = payload.default_worker_reasoning_effort
-        if "per_role_model_overrides_json" in fields_set and payload.per_role_model_overrides_json is not None:
-            settings.per_role_model_overrides_json = {
-                key: value.strip()
-                for key, value in payload.per_role_model_overrides_json.items()
-                if key.strip() and value.strip()
-            }
-        if "per_role_reasoning_overrides_json" in fields_set and payload.per_role_reasoning_overrides_json is not None:
-            settings.per_role_reasoning_overrides_json = {
-                key: value
-                for key, value in payload.per_role_reasoning_overrides_json.items()
-                if key.strip() and value
-            }
-        if provider_changed or "provider_endpoint" in fields_set:
-            endpoint_source = payload.provider_endpoint if "provider_endpoint" in fields_set else settings.provider_endpoint
-            settings.provider_endpoint = normalize_provider_endpoint(settings.provider, endpoint_source)
-        if provider_changed or "adapter_command" in fields_set or "adapter_args_json" in fields_set:
-            command_source = payload.adapter_command if "adapter_command" in fields_set else settings.adapter_command
-            args_source = payload.adapter_args_json if "adapter_args_json" in fields_set else list(settings.adapter_args_json or [])
-            settings.adapter_command, settings.adapter_args_json = normalize_provider_adapter_settings(
-                settings.provider,
-                command_source,
-                args_source,
-            )
-        if "runner_mode" in fields_set and payload.runner_mode is not None:
-            settings.runner_mode = payload.runner_mode
-            project.runner_mode = payload.runner_mode
-        if "sandbox_mode" in fields_set and payload.sandbox_mode is not None:
-            settings.sandbox_mode = payload.sandbox_mode
-        if "approval_policy" in fields_set and payload.approval_policy is not None:
-            settings.approval_policy = payload.approval_policy
-        if "workspace_widgets_json" in fields_set and payload.workspace_widgets_json is not None:
-            settings.workspace_widgets_json = validate_widget_types(
-                payload.workspace_widgets_json,
-                scope="project",
-                field_name="workspace widgets",
-            )
-        if "approval_overrides_json" in fields_set and payload.approval_overrides_json is not None:
-            settings.approval_overrides_json = dict(payload.approval_overrides_json or {})
+        settings = update_project_settings(db, project, payload)
+        resolved_manager = resolve_manager_settings(project, settings)
+        resolved_worker = resolve_default_worker_settings(project, settings)
         self.events.publish(
             db,
             project.id,
@@ -16503,8 +30112,8 @@ class MissionControlService:
                 "project_id": project.id,
                 "provider": settings.provider,
                 "runner_mode": settings.runner_mode,
-                "manager_model": settings.manager_model or resolve_manager_settings(project, settings).effective_model_label,
-                "default_worker_model": settings.default_worker_model or default_label(settings.provider),
+                "manager_model": resolved_manager.effective_model_label,
+                "default_worker_model": resolved_worker.effective_model_label,
             },
         )
         db.flush()
@@ -16588,13 +30197,10 @@ class MissionControlService:
         return self._manager_queue(db, project)
 
     async def get_project_action(self, db: Session, project: Project, *, mutate: bool = True) -> dict[str, Any]:
-        settings = self._project_settings_preview(db, project)
-        degraded_notices = await self._workspace_degraded_notices(project, settings)
-        return self._derive_current_action(db, project, degraded_notices, mutate=mutate)
+        return self._derive_current_action(db, project, self._workspace_degraded_notices_preview(project), mutate=mutate)
 
     async def list_project_actions(self, db: Session, project: Project, *, mutate: bool = True) -> list[dict[str, Any]]:
-        settings = self._project_settings_preview(db, project)
-        degraded_notices = await self._workspace_degraded_notices(project, settings)
+        degraded_notices = self._workspace_degraded_notices_preview(project)
         current = self._derive_current_action(db, project, degraded_notices, mutate=mutate)
         history = self._derive_action_history(db, project)
         return [current, *history]
@@ -17215,18 +30821,65 @@ class MissionControlService:
         return plan
 
     def initialize_build_roster(self, db: Session, project: Project) -> list[Agent]:
-        existing_workers = list(db.scalars(select(Agent).where(Agent.project_id == project.id, Agent.kind == "worker")))
-        if existing_workers:
-            return existing_workers
         preferences = self._ensure_swarm_preferences(db, project)
+        recent_requests = list(
+            db.scalars(
+                select(ChangeRequest)
+                .where(ChangeRequest.project_id == project.id, ChangeRequest.status != "rejected")
+                .order_by(ChangeRequest.updated_at.desc(), ChangeRequest.id.desc())
+                .limit(5)
+            )
+        )
+        combined_request_text = " ".join(record.request_text for record in recent_requests if record.request_text)
+        fresh_benchmark_reset_requested = any(
+            self._request_implies_fresh_benchmark_reset(record.request_text) for record in recent_requests
+        )
+        bug_campaign_requested = self._request_implies_bug_campaign(combined_request_text)
+        existing_workers = list(db.scalars(select(Agent).where(Agent.project_id == project.id, Agent.kind == "worker")))
         current_plan = self._current_swarm_plan_record(db, project.id)
+        manifest = self._workspace_manifest_summary(project)
+        understanding = self._project_understanding(project)
+        needs_defect_campaign_plan = bug_campaign_requested and (
+            fresh_benchmark_reset_requested
+            or current_plan is None
+            or current_plan.mode != "defect_campaign"
+        )
+        if existing_workers and not needs_defect_campaign_plan:
+            return existing_workers
         if current_plan is None:
             payload = self._deterministic_swarm_plan(
                 project,
                 preferences,
-                self._workspace_manifest_summary(project),
-                self._project_understanding(project),
+                manifest,
+                understanding,
                 self._latest_plan(db, project.id),
+            )
+            if bug_campaign_requested:
+                payload = self._deterministic_bug_campaign_swarm_plan(
+                    db,
+                    project,
+                    preferences,
+                    manifest,
+                    goal=f"Run a parallel defect campaign for {project.name} without path collisions or duplicate counting.",
+                )
+            approval_required = payload.recommended_agent_count > preferences.require_approval_above_agent_count
+            current_plan = self._persist_swarm_plan_payload(
+                db,
+                project,
+                preferences,
+                payload,
+                approved_by_user=not approval_required,
+                status="pending_approval" if approval_required else "approved",
+            )
+            if not approval_required:
+                current_plan.approved_by_user = True
+        elif needs_defect_campaign_plan:
+            payload = self._deterministic_bug_campaign_swarm_plan(
+                db,
+                project,
+                preferences,
+                manifest,
+                goal=f"Reset the worker swarm for a fresh benchmark-grade defect campaign on {project.name}.",
             )
             approval_required = payload.recommended_agent_count > preferences.require_approval_above_agent_count
             current_plan = self._persist_swarm_plan_payload(
@@ -17244,11 +30897,264 @@ class MissionControlService:
         self._sync_agents_to_swarm_plan(db, project, current_plan, activate_deferred=project.runner_mode == "dry_run")
         return list(db.scalars(select(Agent).where(Agent.project_id == project.id, Agent.kind == "worker").order_by(Agent.id.asc())))
 
+    async def _prepare_fresh_benchmark_reset(
+        self,
+        db: Session,
+        project: Project,
+        *,
+        retained_titles: set[str] | None = None,
+    ) -> None:
+        superseded_reason = "Superseded by a fresh benchmark reset request."
+        retained_titles = {title for title in (retained_titles or set()) if title}
+        open_tasks = list(
+            db.scalars(
+                select(Task)
+                .where(
+                    Task.project_id == project.id,
+                    Task.status.in_(list(TASK_OPEN_STATUSES)),
+                )
+                .order_by(Task.priority.asc(), Task.id.asc())
+            )
+        )
+        # A fresh benchmark reset is a version boundary: prior worker output cannot
+        # count after Mission Control changes, so old in-flight lanes must not keep
+        # broad path locks that block the regenerated task set.
+        protected_task_ids: set[int] = set()
+        workers = list(db.scalars(select(Agent).where(Agent.project_id == project.id, Agent.kind == "worker").order_by(Agent.id.asc())))
+        for agent in workers:
+            if agent.current_task_id in protected_task_ids:
+                continue
+            if self._agent_has_unfinished_run(db, agent.id):
+                await self.stop_agent(db, agent)
+        for agent in workers:
+            if agent.current_task_id in protected_task_ids:
+                continue
+            agent.failure_count = 0
+            agent.last_report_summary = None
+            agent.current_task_id = None
+            agent.session_ref = None
+            agent.active_usage_json = None
+            agent.active_model = None
+            agent.active_reasoning_effort = None
+            agent.active_runner_type = None
+            agent.locked_paths_json = []
+            if agent.status not in {"retired", "done"}:
+                agent.status = "waiting"
+                agent.current_action = None
+        for task in open_tasks:
+            if task.id in protected_task_ids:
+                task.waiting_reason = None
+                continue
+            assigned_agent_id = task.assigned_agent_id
+            if assigned_agent_id is not None:
+                assigned_agent = db.get(Agent, assigned_agent_id)
+                if assigned_agent is not None and assigned_agent.current_task_id == task.id:
+                    assigned_agent.current_task_id = None
+            self._release_reservations(
+                db,
+                project.id,
+                task_id=task.id,
+                agent_id=assigned_agent_id,
+                publish=False,
+            )
+            task.assigned_agent_id = None
+            task.failure_count = 0
+            if task.title.startswith("Unblock:"):
+                task.status = "superseded"
+                task.waiting_reason = superseded_reason
+                continue
+            task.status = "backlog"
+            task.waiting_reason = None
+        stale_done_tasks = list(
+            db.scalars(
+                select(Task)
+                .where(Task.project_id == project.id, Task.status == "done")
+                .order_by(Task.priority.asc(), Task.id.asc())
+            )
+        )
+        for task in stale_done_tasks:
+            if task.title in retained_titles:
+                continue
+            self._release_reservations(
+                db,
+                project.id,
+                task_id=task.id,
+                agent_id=task.assigned_agent_id,
+                publish=False,
+            )
+            task.assigned_agent_id = None
+            task.status = "superseded"
+            task.waiting_reason = superseded_reason
+        for request in db.scalars(
+            select(ChangeRequest)
+            .where(ChangeRequest.project_id == project.id, ChangeRequest.status == "new")
+            .order_by(ChangeRequest.updated_at.desc(), ChangeRequest.id.desc())
+        ):
+            if self._request_implies_fresh_benchmark_reset(request.request_text):
+                request.status = "accepted"
+
     async def generate_tasks(self, db: Session, project: Project) -> tuple[list[Task], str]:
         latest_plan = self._latest_plan(db, project.id)
+        if project.source_type != "idea":
+            existing_tasks = list(db.scalars(select(Task).where(Task.project_id == project.id)))
+            has_open_tasks = any(task.status in TASK_OPEN_STATUSES for task in existing_tasks)
+            productive_open_task_count = self._productive_open_task_count(db, project, existing_tasks)
+            target_parallel_task_count = self._target_parallel_open_task_count(db, project, existing_tasks=existing_tasks)
+            latest_handoff = self._latest_evidence_handoff(db, project.id)
+            latest_task_update = max((task.updated_at for task in existing_tasks), default=None)
+            freshness_markers = [marker for marker in [latest_handoff.created_at if latest_handoff is not None else None, latest_task_update] if marker is not None]
+            follow_up_cutoff = max(freshness_markers) if freshness_markers else None
+            recent_change_requests = list(
+                db.scalars(
+                    select(ChangeRequest)
+                    .where(ChangeRequest.project_id == project.id, ChangeRequest.status != "rejected")
+                    .order_by(ChangeRequest.updated_at.desc(), ChangeRequest.id.desc())
+                    .limit(5)
+                )
+            )
+            follow_up_requests = [
+                record
+                for record in recent_change_requests
+                if record.status == "new" or follow_up_cutoff is None or record.updated_at >= follow_up_cutoff
+            ]
+            if not follow_up_requests and recent_change_requests and not has_open_tasks and project.handoff_status != "ready":
+                follow_up_requests = recent_change_requests
+            fresh_benchmark_reset_requested = any(
+                record.status == "new" and self._request_implies_fresh_benchmark_reset(record.request_text)
+                for record in follow_up_requests
+            )
+            needs_parallel_replenishment = fresh_benchmark_reset_requested or (
+                bool(follow_up_requests) and productive_open_task_count < target_parallel_task_count
+            )
+            should_use_change_requests = bool(follow_up_requests) and (
+                fresh_benchmark_reset_requested
+                or latest_plan is None
+                or project.status == "handoff_ready"
+                or not has_open_tasks
+                or needs_parallel_replenishment
+            )
+            if should_use_change_requests:
+                self._prime_workspace_context(db, project)
+                if project.status == "handoff_ready" or project.final_report_json:
+                    project.status = "building"
+                    project.handoff_status = "not_ready"
+                    project.final_report_json = None
+                decomposition, manager_mode_used = await self._resolve_manager_model(
+                    db,
+                    project,
+                    action_name="tasks.decompose",
+                    objective=(
+                        "Break the requested existing-repo changes into milestone-based worker tasks with non-overlapping path hints. "
+                        "If the operator asked for multiple features, preserve that breadth with separate implementation tasks when safe. "
+                        "If current runnable work is thinner than swarm capacity, replenish the backlog with multiple bounded parallel-safe tasks instead of a single serial follow-up."
+                    ),
+                    response_schema=MANAGER_TASK_DECOMPOSITION_SCHEMA,
+                    payload={
+                        "requested_change_requests": [
+                            {
+                                "id": record.id,
+                                "request_text": record.request_text,
+                                "classification": record.classification,
+                                "impact_estimate": record.impact_estimate,
+                                "status": record.status,
+                            }
+                            for record in follow_up_requests
+                        ],
+                        "current_open_task_count": len([task for task in existing_tasks if task.status in TASK_OPEN_STATUSES]),
+                        "current_productive_open_task_count": productive_open_task_count,
+                        "target_parallel_task_count": target_parallel_task_count,
+                        "workspace_manifest_summary": self._workspace_manifest_summary(project),
+                        "intelligence_layer": planning_intelligence_service.build_context(db, project),
+                    },
+                    model_schema=ManagerTaskDecomposition,
+                    fallback_factory=lambda: self._deterministic_task_decomposition(
+                        db,
+                        project,
+                        latest_plan,
+                        requested_change_requests=follow_up_requests,
+                    ),
+                )
+                if fresh_benchmark_reset_requested and any(
+                    self._request_implies_bug_campaign(record.request_text) for record in follow_up_requests
+                ):
+                    decomposition = self._deterministic_task_decomposition(
+                        db,
+                        project,
+                        latest_plan,
+                        requested_change_requests=follow_up_requests,
+                    )
+                    manager_mode_used = "deterministic"
+                if fresh_benchmark_reset_requested:
+                    await self._prepare_fresh_benchmark_reset(
+                        db,
+                        project,
+                        retained_titles={item.title for item in decomposition.tasks},
+                    )
+                    existing_tasks = list(db.scalars(select(Task).where(Task.project_id == project.id)))
+                    has_open_tasks = any(task.status in TASK_OPEN_STATUSES for task in existing_tasks)
+                    productive_open_task_count = self._productive_open_task_count(db, project, existing_tasks)
+                tasks = self._upsert_tasks_from_decomposition(
+                    db,
+                    project,
+                    decomposition,
+                    reopen_completed=not has_open_tasks or needs_parallel_replenishment or fresh_benchmark_reset_requested,
+                    supersede_open_tasks=fresh_benchmark_reset_requested,
+                )
+                self.events.publish(db, project.id, "tasks.generated", {"count": len(tasks), "manager_mode_used": manager_mode_used})
+                self._write_task_board_doc(db, project)
+                return tasks, manager_mode_used
         if latest_plan is None and project.source_type != "idea":
             self._prime_workspace_context(db, project)
-            decomposition = self._deterministic_task_decomposition(db, project, latest_plan)
+            recent_change_requests = list(
+                db.scalars(
+                    select(ChangeRequest)
+                    .where(ChangeRequest.project_id == project.id, ChangeRequest.status != "rejected")
+                    .order_by(ChangeRequest.updated_at.desc(), ChangeRequest.id.desc())
+                    .limit(5)
+                )
+            )
+            if recent_change_requests:
+                decomposition, manager_mode_used = await self._resolve_manager_model(
+                    db,
+                    project,
+                    action_name="tasks.decompose",
+                    objective=(
+                        "Break the requested existing-repo changes into milestone-based worker tasks with non-overlapping path hints. "
+                        "If the operator asked for multiple features, preserve that breadth with separate implementation tasks when safe."
+                    ),
+                    response_schema=MANAGER_TASK_DECOMPOSITION_SCHEMA,
+                    payload={
+                        "requested_change_requests": [
+                            {
+                                "id": record.id,
+                                "request_text": record.request_text,
+                                "classification": record.classification,
+                                "impact_estimate": record.impact_estimate,
+                                "status": record.status,
+                            }
+                            for record in recent_change_requests
+                        ],
+                        "workspace_manifest_summary": self._workspace_manifest_summary(project),
+                        "intelligence_layer": planning_intelligence_service.build_context(db, project),
+                    },
+                    model_schema=ManagerTaskDecomposition,
+                    fallback_factory=lambda: self._deterministic_task_decomposition(
+                        db,
+                        project,
+                        latest_plan,
+                        requested_change_requests=recent_change_requests,
+                    ),
+                )
+                tasks = self._upsert_tasks_from_decomposition(
+                    db,
+                    project,
+                    decomposition,
+                    reopen_completed=True,
+                )
+                self.events.publish(db, project.id, "tasks.generated", {"count": len(tasks), "manager_mode_used": manager_mode_used})
+                self._write_task_board_doc(db, project)
+                return tasks, manager_mode_used
+            decomposition = self._deterministic_task_decomposition(db, project, latest_plan, requested_change_requests=recent_change_requests)
             tasks = self._upsert_tasks_from_decomposition(db, project, decomposition)
             self.events.publish(db, project.id, "tasks.generated", {"count": len(tasks), "manager_mode_used": "deterministic"})
             self._write_task_board_doc(db, project)
@@ -17272,17 +31178,48 @@ class MissionControlService:
         self._write_task_board_doc(db, project)
         return tasks, manager_mode_used
 
-    def _upsert_tasks_from_decomposition(self, db: Session, project: Project, decomposition: ManagerTaskDecomposition) -> list[Task]:
+    def _upsert_tasks_from_decomposition(
+        self,
+        db: Session,
+        project: Project,
+        decomposition: ManagerTaskDecomposition,
+        *,
+        reopen_completed: bool = False,
+        supersede_open_tasks: bool = False,
+    ) -> list[Task]:
         existing = {task.title: task for task in db.scalars(select(Task).where(Task.project_id == project.id))}
         ordered: list[Task] = []
         index_map: dict[int, Task] = {}
+        retained_titles: set[str] = set()
         for index, item in enumerate(decomposition.tasks, start=1):
             task = existing.get(item.title)
             created = task is None
             if task is None:
                 task = Task(project_id=project.id, title=item.title, goal=item.goal, scope=item.scope)
                 db.add(task)
-            if created or task.status in {"backlog", "assigned", "waiting_on_paths"}:
+            retained_titles.add(item.title)
+            if supersede_open_tasks and not created and task.status in {"needs_review", "blocked", "superseded"}:
+                should_refresh = True
+                if task.assigned_agent_id is not None:
+                    self._release_reservations(
+                        db,
+                        project.id,
+                        task_id=task.id,
+                        agent_id=task.assigned_agent_id,
+                        publish=False,
+                    )
+                    assigned_agent = db.get(Agent, task.assigned_agent_id)
+                    if assigned_agent is not None and assigned_agent.current_task_id == task.id:
+                        assigned_agent.current_task_id = None
+                task.assigned_agent_id = None
+                task.failure_count = 0
+            else:
+                should_refresh = created or task.status in {"backlog", "assigned", "waiting_on_paths"}
+            if reopen_completed and task.status == "done":
+                should_refresh = True
+                task.assigned_agent_id = None
+                task.failure_count = 0
+            if should_refresh:
                 task.goal = item.goal
                 task.scope = item.scope
                 task.agent_role = item.agent_role
@@ -17301,6 +31238,26 @@ class MissionControlService:
         for index, item in enumerate(decomposition.tasks, start=1):
             resolved = [index_map[dependency].id for dependency in item.dependencies if dependency in index_map]
             index_map[index].dependencies_json = resolved
+        if supersede_open_tasks:
+            superseded_reason = "Superseded by a fresh benchmark reset request."
+            for title, stale_task in existing.items():
+                if title in retained_titles or stale_task.status not in {"backlog", "assigned", "waiting_on_paths", "needs_review", "blocked", "done"}:
+                    continue
+                assigned_agent_id = stale_task.assigned_agent_id
+                self._release_reservations(
+                    db,
+                    project.id,
+                    task_id=stale_task.id,
+                    agent_id=assigned_agent_id,
+                    publish=False,
+                )
+                if assigned_agent_id is not None:
+                    assigned_agent = db.get(Agent, assigned_agent_id)
+                    if assigned_agent is not None and assigned_agent.current_task_id == stale_task.id:
+                        assigned_agent.current_task_id = None
+                stale_task.assigned_agent_id = None
+                stale_task.status = "superseded"
+                stale_task.waiting_reason = superseded_reason
         db.flush()
         return ordered
 
@@ -17345,20 +31302,51 @@ class MissionControlService:
             return 0
         if not task.agent_role:
             return 50
-        agent_name = agent.name.lower()
-        agent_role = agent.role.lower()
-        agent_archetype = (agent.archetype or "").lower()
-        task_role = task.agent_role.lower()
-        allowed_paths = {path.lower() for path in (task.allowed_paths_json or [])}
+        agent_name = re.sub(r"[^a-z0-9]+", " ", agent.name.lower()).strip()
+        agent_role = re.sub(r"[^a-z0-9]+", " ", agent.role.lower()).strip()
+        agent_archetype = re.sub(r"[^a-z0-9]+", " ", (agent.archetype or "").lower()).strip()
+        task_role = re.sub(r"[^a-z0-9]+", " ", task.agent_role.lower()).strip()
+        compact_agent_name = agent_name.replace(" ", "")
+        compact_agent_role = agent_role.replace(" ", "")
+        compact_agent_archetype = agent_archetype.replace(" ", "")
+        compact_task_role = task_role.replace(" ", "")
+        allowed_path_text = " ".join(path.lower() for path in (task.allowed_paths_json or []))
+        is_frontend_lane = any(token in allowed_path_text for token in ("dashboard", "frontend", "ui", "client", "web", "desktop"))
+        is_backend_lane = any(token in allowed_path_text for token in ("mcp-server", "server", "backend", "api", "services"))
+        is_validation_lane = "validation" in task_role or any(segment in allowed_path_text for segment in ("tests", "test"))
+        is_docs_lane = any(segment in allowed_path_text for segment in ("docs", "mission-control")) or any(
+            token in task_role for token in ("docs", "handoff")
+        )
         if task_role in agent_name or task_role in agent_role or task_role in agent_archetype:
             return 100
+        if compact_task_role and (
+            compact_task_role in compact_agent_name
+            or compact_task_role in compact_agent_role
+            or compact_task_role in compact_agent_archetype
+        ):
+            return 100
+        if is_frontend_lane:
+            if agent_archetype == "frontend" or "frontend" in agent_role:
+                return 95
+            if agent_archetype == "planner":
+                return 0
+        if is_backend_lane:
+            if agent_archetype in {"backend", "feature"} or "backend" in agent_role:
+                return 95
+            if agent_archetype == "planner":
+                return 0
+        if is_validation_lane:
+            if agent_archetype in {"test", "reviewer"} or "validation" in agent_role or "test" in agent_role:
+                return 96
+            if agent_archetype in {"docs", "release_handoff"}:
+                return 0
         if "validation" in task_role:
-            if "validation" in agent_role or agent_archetype in {"test", "reviewer", "release_handoff"}:
+            if "validation" in agent_role or agent_archetype in {"test", "reviewer"}:
                 return 95
             if agent_archetype in {"backend", "feature"} or "backend" in agent_role:
                 return 75
             if agent_archetype == "planner":
-                return 65
+                return 0
         if "docs" in task_role or "handoff" in task_role:
             if agent_archetype in {"docs", "release_handoff", "reviewer"} or "docs" in agent_role:
                 return 90
@@ -17374,20 +31362,31 @@ class MissionControlService:
             return 80 if "primary" in agent_role or "agent a" in agent_name else 0
         if task_role in agent_role or task_role in agent_name:
             return 85
-        if allowed_paths & {"src", "app", "lib", "server", "package"}:
+        if any(segment in allowed_path_text for segment in ("src", "app", "lib", "server", "package")):
             if agent_archetype in {"backend", "feature"} or "backend" in agent_role:
                 return 70
             if agent_archetype == "planner":
-                return 55
-        if allowed_paths & {"tests", "test"}:
+                return 0
+        if any(segment in allowed_path_text for segment in ("tests", "test")):
             if agent_archetype in {"test", "reviewer"}:
                 return 80
-            if agent_archetype in {"backend", "planner"}:
+            if agent_archetype in {"backend"}:
                 return 60
-        if allowed_paths & {"docs", "mission-control"} and (agent_archetype in {"docs", "release_handoff"} or "docs" in agent_role):
+        if any(segment in allowed_path_text for segment in ("docs", "mission-control")) and (
+            agent_archetype in {"docs", "release_handoff"} or "docs" in agent_role
+        ):
             return 70
-        if allowed_paths & {"ui", "frontend"} and (agent_archetype == "frontend" or "frontend" in agent_role):
+        if any(segment in allowed_path_text for segment in ("ui", "frontend", "dashboard", "desktop")) and (
+            agent_archetype == "frontend" or "frontend" in agent_role
+        ):
             return 70
+        if is_docs_lane and agent_archetype == "planner":
+            return 45
+        if "defect batch" in str(task.title or "").lower():
+            if agent_archetype == "feature":
+                return 65
+            if agent_archetype in {"test", "reviewer"} or "validator" in agent_name or "validator" in agent_role:
+                return 60
         return 0
 
     def _agent_matches_task(self, agent: Agent, task: Task) -> bool:
@@ -17443,6 +31442,7 @@ class MissionControlService:
             query = query.where(PathReservation.agent_id == agent_id)
         released = list(db.scalars(query))
         if not released:
+            self._refresh_agent_locks(db, project_id)
             return
         now = utc_now()
         for reservation in released:
@@ -17458,6 +31458,50 @@ class MissionControlService:
 
     def list_reservations(self, db: Session, project_id: int) -> list[PathReservation]:
         return self._active_reservations(db, project_id)
+
+    def _release_orphaned_agent_reservations(self, db: Session, project: Project) -> int:
+        """Clear path locks left on workers that no longer own live work."""
+        changed = 0
+        agents = list(
+            db.scalars(
+                select(Agent)
+                .where(
+                    Agent.project_id == project.id,
+                    Agent.kind == "worker",
+                    Agent.current_task_id.is_(None),
+                    Agent.locked_paths_json.is_not(None),
+                )
+                .order_by(Agent.id.asc())
+            )
+        )
+        for agent in agents:
+            if not agent.locked_paths_json:
+                continue
+            if self._agent_has_unfinished_run(db, agent.id):
+                continue
+            if agent.status not in {"idle", "waiting", "done", "stopped"}:
+                continue
+            released_paths = list(agent.locked_paths_json or [])
+            self._release_reservations(db, project.id, agent_id=agent.id, publish=False)
+            agent.session_ref = None
+            agent.active_usage_json = None
+            agent.active_model = None
+            agent.active_reasoning_effort = None
+            agent.active_runner_type = None
+            agent.current_action = None
+            if agent.status in {"done", "stopped"}:
+                agent.status = "waiting"
+            self.events.publish(
+                db,
+                project.id,
+                "agent.orphaned_path_locks_released",
+                {"agent_id": agent.id, "paths": released_paths},
+            )
+            changed += 1
+        if changed:
+            self._refresh_agent_locks(db, project.id)
+            db.flush()
+        return changed
 
     def _set_waiting_on_paths(self, db: Session, project: Project, task: Task, workers: list[Agent]) -> None:
         blockers = conflicting_agents(task, workers)
@@ -17478,7 +31522,7 @@ class MissionControlService:
         )
 
     def _candidate_task_score(self, db: Session, project: Project, agent: Agent, task: Task) -> tuple[int, int, int, int]:
-        role_match = 1 if self._agent_matches_task(agent, task) else 0
+        role_match = self._agent_task_match_score(agent, task)
         dependency_ready = 1 if self._dependencies_met(db, task) else 0
         path_overlap = 0
         if task.allowed_paths_json and agent.locked_paths_json:
@@ -17492,18 +31536,34 @@ class MissionControlService:
             -int(task.priority or 0) + path_overlap,
         )
 
-    def _find_next_safe_task(self, db: Session, project: Project, agent: Agent) -> Task | None:
+    def _find_next_safe_task(
+        self,
+        db: Session,
+        project: Project,
+        agent: Agent,
+        *,
+        provisional_task_ids: set[int] | None = None,
+        provisional_path_sets: list[list[str]] | None = None,
+    ) -> Task | None:
         workers = list(db.scalars(select(Agent).where(Agent.project_id == project.id, Agent.kind == "worker").order_by(Agent.id.asc())))
         candidates: list[tuple[tuple[int, int, int, int], Task]] = []
         blocked_by_paths: list[Task] = []
+        provisional_task_ids = provisional_task_ids or set()
+        provisional_path_sets = provisional_path_sets or []
         for task in db.scalars(select(Task).where(Task.project_id == project.id).order_by(Task.priority.asc(), Task.id.asc())):
             if task.id == agent.current_task_id:
+                continue
+            if task.id in provisional_task_ids:
+                continue
+            if self._task_has_unfinished_run(db, task.id):
                 continue
             if task.status not in TASK_STARTABLE_STATUSES:
                 continue
             if not self._agent_matches_task(agent, task):
                 continue
             if not self._dependencies_met(db, task):
+                continue
+            if provisional_path_sets and any(paths_conflict(task.allowed_paths_json, path_set) for path_set in provisional_path_sets):
                 continue
             if can_assign_task(agent, task, workers, self._is_git_workspace(project)):
                 candidates.append((self._candidate_task_score(db, project, agent, task), task))
@@ -17515,6 +31575,162 @@ class MissionControlService:
         for task in blocked_by_paths:
             self._set_waiting_on_paths(db, project, task, workers)
         return None
+
+    def _reconcile_completed_follow_up_waiting_tasks(self, db: Session, project: Project) -> int:
+        changed = 0
+        while True:
+            updated_this_pass = 0
+            tasks = list(
+                db.scalars(
+                    select(Task)
+                    .where(
+                        Task.project_id == project.id,
+                        Task.waiting_reason.is_not(None),
+                    )
+                    .order_by(Task.priority.asc(), Task.id.asc())
+                )
+            )
+            for task in tasks:
+                waiting_reason = (task.waiting_reason or "").strip()
+                if self._FOLLOW_UP_BLOCKER_PREFIX not in waiting_reason:
+                    continue
+                suffix = waiting_reason.split(self._FOLLOW_UP_BLOCKER_PREFIX, 1)[1].strip()
+                follow_up_id_text = suffix.split(".", 1)[0].strip()
+                if not follow_up_id_text.isdigit():
+                    continue
+                follow_up_task = db.get(Task, int(follow_up_id_text))
+                if follow_up_task is None or follow_up_task.project_id != project.id or follow_up_task.status != "done":
+                    continue
+                before_status = task.status
+                before_waiting_reason = task.waiting_reason
+                self._resolve_follow_up_blocked_tasks(db, project, follow_up_task)
+                if task.status != before_status or task.waiting_reason != before_waiting_reason:
+                    updated_this_pass += 1
+            if updated_this_pass == 0:
+                break
+            changed += updated_this_pass
+        return changed
+
+    async def _start_agent_task_candidate(self, project_id: int, agent_id: int, task_id: int) -> AgentRun | None:
+        from db import SessionLocal
+
+        launch_db = SessionLocal()
+        try:
+            project = launch_db.get(Project, project_id)
+            agent = launch_db.get(Agent, agent_id)
+            task = launch_db.get(Task, task_id)
+            if project is None or agent is None or task is None:
+                return None
+            run = await self.start_agent_task(launch_db, project, agent, task)
+            launch_db.commit()
+            return run
+        except Exception:
+            launch_db.rollback()
+            raise
+        finally:
+            launch_db.close()
+
+    def _follow_up_task_id_from_waiting_reason(self, waiting_reason: str | None) -> int | None:
+        reason_text = str(waiting_reason or "").strip()
+        if self._FOLLOW_UP_BLOCKER_PREFIX not in reason_text:
+            return None
+        suffix = reason_text.split(self._FOLLOW_UP_BLOCKER_PREFIX, 1)[1].strip()
+        follow_up_id_text = suffix.split(".", 1)[0].strip()
+        if not follow_up_id_text.isdigit():
+            return None
+        return int(follow_up_id_text)
+
+    def _follow_up_chain(self, db: Session, project: Project, task: Task) -> list[Task]:
+        chain = [task]
+        seen_task_ids = {task.id}
+        current_task = task
+        while True:
+            follow_up_id = self._follow_up_task_id_from_waiting_reason(current_task.waiting_reason)
+            if follow_up_id is None:
+                break
+            follow_up_task = db.get(Task, follow_up_id)
+            if follow_up_task is None or follow_up_task.project_id != project.id or follow_up_task.id in seen_task_ids:
+                break
+            chain.append(follow_up_task)
+            seen_task_ids.add(follow_up_task.id)
+            current_task = follow_up_task
+        return chain
+
+    def _worker_action_signals_dependency_ready(self, action_text: str, waiting_task_id: int) -> bool:
+        normalized = str(action_text or "").lower()
+        if not normalized:
+            return False
+        if f"start task {waiting_task_id}" in normalized or f"launch task {waiting_task_id}" in normalized:
+            return True
+        if f"task {waiting_task_id}" not in normalized:
+            return False
+        signal_phrases = (
+            "next safe move",
+            "safest next move",
+            "safest move",
+            "intended next step",
+            "next step",
+            "resume the planned",
+            "move into validation",
+            "validation-and-count reconciliation",
+            "validation/count-reconciliation",
+        )
+        return any(phrase in normalized for phrase in signal_phrases)
+
+    def _reconcile_dependency_ready_follow_up_chains(self, db: Session, project: Project) -> int:
+        changed = 0
+        workers_by_id = {
+            worker.id: worker
+            for worker in db.scalars(select(Agent).where(Agent.project_id == project.id, Agent.kind == "worker"))
+        }
+        waiting_tasks = list(
+            db.scalars(
+                select(Task)
+                .where(
+                    Task.project_id == project.id,
+                    Task.status.in_(list(TASK_STARTABLE_STATUSES)),
+                )
+                .order_by(Task.priority.asc(), Task.id.asc())
+            )
+        )
+        for waiting_task in waiting_tasks:
+            if not waiting_task.dependencies_json:
+                continue
+            for dependency_id in waiting_task.dependencies_json:
+                dependency_task = db.get(Task, dependency_id)
+                if dependency_task is None or dependency_task.project_id != project.id or dependency_task.status != "needs_review":
+                    continue
+                follow_up_chain = self._follow_up_chain(db, project, dependency_task)
+                if len(follow_up_chain) < 2:
+                    continue
+                leaf_task = follow_up_chain[-1]
+                if leaf_task.status not in {"needs_review", "done"}:
+                    continue
+                ready_signal = False
+                for chain_task in reversed(follow_up_chain):
+                    agent_id = chain_task.assigned_agent_id
+                    if not agent_id:
+                        continue
+                    worker = workers_by_id.get(agent_id)
+                    if worker is None or self._agent_has_unfinished_run(db, worker.id):
+                        continue
+                    if self._worker_action_signals_dependency_ready(worker.current_action or "", waiting_task.id):
+                        ready_signal = True
+                        break
+                if not ready_signal:
+                    continue
+                for chain_task in follow_up_chain:
+                    if chain_task.status != "done":
+                        chain_task.status = "done"
+                        changed += 1
+                    if chain_task.waiting_reason is not None:
+                        chain_task.waiting_reason = None
+                        changed += 1
+                if waiting_task.waiting_reason:
+                    waiting_task.waiting_reason = None
+                    changed += 1
+                break
+        return changed
 
     def _activate_ready_deferred_specs(self, db: Session, project: Project) -> int:
         plan = self._current_swarm_plan_record(db, project.id)
@@ -17551,25 +31767,352 @@ class MissionControlService:
         return changed
 
     def _unfinished_runs_for_agent(self, db: Session, agent_id: int) -> list[AgentRun]:
-        return list(
+        runs = list(
             db.scalars(
                 select(AgentRun)
                 .where(AgentRun.agent_id == agent_id, AgentRun.finished_at.is_(None))
                 .order_by(AgentRun.id.desc())
             )
         )
+        return [run for run in runs if str(run.status or "").strip().lower() not in RUN_TERMINAL_STATUSES]
 
     def _agent_has_unfinished_run(self, db: Session, agent_id: int) -> bool:
         return bool(self._unfinished_runs_for_agent(db, agent_id))
 
-    async def start_idle_agents(self, db: Session, project: Project) -> int:
+    def _unfinished_runs_for_task(self, db: Session, task_id: int) -> list[AgentRun]:
+        runs = list(
+            db.scalars(
+                select(AgentRun)
+                .where(AgentRun.task_id == task_id, AgentRun.finished_at.is_(None))
+                .order_by(AgentRun.id.desc())
+            )
+        )
+        return [run for run in runs if str(run.status or "").strip().lower() not in RUN_TERMINAL_STATUSES]
+
+    @staticmethod
+    def _text_implies_provider_backoff(text: str | None) -> bool:
+        haystack = str(text or "").lower()
+        return any(
+            token in haystack
+            for token in (
+                "usage limit",
+                "rate limit",
+                "quota",
+                "purchase more credits",
+                "try again at",
+            )
+        )
+
+    def _provider_backoff_state(
+        self,
+        db: Session,
+        project: Project,
+        *,
+        settings: ProjectSettings | None = None,
+    ) -> dict[str, Any] | None:
+        project_agent_ids = [
+            agent_id
+            for agent_id in db.scalars(select(Agent.id).where(Agent.project_id == project.id, Agent.kind == "worker"))
+        ]
+        if not project_agent_ids:
+            return None
+        settings = settings or self._project_settings(db, project)
+        cooldown_minutes = max(
+            1,
+            int(settings.quota_backoff_cooldown_minutes or DEFAULT_QUOTA_BACKOFF_COOLDOWN_MINUTES),
+        )
+        runs = list(
+            db.scalars(
+                select(AgentRun)
+                .where(
+                    AgentRun.agent_id.in_(project_agent_ids),
+                    AgentRun.finished_at.is_not(None),
+                )
+                .order_by(AgentRun.finished_at.desc(), AgentRun.id.desc())
+                .limit(12)
+            )
+        )
+        signaled_runs: list[tuple[AgentRun, str]] = []
+        for run in runs:
+            summary = ""
+            if isinstance(run.report_json, dict):
+                summary = str(run.report_json.get("summary") or "")
+                if not summary:
+                    summary = " ".join(str(item or "") for item in list(run.report_json.get("blockers") or []))
+            if not self._text_implies_provider_backoff(summary):
+                continue
+            signaled_runs.append((run, summary))
+        if len(signaled_runs) < 1:
+            return None
+        latest_run, latest_summary = signaled_runs[0]
+        latest_finished_at = self._normalize_report_datetime(latest_run.finished_at)
+        if latest_finished_at is None:
+            return None
+        backoff_until = latest_finished_at + timedelta(minutes=cooldown_minutes)
+        remaining_seconds = int((backoff_until - utc_now()).total_seconds())
+        if remaining_seconds <= 0:
+            return None
+        return {
+            "until": backoff_until,
+            "remaining_seconds": remaining_seconds,
+            "summary": latest_summary,
+        }
+
+    def _task_has_unfinished_run(
+        self,
+        db: Session,
+        task_id: int,
+        *,
+        exclude_agent_id: int | None = None,
+    ) -> bool:
+        unfinished_runs = self._unfinished_runs_for_task(db, task_id)
+        if exclude_agent_id is None:
+            return bool(unfinished_runs)
+        return any(run.agent_id != exclude_agent_id for run in unfinished_runs)
+
+    def _reconcile_tasks_with_unfinished_runs(self, db: Session, project: Project) -> int:
+        changed = 0
+        unfinished_runs = list(
+            db.scalars(
+                select(AgentRun)
+                .join(Agent, Agent.id == AgentRun.agent_id)
+                .where(
+                    Agent.project_id == project.id,
+                    AgentRun.finished_at.is_(None),
+                )
+                .order_by(AgentRun.id.desc())
+            )
+        )
+        seen_task_ids: set[int] = set()
+        for run in unfinished_runs:
+            if str(run.status or "").strip().lower() in RUN_TERMINAL_STATUSES:
+                continue
+            if run.task_id is None or run.task_id in seen_task_ids:
+                continue
+            task = db.get(Task, run.task_id)
+            agent = db.get(Agent, run.agent_id)
+            if task is None or agent is None:
+                continue
+            seen_task_ids.add(task.id)
+            if task.status != "working":
+                task.status = "working"
+                changed += 1
+            if task.assigned_agent_id != agent.id:
+                task.assigned_agent_id = agent.id
+                changed += 1
+            if task.waiting_reason is not None:
+                task.waiting_reason = None
+                changed += 1
+            if agent.current_task_id != task.id:
+                agent.current_task_id = task.id
+                changed += 1
+            if agent.status not in {"working", "starting"}:
+                agent.status = "working"
+                changed += 1
+        return changed
+
+    def _reconcile_orphaned_working_tasks(self, db: Session, project: Project) -> int:
+        orphaned_reason = "Mission Control lost the live worker state for this task. The task was returned to backlog for a safe retry."
+        changed = 0
+        tasks = list(
+            db.scalars(
+                select(Task)
+                .where(Task.project_id == project.id, Task.status == "working")
+                .order_by(Task.priority.asc(), Task.id.asc())
+            )
+        )
+        for task in tasks:
+            unfinished_runs = self._unfinished_runs_for_task(db, task.id)
+            unfinished_run = unfinished_runs[0] if unfinished_runs else None
+            if unfinished_run is not None:
+                if task.assigned_agent_id != unfinished_run.agent_id:
+                    task.assigned_agent_id = unfinished_run.agent_id
+                    changed += 1
+                if task.waiting_reason is not None:
+                    task.waiting_reason = None
+                    changed += 1
+                run_agent = db.get(Agent, unfinished_run.agent_id)
+                if run_agent is not None:
+                    if run_agent.current_task_id != task.id:
+                        run_agent.current_task_id = task.id
+                        changed += 1
+                    if run_agent.status not in {"working", "starting"}:
+                        run_agent.status = "working"
+                        changed += 1
+                continue
+            linked_agents = list(
+                db.scalars(
+                    select(Agent).where(
+                        Agent.project_id == project.id,
+                        or_(
+                            Agent.id == task.assigned_agent_id if task.assigned_agent_id is not None else false(),
+                            Agent.current_task_id == task.id,
+                        ),
+                    )
+                )
+            )
+            assigned_agent = linked_agents[0] if linked_agents else None
+            for linked_agent in linked_agents:
+                if linked_agent.current_task_id == task.id:
+                    linked_agent.current_task_id = None
+                    changed += 1
+                if linked_agent.kind == "worker" and linked_agent.status not in {"retired", "done", "stopped"}:
+                    linked_agent.status = "waiting"
+                    if not linked_agent.current_action:
+                        linked_agent.current_action = orphaned_reason
+                    changed += 1
+            task.status = "backlog"
+            task.assigned_agent_id = None
+            task.waiting_reason = orphaned_reason
+            self._release_reservations(db, project.id, task_id=task.id, agent_id=assigned_agent.id if assigned_agent is not None else None)
+            changed += 1
+        return changed
+
+    def _reconcile_startable_tasks_assigned_to_ineligible_agents(self, db: Session, project: Project) -> int:
+        changed = 0
+        tasks = list(
+            db.scalars(
+                select(Task)
+                .where(
+                    Task.project_id == project.id,
+                    Task.status.in_(list(TASK_STARTABLE_STATUSES)),
+                )
+                .order_by(Task.priority.asc(), Task.id.asc())
+            )
+        )
+        for task in tasks:
+            if task.assigned_agent_id is None:
+                if task.status == "assigned":
+                    task.status = "backlog"
+                    task.waiting_reason = "Previous assignment had no owning worker; Mission Control returned it to the runnable backlog."
+                    changed += 1
+                continue
+            assigned_agent = db.get(Agent, task.assigned_agent_id) if task.assigned_agent_id else None
+            assigned_agent_is_available = (
+                assigned_agent is not None
+                and assigned_agent.kind == "worker"
+                and assigned_agent.status not in {"retired", "working", "starting"}
+                and (assigned_agent.current_task_id is None or assigned_agent.current_task_id == task.id)
+                and not self._agent_has_unfinished_run(db, assigned_agent.id)
+            )
+            if assigned_agent_is_available:
+                continue
+            self._release_reservations(
+                db,
+                project.id,
+                task_id=task.id,
+                agent_id=task.assigned_agent_id,
+                publish=False,
+            )
+            task.assigned_agent_id = None
+            if task.status == "assigned":
+                task.status = "backlog"
+            task.waiting_reason = "Previous assignment targeted a retired, missing, or busy worker; Mission Control returned it to the runnable backlog."
+            changed += 1
+        if changed:
+            db.flush()
+        return changed
+
+    def _reconcile_stale_blocked_task_assignments(self, db: Session, project: Project) -> int:
+        changed = 0
+        tasks = list(
+            db.scalars(
+                select(Task)
+                .where(
+                    Task.project_id == project.id,
+                    Task.status == "blocked",
+                    or_(
+                        Task.waiting_reason.is_(None),
+                        Task.waiting_reason == "",
+                        Task.waiting_reason.like("Fresh benchmark reset requested; stale review%"),
+                        Task.waiting_reason == STALE_BLOCKED_REQUEUE_REASON,
+                    ),
+                )
+                .order_by(Task.priority.asc(), Task.id.asc())
+            )
+        )
+        for task in tasks:
+            if self._task_has_unfinished_run(db, task.id):
+                continue
+            assigned_agent = db.get(Agent, task.assigned_agent_id) if task.assigned_agent_id else None
+            if assigned_agent is not None and assigned_agent.current_task_id == task.id:
+                continue
+            self._release_reservations(
+                db,
+                project.id,
+                task_id=task.id,
+                agent_id=task.assigned_agent_id,
+                publish=False,
+            )
+            previous_agent_id = task.assigned_agent_id
+            previous_agent_name = assigned_agent.name if assigned_agent is not None else None
+            previous_agent_current_task_id = assigned_agent.current_task_id if assigned_agent is not None else None
+            task.status = "backlog"
+            task.assigned_agent_id = None
+            task.waiting_reason = STALE_BLOCKED_REQUEUE_REASON
+            self.events.publish(
+                db,
+                project.id,
+                "task.stale_blocked_assignment_requeued",
+                {
+                    "task_id": task.id,
+                    "previous_agent_id": previous_agent_id,
+                    "previous_agent_name": previous_agent_name,
+                    "previous_agent_current_task_id": previous_agent_current_task_id,
+                },
+            )
+            changed += 1
+        if changed:
+            db.flush()
+        return changed
+
+    async def start_idle_agents(self, db: Session, project: Project, *, _retry_after_claim: bool = True) -> int:
         if project.status == "paused":
             return 0
+        self._refresh_agent_locks(db, project.id)
+        self._release_orphaned_agent_reservations(db, project)
+        self._reconcile_completed_follow_up_waiting_tasks(db, project)
+        self._reconcile_dependency_ready_follow_up_chains(db, project)
+        self._reconcile_tasks_with_unfinished_runs(db, project)
+        self._reconcile_orphaned_working_tasks(db, project)
+        self._reconcile_startable_tasks_assigned_to_ineligible_agents(db, project)
+        self._reconcile_stale_blocked_task_assignments(db, project)
+        activated_specs = self._activate_ready_deferred_specs(db, project)
+        if activated_specs:
+            plan = self._current_swarm_plan_record(db, project.id)
+            if plan is not None:
+                preferences = self._ensure_swarm_preferences(db, project)
+                if plan.approved_by_user or not self._swarm_approval_required(plan, preferences):
+                    self.spawn_swarm_agents(db, project)
+        settings_record = self._project_settings(db, project)
         workers = list(db.scalars(select(Agent).where(Agent.project_id == project.id, Agent.kind == "worker").order_by(Agent.id.asc())))
         tasks = list(db.scalars(select(Task).where(Task.project_id == project.id).order_by(Task.priority.asc(), Task.id.asc())))
+        _policy, launch_metrics, launch_guard = self._evaluate_launch_guard(
+            db,
+            project,
+            settings=settings_record,
+            role="worker",
+        )
+        if not launch_guard.allowed:
+            guard_message = launch_guard.reason or "Launch guard paused new worker launches."
+            if launch_guard.status == "provider_backoff_active" and launch_metrics.quota_backoff_until is not None:
+                guard_message = (
+                    "Provider quota backoff is active until "
+                    f"{launch_metrics.quota_backoff_until.astimezone(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}. "
+                    f"{launch_guard.reason or ''}"
+                ).strip()
+            for agent in workers:
+                if self._agent_has_unfinished_run(db, agent.id):
+                    continue
+                if agent.status in {"idle", "waiting", "done", "stopped", "starting"}:
+                    agent.status = "waiting"
+                    agent.current_action = guard_message
+            return 0
         is_git_workspace = self._is_git_workspace(project)
-        self._activate_ready_deferred_specs(db, project)
         started_count = 0
+        launch_specs: list[tuple[int, int]] = []
+        planned_task_ids: set[int] = set()
+        planned_path_sets: list[list[str]] = []
         for task in tasks:
             if task.status in TASK_STARTABLE_STATUSES and not self._dependencies_met(db, task):
                 if task.assigned_agent_id is None:
@@ -17580,10 +32123,18 @@ class MissionControlService:
                 continue
             if agent.status not in {"idle", "waiting", "done", "stopped"}:
                 continue
-            candidate = self._find_next_safe_task(db, project, agent)
+            candidate = self._find_next_safe_task(
+                db,
+                project,
+                agent,
+                provisional_task_ids=planned_task_ids,
+                provisional_path_sets=planned_path_sets,
+            )
             if candidate is not None:
-                await self.start_agent_task(db, project, agent, candidate)
-                started_count += 1
+                launch_specs.append((agent.id, candidate.id))
+                planned_task_ids.add(candidate.id)
+                if candidate.allowed_paths_json:
+                    planned_path_sets.append(list(candidate.allowed_paths_json))
                 continue
             for task in tasks:
                 if task.status in TASK_STARTABLE_STATUSES and self._agent_matches_task(agent, task) and self._dependencies_met(db, task) and not can_assign_task(agent, task, workers, is_git_workspace):
@@ -17591,6 +32142,40 @@ class MissionControlService:
                     agent.status = "waiting"
                     agent.current_action = "Waiting for another worker to release overlapping path ownership."
                     break
+        if launch_specs:
+            db.commit()
+            launch_results = await asyncio.gather(
+                *(self._start_agent_task_candidate(project.id, agent_id, task_id) for agent_id, task_id in launch_specs),
+                return_exceptions=True,
+            )
+            retry_after_claim = False
+            for (agent_id, _task_id), result in zip(launch_specs, launch_results, strict=False):
+                if isinstance(result, Exception):
+                    if isinstance(result, ValueError) and str(result) == "Agent already has an active unfinished run.":
+                        claimed_agent = db.get(Agent, agent_id)
+                        if claimed_agent is not None and claimed_agent.status in {"idle", "waiting", "done", "stopped"}:
+                            claimed_agent.status = "starting"
+                            claimed_agent.current_action = "Another Mission Control turn claimed this worker while launch fanout was in progress."
+                        retry_after_claim = True
+                        continue
+                    if isinstance(result, ValueError) and str(result) in {
+                        "Task is not in a startable state.",
+                        "Task already has an active unfinished run.",
+                        "Launch guard blocked worker start.",
+                    }:
+                        claimed_agent = db.get(Agent, agent_id)
+                        if claimed_agent is not None:
+                            claimed_agent.current_task_id = None
+                            if claimed_agent.status not in {"retired", "done"}:
+                                claimed_agent.status = "waiting"
+                                claimed_agent.current_action = "A queued task changed state before launch completed. Waiting for the next safe assignment."
+                        retry_after_claim = True
+                        continue
+                    raise result
+                started_count += 1
+            if retry_after_claim and _retry_after_claim:
+                db.commit()
+                started_count += await self.start_idle_agents(db, project, _retry_after_claim=False)
         return started_count
 
     async def start_agent_task(self, db: Session, project: Project, agent: Agent, task: Task) -> AgentRun:
@@ -17598,60 +32183,184 @@ class MissionControlService:
             raise ValueError("Only worker agents can be started manually.")
         if self._agent_has_unfinished_run(db, agent.id):
             raise ValueError("Agent already has an active unfinished run.")
+        if task.status not in TASK_STARTABLE_STATUSES:
+            raise ValueError("Task is not in a startable state.")
+        if self._task_has_unfinished_run(db, task.id):
+            raise ValueError("Task already has an active unfinished run.")
+        project_id = project.id
+        agent_id = agent.id
+        task_id = task.id
         settings_record = self._project_settings(db, project)
         resolved_settings = resolve_worker_settings(project, settings_record, agent)
+        _policy, launch_metrics, launch_guard = self._evaluate_launch_guard(
+            db,
+            project,
+            settings=settings_record,
+            resolved_settings=resolved_settings,
+            role="worker",
+        )
+        if not launch_guard.allowed:
+            guard_message = launch_guard.reason or "Launch guard paused new worker launches."
+            if launch_guard.status == "provider_backoff_active" and launch_metrics.quota_backoff_until is not None:
+                guard_message = (
+                    "Provider quota backoff is active until "
+                    f"{launch_metrics.quota_backoff_until.astimezone(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}. "
+                    f"{launch_guard.reason or ''}"
+                ).strip()
+            agent.status = "waiting"
+            agent.current_action = guard_message
+            task.status = "backlog"
+            task.assigned_agent_id = None
+            task.waiting_reason = guard_message
+            db.flush()
+            raise ValueError("Launch guard blocked worker start.")
         latest_plan = self._latest_plan(db, project.id)
-        context_pack_payload = context_pack_service.build_context_pack(db, project, agent_id=agent.id, task_id=task.id)
-        runner = await self.runners.get_runner_for_settings(resolved_settings)
+        benchmark_mode = self._benchmark_defect_campaign_active(db, project)
+        # Release any broader background-turn writes before building the
+        # persisted context pack. Otherwise worker startup competes for the same
+        # SQLite write lock while the orchestration turn still owns it.
+        db.commit()
+        project = db.get(Project, project_id)
+        agent = db.get(Agent, agent_id)
+        task = db.get(Task, task_id)
+        if project is None or agent is None or task is None:
+            raise ValueError("Project, agent, or task disappeared before the worker context was prepared.")
+        docs_path = project.docs_path or str(self._project_docs_dir(project))
+        if benchmark_mode:
+            context_pack_markdown = self._fallback_worker_context_pack_markdown(
+                project,
+                agent,
+                task,
+                docs_path=docs_path,
+            )
+        else:
+            try:
+                # Fail fast on SQLite contention here so worker startup falls back to
+                # the inline context pack instead of burning the default 30s busy
+                # timeout during a live swarm launch.
+                with self._sqlite_busy_timeout_scope(db, milliseconds=750):
+                    context_pack_payload = context_pack_service.build_context_pack(
+                        db,
+                        project,
+                        agent_id=agent.id,
+                        task_id=task.id,
+                        persist=False,
+                    )
+                context_pack_markdown = await asyncio.to_thread(context_pack_service.render_markdown, context_pack_payload)
+                # Persist the context pack, then release the lock again before the
+                # runner handshake/process launch.
+                db.commit()
+            except OperationalError:
+                db.rollback()
+                project = db.get(Project, project_id)
+                agent = db.get(Agent, agent_id)
+                task = db.get(Task, task_id)
+                if project is None or agent is None or task is None:
+                    raise ValueError("Project, agent, or task disappeared while recovering from a context-pack lock.")
+                context_pack_markdown = self._fallback_worker_context_pack_markdown(
+                    project,
+                    agent,
+                    task,
+                    docs_path=docs_path,
+                )
+        resolved_settings = self._apply_remote_execution_selection(db, project, resolved_settings)
         context = RunnerContext(
-            project=project,
-            agent=agent,
-            task=task,
-            docs_path=project.docs_path or str(self._project_docs_dir(project)),
-            plan_markdown=latest_plan.content_markdown if latest_plan else None,
-            context_pack_markdown=context_pack_service.render_markdown(context_pack_payload),
+            project=self._runner_project_snapshot(project),
+            agent=self._runner_agent_snapshot(agent),
+            task=self._runner_task_snapshot(task),
+            docs_path=docs_path,
+            plan_markdown=None if benchmark_mode else latest_plan.content_markdown if latest_plan else None,
+            context_pack_markdown=context_pack_markdown,
             settings=self._runner_settings_payload(resolved_settings),
         )
+        # Close any read transaction reopened during context preparation before
+        # the live runner process starts, otherwise worker launch still pins
+        # SQLite across the external provider handshake.
+        db.commit()
+        runner = await self.runners.get_runner_for_settings(resolved_settings)
+        context = RunnerContext(
+            project=context.project,
+            agent=context.agent,
+            task=context.task,
+            docs_path=context.docs_path,
+            plan_markdown=context.plan_markdown,
+            context_pack_markdown=context.context_pack_markdown,
+            settings=context.settings,
+        )
         handle = await runner.start_task(context)
-        agent.status = "starting"
-        agent.current_task_id = task.id
-        self._cache_agent_run_profile(agent, resolved_settings, runner_type=handle.runner_type, action=task.title)
-        task.status = "working"
-        task.assigned_agent_id = agent.id
-        task.waiting_reason = None
-        self._reserve_task_paths(db, project, agent, task)
-        run = AgentRun(
-            agent_id=agent.id,
-            task_id=task.id,
-            runner_type=handle.runner_type,
-            process_ref=handle.id,
-            status="starting",
-            logs_path=handle.logs_path,
-            stdout_path=handle.stdout_path,
-            stderr_path=handle.stderr_path,
-            event_log_path=handle.event_log_path,
-            manager_action="worker_task",
-            effective_settings_json=resolved_run_settings_payload(resolved_settings),
-        )
-        db.add(run)
-        db.flush()
-        self.events.publish(
-            db,
-            project.id,
-            "agent.started",
-            {
-                "agent_id": agent.id,
-                "agent_name": agent.name,
-                "task_id": task.id,
-                "task_title": task.title,
-                "runner": handle.runner_type,
-                "reserved_paths": task.allowed_paths_json,
-                "effective_settings": resolved_run_settings_payload(resolved_settings),
-            },
-        )
-        self.run_input_snapshots[run.id] = self._task_workspace_snapshot(project, task)
-        self.active_monitors[run.id] = asyncio.create_task(self._monitor_run(run.id))
-        return run
+        initial_usage = dict(handle.initial_usage or {})
+        launch_input_snapshot = await asyncio.to_thread(self._task_workspace_snapshot, project, task)
+        run: AgentRun | None = None
+        lock_error: OperationalError | None = None
+        for attempt in range(5):
+            try:
+                project = db.get(Project, project_id)
+                agent = db.get(Agent, agent_id)
+                task = db.get(Task, task_id)
+                if project is None or agent is None or task is None:
+                    await runner.stop_run(handle.id)
+                    raise ValueError("Project, agent, or task disappeared while the runner was starting.")
+                if self._agent_has_unfinished_run(db, agent.id):
+                    await runner.stop_run(handle.id)
+                    raise ValueError("Agent already has an active unfinished run.")
+                if task.status not in TASK_STARTABLE_STATUSES:
+                    await runner.stop_run(handle.id)
+                    raise ValueError("Task is not in a startable state.")
+                if self._task_has_unfinished_run(db, task.id):
+                    await runner.stop_run(handle.id)
+                    raise ValueError("Task already has an active unfinished run.")
+                agent.status = "starting"
+                agent.current_task_id = task.id
+                self._cache_agent_run_profile(agent, resolved_settings, runner_type=handle.runner_type, action=task.title)
+                self._set_agent_usage_snapshot(agent, initial_usage)
+                task.status = "working"
+                task.assigned_agent_id = agent.id
+                task.waiting_reason = None
+                self._reserve_task_paths(db, project, agent, task)
+                run = AgentRun(
+                    agent_id=agent.id,
+                    task_id=task.id,
+                    runner_type=handle.runner_type,
+                    process_ref=handle.id,
+                    status="starting",
+                    logs_path=handle.logs_path,
+                    stdout_path=handle.stdout_path,
+                    stderr_path=handle.stderr_path,
+                    event_log_path=handle.event_log_path,
+                    manager_action="worker_task",
+                    effective_settings_json=resolved_run_settings_payload(resolved_settings),
+                    usage_json=initial_usage or None,
+                )
+                db.add(run)
+                db.flush()
+                self.events.publish(
+                    db,
+                    project.id,
+                    "agent.started",
+                    {
+                        "agent_id": agent.id,
+                        "agent_name": agent.name,
+                        "task_id": task.id,
+                        "task_title": task.title,
+                        "runner": handle.runner_type,
+                        "reserved_paths": task.allowed_paths_json,
+                        "effective_settings": resolved_run_settings_payload(resolved_settings),
+                    },
+                )
+                self.run_input_snapshots[run.id] = launch_input_snapshot
+                self.active_monitors[run.id] = asyncio.create_task(self._monitor_run(run.id))
+                db.commit()
+                db.refresh(run)
+                return run
+            except OperationalError as exc:
+                db.rollback()
+                if "database is locked" not in str(exc).lower() or attempt == 4:
+                    await runner.stop_run(handle.id)
+                    raise
+                lock_error = exc
+                await asyncio.sleep(0.4 * (attempt + 1))
+        await runner.stop_run(handle.id)
+        raise lock_error or RuntimeError("Worker launch could not persist after repeated SQLite lock retries.")
 
     async def _monitor_run(self, run_id: int) -> None:
         from db import session_scope
@@ -17659,67 +32368,191 @@ class MissionControlService:
         try:
             while True:
                 await asyncio.sleep(0.6)
-                with session_scope() as db:
-                    run = db.get(AgentRun, run_id)
-                    if not run:
-                        return
-                    agent = db.get(Agent, run.agent_id)
-                    if not agent:
-                        return
-                    project = db.get(Project, agent.project_id)
-                    if not project:
-                        return
-                    runner = await self.runners.get_runner(run.runner_type)
-                    events = await runner.read_events(run.process_ref or "")
-                    for event in events:
-                        self.events.publish_isolated(
-                            project.id,
-                            f"runner.{event.get('type', 'unknown')}",
-                            {"agent_id": agent.id, "task_id": run.task_id, "event": event},
-                        )
-                        if event.get("type") == "thread.started":
-                            agent.session_ref = event.get("thread_id")
-                        if event.get("type") == "turn.started":
-                            agent.status = "working"
-                            run.status = "working"
-                        effective_settings = event.get("effective_settings")
-                        if isinstance(effective_settings, dict):
-                            run.effective_settings_json = effective_settings
-                            provider_name = str(effective_settings.get("provider") or settings_summary(self._project_settings(db, project)).get("provider") or "codex")
-                            agent.active_model = str(effective_settings.get("model") or agent.active_model or default_label(provider_name))
-                            agent.active_reasoning_effort = str(effective_settings.get("reasoning_effort") or agent.active_reasoning_effort or default_label(provider_name))
-                            agent.active_runner_type = run.runner_type
-                        item = event.get("item")
-                        if isinstance(item, dict) and item.get("type") == "agent_message":
-                            envelope = runner.try_parse_result_envelope(item.get("text"))
-                            if envelope:
-                                run.result_envelope_json = envelope
-                                report = envelope.get("report")
-                                if isinstance(report, dict):
-                                    run.report_json = report
-                            else:
-                                report = runner.try_parse_report(item.get("text"))
+                try:
+                    with session_scope() as db:
+                        run = db.get(AgentRun, run_id)
+                        if not run:
+                            return
+                        agent = db.get(Agent, run.agent_id)
+                        if not agent:
+                            return
+                        project = db.get(Project, agent.project_id)
+                        if not project:
+                            return
+                        runner_type = run.runner_type
+                        process_ref = run.process_ref or ""
+                    runner = await self.runners.get_runner(runner_type)
+                    events = await runner.read_events(process_ref)
+                    status = await runner.get_status(process_ref)
+                    runner_state = getattr(runner, "runs", {}).get(process_ref) if hasattr(runner, "runs") else None
+                    exit_code = getattr(runner_state, "exit_code", None) if runner_state is not None else None
+                    session_ref = getattr(runner_state, "session_ref", None) if runner_state is not None else None
+                    with session_scope() as db:
+                        run = db.get(AgentRun, run_id)
+                        if not run or run.finished_at is not None:
+                            return
+                        agent = db.get(Agent, run.agent_id)
+                        if not agent:
+                            return
+                        project = db.get(Project, agent.project_id)
+                        if not project:
+                            return
+                        for event in events:
+                            self.events.publish_isolated(
+                                project.id,
+                                f"runner.{event.get('type', 'unknown')}",
+                                {"agent_id": agent.id, "task_id": run.task_id, "event": event},
+                            )
+                            if event.get("type") == "thread.started":
+                                agent.session_ref = event.get("thread_id")
+                            if event.get("type") == "turn.started":
+                                agent.status = "working"
+                                run.status = "working"
+                            usage_snapshot = usage_snapshot_from_event(event)
+                            if usage_snapshot:
+                                run.usage_json = self._merge_usage_snapshot(run.usage_json, usage_snapshot)
+                                agent.active_usage_json = self._merge_usage_snapshot(agent.active_usage_json, usage_snapshot)
+                            effective_settings = event.get("effective_settings")
+                            if isinstance(effective_settings, dict):
+                                merged_effective_settings = self._merge_effective_settings_payload(
+                                    run.effective_settings_json if isinstance(run.effective_settings_json, dict) else None,
+                                    effective_settings,
+                                )
+                                run.effective_settings_json = merged_effective_settings
+                                provider_name = str(
+                                    merged_effective_settings.get("provider")
+                                    or settings_summary(self._project_settings(db, project)).get("provider")
+                                    or "codex"
+                                )
+                                agent.active_model = str(
+                                    merged_effective_settings.get("model") or agent.active_model or default_label(provider_name)
+                                )
+                                agent.active_reasoning_effort = str(
+                                    merged_effective_settings.get("reasoning_effort")
+                                    or agent.active_reasoning_effort
+                                    or default_label(provider_name)
+                                )
+                                agent.active_runner_type = run.runner_type
+                            item = event.get("item")
+                            candidate_texts: list[str] = []
+                            if isinstance(item, dict) and item.get("type") == "agent_message":
+                                text = item.get("text")
+                                if isinstance(text, str) and text.strip():
+                                    candidate_texts.append(text)
+                            raw_text = event.get("text")
+                            if isinstance(raw_text, str) and raw_text.strip():
+                                candidate_texts.append(raw_text)
+                            for candidate_text in candidate_texts:
+                                envelope = runner.try_parse_result_envelope(candidate_text)
+                                if envelope:
+                                    run.result_envelope_json = envelope
+                                    report = envelope.get("report")
+                                    if isinstance(report, dict):
+                                        run.report_json = report
+                                    break
+                                report = runner.try_parse_report(candidate_text)
                                 if report:
                                     run.report_json = report
-                        if event.get("type") in {"turn.completed", "turn.failed", "error"}:
-                            run.status = await runner.get_status(run.process_ref or "")
-                    status = await runner.get_status(run.process_ref or "")
-                    if hasattr(runner, "runs") and run.process_ref in getattr(runner, "runs"):
-                        state = getattr(runner, "runs")[run.process_ref]
-                        run.exit_code = getattr(state, "exit_code", None)
-                        if getattr(state, "session_ref", None) and not agent.session_ref:
-                            agent.session_ref = state.session_ref
-                    if status in {"done", "error", "blocked", "needs_review", "stopped"}:
-                        await self._finalize_run(db, project, agent, run, status)
-                        return
+                                    break
+                            if event.get("type") in {"turn.completed", "turn.failed", "error"}:
+                                run.status = status
+                        run.exit_code = exit_code
+                        if session_ref and not agent.session_ref:
+                            agent.session_ref = session_ref
+                        if status in {"done", "error", "blocked", "needs_review", "stopped"}:
+                            db.commit()
+                            await self._finalize_run_with_retry(run_id, status=status)
+                            return
+                except Exception as exc:
+                    await self._handle_monitor_failure(run_id, exc)
+                    return
         finally:
             self.active_monitors.pop(run_id, None)
+
+    async def _finalize_run_with_retry(self, run_id: int, *, status: str, max_attempts: int = 5) -> None:
+        from db import session_scope
+
+        for attempt in range(max_attempts):
+            try:
+                with session_scope() as db:
+                    run = db.get(AgentRun, run_id)
+                    if run is None or run.finished_at is not None:
+                        return
+                    agent = db.get(Agent, run.agent_id)
+                    if agent is None:
+                        return
+                    project = db.get(Project, agent.project_id)
+                    if project is None:
+                        return
+                    run.status = status or run.status or "error"
+                    await self._finalize_run(db, project, agent, run, run.status)
+                return
+            except OperationalError as exc:
+                if not self._is_sqlite_lock_error(exc) or attempt >= max_attempts - 1:
+                    raise
+                await asyncio.sleep(0.4 * (attempt + 1))
+
+    async def _handle_monitor_failure(self, run_id: int, exc: Exception) -> None:
+        from db import session_scope
+
+        for attempt in range(5):
+            try:
+                with session_scope() as db:
+                    run = db.get(AgentRun, run_id)
+                    if run is None or run.finished_at is not None:
+                        return
+                    agent = db.get(Agent, run.agent_id)
+                    if agent is None:
+                        return
+                    project = db.get(Project, agent.project_id)
+                    if project is None:
+                        return
+                    task = db.get(Task, run.task_id) if run.task_id else None
+                    reason = f"Mission Control run monitor failed before the worker result could be reconciled: {exc}"
+                    raw_payload = run.result_envelope_json if isinstance(run.result_envelope_json, dict) else run.report_json if isinstance(run.report_json, dict) else None
+                    self.run_input_snapshots.pop(run.id, None)
+                    self._reject_runner_completion(
+                        db,
+                        project,
+                        agent,
+                        task,
+                        run,
+                        status=run.status or "error",
+                        reason=reason[:500],
+                        raw_payload=raw_payload,
+                    )
+                return
+            except OperationalError as retry_exc:
+                if not self._is_sqlite_lock_error(retry_exc) or attempt >= 4:
+                    raise
+                await asyncio.sleep(0.4 * (attempt + 1))
 
     async def _finalize_run(self, db: Session, project: Project, agent: Agent, run: AgentRun, status: str) -> None:
         task = db.get(Task, run.task_id) if run.task_id else None
         if task:
+            if not isinstance(run.result_envelope_json, dict) and not isinstance(run.report_json, dict):
+                recovered_envelope, recovered_report = self._recover_runner_payload_from_event_log(run)
+                if isinstance(recovered_envelope, dict):
+                    run.result_envelope_json = recovered_envelope
+                    report = recovered_envelope.get("report")
+                    if isinstance(report, dict):
+                        run.report_json = report
+                elif isinstance(recovered_report, dict):
+                    run.report_json = recovered_report
             try:
-                envelope = self._normalize_runner_result_envelope(run, task, run.result_envelope_json or {})
+                if run.result_envelope_json:
+                    try:
+                        envelope = self._normalize_runner_result_envelope(run, task, run.result_envelope_json)
+                    except (ValidationError, ValueError):
+                        if not isinstance(run.report_json, dict):
+                            raise
+                        report = _validate_model(WorkerReport, run.report_json)
+                        envelope = self._build_runner_result_envelope_from_report(run, task, report)
+                elif isinstance(run.report_json, dict):
+                    report = _validate_model(WorkerReport, run.report_json)
+                    envelope = self._build_runner_result_envelope_from_report(run, task, report)
+                else:
+                    envelope = self._normalize_runner_result_envelope(run, task, {})
             except (ValidationError, ValueError) as exc:
                 reason = f"Runner completion envelope validation failed: {exc}"
                 self.run_input_snapshots.pop(run.id, None)
@@ -17736,6 +32569,7 @@ class MissionControlService:
                 return
             report = envelope.report
             report = self._verify_worker_report_evidence(project, task, report, self.run_input_snapshots.pop(run.id, None))
+            report = self._convert_no_change_review_to_blocked(task, report)
             envelope = envelope.model_copy(
                 update={
                     "report": report,
@@ -17803,6 +32637,7 @@ class MissionControlService:
             if task:
                 task.failure_count = 0
                 task.status = "done"
+                self._resolve_follow_up_blocked_tasks(db, project, task)
         elif report.status == "needs_review":
             agent.failure_count = 0
             if task:
@@ -17863,52 +32698,149 @@ class MissionControlService:
                     "owner_agent_id": agent.id,
                     "created_by": "agent",
                 },
-            )
+        )
         validation_coverage_service.recompute(db, project)
         self._persist_run_trace_spans(db, project, agent, task, run, normalized_envelope)
+        remote_rollup_error: str | None = None
+        try:
+            self._persist_remote_execution_normalized_results_summary(project, run, normalized_envelope)
+        except OSError as exc:
+            remote_rollup_error = str(exc)
         self.events.publish(db, project.id, "worker.report.received", {"run_id": run.id, "task_id": run.task_id, "status": report.status, "summary": report.summary})
-        decision, manager_mode_used = await self._resolve_manager_model(
-            db,
-            project,
-            action_name="worker.decide_next",
-            objective="Decide the next action after a worker completion report.",
-            response_schema=MANAGER_WORKER_DECISION_SCHEMA,
-            payload={
-                "agent": agent.name,
-                "task": {"id": task.id if task else None, "title": task.title if task else None},
-                "report": _dump_model(report),
-                "open_tasks": [
-                    {"id": item.id, "title": item.title, "status": item.status}
-                    for item in db.scalars(select(Task).where(Task.project_id == project.id).order_by(Task.priority.asc()))
-                ],
-                "intelligence_layer": planning_intelligence_service.build_context(db, project),
-            },
-            model_schema=ManagerWorkerDecision,
-            fallback_factory=lambda: self._deterministic_worker_decision(db, project, agent, task, report),
-        )
-        await self._apply_worker_decision(db, project, agent, task, decision)
-        self.events.publish(
-            db,
-            project.id,
-            "manager.worker_decision",
-            {"run_id": run.id, "decision": _dump_model(decision), "manager_mode_used": manager_mode_used},
-        )
-        await self._maybe_finalize_handoff(db, project)
-        if project.status != "handoff_ready":
-            await self.start_idle_agents(db, project)
-        self._write_task_board_doc(db, project)
-        return decision
+        if remote_rollup_error:
+            self.events.publish(
+                db,
+                project.id,
+                "remote_execution.rollup_persist_failed",
+                {
+                    "run_id": run.id,
+                    "task_id": run.task_id,
+                    "artifact": self._remote_execution_normalized_summary_artifact(
+                        dict((run.effective_settings_json or {}).get("remote_execution") or {})
+                        if isinstance(run.effective_settings_json, dict)
+                        else None
+                    ),
+                    "reason": remote_rollup_error[:500],
+                },
+            )
+        # Persist the worker outcome before any follow-up routing or runner
+        # launch so a transient SQLite collision in later coordination does not
+        # lose the accepted run result or strand the task in working forever.
+        db.commit()
+        agent = db.get(Agent, run.agent_id)
+        if not agent:
+            raise ValueError("Agent not found after worker report persistence.")
+        project = db.get(Project, agent.project_id)
+        if not project:
+            raise ValueError("Project not found after worker report persistence.")
+        task = db.get(Task, run.task_id) if run.task_id else None
+        run = db.get(AgentRun, run.id)
+        if run is None:
+            raise ValueError("Run not found after worker report persistence.")
+        try:
+            decision, manager_mode_used = await self._resolve_manager_model(
+                db,
+                project,
+                action_name="worker.decide_next",
+                objective="Decide the next action after a worker completion report.",
+                response_schema=MANAGER_WORKER_DECISION_SCHEMA,
+                payload={
+                    "agent": agent.name,
+                    "task": {"id": task.id if task else None, "title": task.title if task else None},
+                    "report": _dump_model(report),
+                    "open_tasks": [
+                        {"id": item.id, "title": item.title, "status": item.status}
+                        for item in db.scalars(select(Task).where(Task.project_id == project.id).order_by(Task.priority.asc()))
+                    ],
+                    "intelligence_layer": planning_intelligence_service.build_context(db, project),
+                },
+                model_schema=ManagerWorkerDecision,
+                fallback_factory=lambda: self._deterministic_worker_decision(db, project, agent, task, report),
+            )
+            deterministic_decision = self._deterministic_worker_decision(db, project, agent, task, report)
+            if (
+                report.status == "blocked"
+                and deterministic_decision.decision_type == "request_fix"
+                and deterministic_decision.follow_up_allowed_paths
+                and decision.decision_type in {"mark_blocked", "escalate_to_user", "wait"}
+            ):
+                decision = deterministic_decision
+            await self._apply_worker_decision(db, project, agent, task, decision)
+            self.events.publish(
+                db,
+                project.id,
+                "manager.worker_decision",
+                {"run_id": run.id, "decision": _dump_model(decision), "manager_mode_used": manager_mode_used},
+            )
+            await self._maybe_finalize_handoff(db, project)
+            db.commit()
+            project = db.get(Project, project.id)
+            if project is None:
+                raise ValueError("Project disappeared before worker follow-up launch.")
+            if project.status != "handoff_ready":
+                await self.start_idle_agents(db, project)
+            self._schedule_orchestration_follow_up(db, project, reason="worker_report_recorded")
+            self._write_task_board_doc(db, project)
+            return decision
+        except OperationalError as exc:
+            db.rollback()
+            if not self._is_sqlite_lock_error(exc):
+                raise
+            project = db.get(Project, project.id) or project
+            self.events.publish_isolated(
+                project.id,
+                "worker.report.follow_up_deferred",
+                {
+                    "run_id": run.id,
+                    "task_id": run.task_id,
+                    "reason": "database_locked",
+                },
+            )
+            self._schedule_orchestration_follow_up(db, project, reason="worker_report_follow_up_deferred")
+            return ManagerWorkerDecision(
+                decision_type="wait",
+                summary_markdown=(
+                    "Mission Control recorded the worker result and deferred follow-up routing after a transient SQLite lock."
+                ),
+            )
 
     async def _apply_worker_decision(self, db: Session, project: Project, agent: Agent, task: Task | None, decision: ManagerWorkerDecision) -> None:
         immediate_task: Task | None = None
+        decision_task = db.get(Task, decision.task_id) if decision.task_id else task
         agent.current_action = decision.summary_markdown
+        def eligible_assignment_agent(candidate_id: int | None, task_id: int) -> int | None:
+            if candidate_id is None:
+                return None
+            candidate = db.get(Agent, candidate_id)
+            if candidate is None or candidate.project_id != project.id or candidate.kind != "worker" or candidate.status == "retired":
+                return None
+            if candidate.status not in {"idle", "waiting", "done", "stopped"}:
+                return None
+            if candidate.current_task_id not in {None, task_id}:
+                return None
+            if self._agent_has_unfinished_run(db, candidate.id):
+                return None
+            return candidate.id
+
         if decision.decision_type == "assign_next_task" and decision.task_id:
-            immediate_task = db.get(Task, decision.task_id)
-            if immediate_task:
-                immediate_task.status = "assigned"
-                immediate_task.assigned_agent_id = decision.assign_to_agent_id or agent.id
+            candidate_task = db.get(Task, decision.task_id)
+            if (
+                candidate_task is not None
+                and candidate_task.status in TASK_STARTABLE_STATUSES
+                and not self._task_has_unfinished_run(db, candidate_task.id)
+            ):
+                assignment_agent_id = eligible_assignment_agent(decision.assign_to_agent_id, candidate_task.id) or eligible_assignment_agent(agent.id, candidate_task.id)
+                if assignment_agent_id is not None:
+                    immediate_task = candidate_task
+                    immediate_task.status = "assigned"
+                    immediate_task.assigned_agent_id = assignment_agent_id
         elif decision.decision_type == "request_fix":
             if decision.follow_up_title and decision.follow_up_goal:
+                follow_up_allowed_paths = list(decision.follow_up_allowed_paths or (task.allowed_paths_json[:] if task else ["docs", "tests"]))
+                follow_up_forbidden_paths = self._prune_conflicting_follow_up_forbidden_paths(
+                    follow_up_allowed_paths,
+                    list(decision.follow_up_forbidden_paths or (task.forbidden_paths_json[:] if task else [])),
+                )
                 fix_task = Task(
                     project_id=project.id,
                     assigned_agent_id=decision.assign_to_agent_id,
@@ -17917,8 +32849,8 @@ class MissionControlService:
                     scope="Resolve a blocker or error before the main flow can continue.",
                     agent_role="Validation, docs, and handoff" if decision.assign_to_agent_id else "Primary implementation",
                     milestone=(task.milestone if task else "Milestone 2 - Validation and handoff") if task else "Milestone 2 - Validation and handoff",
-                    allowed_paths_json=task.allowed_paths_json[:] if task else ["docs", "tests"],
-                    forbidden_paths_json=task.forbidden_paths_json[:] if task else [],
+                    allowed_paths_json=follow_up_allowed_paths,
+                    forbidden_paths_json=follow_up_forbidden_paths,
                     validation_steps_json=["Confirm the blocker is removed", "Record what changed"],
                     success_criteria_json=["The blocking issue is resolved or clearly isolated."],
                     estimated_complexity="small",
@@ -17927,16 +32859,21 @@ class MissionControlService:
                     priority=(task.priority + 1 if task else 50),
                 )
                 db.add(fix_task)
+                db.flush()
+                immediate_task = fix_task
+                if task is not None:
+                    task.waiting_reason = f"{self._FOLLOW_UP_BLOCKER_PREFIX}{fix_task.id}."
             elif task and task.failure_count < 2:
                 task.status = "assigned"
                 task.waiting_reason = "Manager requested one fix retry."
                 immediate_task = task
             elif task:
                 task.status = "blocked"
-        elif decision.decision_type == "mark_blocked" and task:
-            task.status = "blocked"
-        elif decision.decision_type == "mark_done" and task:
-            task.status = "done"
+        elif decision.decision_type == "mark_blocked" and decision_task:
+            decision_task.status = "blocked"
+        elif decision.decision_type == "mark_done" and decision_task:
+            decision_task.status = "done"
+            self._resolve_follow_up_blocked_tasks(db, project, decision_task)
         elif decision.decision_type == "retire_agent":
             agent.status = "done"
         elif decision.decision_type == "escalate_to_user":
@@ -17945,14 +32882,189 @@ class MissionControlService:
         else:
             agent.status = "waiting"
 
-        if immediate_task and agent.status in {"idle", "waiting", "done", "stopped"}:
+        if (
+            immediate_task
+            and immediate_task.status in TASK_STARTABLE_STATUSES
+            and not self._task_has_unfinished_run(db, immediate_task.id)
+            and agent.status in {"idle", "waiting", "done", "stopped"}
+        ):
             workers = list(db.scalars(select(Agent).where(Agent.project_id == project.id, Agent.kind == "worker")))
             if can_assign_task(agent, immediate_task, workers, self._is_git_workspace(project)) and self._dependencies_met(db, immediate_task):
-                await self.start_agent_task(db, project, agent, immediate_task)
+                try:
+                    await self.start_agent_task(db, project, agent, immediate_task)
+                except ValueError as exc:
+                    if str(exc) not in {
+                        "Agent already has an active unfinished run.",
+                        "Task is not in a startable state.",
+                        "Task already has an active unfinished run.",
+                    }:
+                        raise
+                    project = db.get(Project, project.id) or project
+                    agent = db.get(Agent, agent.id) or agent
+                    immediate_task = db.get(Task, immediate_task.id)
+                    if immediate_task is not None and not self._task_has_unfinished_run(db, immediate_task.id):
+                        immediate_task.status = "backlog"
+                        immediate_task.assigned_agent_id = None
+                        immediate_task.waiting_reason = (
+                            "Immediate follow-up launch lost a concurrent worker-claim race; queued for the next safe scheduler pass."
+                        )
+                    if agent is not None and not self._agent_has_unfinished_run(db, agent.id) and agent.status not in {"retired", "done"}:
+                        agent.status = "waiting"
+                        agent.current_task_id = None
+                        agent.current_action = "Immediate follow-up launch lost a concurrent claim race; waiting for reassignment."
+                    self.events.publish(
+                        db,
+                        project.id,
+                        "manager.immediate_launch_deferred",
+                        {
+                            "agent_id": agent.id if agent else None,
+                            "task_id": immediate_task.id if immediate_task else None,
+                            "reason": str(exc),
+                        },
+                    )
+
+    def _resolve_follow_up_blocked_tasks(self, db: Session, project: Project, follow_up_task: Task) -> None:
+        pending_follow_up_ids = [follow_up_task.id]
+        seen_follow_up_ids: set[int] = set()
+        while pending_follow_up_ids:
+            current_follow_up_id = pending_follow_up_ids.pop()
+            if current_follow_up_id in seen_follow_up_ids:
+                continue
+            seen_follow_up_ids.add(current_follow_up_id)
+            marker = f"{self._FOLLOW_UP_BLOCKER_PREFIX}{current_follow_up_id}"
+            parent_tasks = list(
+                db.scalars(
+                    select(Task).where(
+                        Task.project_id == project.id,
+                        Task.waiting_reason.is_not(None),
+                    )
+                )
+            )
+            for parent_task in parent_tasks:
+                waiting_reason = (parent_task.waiting_reason or "").strip()
+                if marker not in waiting_reason:
+                    continue
+                if parent_task.status != "done":
+                    parent_task.status = "done"
+                parent_task.waiting_reason = None
+                pending_follow_up_ids.append(parent_task.id)
+
+    @staticmethod
+    def _extract_repo_like_paths(text: str) -> list[str]:
+        normalized = str(text or "").replace("\\", "/")
+        matches = re.findall(r"(?:[A-Za-z0-9_.-]+/)+(?:\*\*|[A-Za-z0-9_.-]+(?:\.[A-Za-z0-9_.-]+)?)", normalized)
+        seen: set[str] = set()
+        ordered: list[str] = []
+        for match in matches:
+            candidate = match.strip().strip(".,:;`()[]{}<>\"'")
+            if "/" not in candidate:
+                continue
+            if candidate.startswith(("http://", "https://")):
+                continue
+            if not candidate.startswith(("apps/", "docs/", "scripts/", "mission-control/", ".codex/")):
+                continue
+            if candidate in seen:
+                continue
+            seen.add(candidate)
+            ordered.append(candidate)
+        return ordered
+
+    @staticmethod
+    def _prune_conflicting_follow_up_forbidden_paths(allowed_paths: list[str], forbidden_paths: list[str]) -> list[str]:
+        if not allowed_paths:
+            return list(forbidden_paths or [])
+        normalized_allowed = [path.replace("\\", "/") for path in allowed_paths]
+        pruned: list[str] = []
+        for forbidden_path in forbidden_paths or []:
+            normalized_forbidden = str(forbidden_path).replace("\\", "/")
+            if any(
+                fnmatch.fnmatch(allowed_path, normalized_forbidden)
+                or fnmatch.fnmatch(normalized_forbidden, allowed_path)
+                for allowed_path in normalized_allowed
+            ):
+                continue
+            pruned.append(forbidden_path)
+        return pruned
+
+    def _suggest_follow_up_allowed_paths(self, task: Task | None, report: WorkerReport) -> list[str]:
+        if task is None:
+            return []
+        text = " ".join(
+            filter(
+                None,
+                [
+                    report.summary,
+                    report.recommended_next_task,
+                    *list(report.blockers or []),
+                    *list(report.risks or []),
+                ],
+            )
+        )
+        suggested = self._extract_repo_like_paths(text)
+        if not suggested:
+            return []
+        existing = set(task.allowed_paths_json or [])
+        return [path for path in suggested if path not in existing]
+
+    def _report_from_saved_run(self, agent: Agent, task: Task | None, run: AgentRun) -> WorkerReport:
+        candidate_payloads: list[dict[str, Any]] = []
+        if isinstance(run.result_envelope_json, dict):
+            report_payload = run.result_envelope_json.get("report")
+            if isinstance(report_payload, dict):
+                candidate_payloads.append(report_payload)
+        if isinstance(run.report_json, dict):
+            candidate_payloads.append(run.report_json)
+        for payload in candidate_payloads:
+            try:
+                return _validate_model(WorkerReport, payload)
+            except ValidationError:
+                continue
+        raw_payload = candidate_payloads[0] if candidate_payloads else None
+        return self._build_synthetic_worker_report(agent, task, run.status, raw_payload)
+
+    def _recover_blocked_task_follow_up(self, db: Session, project: Project) -> tuple[Task, ManagerWorkerDecision] | None:
+        blocked_tasks = list(
+            db.scalars(
+                select(Task)
+                .where(Task.project_id == project.id, Task.status == "blocked")
+                .order_by(Task.priority.asc(), Task.id.asc())
+            )
+        )
+        for blocked_task in blocked_tasks:
+            waiting_reason = (blocked_task.waiting_reason or "").strip()
+            if self._FOLLOW_UP_BLOCKER_PREFIX in waiting_reason:
+                continue
+            latest_run = db.scalar(select(AgentRun).where(AgentRun.task_id == blocked_task.id).order_by(AgentRun.id.desc()))
+            if latest_run is None:
+                continue
+            blocking_agent = db.get(Agent, latest_run.agent_id)
+            if blocking_agent is None:
+                continue
+            report = self._report_from_saved_run(blocking_agent, blocked_task, latest_run)
+            if report.status != "blocked":
+                continue
+            decision = self._deterministic_worker_decision(db, project, blocking_agent, blocked_task, report)
+            if decision.decision_type != "request_fix":
+                continue
+            if not decision.follow_up_title or not decision.follow_up_goal:
+                continue
+            return blocked_task, decision
+        return None
 
     async def _maybe_finalize_handoff(self, db: Session, project: Project) -> None:
         open_tasks = list(db.scalars(select(Task).where(Task.project_id == project.id, Task.status.in_(list(TASK_OPEN_STATUSES)))))
         if open_tasks:
+            return
+        existing_handoff = self._latest_evidence_handoff(db, project.id)
+        if existing_handoff is not None:
+            project.status = "handoff_ready" if existing_handoff.confidence_level in {"medium", "high"} else project.status
+            project.handoff_status = "ready" if existing_handoff.confidence_level == "high" else "needs_review"
+            return
+        if project.final_report_json:
+            handoff = self.generate_evidence_handoff(db, project)
+            project.status = "handoff_ready" if handoff.confidence_level in {"medium", "high"} else project.status
+            project.handoff_status = "ready" if handoff.confidence_level == "high" else "needs_review"
+            self.events.publish(db, project.id, "project.handoff_ready", {"project_id": project.id})
             return
         settings_record = self._project_settings(db, project)
         project_agent_ids = [project_agent.id for project_agent in db.scalars(select(Agent).where(Agent.project_id == project.id))]
@@ -17985,6 +33097,9 @@ class MissionControlService:
                 "effective_runs": [run.effective_settings_json or {} for run in completed_runs if run.effective_settings_json],
             },
         }
+        evidence_handoff = self.generate_evidence_handoff(db, project)
+        project.status = "handoff_ready" if evidence_handoff.confidence_level in {"medium", "high"} else project.status
+        project.handoff_status = "ready" if evidence_handoff.confidence_level == "high" else "needs_review"
         self.events.publish(db, project.id, "project.handoff_ready", {"project_id": project.id})
 
     def _reconcile_stopped_agent_state(self, db: Session, agent: Agent, runs: list[AgentRun]) -> None:
@@ -18026,11 +33141,8 @@ class MissionControlService:
         project = db.get(Project, task.project_id)
         if project is None:
             raise ValueError("Project not found")
-        run = db.scalar(
-            select(AgentRun)
-            .where(AgentRun.task_id == task.id, AgentRun.finished_at.is_(None))
-            .order_by(AgentRun.id.desc())
-        )
+        unfinished_runs = self._unfinished_runs_for_task(db, task.id)
+        run = unfinished_runs[0] if unfinished_runs else None
         agent = db.get(Agent, task.assigned_agent_id) if task.assigned_agent_id else None
         if run is not None:
             run.status = "stopped"
@@ -18046,6 +33158,7 @@ class MissionControlService:
         self._release_reservations(db, project.id, task_id=task.id, agent_id=agent.id if agent is not None else None)
         self.events.publish(db, project.id, "task.completed_by_user", {"task_id": task.id, "run_id": run.id if run is not None else None})
         await self._maybe_finalize_handoff(db, project)
+        self._schedule_orchestration_follow_up(db, project, reason="task_completed_by_user")
 
     async def pause_agent(self, db: Session, agent: Agent) -> None:
         await self.stop_agent(db, agent)
@@ -18062,10 +33175,13 @@ class MissionControlService:
         return str(path), path.read_text(encoding="utf-8", errors="ignore")
 
     async def manager_message(self, db: Session, project: Project, message: str) -> dict[str, Any]:
+        project_id = project.id
         manager_agent = self._manager_agent(db, project.id)
         settings_record = self._project_settings(db, project)
         resolved_settings = resolve_manager_settings(project, settings_record)
         latest_plan = self._latest_plan(db, project.id)
+        docs_path = project.docs_path or str(self._project_docs_dir(project))
+        user_name = self._preferred_user_name(db, project)
         user_record = self._record_manager_message(
             db,
             project,
@@ -18074,6 +33190,7 @@ class MissionControlService:
             content_markdown=message,
             metadata_json={"source": "workspace_chat"},
         )
+        user_record_id = user_record.id
         if project.manager_mode == "deterministic" or resolved_settings.runner_mode == "dry_run":
             reply = f"Manager summary: project is **{project.status}**. Open tasks: {db.scalar(select(func.count(Task.id)).where(Task.project_id == project.id, Task.status.in_(list(TASK_OPEN_STATUSES))))}."
             manager_agent.active_model = resolved_settings.effective_model_label
@@ -18092,28 +33209,47 @@ class MissionControlService:
             self.events.publish(db, project.id, "manager.message", {"message": message, "reply": reply})
             return {"reply": reply, "message": self._serialize_manager_message(manager_record)}
         try:
+            manager_agent.status = "working"
+            manager_agent.current_action = "message"
+            resolved_settings = self._apply_remote_execution_selection(db, project, resolved_settings)
+            context = RunnerContext(
+                project=self._runner_project_snapshot(project),
+                agent=self._runner_agent_snapshot(manager_agent),
+                task=None,
+                docs_path=docs_path,
+                plan_markdown=latest_plan.content_markdown if latest_plan else None,
+                settings=self._runner_settings_payload(resolved_settings),
+            )
+            prompt = await asyncio.to_thread(
+                manager_message_prompt,
+                project,
+                docs_path,
+                message,
+                user_name=user_name,
+                provider=resolved_settings.provider,
+                model=resolved_settings.effective_model_label,
+                reasoning_effort=resolved_settings.effective_reasoning_label,
+            )
+            # Persist the inbound message and release the transaction before the
+            # live manager runner handshake/turn so background orchestration
+            # does not pin SQLite while the provider is running.
+            db.commit()
             runner = await self.runners.get_runner_for_settings(resolved_settings)
+            project = db.get(Project, project_id)
+            if project is None:
+                raise ValueError("Project disappeared before manager message execution.")
+            manager_agent = self._manager_agent(db, project.id)
             manager_agent.status = "working"
             self._cache_agent_run_profile(manager_agent, resolved_settings, runner_type=runner.runner_type, action="message")
+            db.commit()
             handle, last_payload = await runner.run_manager_turn(
-                RunnerContext(
-                    project=project,
-                    agent=manager_agent,
-                    task=None,
-                    docs_path=project.docs_path or str(self._project_docs_dir(project)),
-                    plan_markdown=latest_plan.content_markdown if latest_plan else None,
-                    settings=self._runner_settings_payload(resolved_settings),
-                ),
-                manager_message_prompt(
-                    project,
-                    project.docs_path or str(self._project_docs_dir(project)),
-                    message,
-                    user_name=self._preferred_user_name(db, project),
-                    provider=resolved_settings.provider,
-                    model=resolved_settings.effective_model_label,
-                    reasoning_effort=resolved_settings.effective_reasoning_label,
-                ),
+                context,
+                prompt,
             )
+            project = db.get(Project, project_id)
+            if project is None:
+                raise ValueError("Project disappeared after manager message execution.")
+            manager_agent = self._manager_agent(db, project.id)
             manager_agent.status = "idle"
             manager_agent.current_action = None
             if handle.session_ref:
@@ -18158,13 +33294,16 @@ class MissionControlService:
                         "provider": resolved_settings.provider,
                         "runner": handle.runner_type,
                         "logs_path": handle.logs_path,
-                        "source_message_id": user_record.id,
+                        "source_message_id": user_record_id,
                     },
                 )
                 self.events.publish(db, project.id, "manager.message", {"message": message, "reply": reply, "logs_path": handle.logs_path})
                 return {"reply": reply, "message": self._serialize_manager_message(manager_record)}
         except Exception as exc:  # noqa: BLE001
+            project = db.get(Project, project_id) or project
             self.events.publish(db, project.id, "manager.mode.fallback", {"action": "message", "error": str(exc)})
+        project = db.get(Project, project_id) or project
+        manager_agent = self._manager_agent(db, project.id)
         manager_agent.status = "idle"
         manager_agent.active_model = resolved_settings.effective_model_label
         manager_agent.active_reasoning_effort = resolved_settings.effective_reasoning_label
@@ -18183,7 +33322,7 @@ class MissionControlService:
             role="manager",
             message_type="system_notice",
             content_markdown=reply,
-            metadata_json={"response_mode": "fallback", "source_message_id": user_record.id},
+            metadata_json={"response_mode": "fallback", "source_message_id": user_record_id},
         )
         self.events.publish(db, project.id, "manager.message", {"message": message, "reply": reply})
         return {"reply": reply, "message": self._serialize_manager_message(manager_record)}
@@ -18340,6 +33479,9 @@ class MissionControlService:
         )
 
     async def manager_next_step(self, db: Session, project: Project) -> ManagerWorkerDecision:
+        self._reconcile_completed_follow_up_waiting_tasks(db, project)
+        self._reconcile_tasks_with_unfinished_runs(db, project)
+        self._reconcile_orphaned_working_tasks(db, project)
         intake_decision = await self._greenfield_intake_decision(db, project)
         if intake_decision is not None:
             self.events.publish(
@@ -18349,8 +33491,15 @@ class MissionControlService:
                 {"decision": _dump_model(intake_decision), "manager_mode_used": "deterministic_greenfield_intake"},
             )
             return intake_decision
+        provider_backoff = self._provider_backoff_state(db, project)
+        if provider_backoff is not None:
+            return ManagerWorkerDecision(
+                decision_type="wait",
+                summary_markdown=f"Provider usage limit active. {provider_backoff['summary']}",
+            )
         workers = list(db.scalars(select(Agent).where(Agent.project_id == project.id, Agent.kind == "worker").order_by(Agent.id.asc())))
         fallback_decision = ManagerWorkerDecision(decision_type="wait", summary_markdown="No safe backlog task is ready.")
+        fallback_task: Task | None = None
         for agent in workers:
             if agent.status not in {"idle", "waiting", "done", "stopped"}:
                 continue
@@ -18363,22 +33512,72 @@ class MissionControlService:
                     assign_to_agent_id=agent.id,
                 )
                 break
-        decision, manager_mode_used = await self._resolve_manager_model(
-            db,
-            project,
-            action_name="manager.next_step",
-            objective="Re-evaluate the backlog and choose the next safe task assignment.",
-            response_schema=MANAGER_WORKER_DECISION_SCHEMA,
-            payload={
-                "workers": [{"id": agent.id, "name": agent.name, "status": agent.status} for agent in workers],
-                "tasks": [
-                    {"id": task.id, "title": task.title, "status": task.status, "waiting_reason": task.waiting_reason}
-                    for task in db.scalars(select(Task).where(Task.project_id == project.id).order_by(Task.priority.asc(), Task.id.asc()))
-                ],
-            },
-            model_schema=ManagerWorkerDecision,
-            fallback_factory=lambda: fallback_decision,
-        )
+        if fallback_decision.decision_type == "wait":
+            blocked_follow_up = self._recover_blocked_task_follow_up(db, project)
+            if blocked_follow_up is not None:
+                fallback_task, fallback_decision = blocked_follow_up
+        if fallback_decision.decision_type in {"assign_next_task", "request_fix"}:
+            decision = fallback_decision
+            manager_mode_used = "deterministic_ready_assignment"
+        else:
+            decision, manager_mode_used = await self._resolve_manager_model(
+                db,
+                project,
+                action_name="manager.next_step",
+                objective="Re-evaluate the backlog and choose the next safe task assignment.",
+                response_schema=MANAGER_WORKER_DECISION_SCHEMA,
+                payload={
+                    "workers": [{"id": agent.id, "name": agent.name, "status": agent.status} for agent in workers],
+                    "tasks": [
+                        {"id": task.id, "title": task.title, "status": task.status, "waiting_reason": task.waiting_reason}
+                        for task in db.scalars(select(Task).where(Task.project_id == project.id).order_by(Task.priority.asc(), Task.id.asc()))
+                    ],
+                },
+                model_schema=ManagerWorkerDecision,
+                fallback_factory=lambda: fallback_decision,
+            )
+        if decision.decision_type == "assign_next_task" and decision.task_id is None and fallback_decision.decision_type in {"assign_next_task", "request_fix"}:
+            decision = fallback_decision
+        elif (
+            decision.decision_type in {"wait", "mark_blocked"}
+            and fallback_decision.decision_type == "request_fix"
+            and fallback_task is not None
+            and not decision.follow_up_title
+        ):
+            decision = fallback_decision
+        if decision.decision_type == "assign_next_task" and decision.task_id:
+            target_task = db.get(Task, decision.task_id)
+            target_agent = next(
+                (
+                    worker
+                    for worker in workers
+                    if worker.id == decision.assign_to_agent_id and worker.status != "retired"
+                ),
+                None,
+            )
+            if target_agent is None and target_task is not None:
+                for candidate in workers:
+                    if candidate.status not in {"idle", "waiting", "done", "stopped"}:
+                        continue
+                    candidate_task = self._find_next_safe_task(db, project, candidate)
+                    if candidate_task and candidate_task.id == target_task.id:
+                        target_agent = candidate
+                        break
+            if target_agent is not None and target_task is not None:
+                await self._apply_worker_decision(db, project, target_agent, None, decision)
+        elif decision.decision_type == "request_fix":
+            target_task = db.get(Task, decision.task_id) if decision.task_id else fallback_task
+            target_agent_id = decision.assign_to_agent_id or (target_task.assigned_agent_id if target_task is not None else None)
+            target_agent = next(
+                (
+                    worker
+                    for worker in workers
+                    if worker.id == target_agent_id and worker.status != "retired"
+                ),
+                None,
+            )
+            if target_agent is not None:
+                await self._apply_worker_decision(db, project, target_agent, target_task, decision)
         self.events.publish(db, project.id, "manager.worker_decision", {"decision": _dump_model(decision), "manager_mode_used": manager_mode_used})
         await self.start_idle_agents(db, project)
         return decision

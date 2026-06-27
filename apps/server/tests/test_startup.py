@@ -315,9 +315,18 @@ def test_manual_diagnostics_report_is_created(client) -> None:
     assert Path(payload["path"]).exists()
     assert Path(payload["json_path"]).exists()
     assert Path(payload["bundle_path"]).exists()
+    assert payload["report_id"].startswith("diagnostic-")
     assert payload["safe_debug_commands"]
     assert payload["platform_profile"]["platform_label"]
     assert payload["performance_profile"]["recommended_swarm_max_agents"] >= 1
+    assert payload["runtime_blockers"] == []
+    assert payload["backend_binding"]["host"]
+    assert "mode" in payload["daemon_identity"]
+    assert "status" in payload["daemon_metadata"]
+    assert payload["repo_version_control"]["status"] == "not_configured"
+    assert sorted(payload["bundle_members"]) == sorted([Path(payload["path"]).name, Path(payload["json_path"]).name])
+    assert payload["bundle_metadata"]["exists"] is True
+    assert payload["bundle_metadata"]["member_count"] >= 2
     assert "summary" in payload
 
 
@@ -506,6 +515,39 @@ def test_diagnostic_reports_preserve_optional_project_scope_metadata(monkeypatch
     reports = diagnostics.list_diagnostic_reports()
 
     assert reports
+    assert reports[0]["report_id"].startswith("diagnostic-")
     assert reports[0]["project_id"] == 42
     assert reports[0]["project_name"] == "Scoped Diagnostics"
     assert reports[0]["workspace_path"] == "C:/demo/scoped"
+    assert reports[0]["bundle_members"]
+    assert reports[0]["bundle_metadata"]["exists"] is True
+    assert reports[0]["repo_version_control"]["status"] == "missing_workspace"
+
+
+def test_preview_status_reuses_provider_detection_when_profile_probe_key_is_unchanged(monkeypatch) -> None:
+    calls = {"count": 0}
+
+    def fake_detect_provider_statuses(selected_provider=None, adapter_command=None, provider_endpoint=None, adapter_args=None):
+        calls["count"] += 1
+        return [
+            {
+                "provider": "codex",
+                "label": "Codex",
+                "runtime_ready": True,
+                "runtime_summary": "Codex CLI ready.",
+                "login_status": "Logged in using ChatGPT",
+                "cli_detected": True,
+                "cli_version": "codex 1.0.0",
+                "authenticated": True,
+            }
+        ]
+
+    monkeypatch.setattr("startup.detect_provider_statuses", fake_detect_provider_statuses)
+
+    db = SessionLocal()
+    try:
+        startup_service.preview_status(db, attempt_number=1, include_optional_checks=False)
+    finally:
+        db.close()
+
+    assert calls["count"] == 1

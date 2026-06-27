@@ -3,7 +3,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 from typing import Generator
 
-from sqlalchemy import create_engine, inspect, text
+from sqlalchemy import create_engine, event, inspect, text
 from sqlalchemy.orm import Session, declarative_base, sessionmaker
 
 from config import DEFAULT_DB_URL, ensure_runtime_dirs
@@ -12,12 +12,25 @@ from config import DEFAULT_DB_URL, ensure_runtime_dirs
 ensure_runtime_dirs()
 
 Base = declarative_base()
+SQLITE_DEFAULT_BUSY_TIMEOUT_MS = 5_000
 engine = create_engine(
     DEFAULT_DB_URL,
-    connect_args={"check_same_thread": False, "timeout": 30},
+    connect_args={"check_same_thread": False, "timeout": SQLITE_DEFAULT_BUSY_TIMEOUT_MS / 1000},
     future=True,
 )
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True)
+
+
+@event.listens_for(engine, "connect")
+def _configure_sqlite_connection(dbapi_connection, _connection_record) -> None:
+    cursor = dbapi_connection.cursor()
+    try:
+        cursor.execute("PRAGMA journal_mode=WAL")
+        cursor.execute("PRAGMA synchronous=NORMAL")
+        cursor.execute(f"PRAGMA busy_timeout={SQLITE_DEFAULT_BUSY_TIMEOUT_MS}")
+        cursor.execute("PRAGMA foreign_keys=ON")
+    finally:
+        cursor.close()
 
 
 def _ensure_column(table_name: str, column_name: str, sql: str) -> None:
@@ -81,6 +94,7 @@ def _apply_sqlite_migrations() -> None:
         _ensure_column("agents", "active_model", "active_model VARCHAR(120)")
         _ensure_column("agents", "active_reasoning_effort", "active_reasoning_effort VARCHAR(30)")
         _ensure_column("agents", "active_runner_type", "active_runner_type VARCHAR(50)")
+        _ensure_column("agents", "active_usage_json", "active_usage_json JSON")
         _ensure_column("agents", "current_action", "current_action TEXT")
     if "tasks" in tables:
         _ensure_column("tasks", "agent_role", "agent_role VARCHAR(120)")
@@ -97,6 +111,7 @@ def _apply_sqlite_migrations() -> None:
         _ensure_column("agent_runs", "exit_code", "exit_code INTEGER")
         _ensure_column("agent_runs", "manager_action", "manager_action VARCHAR(80)")
         _ensure_column("agent_runs", "effective_settings_json", "effective_settings_json JSON")
+        _ensure_column("agent_runs", "usage_json", "usage_json JSON")
         _ensure_column("agent_runs", "result_envelope_json", "result_envelope_json JSON")
         _ensure_column("agent_runs", "failure_classification", "failure_classification VARCHAR(40)")
     if "project_settings" in tables:
@@ -104,6 +119,12 @@ def _apply_sqlite_migrations() -> None:
         _ensure_column("project_settings", "provider_endpoint", "provider_endpoint TEXT")
         _ensure_column("project_settings", "adapter_command", "adapter_command TEXT")
         _ensure_column("project_settings", "adapter_args_json", "adapter_args_json JSON NOT NULL DEFAULT '[]'")
+        _ensure_column("project_settings", "remote_execution_policy_json", "remote_execution_policy_json JSON NOT NULL DEFAULT '{}'")
+        _ensure_column("project_settings", "launch_guard_enabled", "launch_guard_enabled BOOLEAN NOT NULL DEFAULT 1")
+        _ensure_column("project_settings", "hard_total_token_budget", "hard_total_token_budget INTEGER NOT NULL DEFAULT 2500000")
+        _ensure_column("project_settings", "hard_total_worker_launch_budget", "hard_total_worker_launch_budget INTEGER NOT NULL DEFAULT 120")
+        _ensure_column("project_settings", "hard_peak_context_budget", "hard_peak_context_budget INTEGER NOT NULL DEFAULT 400000")
+        _ensure_column("project_settings", "quota_backoff_cooldown_minutes", "quota_backoff_cooldown_minutes INTEGER NOT NULL DEFAULT 60")
         _ensure_column("project_settings", "workspace_widgets_json", "workspace_widgets_json JSON NOT NULL DEFAULT '[]'")
         _ensure_column("project_settings", "approval_overrides_json", "approval_overrides_json JSON NOT NULL DEFAULT '{}'")
     if "swarm_preferences" in tables:
@@ -169,6 +190,17 @@ def _apply_sqlite_migrations() -> None:
         _ensure_column("swarm_events", "message", "message TEXT NOT NULL DEFAULT ''")
         _ensure_column("swarm_events", "agent_id", "agent_id INTEGER")
         _ensure_column("swarm_events", "metadata_json", "metadata_json JSON NOT NULL DEFAULT '{}'")
+    if "swarm_budgets" in tables:
+        _ensure_column("swarm_budgets", "launch_guard_enabled", "launch_guard_enabled BOOLEAN NOT NULL DEFAULT 1")
+        _ensure_column("swarm_budgets", "launch_guard_status", "launch_guard_status VARCHAR(40) NOT NULL DEFAULT 'ok'")
+        _ensure_column("swarm_budgets", "launch_guard_reason", "launch_guard_reason TEXT")
+        _ensure_column("swarm_budgets", "hard_total_token_budget", "hard_total_token_budget INTEGER NOT NULL DEFAULT 2500000")
+        _ensure_column("swarm_budgets", "observed_total_tokens", "observed_total_tokens INTEGER NOT NULL DEFAULT 0")
+        _ensure_column("swarm_budgets", "hard_total_worker_launch_budget", "hard_total_worker_launch_budget INTEGER NOT NULL DEFAULT 120")
+        _ensure_column("swarm_budgets", "launches_started", "launches_started INTEGER NOT NULL DEFAULT 0")
+        _ensure_column("swarm_budgets", "hard_peak_context_budget", "hard_peak_context_budget INTEGER NOT NULL DEFAULT 400000")
+        _ensure_column("swarm_budgets", "observed_peak_context_tokens", "observed_peak_context_tokens INTEGER NOT NULL DEFAULT 0")
+        _ensure_column("swarm_budgets", "quota_backoff_active", "quota_backoff_active BOOLEAN NOT NULL DEFAULT 0")
     if "interview_sessions" in tables:
         _ensure_column("interview_sessions", "question_budget", "question_budget INTEGER NOT NULL DEFAULT 20")
         _ensure_column("interview_sessions", "questions_asked", "questions_asked INTEGER NOT NULL DEFAULT 0")
@@ -272,6 +304,7 @@ def _apply_sqlite_migrations() -> None:
         _ensure_column("app_profile", "provider_endpoint", "provider_endpoint TEXT")
         _ensure_column("app_profile", "adapter_command", "adapter_command TEXT")
         _ensure_column("app_profile", "adapter_args_json", "adapter_args_json JSON NOT NULL DEFAULT '[]'")
+        _ensure_column("app_profile", "remote_execution_registry_json", "remote_execution_registry_json JSON NOT NULL DEFAULT '{}'")
         _ensure_column("app_profile", "recent_startup_error_json", "recent_startup_error_json JSON")
         _ensure_column("app_profile", "last_opened_at", "last_opened_at DATETIME")
     if "orchestration_sessions" in tables:

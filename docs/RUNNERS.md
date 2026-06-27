@@ -1,27 +1,27 @@
 # Runners
 
-> Status: Partial / Experimental
+> Status: Current
 
 Mission Control uses runners to execute background work. Runner availability depends on the local machine, installed tools, authentication state, and explicit configuration.
 
-## Supported runner types
+## Support Matrix
 
-- `dry_run`
-- `codex_cli`
-- `ollama`
-- `claude_cli`
-- `openai_api`
-- `anthropic_api`
-- `xai_api`
-- `nvidia_dynamo`
-- `nvidia_nim`
+`working` means the runner path is implemented, selected by the runtime, and covered by tests when its prerequisites exist.
+
+| Runner | Status | What proves it |
+| --- | --- | --- |
+| `codex_cli` | working | CLI runner, startup probes, runner selection tests |
+| `claude_cli` | working | Claude CLI runner, handshake tests, runner selection tests |
+| `ollama` | working | built-in adapter recipe, adapter tests, runner execution tests |
+| `openai_api` | working | built-in API adapter recipe, adapter tests, runner selection tests |
+| `dry_run` | working | deterministic dry-run lane used by the validated happy path |
 
 ## Detection model
 
 - `dry_run` is always the safe fallback
 - `codex_cli` is preferred when installed and signed in
 - `ollama` uses the built-in `scripts/ollama_adapter.py` recipe and still requires a reachable local endpoint
-- `claude_cli` depends on a working local CLI environment
+- `claude_cli` depends on a working local CLI environment and local auth state
 - API-backed runners use the built-in `scripts/api_provider_adapter.py` recipe, still require secure external API keys, and may incur billing
 - `nvidia_dynamo` uses the built-in OpenAI-compatible adapter recipe and expects a reachable NVIDIA Dynamo frontend; API keys are optional unless the deployment enforces bearer auth
 - `nvidia_nim` uses the built-in OpenAI-compatible adapter recipe and expects a reachable NVIDIA NIM endpoint; hosted or private deployments may require bearer auth
@@ -51,6 +51,13 @@ Mission Control uses runners to execute background work. Runner availability dep
 - users can still override the adapter command or args explicitly when they need a custom path
 - `custom` providers stay opt-in and do not get a fake default recipe
 
+## Test proof
+
+- [Runner registry tests](../apps/server/tests/test_runners.py)
+- [Headless bootstrap tests](../apps/server/tests/test_headless_bootstrap.py)
+- [Ollama adapter tests](../apps/server/tests/test_ollama_adapter.py)
+- [API provider adapter tests](../apps/server/tests/test_api_provider_adapter.py)
+
 ## Operational rules
 
 - Mission Control should not silently switch a project onto a billed API path
@@ -61,6 +68,7 @@ Mission Control uses runners to execute background work. Runner availability dep
 ## Read next
 
 - [Autowire Providers](AUTOWIRE_PROVIDERS.md)
+- [Feature Status](FEATURE_STATUS.md)
 - [Background Health](HEADLESS_HEALTH.md)
 - [NVIDIA Stack Testing](NVIDIA_STACK_TESTING.md)
 - [Webwright](WEBWRIGHT.md)

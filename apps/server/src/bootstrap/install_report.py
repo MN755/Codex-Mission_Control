@@ -230,9 +230,18 @@ def build_install_report(
         codex_host_status=codex_host_status,
         discovered_installs=discovered_installs,
     )
+    ready_readiness_keys = {"backend_daemon", "daemon_identity", "mcp_bridge", "multiple_installs"}
+    ready_readiness = {
+        str(item.get("key")): str(item.get("state") or "unknown")
+        for item in readiness_matrix
+    }
+    dry_run_ready = any(str(probe.get("runner_id")) == "dry_run" and probe.get("configured") for probe in probes)
+    core_bridge_ready = all(ready_readiness.get(key) == "ready" for key in ready_readiness_keys)
     live_runners = [probe for probe in probes if probe["runner_id"] != "dry_run" and probe["configured"]]
-    if health.get("status") == "broken" and not live_runners:
+    if health.get("status") == "broken" and not dry_run_ready:
         status = "failed"
+    elif core_bridge_ready and dry_run_ready:
+        status = "ready"
     elif health.get("status") == "ready" and live_runners:
         status = "ready"
     else:

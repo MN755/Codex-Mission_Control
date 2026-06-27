@@ -3034,6 +3034,7 @@ def _build_dynamic_bridge_endpoints_page() -> str:
     core_action_endpoints = [
         "`/api/health`",
         "`/api/plugin/health`",
+        "`/api/headless/attach-workspace`",
         "`/api/orchestrations/attach-workspace`",
         "`/api/orchestrations`",
         "`/api/orchestrations/{orchestration_id}/status`",

@@ -18,6 +18,7 @@ from nvidia_support import detect_nvidia_dynamo_status, detect_nvidia_nim_status
 from provider_adapter_recipes import resolve_adapter_recipe
 from provider_support import normalize_provider, provider_label, provider_uses_adapter, provider_uses_endpoint, supports_app_server
 from webwright_support import detect_webwright_status
+from workspace_git import workspace_git_env
 
 try:
     import tomllib
@@ -75,6 +76,172 @@ def _adapter_runtime_blockers(*, adapter_required: bool, adapter_configured: boo
     elif not adapter_ready:
         blockers.append("adapter_command_unavailable")
     return blockers
+
+
+def _deferred_ollama_status(endpoint: str | None = None) -> dict[str, Any]:
+    base = (endpoint or "http://localhost:11434").rstrip("/")
+    summary = f"Ollama endpoint was not probed because it is not the selected provider."
+    return {
+        "provider": "ollama",
+        "label": "Ollama",
+        "cli_detected": False,
+        "cli_path": None,
+        "cli_path_exists": False,
+        "cli_execution_available": False,
+        "cli_version": base,
+        "login_status": summary,
+        "auth_mode": "local",
+        "authenticated": False,
+        "auth_status_detectable": True,
+        "supports_model_override": True,
+        "supports_reasoning_effort": True,
+        "supports_app_server": False,
+        "supports_builtin_auth": False,
+        "available_models": [],
+        "notes": ["Mission Control defers live Ollama probing until Ollama is the selected provider."],
+        "reachable": False,
+        "summary": summary,
+    }
+
+
+def _deferred_nvidia_dynamo_status(endpoint: str | None = None) -> dict[str, Any]:
+    base = (endpoint or "http://localhost:8000").rstrip("/")
+    summary = "NVIDIA Dynamo frontend was not probed because it is not the selected provider."
+    return {
+        "provider": "nvidia_dynamo",
+        "label": "NVIDIA Dynamo",
+        "available": False,
+        "cli_detected": False,
+        "cli_path": base,
+        "cli_path_exists": False,
+        "cli_execution_available": False,
+        "cli_version": None,
+        "login_status": summary,
+        "auth_mode": None,
+        "authenticated": False,
+        "auth_status_detectable": True,
+        "supports_model_override": True,
+        "supports_reasoning_effort": False,
+        "supports_app_server": False,
+        "supports_builtin_auth": False,
+        "available_models": [],
+        "notes": ["Mission Control defers live NVIDIA Dynamo probing until Dynamo is the selected provider."],
+        "reachable": False,
+        "summary": summary,
+        "endpoint": base,
+        "endpoint_configured": bool(str(endpoint or "").strip()),
+        "api_key_configured": False,
+        "auth_required": False,
+    }
+
+
+def detect_git_status(*, workspace_path: str | None = None) -> dict[str, Any]:
+    root_text = str(workspace_path or "").strip()
+    if not root_text:
+        return {
+            "status": "not_configured",
+            "summary": "No workspace path was provided for Git readiness checks.",
+            "safe_directory": None,
+            "workspace_path": None,
+            "is_git_repo": False,
+            "dirty_working_tree": None,
+            "error": None,
+            "recommended_fix": None,
+        }
+    root = Path(root_text).expanduser()
+    if not root.exists():
+        return {
+            "status": "missing_workspace",
+            "summary": "Workspace path does not exist.",
+            "safe_directory": None,
+            "workspace_path": str(root),
+            "is_git_repo": False,
+            "dirty_working_tree": None,
+            "error": None,
+            "recommended_fix": None,
+        }
+    git_path = shutil.which("git")
+    if not git_path:
+        return {
+            "status": "git_missing",
+            "summary": "Git is not available on PATH.",
+            "safe_directory": None,
+            "workspace_path": str(root),
+            "is_git_repo": None,
+            "dirty_working_tree": None,
+            "error": None,
+            "recommended_fix": "Install Git or make it available on PATH for Mission Control.",
+        }
+    try:
+        completed = subprocess.run(
+            [git_path, "-C", str(root), "status", "--short", "--branch", "--untracked-files=no"],
+            capture_output=True,
+            text=True,
+            timeout=20,
+            check=False,
+            env=workspace_git_env(root),
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        return {
+            "status": "probe_failed",
+            "summary": "Git readiness probe failed before Git could respond.",
+            "safe_directory": None,
+            "workspace_path": str(root),
+            "is_git_repo": None,
+            "dirty_working_tree": None,
+            "error": str(exc),
+            "recommended_fix": "Re-run the Git readiness check after the local Git runtime is available.",
+        }
+    stdout = (completed.stdout or "").strip()
+    stderr = (completed.stderr or "").strip()
+    combined = "\n".join(part for part in [stdout, stderr] if part).strip()
+    lowered = combined.lower()
+    if completed.returncode == 0:
+        lines = [line for line in stdout.splitlines() if line.strip()]
+        dirty = any(not line.startswith("##") for line in lines)
+        return {
+            "status": "ready",
+            "summary": "Git is ready.",
+            "safe_directory": True,
+            "workspace_path": str(root),
+            "is_git_repo": True,
+            "dirty_working_tree": dirty,
+            "error": None,
+            "recommended_fix": None,
+            "details": {"branch_status": lines[0] if lines else "", "raw_output": combined, "untracked_files": "ignored"},
+        }
+    if "not a git repository" in lowered:
+        return {
+            "status": "not_git_repo",
+            "summary": "Workspace is not a Git repository.",
+            "safe_directory": None,
+            "workspace_path": str(root),
+            "is_git_repo": False,
+            "dirty_working_tree": None,
+            "error": combined or None,
+            "recommended_fix": None,
+        }
+    if "dubious ownership" in lowered or "safe.directory" in lowered:
+        return {
+            "status": "safe_directory_blocked",
+            "summary": "Git ownership policy is blocking repo commands for this workspace.",
+            "safe_directory": False,
+            "workspace_path": str(root),
+            "is_git_repo": True,
+            "dirty_working_tree": None,
+            "error": combined or None,
+            "recommended_fix": f"Run `git config --global --add safe.directory \"{root}\"` from the owning user environment if you trust this workspace.",
+        }
+    return {
+        "status": "probe_failed",
+        "summary": "Git readiness probe failed.",
+        "safe_directory": None,
+        "workspace_path": str(root),
+        "is_git_repo": None,
+        "dirty_working_tree": None,
+        "error": combined or None,
+        "recommended_fix": "Inspect the Git error output and retry the workspace readiness check.",
+    }
 
 
 def auth_mode_from_login_output(login_output: str) -> str | None:
@@ -640,11 +807,11 @@ def detect_provider_statuses(
     selected = normalize_provider(selected_provider)
     providers = [
         detect_codex_status(),
-        detect_ollama_status(provider_endpoint if selected == "ollama" else None),
+        detect_ollama_status(provider_endpoint) if selected == "ollama" else _deferred_ollama_status(),
         detect_env_api_status("openai_api", env_key="OPENAI_API_KEY", label="OpenAI API"),
         detect_env_api_status("anthropic_api", env_key="ANTHROPIC_API_KEY", label="Anthropic API"),
         detect_env_api_status("xai_api", env_key="XAI_API_KEY", label="xAI API"),
-        detect_nvidia_dynamo_status(provider_endpoint if selected == "nvidia_dynamo" else None),
+        detect_nvidia_dynamo_status(provider_endpoint) if selected == "nvidia_dynamo" else _deferred_nvidia_dynamo_status(),
         detect_nvidia_nim_status(provider_endpoint if selected == "nvidia_nim" else None),
         detect_claude_code_status(),
         detect_custom_status(adapter_command, adapter_args),
@@ -709,6 +876,7 @@ def detect_system_status(
     adapter_command: str | None = None,
     ollama_endpoint: str | None = None,
     adapter_args: list[str] | None = None,
+    workspace_path: str | None = None,
 ) -> dict[str, Any]:
     normalized_provider = normalize_provider(selected_provider)
     launcher_config = load_launcher_config()
@@ -729,6 +897,7 @@ def detect_system_status(
         available_models=list(selected.get("available_models", [])),
     )
     notes = list(dict.fromkeys(selected.get("notes", []) + codex.get("notes", [])))
+    repo_version_control = detect_git_status(workspace_path=workspace_path)
     return {
         "selected_provider": normalized_provider,
         "selected_provider_label": provider_label(normalized_provider),
@@ -753,6 +922,7 @@ def detect_system_status(
         "repo_root": str(REPO_ROOT),
         "launcher_root": str(LAUNCHER_ROOT),
         "plugin_source_root": str((REPO_ROOT / "plugins" / "mission-control").resolve()),
+        "repo_version_control": repo_version_control,
         "backend_host": str(backend_binding["host"]),
         "backend_port": int(backend_binding["port"]),
         "backend_base_url": f"http://{_url_host(str(backend_binding['host']))}:{int(backend_binding['port'])}",
@@ -778,5 +948,6 @@ def detect_system_status(
             f"Active repo root: {daemon_identity['repo_root']}.",
             f"Launcher root: {daemon_identity['launcher_root']}.",
             f"Webwright status: {webwright.get('summary')}",
+            f"Repo Git readiness: {repo_version_control.get('summary')}",
         ],
     }

@@ -46,10 +46,25 @@ def test_cli_resume_args_do_not_include_initial_exec_only_flags(monkeypatch) -> 
     monkeypatch.setattr("codex_runner.cli_runner.codex_command_path", lambda: "C:/tools/codex.exe")
     args = CliCodexRunner().build_exec_args(_context(session_ref="thread-123"), resume=True)
 
-    assert args[:4] == ["C:/tools/codex.exe", "exec", "resume", "--json"]
+    assert args[:14] == [
+        "C:/tools/codex.exe",
+        "--disable",
+        "apps",
+        "--disable",
+        "plugins",
+        "--disable",
+        "tool_suggest",
+        "-a",
+        "on-request",
+        "--sandbox",
+        "danger-full-access",
+        "exec",
+        "resume",
+        "--json",
+    ]
+    assert "--ignore-user-config" in args
+    assert "--ignore-rules" in args
     assert "thread-123" in args
-    assert "--sandbox" not in args
-    assert "-a" not in args
     assert "-C" not in args
 
 
@@ -57,7 +72,23 @@ def test_cli_initial_exec_args_keep_workspace_and_approval_flags(monkeypatch) ->
     monkeypatch.setattr("codex_runner.cli_runner.codex_command_path", lambda: "C:/tools/codex.exe")
     args = CliCodexRunner().build_exec_args(_context(), resume=False)
 
-    assert args[:3] == ["C:/tools/codex.exe", "exec", "--json"]
+    assert args[:13] == [
+        "C:/tools/codex.exe",
+        "--disable",
+        "apps",
+        "--disable",
+        "plugins",
+        "--disable",
+        "tool_suggest",
+        "-a",
+        "on-request",
+        "--sandbox",
+        "danger-full-access",
+        "exec",
+        "--json",
+    ]
+    assert "--ignore-user-config" in args
+    assert "--ignore-rules" in args
     assert "--sandbox" in args
     assert "-a" in args
     assert "-C" in args

@@ -570,13 +570,13 @@ def test_validation_coverage_get_returns_preview_without_persisting_rows(client)
 def test_project_status_summary_get_is_read_only_for_support_records(client, bridge_headers, monkeypatch: pytest.MonkeyPatch) -> None:
     project_id = _create_legacy_project("Project Status Summary Read Safety", "project-status-summary-read-safety")
 
-    async def fake_status_summary(db, *, project=None, orchestration=None):
+    def fake_status_summary_preview(db, *, project=None, orchestration=None):
         return _fast_status_summary(
             project.id if project is not None else project_id,
             orchestration.id if orchestration is not None else None,
         )
 
-    monkeypatch.setattr(bridge_runtime_service, "get_status_summary", fake_status_summary)
+    monkeypatch.setattr(bridge_runtime_service, "get_status_summary_preview", fake_status_summary_preview)
 
     db = SessionLocal()
     try:
@@ -638,6 +638,19 @@ def test_orchestration_status_summary_get_is_read_only_for_support_records(clien
         db.close()
 
 
+def test_project_status_summary_route_does_not_require_full_health_preview(client, bridge_headers, monkeypatch: pytest.MonkeyPatch) -> None:
+    project_id = _create_legacy_project("Project Status Summary Fast Path", "project-status-summary-fast-path")
+
+    def fail_health_preview(db, project):
+        raise AssertionError("status-summary route should not invoke the full project health preview")
+
+    monkeypatch.setattr(manager_service, "get_project_health_preview", fail_health_preview)
+
+    response = client.get(f"/api/projects/{project_id}/status-summary", headers=bridge_headers)
+    assert response.status_code == 200, response.text
+    assert response.json()["message_type"] in {"status_update", "blocked"}
+
+
 @pytest.mark.parametrize(
     ("route_template", "needs_orchestration"),
     [
@@ -682,12 +695,12 @@ def test_swarm_read_routes_do_not_persist_launch_simulations(
         db.close()
 
     if "status-summary" in route_template:
-        async def fake_status_summary(db, *, project=None, orchestration=None):
+        def fake_status_summary_preview(db, *, project=None, orchestration=None):
             resolved_project_id = project.id if project is not None else project_id
             resolved_orchestration_id = orchestration.id if orchestration is not None else None
             return _fast_status_summary(resolved_project_id, resolved_orchestration_id)
 
-        monkeypatch.setattr(bridge_runtime_service, "get_status_summary", fake_status_summary)
+        monkeypatch.setattr(bridge_runtime_service, "get_status_summary_preview", fake_status_summary_preview)
     if "operator-snapshot" in route_template:
         monkeypatch.setattr(
             manager_service,

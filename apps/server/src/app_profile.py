@@ -10,7 +10,7 @@ from config import DEFAULT_APPROVAL_POLICY, DEFAULT_RUNNER_MODE, DEFAULT_SANDBOX
 from integration_registry import normalize_integration_registry, registry_to_legacy_connected_accounts
 from models import AppProfile, utc_now
 from provider_support import normalize_provider
-from project_settings import normalize_provider_adapter_settings, normalize_provider_endpoint
+from project_settings import clamp_codex_model_settings, normalize_provider_adapter_settings, normalize_provider_endpoint
 from schemas import AppProfileUpdate, CompleteFirstRunRequest
 from widget_catalog import validate_widget_types
 
@@ -93,6 +93,7 @@ def _default_app_profile(*, install_id: str | None) -> AppProfile:
         provider_endpoint=None,
         adapter_command=None,
         adapter_args_json=[],
+        remote_execution_registry_json={},
         recent_startup_error_json=None,
         created_at=timestamp,
         updated_at=timestamp,
@@ -130,6 +131,9 @@ def _normalize_profile(profile: AppProfile) -> bool:
         updated = True
     if not profile.adapter_args_json:
         profile.adapter_args_json = []
+        updated = True
+    if not profile.remote_execution_registry_json:
+        profile.remote_execution_registry_json = {}
         updated = True
     if not profile.notification_preferences_json:
         profile.notification_preferences_json = dict(DEFAULT_NOTIFICATION_PREFERENCES)
@@ -254,9 +258,11 @@ def complete_first_run(db: Session, payload: CompleteFirstRunRequest, *, setup_v
     profile.onboarding_completed = True
     profile.setup_version_completed = setup_version
     profile.default_runner_mode = payload.default_runner_mode or profile.default_runner_mode
-    profile.manager_model = payload.manager_model.strip() if payload.manager_model and payload.manager_model.strip() else None
-    profile.default_worker_model = (
-        payload.default_worker_model.strip() if payload.default_worker_model and payload.default_worker_model.strip() else None
+    profile.manager_model, profile.default_worker_model, _ = clamp_codex_model_settings(
+        selected_provider,
+        manager_model=payload.manager_model,
+        default_worker_model=payload.default_worker_model,
+        per_role_model_overrides={},
     )
     profile.manager_reasoning_effort = payload.manager_reasoning_effort
     profile.default_worker_reasoning_effort = payload.default_worker_reasoning_effort

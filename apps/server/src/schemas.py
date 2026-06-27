@@ -34,6 +34,10 @@ SandboxMode = Literal["workspace-write", "read-only"]
 ApprovalPolicy = Literal["on-request", "untrusted", "never"]
 ThemeMode = Literal["system", "dark", "light"]
 StartupBehavior = Literal["dashboard", "last_project", "restore_previous_page"]
+RemoteExecutionTransport = Literal["ssh", "lan_ssh", "tailscale_ssh"]
+RemoteExecutionShellFamily = Literal["posix", "powershell"]
+RemoteExecutionOsFamily = Literal["windows", "linux", "macos", "unknown"]
+RemoteExecutionTrustLevel = Literal["trusted", "limited", "quarantined"]
 AuthJobMethod = Literal["chatgpt", "device_auth", "api_key", "logout"]
 AuthJobStatus = Literal["queued", "running", "succeeded", "failed"]
 StartupMode = Literal["first_time", "regular", "error", "degraded"]
@@ -410,7 +414,20 @@ class ManagerWorkerDecision(BaseModel):
     assign_to_agent_id: int | None = None
     follow_up_title: str | None = None
     follow_up_goal: str | None = None
+    follow_up_allowed_paths: list[str] = Field(default_factory=list)
+    follow_up_forbidden_paths: list[str] = Field(default_factory=list)
     escalation_message: str | None = None
+
+    @field_validator("task_id", "assign_to_agent_id", mode="before")
+    @classmethod
+    def _normalize_optional_positive_ids(cls, value: Any) -> int | None:
+        if value in {None, "", 0, "0"}:
+            return None
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError):
+            return value
+        return parsed if parsed > 0 else None
 
 
 class ManagerHandoff(BaseModel):
@@ -492,6 +509,7 @@ class AgentRead(BaseModel):
     active_model: str | None
     active_reasoning_effort: str | None
     active_runner_type: str | None
+    active_usage_json: dict[str, Any] = Field(default_factory=dict)
     current_action: str | None
     current_task_title: str | None = None
     display_status: AgentDisplayStatus | str = "idle"
@@ -531,6 +549,49 @@ class AgentActionResponse(BaseModel):
     ok: bool
     message: str
     run_id: int | None = None
+
+
+class AgentUsageSnapshotRead(BaseModel):
+    agent_id: int
+    name: str
+    role: str
+    kind: str
+    status: str
+    provider: str | None = None
+    model: str | None = None
+    runner_type: str | None = None
+    usage_json: dict[str, Any] = Field(default_factory=dict)
+
+
+class ModelUsageSummaryRead(BaseModel):
+    provider: str | None = None
+    model: str | None = None
+    runner_type: str | None = None
+    run_count: int = 0
+    active_run_count: int = 0
+    active_agent_count: int = 0
+    input_tokens: int = 0
+    output_tokens: int = 0
+    total_tokens: int = 0
+    cached_input_tokens: int = 0
+    reasoning_tokens: int = 0
+    context_tokens: int = 0
+    estimated_input_tokens: int = 0
+    estimated_context_tokens: int = 0
+    peak_context_tokens: int = 0
+    context_window_tokens: int | None = None
+    peak_context_utilization: float | None = None
+    sample_count: int = 0
+    estimated_source_count: int = 0
+
+
+class ProjectUsageSummaryRead(BaseModel):
+    project_id: int
+    generated_at: datetime
+    active_agents: list[AgentUsageSnapshotRead] = Field(default_factory=list)
+    by_model: list[ModelUsageSummaryRead] = Field(default_factory=list)
+    totals_json: dict[str, Any] = Field(default_factory=dict)
+    notes: list[str] = Field(default_factory=list)
 
 
 class TaskGenerationResponse(BaseModel):
@@ -589,6 +650,12 @@ class ProjectSettingsRead(BaseModel):
     runner_mode: RunnerMode
     sandbox_mode: SandboxMode
     approval_policy: ApprovalPolicy
+    launch_guard_enabled: bool = True
+    hard_total_token_budget: int = 2500000
+    hard_total_worker_launch_budget: int = 120
+    hard_peak_context_budget: int = 400000
+    quota_backoff_cooldown_minutes: int = 60
+    remote_execution_policy_json: dict[str, Any] = Field(default_factory=dict)
     workspace_widgets_json: list[str] = Field(default_factory=list)
     approval_overrides_json: dict[str, Any] = Field(default_factory=dict)
     created_at: datetime
@@ -611,8 +678,357 @@ class ProjectSettingsUpdate(BaseModel):
     runner_mode: RunnerMode | None = None
     sandbox_mode: SandboxMode | None = None
     approval_policy: ApprovalPolicy | None = None
+    launch_guard_enabled: bool | None = None
+    hard_total_token_budget: int | None = Field(default=None, ge=1)
+    hard_total_worker_launch_budget: int | None = Field(default=None, ge=1)
+    hard_peak_context_budget: int | None = Field(default=None, ge=1)
+    quota_backoff_cooldown_minutes: int | None = Field(default=None, ge=1, le=1440)
+    remote_execution_policy_json: dict[str, Any] | None = None
     workspace_widgets_json: list[str] | None = None
     approval_overrides_json: dict[str, Any] | None = None
+
+
+class RemoteExecutionTargetRead(BaseModel):
+    id: str
+    label: str
+    description: str | None = None
+    transport: RemoteExecutionTransport = "ssh"
+    host: str
+    ssh_user: str | None = None
+    ssh_port: int = 22
+    os_family: RemoteExecutionOsFamily = "unknown"
+    shell_family: RemoteExecutionShellFamily = "posix"
+    architecture: str = "unknown"
+    workspace_root: str | None = None
+    adapter_command: str | None = None
+    adapter_args: list[str] = Field(default_factory=list)
+    tags: list[str] = Field(default_factory=list)
+    capabilities: list[str] = Field(default_factory=list)
+    runner_families: list[str] = Field(default_factory=list)
+    trust_level: RemoteExecutionTrustLevel = "limited"
+    enabled: bool = True
+    allow_write: bool = True
+    gpu: str | None = None
+    toolchains: list[str] = Field(default_factory=list)
+    command_families: list[str] = Field(default_factory=list)
+    result_formats: list[str] = Field(default_factory=list)
+    session_recording_enabled: bool = False
+    max_command_runtime_seconds: int | None = None
+    file_transfer_quota_mb: int | None = None
+    allowed_repo_roots: list[str] = Field(default_factory=list)
+    allowed_path_prefixes: list[str] = Field(default_factory=list)
+    artifact_roots: list[str] = Field(default_factory=list)
+    connector_families: list[str] = Field(default_factory=list)
+    last_probe_status: str = "unknown"
+    last_seen_at: str | None = None
+    notes: list[str] = Field(default_factory=list)
+
+
+class RemoteExecutionTargetUpsert(BaseModel):
+    id: str | None = None
+    label: str
+    description: str | None = None
+    transport: RemoteExecutionTransport = "ssh"
+    host: str
+    ssh_user: str | None = None
+    ssh_port: int = Field(default=22, ge=1, le=65535)
+    os_family: RemoteExecutionOsFamily = "unknown"
+    shell_family: RemoteExecutionShellFamily | None = None
+    architecture: str | None = None
+    workspace_root: str | None = None
+    adapter_command: str | None = None
+    adapter_args: list[str] = Field(default_factory=list)
+    tags: list[str] = Field(default_factory=list)
+    capabilities: list[str] = Field(default_factory=list)
+    runner_families: list[str] = Field(default_factory=lambda: ["external_adapter"])
+    trust_level: RemoteExecutionTrustLevel = "limited"
+    enabled: bool = True
+    allow_write: bool = True
+    gpu: str | None = None
+    toolchains: list[str] = Field(default_factory=list)
+    command_families: list[str] = Field(default_factory=list)
+    result_formats: list[str] = Field(default_factory=list)
+    session_recording_enabled: bool = False
+    max_command_runtime_seconds: int | None = Field(default=None, ge=1)
+    file_transfer_quota_mb: int | None = Field(default=None, ge=1)
+    allowed_repo_roots: list[str] = Field(default_factory=list)
+    allowed_path_prefixes: list[str] = Field(default_factory=list)
+    artifact_roots: list[str] = Field(default_factory=list)
+    connector_families: list[str] = Field(default_factory=list)
+    last_probe_status: str | None = None
+    last_seen_at: str | None = None
+    notes: list[str] = Field(default_factory=list)
+
+
+class RemoteExecutionPolicyRead(BaseModel):
+    enabled: bool = False
+    preferred_target_id: str | None = None
+    required_runner_family: str = "external_adapter"
+    required_tags: list[str] = Field(default_factory=list)
+    required_capabilities: list[str] = Field(default_factory=list)
+    allowed_trust_levels: list[RemoteExecutionTrustLevel] = Field(default_factory=list)
+    required_toolchains: list[str] = Field(default_factory=list)
+    required_command_families: list[str] = Field(default_factory=list)
+    required_result_formats: list[str] = Field(default_factory=list)
+    allowed_transports: list[RemoteExecutionTransport] = Field(default_factory=list)
+    allowed_os_families: list[RemoteExecutionOsFamily] = Field(default_factory=list)
+    require_write_access: bool = True
+    fallback_to_local: bool = True
+    require_target_workspace_root: bool = False
+    artifact_sync_enabled: bool = True
+    artifact_required: bool = False
+    artifact_path_allowlist: list[str] = Field(default_factory=list)
+    required_connector_families: list[str] = Field(default_factory=list)
+    allow_host_integrated_connectors: bool = True
+    require_connector_authority: bool = False
+    require_probe_ready: bool = False
+    require_session_recording: bool = False
+    required_repo_roots: list[str] = Field(default_factory=list)
+    required_path_prefixes: list[str] = Field(default_factory=list)
+    minimum_command_runtime_seconds: int | None = None
+    minimum_file_transfer_quota_mb: int | None = None
+
+
+class RemoteExecutionPolicyUpdate(BaseModel):
+    enabled: bool | None = None
+    preferred_target_id: str | None = None
+    required_runner_family: str | None = None
+    required_tags: list[str] | None = None
+    required_capabilities: list[str] | None = None
+    allowed_trust_levels: list[RemoteExecutionTrustLevel] | None = None
+    required_toolchains: list[str] | None = None
+    required_command_families: list[str] | None = None
+    required_result_formats: list[str] | None = None
+    allowed_transports: list[RemoteExecutionTransport] | None = None
+    allowed_os_families: list[RemoteExecutionOsFamily] | None = None
+    require_write_access: bool | None = None
+    fallback_to_local: bool | None = None
+    require_target_workspace_root: bool | None = None
+    artifact_sync_enabled: bool | None = None
+    artifact_required: bool | None = None
+    artifact_path_allowlist: list[str] | None = None
+    required_connector_families: list[str] | None = None
+    allow_host_integrated_connectors: bool | None = None
+    require_connector_authority: bool | None = None
+    require_probe_ready: bool | None = None
+    require_session_recording: bool | None = None
+    required_repo_roots: list[str] | None = None
+    required_path_prefixes: list[str] | None = None
+    minimum_command_runtime_seconds: int | None = Field(default=None, ge=1)
+    minimum_file_transfer_quota_mb: int | None = Field(default=None, ge=1)
+
+
+class RemoteExecutionRegistryRead(BaseModel):
+    version: int
+    targets: list[RemoteExecutionTargetRead] = Field(default_factory=list)
+    summary: dict[str, Any] = Field(default_factory=dict)
+
+
+class RemoteExecutionCapabilityEntryRead(BaseModel):
+    target_id: str
+    label: str
+    transport: RemoteExecutionTransport = "ssh"
+    host: str
+    os_family: RemoteExecutionOsFamily = "unknown"
+    architecture: str = "unknown"
+    gpu: str | None = None
+    trust_level: RemoteExecutionTrustLevel = "limited"
+    workspace_root: str | None = None
+    capabilities: list[str] = Field(default_factory=list)
+    tags: list[str] = Field(default_factory=list)
+    runner_families: list[str] = Field(default_factory=list)
+    adapter_command: str | None = None
+    toolchains: list[str] = Field(default_factory=list)
+    command_families: list[str] = Field(default_factory=list)
+    result_formats: list[str] = Field(default_factory=list)
+    connector_families: list[str] = Field(default_factory=list)
+    artifact_roots: list[str] = Field(default_factory=list)
+    allowed_repo_roots: list[str] = Field(default_factory=list)
+    allowed_path_prefixes: list[str] = Field(default_factory=list)
+    session_recording_enabled: bool = False
+    max_command_runtime_seconds: int | None = None
+    file_transfer_quota_mb: int | None = None
+    probe_status: str = "unknown"
+    ready: bool = False
+
+
+class RemoteExecutionCapabilityIndexRead(BaseModel):
+    target_count: int = 0
+    ready_target_count: int = 0
+    toolchain_counts: dict[str, int] = Field(default_factory=dict)
+    command_family_counts: dict[str, int] = Field(default_factory=dict)
+    result_format_counts: dict[str, int] = Field(default_factory=dict)
+    gpu_counts: dict[str, int] = Field(default_factory=dict)
+    trust_level_counts: dict[str, int] = Field(default_factory=dict)
+    connector_family_counts: dict[str, int] = Field(default_factory=dict)
+    targets: list[RemoteExecutionCapabilityEntryRead] = Field(default_factory=list)
+
+
+class RemoteExecutionArtifactContractRead(BaseModel):
+    sync_enabled: bool = False
+    required: bool = False
+    artifact_path_allowlist: list[str] = Field(default_factory=list)
+    artifact_kind_summaries: list[str] = Field(default_factory=list)
+    local_artifact_paths: list[str] = Field(default_factory=list)
+    local_artifact_path_count: int = 0
+    artifact_inspection_commands: list[str] = Field(default_factory=list)
+    target_artifact_roots: list[str] = Field(default_factory=list)
+    selected_artifact_root: str | None = None
+    remote_workspace_root: str | None = None
+    remote_workspace_artifact_paths: list[str] = Field(default_factory=list)
+    preflight_ready: bool = True
+    blocking_reasons: list[str] = Field(default_factory=list)
+    notes: list[str] = Field(default_factory=list)
+
+
+class RemoteExecutionConnectorContractRead(BaseModel):
+    required_connector_families: list[str] = Field(default_factory=list)
+    target_connector_families: list[str] = Field(default_factory=list)
+    allow_host_integrated_connectors: bool = True
+    require_connector_authority: bool = False
+    available_families: list[str] = Field(default_factory=list)
+    available_connector_count: int = 0
+    missing_required_families: list[str] = Field(default_factory=list)
+    connections: list[dict[str, Any]] = Field(default_factory=list)
+    preflight_ready: bool = True
+    blocking_reasons: list[str] = Field(default_factory=list)
+    notes: list[str] = Field(default_factory=list)
+
+
+class RemoteExecutionBrokerContractRead(BaseModel):
+    allowed_trust_levels: list[RemoteExecutionTrustLevel] = Field(default_factory=list)
+    required_toolchains: list[str] = Field(default_factory=list)
+    required_command_families: list[str] = Field(default_factory=list)
+    required_result_formats: list[str] = Field(default_factory=list)
+    require_session_recording: bool = False
+    require_target_workspace_root: bool = False
+    required_repo_roots: list[str] = Field(default_factory=list)
+    required_path_prefixes: list[str] = Field(default_factory=list)
+    minimum_command_runtime_seconds: int | None = None
+    minimum_file_transfer_quota_mb: int | None = None
+    target_gpu: str | None = None
+    target_toolchains: list[str] = Field(default_factory=list)
+    target_command_families: list[str] = Field(default_factory=list)
+    target_result_formats: list[str] = Field(default_factory=list)
+    session_recording_enabled: bool = False
+    target_command_runtime_seconds: int | None = None
+    target_file_transfer_quota_mb: int | None = None
+    target_repo_roots: list[str] = Field(default_factory=list)
+    target_path_prefixes: list[str] = Field(default_factory=list)
+    preflight_ready: bool = True
+    blocking_reasons: list[str] = Field(default_factory=list)
+    notes: list[str] = Field(default_factory=list)
+
+
+class RemoteExecutionSelectionRead(BaseModel):
+    policy: RemoteExecutionPolicyRead
+    registry_summary: dict[str, Any] = Field(default_factory=dict)
+    required_runner_family: str
+    require_write_access: bool = True
+    eligible_target_count: int = 0
+    ready_candidate_count: int = 0
+    ready_candidate_ids: list[str] = Field(default_factory=list)
+    selected_target: RemoteExecutionTargetRead | None = None
+    selected_target_id: str | None = None
+    selected_target_probe_status: str = "unknown"
+    preflight_ready: bool = False
+    blocking_reasons: list[str] = Field(default_factory=list)
+    candidates: list[dict[str, Any]] = Field(default_factory=list)
+    artifact_contract: RemoteExecutionArtifactContractRead = Field(default_factory=RemoteExecutionArtifactContractRead)
+    connector_contract: RemoteExecutionConnectorContractRead = Field(default_factory=RemoteExecutionConnectorContractRead)
+    broker_contract: RemoteExecutionBrokerContractRead = Field(default_factory=RemoteExecutionBrokerContractRead)
+
+
+class RemoteExecutionLaunchPlanRead(BaseModel):
+    preflight_ready: bool = False
+    target_id: str | None = None
+    target_label: str | None = None
+    selected_target_probe_status: str = "unknown"
+    required_runner_family: str = "external_adapter"
+    transport: RemoteExecutionTransport | None = None
+    host: str | None = None
+    remote_workspace_root: str | None = None
+    remote_cwd: str | None = None
+    adapter_command: str | None = None
+    adapter_args: list[str] = Field(default_factory=list)
+    allowed_relative_paths: list[str] = Field(default_factory=list)
+    allowed_remote_paths: list[str] = Field(default_factory=list)
+    forbidden_relative_paths: list[str] = Field(default_factory=list)
+    forbidden_remote_paths: list[str] = Field(default_factory=list)
+    allowed_repo_roots: list[str] = Field(default_factory=list)
+    artifact_sync_enabled: bool = False
+    remote_artifact_paths: list[str] = Field(default_factory=list)
+    connector_families: list[str] = Field(default_factory=list)
+    required_result_formats: list[str] = Field(default_factory=list)
+    target_result_formats: list[str] = Field(default_factory=list)
+    required_command_families: list[str] = Field(default_factory=list)
+    target_command_families: list[str] = Field(default_factory=list)
+    required_toolchains: list[str] = Field(default_factory=list)
+    target_toolchains: list[str] = Field(default_factory=list)
+    expected_evidence_categories: list[str] = Field(default_factory=list)
+    observed_evidence_categories: list[str] = Field(default_factory=list)
+    normalized_summary_artifact: str | None = None
+    session_recording_required: bool = False
+    session_recording_enabled: bool = False
+    session_recording_artifact_paths: list[str] = Field(default_factory=list)
+    remote_session_recording_artifact_paths: list[str] = Field(default_factory=list)
+    primary_session_recording_artifact_path: str | None = None
+    primary_remote_session_recording_artifact_path: str | None = None
+    environment: dict[str, str] = Field(default_factory=dict)
+    exec_args: list[str] = Field(default_factory=list)
+    command_preview: str = ""
+    blocking_reasons: list[str] = Field(default_factory=list)
+    notes: list[str] = Field(default_factory=list)
+
+
+class RemoteExecutionLaunchRequest(BaseModel):
+    adapter_command: str | None = None
+    adapter_args: list[str] = Field(default_factory=list)
+    allowed_paths: list[str] = Field(default_factory=list)
+    forbidden_paths: list[str] = Field(default_factory=list)
+    dry_run: bool = True
+    write_intent: bool = False
+
+
+class RemoteExecutionLaunchPackagePlanRead(BaseModel):
+    project_id: int
+    project_name: str
+    workspace_path: str | None = None
+    summary: str
+    plan_status: str = "blocked"
+    approval_required: bool = False
+    approval_id: int | None = None
+    approval_status: ApprovalRequestStatus | None = None
+    dry_run: bool = True
+    write_intent: bool = False
+    target_id: str | None = None
+    selected_target_probe_status: str = "unknown"
+    required_runner_family: str = "external_adapter"
+    transport: RemoteExecutionTransport | None = None
+    host: str | None = None
+    remote_workspace_root: str | None = None
+    adapter_command: str | None = None
+    adapter_args: list[str] = Field(default_factory=list)
+    allowed_relative_paths: list[str] = Field(default_factory=list)
+    forbidden_relative_paths: list[str] = Field(default_factory=list)
+    remote_artifact_paths: list[str] = Field(default_factory=list)
+    connector_families: list[str] = Field(default_factory=list)
+    required_result_formats: list[str] = Field(default_factory=list)
+    target_result_formats: list[str] = Field(default_factory=list)
+    expected_evidence_categories: list[str] = Field(default_factory=list)
+    normalized_summary_artifact: str | None = None
+    session_recording_required: bool = False
+    session_recording_enabled: bool = False
+    session_recording_artifact_paths: list[str] = Field(default_factory=list)
+    remote_session_recording_artifact_paths: list[str] = Field(default_factory=list)
+    command_preview: str = ""
+    manifest_root: str
+    launch_request_path: str
+    launch_command_path: str
+    launch_environment_path: str
+    approval_checkpoint_path: str
+    blocking_reasons: list[str] = Field(default_factory=list)
+    notes: list[str] = Field(default_factory=list)
 
 
 class SwarmPreferencesRead(BaseModel):
@@ -1269,6 +1685,7 @@ class OrchestrationStatusRead(BaseModel):
     orchestration_status: OrchestrationStatus
     manager_status: str
     current_phase: str
+    manager: dict[str, Any] = Field(default_factory=dict)
     active_agents: list[dict[str, Any]] = Field(default_factory=list)
     pending_decisions_count: int = 0
     recent_events: list[dict[str, Any]] = Field(default_factory=list)
@@ -1278,6 +1695,19 @@ class OrchestrationStatusRead(BaseModel):
     handoff_readiness: str = "not_ready"
     runner_inventory: list[RunnerAvailabilityRead] = Field(default_factory=list)
     background_runtime: dict[str, Any] = Field(default_factory=dict)
+
+
+class AsciiMonitorFrameRead(BaseModel):
+    project_id: int
+    project_name: str
+    orchestration_id: int | None = None
+    orchestration_status: str
+    pending_decisions_count: int = 0
+    active_agents_count: int = 0
+    refresh_seconds: float = 1.0
+    checked_at: datetime
+    viewer_command: str
+    frame: str
 
 
 class DaemonStatusRead(BaseModel):
@@ -1430,6 +1860,16 @@ class SwarmBudgetRead(BaseModel):
     current_active_agents: int = 0
     current_intensity: SwarmIntensity | str = "low"
     dynamic_spawning_paused: bool = False
+    launch_guard_enabled: bool = True
+    launch_guard_status: str = "ok"
+    launch_guard_reason: str | None = None
+    hard_total_token_budget: int = 2500000
+    observed_total_tokens: int = 0
+    hard_total_worker_launch_budget: int = 120
+    launches_started: int = 0
+    hard_peak_context_budget: int = 400000
+    observed_peak_context_tokens: int = 0
+    quota_backoff_active: bool = False
     updated_at: datetime
 
     model_config = ConfigDict(from_attributes=True)
@@ -1734,6 +2174,56 @@ class WorkspaceToolingStatusRead(BaseModel):
     spatial3d_validation_plan: dict[str, Any] = Field(default_factory=dict)
 
 
+class ProjectArtifactRegistryRead(BaseModel):
+    project_id: int
+    project_name: str
+    workspace_path: str | None = None
+    available: bool = False
+    summary: str
+    artifact_count: int = 0
+    artifact_paths: list[str] = Field(default_factory=list)
+    artifact_extensions: list[str] = Field(default_factory=list)
+    artifact_extension_count: int = 0
+    artifact_kind_summaries: list[str] = Field(default_factory=list)
+    artifact_kind_counts: dict[str, int] = Field(default_factory=dict)
+    artifact_kind_count: int = 0
+    inspection_command_count: int = 0
+    inspection_commands: list[str] = Field(default_factory=list)
+    config_review_path_count: int = 0
+    config_review_paths: list[str] = Field(default_factory=list)
+    config_review_command_count: int = 0
+    config_review_commands: list[str] = Field(default_factory=list)
+    validation_evidence_target_count: int = 0
+    validation_evidence_targets: list[str] = Field(default_factory=list)
+    execution_entrypoint_count: int = 0
+    execution_entrypoints: list[str] = Field(default_factory=list)
+    notebook_path_count: int = 0
+    notebook_paths: list[str] = Field(default_factory=list)
+    recommended_next_steps: list[str] = Field(default_factory=list)
+    recommended_next_step_count: int = 0
+
+
+class ArtifactRegistryPlanRead(BaseModel):
+    project_id: int
+    project_name: str
+    workspace_path: str | None = None
+    summary: str
+    plan_status: str = "blocked"
+    artifact_count: int = 0
+    artifact_kind_count: int = 0
+    inspection_command_count: int = 0
+    validation_evidence_target_count: int = 0
+    manifest_root: str
+    inventory_path: str
+    kind_rollup_path: str
+    inspection_plan_path: str
+    validation_targets_path: str
+    execution_surface_path: str
+    remote_runtime_rollup_path: str = ""
+    blocking_reasons: list[str] = Field(default_factory=list)
+    notes: list[str] = Field(default_factory=list)
+
+
 class ExecutionPolicySummaryRead(BaseModel):
     project_id: int
     project_name: str
@@ -1774,6 +2264,79 @@ class CoordinationSummaryRead(BaseModel):
     failed_gate_count: int = 0
     pending_gate_count: int = 0
     review_gate_count: int = 0
+
+
+class QualityGateSummaryRead(BaseModel):
+    project_id: int
+    project_name: str
+    summary: str
+    gate_count: int = 0
+    required_gate_count: int = 0
+    passed_gate_count: int = 0
+    failed_gate_count: int = 0
+    pending_gate_count: int = 0
+    review_gate_count: int = 0
+    gate_status_counts: dict[str, int] = Field(default_factory=dict)
+    gate_type_counts: dict[str, int] = Field(default_factory=dict)
+    blocking_gate_titles: list[str] = Field(default_factory=list)
+    blocking_gate_count: int = 0
+    evidence_item_count: int = 0
+    evidence_type_counts: dict[str, int] = Field(default_factory=dict)
+    missing_evidence: list[str] = Field(default_factory=list)
+    missing_evidence_count: int = 0
+
+
+class QualityGatePlanRead(BaseModel):
+    project_id: int
+    project_name: str
+    workspace_path: str | None = None
+    summary: str
+    plan_status: str = "blocked"
+    gate_count: int = 0
+    blocking_gate_count: int = 0
+    missing_evidence_count: int = 0
+    manifest_root: str
+    gate_rollup_path: str
+    evidence_requirements_path: str
+    handoff_checkpoint_path: str
+    blocking_reasons: list[str] = Field(default_factory=list)
+    notes: list[str] = Field(default_factory=list)
+
+
+class DecisionAuditSummaryRead(BaseModel):
+    project_id: int
+    project_name: str
+    summary: str
+    decision_count: int = 0
+    decision_type_counts: dict[str, int] = Field(default_factory=dict)
+    approval_audit_count: int = 0
+    approval_decision_counts: dict[str, int] = Field(default_factory=dict)
+    approval_actor_counts: dict[str, int] = Field(default_factory=dict)
+    pending_approval_count: int = 0
+    pending_question_count: int = 0
+    reversible_decision_count: int = 0
+    superseded_decision_count: int = 0
+    recent_decision_titles: list[str] = Field(default_factory=list)
+    recent_audit_actions: list[str] = Field(default_factory=list)
+
+
+class DecisionAuditPlanRead(BaseModel):
+    project_id: int
+    project_name: str
+    workspace_path: str | None = None
+    summary: str
+    plan_status: str = "blocked"
+    decision_count: int = 0
+    pending_approval_count: int = 0
+    pending_question_count: int = 0
+    manifest_root: str
+    decision_ledger_path: str
+    approval_audit_path: str
+    pending_actions_path: str
+    reversibility_review_path: str
+    approval_checkpoint_path: str
+    blocking_reasons: list[str] = Field(default_factory=list)
+    notes: list[str] = Field(default_factory=list)
 
 
 class TensorFlowFeatureCatalogEntryRead(BaseModel):
@@ -2064,6 +2627,66 @@ class NvidiaValidationPlanRead(BaseModel):
     blockers: list[str] = Field(default_factory=list)
     recommended_fixes: list[str] = Field(default_factory=list)
     evidence_targets: list[str] = Field(default_factory=list)
+
+
+class NvidiaExecutionGovernanceSummaryRead(BaseModel):
+    project_id: int
+    project_name: str
+    workspace_path: str | None = None
+    summary: str
+    governance_status: str = "not_applicable"
+    recommended_execution_lane: str = "discovery_needed"
+    cuda_repo_enabled: bool = False
+    validation_status: str = "not_applicable"
+    local_runtime_status: str = "missing"
+    gpu_diagnostics_status: str = "missing"
+    aiq_status: str = "missing"
+    remote_gpu_target_count: int = 0
+    ready_remote_gpu_target_count: int = 0
+    selected_ready_remote_gpu_target_count: int = 0
+    selected_remote_target_id: str | None = None
+    selected_remote_target_ready: bool = False
+    selected_remote_target_gpu: str | None = None
+    provider_ready_ids: list[str] = Field(default_factory=list)
+    provider_partial_ids: list[str] = Field(default_factory=list)
+    available_provider_count: int = 0
+    sanitizer_ready: bool = False
+    profiler_ready: bool = False
+    container_smoke_ready: bool = False
+    blocking_reasons: list[str] = Field(default_factory=list)
+    recommended_fixes: list[str] = Field(default_factory=list)
+    notes: list[str] = Field(default_factory=list)
+    dynamo_status: NvidiaDynamoStatusRead
+    nim_status: NvidiaNimStatusRead
+    aiq: NvidiaAiqStatusRead
+    gpu_diagnostics: NvidiaGpuDiagnosticsRead
+    local_runtime: NvidiaLocalRuntimeStatusRead
+    validation_plan: NvidiaValidationPlanRead
+    platform_runners: PlatformRunnerSummaryRead
+    device_broker: DeviceBrokerSummaryRead
+
+
+class NvidiaExecutionGovernancePlanRead(BaseModel):
+    project_id: int
+    project_name: str
+    workspace_path: str | None = None
+    summary: str
+    plan_status: str = "blocked"
+    recommended_execution_lane: str = "discovery_needed"
+    governance_status: str = "not_applicable"
+    ready_remote_gpu_target_count: int = 0
+    selected_ready_remote_gpu_target_count: int = 0
+    available_provider_count: int = 0
+    manifest_root: str | None = None
+    execution_lane_path: str | None = None
+    provider_runtime_path: str | None = None
+    gpu_target_inventory_path: str | None = None
+    validation_evidence_path: str | None = None
+    telemetry_gate_path: str | None = None
+    approval_checkpoint_path: str | None = None
+    blocking_reasons: list[str] = Field(default_factory=list)
+    recommended_fixes: list[str] = Field(default_factory=list)
+    notes: list[str] = Field(default_factory=list)
 
 
 class ProjectConfidenceRead(BaseModel):
@@ -3527,6 +4150,11 @@ class StartupStatusRead(BaseModel):
     diagnostic_report_path: str | None = None
     degraded_reasons: list[str] = Field(default_factory=list)
     failed_checks: list[str] = Field(default_factory=list)
+    selected_provider: ProviderId = "codex"
+    selected_provider_label: str | None = None
+    runtime_ready: bool = False
+    runtime_summary: str | None = None
+    runtime_blockers: list[str] = Field(default_factory=list)
     status_source: Literal["fresh", "cached"] = "fresh"
     startup_started_at: datetime
     last_completed_at: datetime | None = None
@@ -3566,6 +4194,7 @@ class DiagnosticReportRead(BaseModel):
     path: str
     json_path: str | None = None
     bundle_path: str | None = None
+    report_id: str | None = None
     summary: str
     error_code: str | None = None
     recommended_fixes: list[str] = Field(default_factory=list)
@@ -3575,6 +4204,13 @@ class DiagnosticReportRead(BaseModel):
     platform_profile: dict[str, Any] = Field(default_factory=dict)
     performance_profile: dict[str, Any] = Field(default_factory=dict)
     safe_debug_commands: list[str] = Field(default_factory=list)
+    runtime_blockers: list[str] = Field(default_factory=list)
+    backend_binding: dict[str, Any] = Field(default_factory=dict)
+    daemon_identity: dict[str, Any] = Field(default_factory=dict)
+    daemon_metadata: dict[str, Any] = Field(default_factory=dict)
+    repo_version_control: dict[str, Any] = Field(default_factory=dict)
+    bundle_members: list[str] = Field(default_factory=list)
+    bundle_metadata: dict[str, Any] = Field(default_factory=dict)
     problem: ProblemDetailsRead | None = None
 
 
@@ -3689,6 +4325,10 @@ class IntegrationActionRead(BaseModel):
     missing_params: list[str] = Field(default_factory=list)
     defaulted_params: dict[str, Any] = Field(default_factory=dict)
     params_complete: bool = True
+    supports_pagination: bool = False
+    supports_streaming_output: bool = False
+    supports_file_output: bool = False
+    supports_throttle_controls: bool = False
     status: ToolAvailability = "available"
     provider: str | None = None
     provider_candidates: list[str] = Field(default_factory=list)
@@ -3760,6 +4400,1174 @@ class IntegrationHealthRead(BaseModel):
     status_counts: dict[str, int] = Field(default_factory=dict)
     recent_action_failures: list[dict[str, Any]] = Field(default_factory=list)
     host_import_roots: dict[str, list[str]] = Field(default_factory=dict)
+
+
+class ConnectorRegistryRead(BaseModel):
+    summary: str
+    family_count: int = 0
+    connection_count: int = 0
+    authoritative_connection_count: int = 0
+    host_imported_count: int = 0
+    status_counts: dict[str, int] = Field(default_factory=dict)
+    host_import_roots: dict[str, list[str]] = Field(default_factory=dict)
+    recent_action_failures: list[dict[str, Any]] = Field(default_factory=list)
+    ready_family_count: int = 0
+    ready_families: list[str] = Field(default_factory=list)
+    provider_counts: dict[str, int] = Field(default_factory=dict)
+    provider_count: int = 0
+    category_counts: dict[str, int] = Field(default_factory=dict)
+    category_count: int = 0
+    connection_source_counts: dict[str, int] = Field(default_factory=dict)
+    connection_source_count: int = 0
+    available_action_count: int = 0
+    catalog: list[IntegrationCatalogEntryRead] = Field(default_factory=list)
+    connections: list[IntegrationConnectionRead] = Field(default_factory=list)
+
+
+class ConnectorGovernanceFamilyRead(BaseModel):
+    family: str
+    name: str
+    category: str
+    status: str
+    connection_status: str = "disconnected"
+    connection_source: str = "mission_control"
+    resolved_provider: str | None = None
+    provider_resolution_state: IntegrationProviderResolutionState = "unresolved"
+    provider_context_status: IntegrationProviderContextStatus = "missing"
+    host_imported: bool = False
+    authoritative: bool = False
+    available_action_count: int = 0
+    blocked_action_count: int = 0
+    available_execution_action_count: int = 0
+    preview_supported_execution_action_count: int = 0
+    safe_command_action_count: int = 0
+    available_non_mutating_action_count: int = 0
+    available_mutating_action_count: int = 0
+    discovery_ready: bool = False
+    execution_ready: bool = False
+    blockers: list[str] = Field(default_factory=list)
+    recommended_fixes: list[str] = Field(default_factory=list)
+    notes: list[str] = Field(default_factory=list)
+
+
+class ConnectorGovernanceSummaryRead(BaseModel):
+    project_id: int
+    project_name: str
+    workspace_path: str | None = None
+    summary: str
+    governance_status: str = "not_applicable"
+    recommended_operation_mode: str = "discovery_needed"
+    family_count: int = 0
+    connected_family_count: int = 0
+    live_family_count: int = 0
+    ready_family_count: int = 0
+    partial_family_count: int = 0
+    needs_setup_family_count: int = 0
+    authoritative_family_count: int = 0
+    host_imported_family_count: int = 0
+    discovery_ready_family_count: int = 0
+    execution_ready_family_count: int = 0
+    previewable_execution_family_count: int = 0
+    safe_command_family_count: int = 0
+    mutating_execution_family_count: int = 0
+    provider_context_verified_family_count: int = 0
+    provider_count: int = 0
+    providers: list[str] = Field(default_factory=list)
+    category_count: int = 0
+    categories: list[str] = Field(default_factory=list)
+    connected_family_ids: list[str] = Field(default_factory=list)
+    live_family_ids: list[str] = Field(default_factory=list)
+    authoritative_family_ids: list[str] = Field(default_factory=list)
+    host_imported_family_ids: list[str] = Field(default_factory=list)
+    discovery_ready_family_ids: list[str] = Field(default_factory=list)
+    execution_ready_family_ids: list[str] = Field(default_factory=list)
+    blocking_reasons: list[str] = Field(default_factory=list)
+    recommended_fixes: list[str] = Field(default_factory=list)
+    notes: list[str] = Field(default_factory=list)
+    families: list[ConnectorGovernanceFamilyRead] = Field(default_factory=list)
+    connector_registry: ConnectorRegistryRead
+
+
+class ConnectorGovernancePlanRead(BaseModel):
+    project_id: int
+    project_name: str
+    workspace_path: str | None = None
+    summary: str
+    plan_status: str = "blocked"
+    recommended_operation_mode: str = "discovery_needed"
+    family_count: int = 0
+    discovery_ready_family_count: int = 0
+    execution_ready_family_count: int = 0
+    authoritative_family_count: int = 0
+    manifest_root: str
+    family_rollup_path: str
+    discovery_lanes_path: str
+    execution_lanes_path: str
+    provider_context_path: str
+    approval_guardrails_path: str
+    connector_registry_path: str
+    blocking_reasons: list[str] = Field(default_factory=list)
+    notes: list[str] = Field(default_factory=list)
+
+
+class ExternalDiscoveryLaneRead(BaseModel):
+    family: str
+    name: str
+    category: str
+    status: str
+    connection_status: str = "disconnected"
+    connection_source: str = "mission_control"
+    authoritative: bool = False
+    host_imported: bool = False
+    provider_context_verified: bool = False
+    discovery_action_count: int = 0
+    preview_supported_action_count: int = 0
+    non_mutating_action_count: int = 0
+    mutating_action_count: int = 0
+    confirmation_guarded_action_count: int = 0
+    safe_command_action_count: int = 0
+    ready_to_execute_action_count: int = 0
+    supports_search: bool = False
+    supports_listing: bool = False
+    supports_export: bool = False
+    supports_pagination: bool = False
+    supports_streaming_output: bool = False
+    supports_file_output: bool = False
+    supports_throttle_controls: bool = False
+    discovery_ready: bool = False
+    execution_ready: bool = False
+    blockers: list[str] = Field(default_factory=list)
+    recommended_fixes: list[str] = Field(default_factory=list)
+    notes: list[str] = Field(default_factory=list)
+
+
+class ExternalDiscoveryGovernanceSummaryRead(BaseModel):
+    project_id: int
+    project_name: str
+    workspace_path: str | None = None
+    summary: str
+    governance_status: str = "not_applicable"
+    recommended_operation_mode: str = "discovery_needed"
+    bounded_discovery_status: str = "not_applicable"
+    authoritative_connector_status: str = "not_applicable"
+    read_only_status: str = "not_applicable"
+    previewability_status: str = "not_applicable"
+    mutation_guard_status: str = "not_applicable"
+    pagination_status: str = "not_applicable"
+    streaming_status: str = "not_applicable"
+    file_output_status: str = "not_applicable"
+    throttle_control_status: str = "not_applicable"
+    storage_discovery_status: str = "not_applicable"
+    design_discovery_status: str = "not_applicable"
+    knowledge_discovery_status: str = "not_applicable"
+    lane_count: int = 0
+    authoritative_lane_count: int = 0
+    live_lane_count: int = 0
+    host_imported_lane_count: int = 0
+    discovery_ready_lane_count: int = 0
+    execution_ready_lane_count: int = 0
+    previewable_lane_count: int = 0
+    read_only_lane_count: int = 0
+    mutating_lane_count: int = 0
+    confirmation_guarded_lane_count: int = 0
+    safe_command_lane_count: int = 0
+    paginated_lane_count: int = 0
+    streaming_lane_count: int = 0
+    file_output_lane_count: int = 0
+    throttled_lane_count: int = 0
+    storage_lane_count: int = 0
+    design_lane_count: int = 0
+    knowledge_lane_count: int = 0
+    live_lane_ids: list[str] = Field(default_factory=list)
+    blocking_reasons: list[str] = Field(default_factory=list)
+    recommended_fixes: list[str] = Field(default_factory=list)
+    notes: list[str] = Field(default_factory=list)
+    lanes: list[ExternalDiscoveryLaneRead] = Field(default_factory=list)
+    connector_governance: ConnectorGovernanceSummaryRead
+    file_governance: FileGovernanceSummaryRead
+
+
+class ExternalDiscoveryGovernancePlanRead(BaseModel):
+    project_id: int
+    project_name: str
+    workspace_path: str | None = None
+    summary: str
+    plan_status: str = "blocked"
+    recommended_operation_mode: str = "discovery_needed"
+    lane_count: int = 0
+    discovery_ready_lane_count: int = 0
+    authoritative_lane_count: int = 0
+    storage_lane_count: int = 0
+    design_lane_count: int = 0
+    knowledge_lane_count: int = 0
+    manifest_root: str
+    lane_inventory_path: str
+    bounded_crawl_plan_path: str
+    storage_sync_plan_path: str
+    connector_contract_path: str
+    approval_checkpoint_path: str
+    blocking_reasons: list[str] = Field(default_factory=list)
+    notes: list[str] = Field(default_factory=list)
+
+
+class DeviceBrokerSummaryRead(BaseModel):
+    project_id: int
+    project_name: str
+    workspace_path: str | None = None
+    summary: str
+    preflight_ready: bool = False
+    selected_target_id: str | None = None
+    selected_target_probe_status: str = "unknown"
+    ready_candidate_count: int = 0
+    ready_candidate_ids: list[str] = Field(default_factory=list)
+    recommended_target_ids: list[str] = Field(default_factory=list)
+    blocking_reasons: list[str] = Field(default_factory=list)
+    ready_target_count: int = 0
+    capability_index: RemoteExecutionCapabilityIndexRead = Field(default_factory=RemoteExecutionCapabilityIndexRead)
+    remote_execution: RemoteExecutionSelectionRead = Field(default_factory=RemoteExecutionSelectionRead)
+    artifact_registry: ProjectArtifactRegistryRead
+    connector_registry: ConnectorRegistryRead
+
+
+class DeviceBrokerPlanRead(BaseModel):
+    project_id: int
+    project_name: str
+    workspace_path: str | None = None
+    summary: str
+    plan_status: str = "blocked"
+    preflight_ready: bool = False
+    selected_target_id: str | None = None
+    selected_target_probe_status: str = "unknown"
+    ready_target_count: int = 0
+    ready_candidate_count: int = 0
+    required_runner_family: str = "external_adapter"
+    manifest_root: str
+    target_index_path: str
+    broker_selection_path: str
+    policy_contract_path: str
+    artifact_contract_path: str
+    connector_contract_path: str
+    approval_checkpoint_path: str
+    blocking_reasons: list[str] = Field(default_factory=list)
+    notes: list[str] = Field(default_factory=list)
+
+
+class HostCapabilityMatchRead(BaseModel):
+    target_id: str
+    label: str
+    transport: str = "ssh"
+    host: str
+    os_family: str = "unknown"
+    architecture: str = "unknown"
+    gpu: str | None = None
+    trust_level: str = "limited"
+    ready: bool = False
+    selected: bool = False
+    status: str = "unavailable"
+    runner_families: list[str] = Field(default_factory=list)
+    capabilities: list[str] = Field(default_factory=list)
+    tags: list[str] = Field(default_factory=list)
+    adapter_command: str | None = None
+    toolchains: list[str] = Field(default_factory=list)
+    command_families: list[str] = Field(default_factory=list)
+    result_formats: list[str] = Field(default_factory=list)
+    connector_families: list[str] = Field(default_factory=list)
+    session_recording_enabled: bool = False
+    max_command_runtime_seconds: int | None = None
+    file_transfer_quota_mb: int | None = None
+    rejected_reasons: list[str] = Field(default_factory=list)
+    notes: list[str] = Field(default_factory=list)
+
+
+class HostCapabilityIndexSummaryRead(BaseModel):
+    project_id: int
+    project_name: str
+    workspace_path: str | None = None
+    summary: str
+    selection_status: str = "not_applicable"
+    selected_target_id: str | None = None
+    selected_target_probe_status: str = "unknown"
+    selected_target_status: str = "not_applicable"
+    required_runner_family: str = "external_adapter"
+    target_count: int = 0
+    ready_target_count: int = 0
+    eligible_target_count: int = 0
+    ready_candidate_count: int = 0
+    ready_candidate_ids: list[str] = Field(default_factory=list)
+    rejected_target_count: int = 0
+    recommended_target_ids: list[str] = Field(default_factory=list)
+    rejected_target_ids: list[str] = Field(default_factory=list)
+    allowed_trust_levels: list[str] = Field(default_factory=list)
+    required_toolchains: list[str] = Field(default_factory=list)
+    required_command_families: list[str] = Field(default_factory=list)
+    required_result_formats: list[str] = Field(default_factory=list)
+    required_connector_families: list[str] = Field(default_factory=list)
+    blocking_reasons: list[str] = Field(default_factory=list)
+    notes: list[str] = Field(default_factory=list)
+    matches: list[HostCapabilityMatchRead] = Field(default_factory=list)
+
+
+class HostCapabilityIndexPlanRead(BaseModel):
+    project_id: int
+    project_name: str
+    workspace_path: str | None = None
+    summary: str
+    plan_status: str = "blocked"
+    selection_status: str = "not_applicable"
+    selected_target_id: str | None = None
+    selected_target_status: str = "not_applicable"
+    target_count: int = 0
+    eligible_target_count: int = 0
+    ready_candidate_count: int = 0
+    manifest_root: str
+    target_matrix_path: str
+    eligibility_report_path: str
+    policy_requirements_path: str
+    selection_checkpoint_path: str
+    blocking_reasons: list[str] = Field(default_factory=list)
+    notes: list[str] = Field(default_factory=list)
+
+
+class RemoteRunnerAdapterRead(BaseModel):
+    adapter_id: str
+    title: str
+    status: str
+    summary: str
+    transport: str
+    target_ids: list[str] = Field(default_factory=list)
+    selected_target_ids: list[str] = Field(default_factory=list)
+    os_families: list[str] = Field(default_factory=list)
+    ready_target_count: int = 0
+    selected_ready: bool = False
+    session_recording_coverage: str = "not_applicable"
+    result_format_coverage: str = "not_applicable"
+    command_family_coverage: str = "not_applicable"
+    selected_session_recording_coverage: str = "not_applicable"
+    selected_result_format_coverage: str = "not_applicable"
+    selected_command_family_coverage: str = "not_applicable"
+    selected_contract_ready: bool = False
+    notes: list[str] = Field(default_factory=list)
+
+
+class RemoteRunnerSummaryRead(BaseModel):
+    project_id: int
+    project_name: str
+    workspace_path: str | None = None
+    summary: str
+    selected_target_id: str | None = None
+    selected_target_probe_status: str = "unknown"
+    required_runner_family: str = "external_adapter"
+    ready_candidate_count: int = 0
+    ready_candidate_ids: list[str] = Field(default_factory=list)
+    adapter_count: int = 0
+    ready_adapter_count: int = 0
+    remote_ready_adapter_count: int = 0
+    remote_contract_ready_adapter_count: int = 0
+    partial_adapter_count: int = 0
+    unavailable_adapter_count: int = 0
+    ready_adapter_ids: list[str] = Field(default_factory=list)
+    remote_ready_adapter_ids: list[str] = Field(default_factory=list)
+    remote_contract_ready_adapter_ids: list[str] = Field(default_factory=list)
+    selected_ready_adapter_ids: list[str] = Field(default_factory=list)
+    selected_contract_ready_adapter_ids: list[str] = Field(default_factory=list)
+    partial_adapter_ids: list[str] = Field(default_factory=list)
+    unavailable_adapter_ids: list[str] = Field(default_factory=list)
+    blocking_reasons: list[str] = Field(default_factory=list)
+    notes: list[str] = Field(default_factory=list)
+    adapters: list[RemoteRunnerAdapterRead] = Field(default_factory=list)
+
+
+class RemoteRunnerPlanRead(BaseModel):
+    project_id: int
+    project_name: str
+    workspace_path: str | None = None
+    summary: str
+    plan_status: str = "blocked"
+    selected_target_id: str | None = None
+    required_runner_family: str = "external_adapter"
+    adapter_count: int = 0
+    ready_adapter_count: int = 0
+    remote_contract_ready_adapter_count: int = 0
+    selected_contract_ready_adapter_count: int = 0
+    partial_adapter_count: int = 0
+    selected_ready_adapter_ids: list[str] = Field(default_factory=list)
+    selected_contract_ready_adapter_ids: list[str] = Field(default_factory=list)
+    manifest_root: str
+    adapter_inventory_path: str
+    coverage_report_path: str
+    target_binding_path: str
+    approval_checkpoint_path: str
+    blocking_reasons: list[str] = Field(default_factory=list)
+    notes: list[str] = Field(default_factory=list)
+
+
+class PlatformRunnerLaneRead(BaseModel):
+    lane_id: str
+    title: str
+    status: str
+    summary: str
+    target_ids: list[str] = Field(default_factory=list)
+    target_count: int = 0
+    selected_target_ids: list[str] = Field(default_factory=list)
+    os_families: list[str] = Field(default_factory=list)
+    toolchains: list[str] = Field(default_factory=list)
+    command_families: list[str] = Field(default_factory=list)
+    recommended_commands: list[str] = Field(default_factory=list)
+    notes: list[str] = Field(default_factory=list)
+
+
+class PlatformRunnerSummaryRead(BaseModel):
+    project_id: int
+    project_name: str
+    workspace_path: str | None = None
+    summary: str
+    selected_target_id: str | None = None
+    selected_target_probe_status: str = "unknown"
+    ready_candidate_count: int = 0
+    ready_candidate_ids: list[str] = Field(default_factory=list)
+    lane_count: int = 0
+    ready_lane_count: int = 0
+    selected_ready_lane_count: int = 0
+    target_backed_ready_lane_count: int = 0
+    partial_lane_count: int = 0
+    unavailable_lane_count: int = 0
+    ready_lane_ids: list[str] = Field(default_factory=list)
+    selected_ready_lane_ids: list[str] = Field(default_factory=list)
+    target_backed_ready_lane_ids: list[str] = Field(default_factory=list)
+    partial_lane_ids: list[str] = Field(default_factory=list)
+    unavailable_lane_ids: list[str] = Field(default_factory=list)
+    lanes: list[PlatformRunnerLaneRead] = Field(default_factory=list)
+
+
+class PlatformRunnerPlanRead(BaseModel):
+    project_id: int
+    project_name: str
+    workspace_path: str | None = None
+    summary: str
+    plan_status: str = "blocked"
+    selected_target_id: str | None = None
+    lane_count: int = 0
+    ready_lane_count: int = 0
+    selected_ready_lane_count: int = 0
+    target_backed_ready_lane_count: int = 0
+    partial_lane_count: int = 0
+    selected_ready_lane_ids: list[str] = Field(default_factory=list)
+    target_backed_ready_lane_ids: list[str] = Field(default_factory=list)
+    manifest_root: str
+    lane_inventory_path: str
+    native_tooling_path: str
+    execution_matrix_path: str
+    approval_checkpoint_path: str
+    blocking_reasons: list[str] = Field(default_factory=list)
+    notes: list[str] = Field(default_factory=list)
+
+
+class ArtifactTransportSummaryRead(BaseModel):
+    project_id: int
+    project_name: str
+    workspace_path: str | None = None
+    summary: str
+    selected_target_id: str | None = None
+    selected_target_probe_status: str = "unknown"
+    ready_candidate_count: int = 0
+    ready_candidate_ids: list[str] = Field(default_factory=list)
+    preflight_ready: bool = False
+    sync_enabled: bool = False
+    recommended_transport_mode: str = "discovery_needed"
+    blocking_reasons: list[str] = Field(default_factory=list)
+    session_recording_status: str = "not_applicable"
+    session_recording_required: bool = False
+    session_recording_artifact_paths: list[str] = Field(default_factory=list)
+    produced_session_recording_artifact_paths: list[str] = Field(default_factory=list)
+    missing_session_recording_artifact_paths: list[str] = Field(default_factory=list)
+    remote_session_recording_artifact_paths: list[str] = Field(default_factory=list)
+    session_recording_runtime_manifest_count: int = 0
+    ready_platform_lanes: list[str] = Field(default_factory=list)
+    selected_ready_platform_lanes: list[str] = Field(default_factory=list)
+    target_backed_ready_platform_lanes: list[str] = Field(default_factory=list)
+    partial_platform_lanes: list[str] = Field(default_factory=list)
+    notes: list[str] = Field(default_factory=list)
+    artifact_registry: ProjectArtifactRegistryRead
+    connector_registry: ConnectorRegistryRead
+    artifact_contract: RemoteExecutionArtifactContractRead = Field(default_factory=RemoteExecutionArtifactContractRead)
+    connector_contract: RemoteExecutionConnectorContractRead = Field(default_factory=RemoteExecutionConnectorContractRead)
+
+
+class ArtifactTransportPlanRead(BaseModel):
+    project_id: int
+    project_name: str
+    workspace_path: str | None = None
+    summary: str
+    plan_status: str = "blocked"
+    selected_target_id: str | None = None
+    recommended_transport_mode: str = "discovery_needed"
+    preflight_ready: bool = False
+    sync_enabled: bool = False
+    selected_ready_lane_count: int = 0
+    selected_ready_platform_lanes: list[str] = Field(default_factory=list)
+    target_backed_ready_platform_lanes: list[str] = Field(default_factory=list)
+    session_recording_status: str = "not_applicable"
+    session_recording_required: bool = False
+    session_recording_runtime_manifest_count: int = 0
+    session_recording_artifact_paths: list[str] = Field(default_factory=list)
+    produced_session_recording_artifact_paths: list[str] = Field(default_factory=list)
+    missing_session_recording_artifact_paths: list[str] = Field(default_factory=list)
+    remote_session_recording_artifact_paths: list[str] = Field(default_factory=list)
+    manifest_root: str | None = None
+    transport_mode_path: str | None = None
+    artifact_sync_plan_path: str | None = None
+    connector_lane_plan_path: str | None = None
+    platform_lane_plan_path: str | None = None
+    session_recording_delivery_path: str | None = None
+    approval_checkpoint_path: str | None = None
+    blocking_reasons: list[str] = Field(default_factory=list)
+    notes: list[str] = Field(default_factory=list)
+
+
+class FileGovernanceStorageLaneRead(BaseModel):
+    lane_id: str
+    title: str
+    status: str
+    summary: str
+    providers: list[str] = Field(default_factory=list)
+    provider_count: int = 0
+    connection_source: str | None = None
+    host_imported: bool = False
+    notes: list[str] = Field(default_factory=list)
+
+
+class FileGovernanceSummaryRead(BaseModel):
+    project_id: int
+    project_name: str
+    workspace_path: str | None = None
+    summary: str
+    recommended_operation_mode: str = "discovery_needed"
+    supports_bulk_planning: bool = False
+    destructive_actions_require_approval: bool = True
+    storage_lane_count: int = 0
+    connected_storage_lane_count: int = 0
+    ready_scanner_lane_count: int = 0
+    storage_provider_count: int = 0
+    storage_providers: list[str] = Field(default_factory=list)
+    ready_scanner_lanes: list[str] = Field(default_factory=list)
+    selected_target_id: str | None = None
+    selected_ready_scanner_lanes: list[str] = Field(default_factory=list)
+    target_backed_ready_scanner_lanes: list[str] = Field(default_factory=list)
+    blocking_reasons: list[str] = Field(default_factory=list)
+    notes: list[str] = Field(default_factory=list)
+    storage_lanes: list[FileGovernanceStorageLaneRead] = Field(default_factory=list)
+    connector_registry: ConnectorRegistryRead
+    platform_runners: PlatformRunnerSummaryRead
+    artifact_transport: ArtifactTransportSummaryRead
+
+
+class FileGovernancePlanRead(BaseModel):
+    project_id: int
+    project_name: str
+    workspace_path: str | None = None
+    summary: str
+    plan_status: str = "blocked"
+    recommended_operation_mode: str = "discovery_needed"
+    supports_bulk_planning: bool = False
+    destructive_actions_require_approval: bool = True
+    storage_lane_count: int = 0
+    ready_scanner_lane_count: int = 0
+    selected_target_id: str | None = None
+    selected_ready_scanner_lane_count: int = 0
+    selected_ready_scanner_lanes: list[str] = Field(default_factory=list)
+    target_backed_ready_scanner_lanes: list[str] = Field(default_factory=list)
+    storage_provider_count: int = 0
+    manifest_root: str | None = None
+    storage_lanes_path: str | None = None
+    scanner_lanes_path: str | None = None
+    operation_mode_path: str | None = None
+    approval_guardrails_path: str | None = None
+    transport_integration_path: str | None = None
+    blocking_reasons: list[str] = Field(default_factory=list)
+    notes: list[str] = Field(default_factory=list)
+
+
+class FileGraphGovernanceSummaryRead(BaseModel):
+    project_id: int
+    project_name: str
+    workspace_path: str | None = None
+    summary: str
+    governance_status: str = "not_applicable"
+    recommended_operation_mode: str = "discovery_needed"
+    destructive_actions_require_approval: bool = True
+    hashing_readiness_status: str = "not_applicable"
+    duplicate_clustering_status: str = "not_applicable"
+    semantic_classification_status: str = "not_applicable"
+    dry_run_manifest_status: str = "not_applicable"
+    reversible_batch_status: str = "not_applicable"
+    destructive_approval_status: str = "not_applicable"
+    signal_path_count: int = 0
+    signal_paths: list[str] = Field(default_factory=list)
+    hash_manifest_count: int = 0
+    hash_manifest_paths: list[str] = Field(default_factory=list)
+    duplicate_cluster_count: int = 0
+    duplicate_cluster_paths: list[str] = Field(default_factory=list)
+    classification_manifest_count: int = 0
+    classification_manifest_paths: list[str] = Field(default_factory=list)
+    dry_run_manifest_count: int = 0
+    dry_run_manifest_paths: list[str] = Field(default_factory=list)
+    reversible_batch_manifest_count: int = 0
+    reversible_batch_manifest_paths: list[str] = Field(default_factory=list)
+    quality_gate_blocker_count: int = 0
+    pending_question_count: int = 0
+    blocking_reasons: list[str] = Field(default_factory=list)
+    recommended_fixes: list[str] = Field(default_factory=list)
+    notes: list[str] = Field(default_factory=list)
+    artifact_registry: ProjectArtifactRegistryRead
+    file_governance: FileGovernanceSummaryRead
+
+
+class FileGraphPlanRead(BaseModel):
+    project_id: int
+    project_name: str
+    workspace_path: str | None = None
+    summary: str
+    plan_status: str = "blocked"
+    supports_bulk_planning: bool = False
+    destructive_actions_require_approval: bool = True
+    scanned_file_count: int = 0
+    hashed_file_count: int = 0
+    duplicate_cluster_count: int = 0
+    classification_bucket_count: int = 0
+    action_count: int = 0
+    action_counts: dict[str, int] = Field(default_factory=dict)
+    manifest_root: str | None = None
+    hash_manifest_path: str | None = None
+    duplicate_cluster_path: str | None = None
+    classification_manifest_path: str | None = None
+    dry_run_manifest_path: str | None = None
+    reversible_batch_manifest_path: str | None = None
+    proposed_actions: list[dict[str, Any]] = Field(default_factory=list)
+    restore_actions: list[dict[str, Any]] = Field(default_factory=list)
+    blocking_reasons: list[str] = Field(default_factory=list)
+    notes: list[str] = Field(default_factory=list)
+
+
+class DesignTransferSummaryRead(BaseModel):
+    project_id: int
+    project_name: str
+    workspace_path: str | None = None
+    summary: str
+    recommended_ingestion_mode: str = "discovery_needed"
+    figma_connected: bool = False
+    design_artifact_count: int = 0
+    design_artifact_paths: list[str] = Field(default_factory=list)
+    design_artifact_formats: list[str] = Field(default_factory=list)
+    browser_lane_status: str = "unavailable"
+    browser_lane_target_ids: list[str] = Field(default_factory=list)
+    supports_visual_regression: bool = False
+    code_conformance_ready: bool = False
+    blocking_reasons: list[str] = Field(default_factory=list)
+    notes: list[str] = Field(default_factory=list)
+    artifact_registry: ProjectArtifactRegistryRead
+    connector_registry: ConnectorRegistryRead
+    platform_runners: PlatformRunnerSummaryRead
+
+
+class DesignTransferPlanRead(BaseModel):
+    project_id: int
+    project_name: str
+    workspace_path: str | None = None
+    summary: str
+    plan_status: str = "blocked"
+    recommended_ingestion_mode: str = "discovery_needed"
+    figma_connected: bool = False
+    browser_lane_status: str = "unavailable"
+    browser_lane_target_ids: list[str] = Field(default_factory=list)
+    design_artifact_count: int = 0
+    supports_visual_regression: bool = False
+    code_conformance_ready: bool = False
+    component_mapping_count: int = 0
+    conformance_check_count: int = 0
+    manifest_root: str | None = None
+    design_intent_manifest_path: str | None = None
+    component_map_manifest_path: str | None = None
+    screenshot_diff_plan_path: str | None = None
+    token_usage_plan_path: str | None = None
+    aria_check_plan_path: str | None = None
+    component_mappings: list[dict[str, Any]] = Field(default_factory=list)
+    conformance_checks: list[dict[str, Any]] = Field(default_factory=list)
+    blocking_reasons: list[str] = Field(default_factory=list)
+    notes: list[str] = Field(default_factory=list)
+
+
+class SpatialAssetGovernanceSummaryRead(BaseModel):
+    project_id: int
+    project_name: str
+    workspace_path: str | None = None
+    summary: str
+    governance_status: str = "not_applicable"
+    selected_target_id: str | None = None
+    repo_mode_enabled: bool = False
+    repo_mode: str | None = None
+    frameworks: list[str] = Field(default_factory=list)
+    product_workflows: list[str] = Field(default_factory=list)
+    recommended_feature_ids: list[str] = Field(default_factory=list)
+    asset_count: int = 0
+    asset_paths: list[str] = Field(default_factory=list)
+    asset_extensions: list[str] = Field(default_factory=list)
+    config_paths: list[str] = Field(default_factory=list)
+    primary_scene_path: str | None = None
+    headless_runner_status: str = "unavailable"
+    browser_lane_status: str = "unavailable"
+    recommended_transport_mode: str = "discovery_needed"
+    build_commands: list[str] = Field(default_factory=list)
+    render_commands: list[str] = Field(default_factory=list)
+    conversion_commands: list[str] = Field(default_factory=list)
+    capture_commands: list[str] = Field(default_factory=list)
+    benchmark_commands: list[str] = Field(default_factory=list)
+    validation_status: str = "not_applicable"
+    validation_available: bool = False
+    validation_step_count: int = 0
+    validation_evidence_targets: list[str] = Field(default_factory=list)
+    supports_visual_regression: bool = False
+    quality_gate_blocker_count: int = 0
+    quality_gate_missing_evidence_count: int = 0
+    pending_approval_count: int = 0
+    pending_question_count: int = 0
+    blocking_reasons: list[str] = Field(default_factory=list)
+    recommended_fixes: list[str] = Field(default_factory=list)
+    notes: list[str] = Field(default_factory=list)
+    platform_runners: PlatformRunnerSummaryRead
+    artifact_transport: ArtifactTransportSummaryRead
+
+
+class SpatialAssetGovernancePlanRead(BaseModel):
+    project_id: int
+    project_name: str
+    workspace_path: str | None = None
+    summary: str
+    plan_status: str = "blocked"
+    selected_target_id: str | None = None
+    repo_mode: str | None = None
+    asset_count: int = 0
+    workflow_count: int = 0
+    validation_step_count: int = 0
+    manifest_root: str | None = None
+    scene_contract_path: str | None = None
+    asset_provenance_path: str | None = None
+    visual_regression_plan_path: str | None = None
+    export_validation_plan_path: str | None = None
+    approval_checkpoint_path: str | None = None
+    blocking_reasons: list[str] = Field(default_factory=list)
+    notes: list[str] = Field(default_factory=list)
+
+
+class GameEngineGovernanceSummaryRead(BaseModel):
+    project_id: int
+    project_name: str
+    workspace_path: str | None = None
+    summary: str
+    governance_status: str = "not_applicable"
+    selected_target_id: str | None = None
+    detected_engines: list[str] = Field(default_factory=list)
+    unity_detected: bool = False
+    unreal_detected: bool = False
+    detected_project_paths: list[str] = Field(default_factory=list)
+    scene_or_map_count: int = 0
+    scene_or_map_paths: list[str] = Field(default_factory=list)
+    automation_signal_count: int = 0
+    automation_signal_paths: list[str] = Field(default_factory=list)
+    screenshot_artifact_count: int = 0
+    screenshot_artifact_paths: list[str] = Field(default_factory=list)
+    playable_contract_status: str = "not_applicable"
+    asset_lock_status: str = "not_applicable"
+    task_routing_status: str = "not_applicable"
+    engine_test_matrix_status: str = "not_applicable"
+    publish_gate_status: str = "not_applicable"
+    normalized_results_status: str = "not_applicable"
+    publish_blocker_count: int = 0
+    publish_blockers: list[str] = Field(default_factory=list)
+    repo_owned_tests_required: bool = False
+    content_task_asset_lock_required: bool = False
+    mixed_task_publish_review_required: bool = False
+    visual_regression_ready: bool = False
+    normalized_results_summary_path: str | None = None
+    normalized_summary_count: int = 0
+    normalized_passed_count: int = 0
+    normalized_failed_count: int = 0
+    normalized_missing_count: int = 0
+    normalized_publish_ready: bool = False
+    unity_lane_status: str = "unavailable"
+    unreal_lane_status: str = "unavailable"
+    browser_lane_status: str = "unavailable"
+    recommended_runner_lane: str = "discovery_needed"
+    quality_gate_blocker_count: int = 0
+    pending_question_count: int = 0
+    blocking_reasons: list[str] = Field(default_factory=list)
+    recommended_fixes: list[str] = Field(default_factory=list)
+    notes: list[str] = Field(default_factory=list)
+    platform_runners: PlatformRunnerSummaryRead
+    design_transfer: DesignTransferSummaryRead
+    spatial_governance: SpatialAssetGovernanceSummaryRead
+
+
+class GameEngineGovernancePlanRead(BaseModel):
+    project_id: int
+    project_name: str
+    workspace_path: str | None = None
+    summary: str
+    plan_status: str = "blocked"
+    selected_target_id: str | None = None
+    detected_engines: list[str] = Field(default_factory=list)
+    engine_count: int = 0
+    playable_contract_status: str = "not_applicable"
+    ready_execution_lane_count: int = 0
+    command_bundle_count: int = 0
+    manifest_root: str
+    playable_definition_path: str
+    scene_governance_path: str
+    asset_lock_plan_path: str
+    task_routing_plan_path: str
+    content_budget_plan_path: str
+    automation_pack_path: str
+    engine_test_matrix_path: str
+    validation_lane_plan_path: str
+    evidence_contract_path: str
+    result_normalization_plan_path: str
+    normalized_results_summary_path: str
+    normalized_summary_count: int = 0
+    normalized_passed_count: int = 0
+    normalized_failed_count: int = 0
+    normalized_missing_count: int = 0
+    normalized_publish_ready: bool = False
+    publish_gate_status: str = "not_applicable"
+    publish_blocker_count: int = 0
+    publish_blockers: list[str] = Field(default_factory=list)
+    screenshot_regression_plan_path: str
+    publish_gate_path: str
+    approval_checkpoint_path: str
+    blocking_reasons: list[str] = Field(default_factory=list)
+    notes: list[str] = Field(default_factory=list)
+
+
+class DatasetGovernanceSummaryRead(BaseModel):
+    project_id: int
+    project_name: str
+    workspace_path: str | None = None
+    summary: str
+    governance_status: str = "not_applicable"
+    dataset_contract_status: str = "not_applicable"
+    data_hygiene_status: str = "not_applicable"
+    repo_mode_enabled: bool = False
+    tensorflow_enabled: bool = False
+    pytorch_enabled: bool = False
+    detected_frameworks: list[str] = Field(default_factory=list)
+    detected_product_workflows: list[str] = Field(default_factory=list)
+    dataset_artifact_count: int = 0
+    dataset_artifact_paths: list[str] = Field(default_factory=list)
+    dataset_artifact_extensions: list[str] = Field(default_factory=list)
+    schema_or_config_count: int = 0
+    schema_or_config_paths: list[str] = Field(default_factory=list)
+    checkpoint_artifact_count: int = 0
+    checkpoint_artifact_paths: list[str] = Field(default_factory=list)
+    provenance_signal_count: int = 0
+    provenance_signals: list[str] = Field(default_factory=list)
+    split_signal_count: int = 0
+    split_signals: list[str] = Field(default_factory=list)
+    evaluation_signal_count: int = 0
+    evaluation_signals: list[str] = Field(default_factory=list)
+    pii_signal_count: int = 0
+    pii_signals: list[str] = Field(default_factory=list)
+    duplication_signal_count: int = 0
+    duplication_signals: list[str] = Field(default_factory=list)
+    corruption_signal_count: int = 0
+    corruption_signals: list[str] = Field(default_factory=list)
+    label_coverage_signal_count: int = 0
+    label_coverage_signals: list[str] = Field(default_factory=list)
+    validation_status: str = "not_applicable"
+    runtime_status: str = "not_applicable"
+    validation_step_count: int = 0
+    validation_evidence_targets: list[str] = Field(default_factory=list)
+    recommended_execution_lane: str = "discovery_needed"
+    supports_gpu_execution: bool = False
+    supports_bulk_file_governance: bool = False
+    quality_gate_blocker_count: int = 0
+    pending_question_count: int = 0
+    blocking_reasons: list[str] = Field(default_factory=list)
+    recommended_fixes: list[str] = Field(default_factory=list)
+    notes: list[str] = Field(default_factory=list)
+    file_governance: FileGovernanceSummaryRead
+    nvidia_governance: NvidiaExecutionGovernanceSummaryRead
+
+
+class DatasetGovernancePlanRead(BaseModel):
+    project_id: int
+    project_name: str
+    workspace_path: str | None = None
+    summary: str
+    plan_status: str = "blocked"
+    detected_frameworks: list[str] = Field(default_factory=list)
+    validation_step_count: int = 0
+    manifest_root: str
+    dataset_contract_path: str
+    data_profile_path: str
+    pii_review_path: str
+    split_plan_path: str
+    duplication_audit_path: str
+    corruption_audit_path: str
+    evaluation_plan_path: str
+    approval_checkpoint_path: str
+    blocking_reasons: list[str] = Field(default_factory=list)
+    notes: list[str] = Field(default_factory=list)
+
+
+class ModelRefactorGovernanceSummaryRead(BaseModel):
+    project_id: int
+    project_name: str
+    workspace_path: str | None = None
+    summary: str
+    governance_status: str = "not_applicable"
+    repo_mode_enabled: bool = False
+    detected_frameworks: list[str] = Field(default_factory=list)
+    compatibility_contract_status: str = "not_applicable"
+    benchmark_readiness_status: str = "not_applicable"
+    rollback_readiness_status: str = "not_applicable"
+    evaluation_first_ready: bool = False
+    recommended_execution_lane: str = "discovery_needed"
+    model_artifact_count: int = 0
+    model_artifact_paths: list[str] = Field(default_factory=list)
+    model_artifact_extensions: list[str] = Field(default_factory=list)
+    compatibility_signal_count: int = 0
+    compatibility_signals: list[str] = Field(default_factory=list)
+    benchmark_signal_count: int = 0
+    benchmark_signals: list[str] = Field(default_factory=list)
+    rollback_signal_count: int = 0
+    rollback_signals: list[str] = Field(default_factory=list)
+    validation_signal_count: int = 0
+    validation_signals: list[str] = Field(default_factory=list)
+    blocking_reasons: list[str] = Field(default_factory=list)
+    recommended_fixes: list[str] = Field(default_factory=list)
+    notes: list[str] = Field(default_factory=list)
+    dataset_governance: DatasetGovernanceSummaryRead
+    nvidia_governance: NvidiaExecutionGovernanceSummaryRead
+
+
+class ModelRefactorGovernancePlanRead(BaseModel):
+    project_id: int
+    project_name: str
+    workspace_path: str | None = None
+    summary: str
+    plan_status: str = "blocked"
+    detected_frameworks: list[str] = Field(default_factory=list)
+    manifest_root: str
+    compatibility_contract_path: str
+    benchmark_comparison_path: str
+    rollback_bundle_path: str
+    validation_plan_path: str
+    evaluation_gate_path: str
+    approval_checkpoint_path: str
+    blocking_reasons: list[str] = Field(default_factory=list)
+    notes: list[str] = Field(default_factory=list)
+
+
+class NativeAppValidationGovernanceSummaryRead(BaseModel):
+    project_id: int
+    project_name: str
+    workspace_path: str | None = None
+    summary: str
+    governance_status: str = "not_applicable"
+    selected_target_id: str | None = None
+    detected_platforms: list[str] = Field(default_factory=list)
+    governed_surface_count: int = 0
+    game_engine_surface_count: int = 0
+    game_engine_surface_ids: list[str] = Field(default_factory=list)
+    game_engine_governance_status: str = "not_applicable"
+    game_engine_playable_contract_status: str = "not_applicable"
+    game_engine_scene_or_map_count: int = 0
+    game_engine_scene_or_map_paths: list[str] = Field(default_factory=list)
+    game_engine_automation_signal_count: int = 0
+    game_engine_automation_signal_paths: list[str] = Field(default_factory=list)
+    game_engine_screenshot_artifact_count: int = 0
+    game_engine_screenshot_artifact_paths: list[str] = Field(default_factory=list)
+    game_engine_normalized_results_summary_path: str | None = None
+    game_engine_normalized_summary_count: int = 0
+    game_engine_normalized_passed_count: int = 0
+    game_engine_normalized_failed_count: int = 0
+    game_engine_normalized_missing_count: int = 0
+    game_engine_normalized_publish_ready: bool = False
+    game_engine_normalized_results_status: str = "not_applicable"
+    game_engine_publish_gate_status: str = "not_applicable"
+    game_engine_publish_blocker_count: int = 0
+    game_engine_publish_blockers: list[str] = Field(default_factory=list)
+    ready_runner_lanes: list[str] = Field(default_factory=list)
+    partial_runner_lanes: list[str] = Field(default_factory=list)
+    unavailable_runner_lanes: list[str] = Field(default_factory=list)
+    installable_artifact_count: int = 0
+    installable_artifact_paths: list[str] = Field(default_factory=list)
+    installable_artifact_extensions: list[str] = Field(default_factory=list)
+    log_artifact_count: int = 0
+    log_artifact_paths: list[str] = Field(default_factory=list)
+    screenshot_artifact_count: int = 0
+    screenshot_artifact_paths: list[str] = Field(default_factory=list)
+    trace_artifact_count: int = 0
+    trace_artifact_paths: list[str] = Field(default_factory=list)
+    crash_artifact_count: int = 0
+    crash_artifact_paths: list[str] = Field(default_factory=list)
+    coverage_artifact_count: int = 0
+    coverage_artifact_paths: list[str] = Field(default_factory=list)
+    performance_artifact_count: int = 0
+    performance_artifact_paths: list[str] = Field(default_factory=list)
+    session_recording_status: str = "not_applicable"
+    session_recording_required: bool = False
+    session_recording_artifact_count: int = 0
+    session_recording_artifact_paths: list[str] = Field(default_factory=list)
+    produced_session_recording_artifact_count: int = 0
+    produced_session_recording_artifact_paths: list[str] = Field(default_factory=list)
+    missing_session_recording_artifact_count: int = 0
+    missing_session_recording_artifact_paths: list[str] = Field(default_factory=list)
+    remote_session_recording_artifact_paths: list[str] = Field(default_factory=list)
+    evidence_pipeline_status: str = "not_applicable"
+    recommended_runner_lanes: list[str] = Field(default_factory=list)
+    recommended_transport_mode: str = "discovery_needed"
+    blocking_reasons: list[str] = Field(default_factory=list)
+    recommended_fixes: list[str] = Field(default_factory=list)
+    notes: list[str] = Field(default_factory=list)
+    platform_runners: PlatformRunnerSummaryRead
+    artifact_transport: ArtifactTransportSummaryRead
+
+
+class NativeAppValidationGovernancePlanRead(BaseModel):
+    project_id: int
+    project_name: str
+    workspace_path: str | None = None
+    summary: str
+    plan_status: str = "blocked"
+    selected_target_id: str | None = None
+    detected_platforms: list[str] = Field(default_factory=list)
+    governed_surface_count: int = 0
+    game_engine_surface_count: int = 0
+    game_engine_surface_ids: list[str] = Field(default_factory=list)
+    game_engine_scene_or_map_count: int = 0
+    game_engine_scene_or_map_paths: list[str] = Field(default_factory=list)
+    game_engine_automation_signal_count: int = 0
+    game_engine_automation_signal_paths: list[str] = Field(default_factory=list)
+    game_engine_screenshot_artifact_count: int = 0
+    game_engine_screenshot_artifact_paths: list[str] = Field(default_factory=list)
+    evidence_pipeline_status: str = "not_applicable"
+    ready_runner_lanes: list[str] = Field(default_factory=list)
+    partial_runner_lanes: list[str] = Field(default_factory=list)
+    unavailable_runner_lanes: list[str] = Field(default_factory=list)
+    recommended_runner_lanes: list[str] = Field(default_factory=list)
+    recommended_transport_mode: str = "discovery_needed"
+    installable_artifact_count: int = 0
+    installable_artifact_paths: list[str] = Field(default_factory=list)
+    installable_artifact_extensions: list[str] = Field(default_factory=list)
+    game_engine_normalized_results_summary_path: str | None = None
+    game_engine_normalized_summary_count: int = 0
+    game_engine_normalized_passed_count: int = 0
+    game_engine_normalized_failed_count: int = 0
+    game_engine_normalized_missing_count: int = 0
+    game_engine_normalized_publish_ready: bool = False
+    game_engine_normalized_results_status: str = "not_applicable"
+    game_engine_publish_gate_status: str = "not_applicable"
+    game_engine_publish_blocker_count: int = 0
+    game_engine_publish_blockers: list[str] = Field(default_factory=list)
+    session_recording_status: str = "not_applicable"
+    session_recording_required: bool = False
+    session_recording_artifact_count: int = 0
+    session_recording_artifact_paths: list[str] = Field(default_factory=list)
+    produced_session_recording_artifact_count: int = 0
+    produced_session_recording_artifact_paths: list[str] = Field(default_factory=list)
+    missing_session_recording_artifact_count: int = 0
+    missing_session_recording_artifact_paths: list[str] = Field(default_factory=list)
+    remote_session_recording_artifact_paths: list[str] = Field(default_factory=list)
+    manifest_root: str
+    platform_matrix_path: str
+    artifact_shipping_plan_path: str
+    install_flow_plan_path: str
+    runner_lane_plan_path: str
+    evidence_bundle_plan_path: str
+    approval_checkpoint_path: str
+    blocking_reasons: list[str] = Field(default_factory=list)
+    notes: list[str] = Field(default_factory=list)
+
+
+class RemoteExecutionGovernanceSummaryRead(BaseModel):
+    project_id: int
+    project_name: str
+    workspace_path: str | None = None
+    summary: str
+    governance_status: str = "not_applicable"
+    policy_enabled: bool = False
+    selected_target_id: str | None = None
+    selected_target_probe_status: str = "unknown"
+    selected_transport: str | None = None
+    selected_os_family: str | None = None
+    required_runner_family: str = "external_adapter"
+    transport_status: str = "not_applicable"
+    broker_contract_status: str = "not_applicable"
+    artifact_contract_status: str = "not_applicable"
+    connector_contract_status: str = "not_applicable"
+    session_recording_status: str = "not_applicable"
+    path_sandbox_status: str = "not_applicable"
+    result_contract_status: str = "not_applicable"
+    quota_status: str = "not_applicable"
+    eligible_target_count: int = 0
+    ready_candidate_count: int = 0
+    ready_candidate_ids: list[str] = Field(default_factory=list)
+    ready_target_count: int = 0
+    ready_lane_count: int = 0
+    ready_lane_ids: list[str] = Field(default_factory=list)
+    selected_ready_lane_count: int = 0
+    selected_ready_lane_ids: list[str] = Field(default_factory=list)
+    allowed_trust_levels: list[str] = Field(default_factory=list)
+    required_repo_roots: list[str] = Field(default_factory=list)
+    required_path_prefixes: list[str] = Field(default_factory=list)
+    required_result_formats: list[str] = Field(default_factory=list)
+    required_command_families: list[str] = Field(default_factory=list)
+    required_toolchains: list[str] = Field(default_factory=list)
+    expected_evidence_categories: list[str] = Field(default_factory=list)
+    observed_evidence_categories: list[str] = Field(default_factory=list)
+    normalized_summary_artifact: str | None = None
+    session_recording_runtime_manifest_count: int = 0
+    session_recording_artifact_paths: list[str] = Field(default_factory=list)
+    produced_session_recording_artifact_paths: list[str] = Field(default_factory=list)
+    missing_session_recording_artifact_paths: list[str] = Field(default_factory=list)
+    remote_session_recording_artifact_paths: list[str] = Field(default_factory=list)
+    minimum_command_runtime_seconds: int | None = None
+    minimum_file_transfer_quota_mb: int | None = None
+    blocking_reasons: list[str] = Field(default_factory=list)
+    recommended_fixes: list[str] = Field(default_factory=list)
+    notes: list[str] = Field(default_factory=list)
+    device_broker: DeviceBrokerSummaryRead
+    artifact_transport: ArtifactTransportSummaryRead
+    platform_runners: PlatformRunnerSummaryRead
+
+
+class RemoteExecutionGovernancePlanRead(BaseModel):
+    project_id: int
+    project_name: str
+    workspace_path: str | None = None
+    summary: str
+    plan_status: str = "blocked"
+    selected_target_id: str | None = None
+    selected_transport: str | None = None
+    required_runner_family: str = "external_adapter"
+    selected_ready_lane_count: int = 0
+    selected_ready_lane_ids: list[str] = Field(default_factory=list)
+    manifest_root: str
+    execution_policy_path: str
+    broker_contract_path: str
+    artifact_contract_path: str
+    connector_contract_path: str
+    path_sandbox_plan_path: str
+    result_contract_path: str
+    session_recording_plan_path: str
+    quota_plan_path: str
+    approval_checkpoint_path: str
+    session_recording_runtime_manifest_count: int = 0
+    session_recording_artifact_paths: list[str] = Field(default_factory=list)
+    produced_session_recording_artifact_paths: list[str] = Field(default_factory=list)
+    missing_session_recording_artifact_paths: list[str] = Field(default_factory=list)
+    remote_session_recording_artifact_paths: list[str] = Field(default_factory=list)
+    blocking_reasons: list[str] = Field(default_factory=list)
+    notes: list[str] = Field(default_factory=list)
 
 
 class ProjectIntegrationFamilyRead(BaseModel):
@@ -4214,10 +6022,78 @@ class ProjectIntegrationsRead(BaseModel):
     connection_without_provider_identity_family_ids: list[str] = Field(default_factory=list)
     provider_context_verified_family_count: int = 0
     provider_context_verified_family_ids: list[str] = Field(default_factory=list)
+    attached_family_count: int = 0
+    attached_family_ids: list[str] = Field(default_factory=list)
+    authoritative_family_count: int = 0
+    authoritative_family_ids: list[str] = Field(default_factory=list)
     available_action_family_count: int = 0
     available_action_family_ids: list[str] = Field(default_factory=list)
     available_action_count: int = 0
     available_action_refs: list[str] = Field(default_factory=list)
+    paginated_action_count: int = 0
+    paginated_action_refs: list[str] = Field(default_factory=list)
+    paginated_action_family_count: int = 0
+    paginated_action_family_ids: list[str] = Field(default_factory=list)
+    streaming_action_count: int = 0
+    streaming_action_refs: list[str] = Field(default_factory=list)
+    streaming_action_family_count: int = 0
+    streaming_action_family_ids: list[str] = Field(default_factory=list)
+    file_output_action_count: int = 0
+    file_output_action_refs: list[str] = Field(default_factory=list)
+    file_output_action_family_count: int = 0
+    file_output_action_family_ids: list[str] = Field(default_factory=list)
+    throttle_control_action_count: int = 0
+    throttle_control_action_refs: list[str] = Field(default_factory=list)
+    throttle_control_action_family_count: int = 0
+    throttle_control_action_family_ids: list[str] = Field(default_factory=list)
+    attached_paginated_action_count: int = 0
+    attached_paginated_action_refs: list[str] = Field(default_factory=list)
+    attached_paginated_action_family_count: int = 0
+    attached_paginated_action_family_ids: list[str] = Field(default_factory=list)
+    attached_streaming_action_count: int = 0
+    attached_streaming_action_refs: list[str] = Field(default_factory=list)
+    attached_streaming_action_family_count: int = 0
+    attached_streaming_action_family_ids: list[str] = Field(default_factory=list)
+    attached_file_output_action_count: int = 0
+    attached_file_output_action_refs: list[str] = Field(default_factory=list)
+    attached_file_output_action_family_count: int = 0
+    attached_file_output_action_family_ids: list[str] = Field(default_factory=list)
+    attached_throttle_control_action_count: int = 0
+    attached_throttle_control_action_refs: list[str] = Field(default_factory=list)
+    attached_throttle_control_action_family_count: int = 0
+    attached_throttle_control_action_family_ids: list[str] = Field(default_factory=list)
+    connected_paginated_action_count: int = 0
+    connected_paginated_action_refs: list[str] = Field(default_factory=list)
+    connected_paginated_action_family_count: int = 0
+    connected_paginated_action_family_ids: list[str] = Field(default_factory=list)
+    connected_streaming_action_count: int = 0
+    connected_streaming_action_refs: list[str] = Field(default_factory=list)
+    connected_streaming_action_family_count: int = 0
+    connected_streaming_action_family_ids: list[str] = Field(default_factory=list)
+    connected_file_output_action_count: int = 0
+    connected_file_output_action_refs: list[str] = Field(default_factory=list)
+    connected_file_output_action_family_count: int = 0
+    connected_file_output_action_family_ids: list[str] = Field(default_factory=list)
+    connected_throttle_control_action_count: int = 0
+    connected_throttle_control_action_refs: list[str] = Field(default_factory=list)
+    connected_throttle_control_action_family_count: int = 0
+    connected_throttle_control_action_family_ids: list[str] = Field(default_factory=list)
+    authoritative_paginated_action_count: int = 0
+    authoritative_paginated_action_refs: list[str] = Field(default_factory=list)
+    authoritative_paginated_action_family_count: int = 0
+    authoritative_paginated_action_family_ids: list[str] = Field(default_factory=list)
+    authoritative_streaming_action_count: int = 0
+    authoritative_streaming_action_refs: list[str] = Field(default_factory=list)
+    authoritative_streaming_action_family_count: int = 0
+    authoritative_streaming_action_family_ids: list[str] = Field(default_factory=list)
+    authoritative_file_output_action_count: int = 0
+    authoritative_file_output_action_refs: list[str] = Field(default_factory=list)
+    authoritative_file_output_action_family_count: int = 0
+    authoritative_file_output_action_family_ids: list[str] = Field(default_factory=list)
+    authoritative_throttle_control_action_count: int = 0
+    authoritative_throttle_control_action_refs: list[str] = Field(default_factory=list)
+    authoritative_throttle_control_action_family_count: int = 0
+    authoritative_throttle_control_action_family_ids: list[str] = Field(default_factory=list)
     local_action_count: int = 0
     local_action_refs: list[str] = Field(default_factory=list)
     local_action_family_count: int = 0
@@ -4873,6 +6749,10 @@ class IntegrationActionPreviewRead(BaseModel):
     required_params: list[str] = Field(default_factory=list)
     missing_params: list[str] = Field(default_factory=list)
     params_complete: bool = True
+    supports_pagination: bool = False
+    supports_streaming_output: bool = False
+    supports_file_output: bool = False
+    supports_throttle_controls: bool = False
     provider: str | None = None
     provider_candidates: list[str] = Field(default_factory=list)
     provider_signal_breakdown: dict[str, Any] = Field(default_factory=dict)
@@ -5021,6 +6901,7 @@ class SystemStatusRead(BaseModel):
     repo_root: str | None = None
     launcher_root: str | None = None
     plugin_source_root: str | None = None
+    repo_version_control: dict[str, Any] = Field(default_factory=dict)
     backend_host: str = "127.0.0.1"
     backend_port: int
     backend_base_url: str | None = None
@@ -5087,7 +6968,7 @@ class PluginHealthSummaryRead(BaseModel):
 PluginHealthRead = PluginHealthSummaryRead
 
 HeadlessSetupStatus = Literal["ready", "degraded", "failed"]
-RunnerAuthStatus = Literal["authenticated", "unauthenticated", "unknown", "not_required"]
+RunnerAuthStatus = Literal["authenticated", "unauthenticated", "unknown", "not_required", "optional"]
 AttachPolicyRead = AttachPolicy
 
 

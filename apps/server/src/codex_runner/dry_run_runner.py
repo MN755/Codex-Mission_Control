@@ -11,6 +11,7 @@ from codex_runner.base import BaseCodexRunner, RunnerContext, RunnerHandle
 from config import RUNTIME_LOGS_ROOT
 from prompts import worker_task_prompt
 from provider_support import default_label
+from usage_tracking import build_prompt_usage_estimate
 
 
 @dataclass
@@ -38,6 +39,22 @@ class DryRunRunner(BaseCodexRunner):
 
     async def start_task(self, context: RunnerContext) -> RunnerHandle:
         run_id = f"dry-{uuid.uuid4().hex}"
+        prompt_preview = (
+            await asyncio.to_thread(
+                worker_task_prompt,
+                context.project,
+                context.agent,
+                context.task,
+                context.docs_path,
+                context.plan_markdown,
+                provider=context.settings.provider,
+                model=context.settings.model,
+                reasoning_effort=context.settings.reasoning_effort,
+            )
+            if context.task
+            else ""
+        )
+        initial_usage = build_prompt_usage_estimate(prompt_preview)
         logs_path = RUNTIME_LOGS_ROOT / f"{run_id}.log"
         stdout_path = RUNTIME_LOGS_ROOT / f"{run_id}.stdout.log"
         stderr_path = RUNTIME_LOGS_ROOT / f"{run_id}.stderr.log"
@@ -53,10 +70,12 @@ class DryRunRunner(BaseCodexRunner):
             stdout_path=str(stdout_path),
             stderr_path=str(stderr_path),
             event_log_path=str(event_log_path),
+            initial_usage=initial_usage,
         )
 
     async def resume_or_continue(self, context: RunnerContext, message: str) -> RunnerHandle:
         run_id = f"dry-manager-{uuid.uuid4().hex}"
+        initial_usage = build_prompt_usage_estimate(message)
         logs_path = RUNTIME_LOGS_ROOT / f"{run_id}.log"
         stdout_path = RUNTIME_LOGS_ROOT / f"{run_id}.stdout.log"
         stderr_path = RUNTIME_LOGS_ROOT / f"{run_id}.stderr.log"
@@ -72,6 +91,7 @@ class DryRunRunner(BaseCodexRunner):
             stdout_path=str(stdout_path),
             stderr_path=str(stderr_path),
             event_log_path=str(event_log_path),
+            initial_usage=initial_usage,
         )
 
     async def stop_run(self, run_id: str) -> None:
@@ -98,7 +118,8 @@ class DryRunRunner(BaseCodexRunner):
     async def _simulate_task(self, run_id: str, context: RunnerContext) -> None:
         state = self.runs[run_id]
         prompt_preview = (
-            worker_task_prompt(
+            await asyncio.to_thread(
+                worker_task_prompt,
                 context.project,
                 context.agent,
                 context.task,

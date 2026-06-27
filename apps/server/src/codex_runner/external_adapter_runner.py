@@ -13,6 +13,7 @@ from codex_runner.base import BaseCodexRunner, RunnerContext, RunnerHandle, Runn
 from config import RUNTIME_LOGS_ROOT
 from prompts import RUNNER_RESULT_ENVELOPE_SCHEMA, WORKER_REPORT_SCHEMA, worker_task_prompt
 from provider_support import default_label
+from usage_tracking import build_prompt_usage_estimate
 
 
 ADAPTER_EDIT_RESPONSE_SCHEMA = {
@@ -46,6 +47,8 @@ class ExternalAdapterRunState:
     forbidden_paths: list[str] = field(default_factory=list)
     applied_edits: list[str] = field(default_factory=list)
     edit_issues: list[str] = field(default_factory=list)
+    runtime_manifest_path: str | None = None
+    runtime_manifest_payload: dict[str, Any] = field(default_factory=dict)
 
 
 class ExternalAdapterRunner(BaseCodexRunner):
@@ -67,7 +70,7 @@ class ExternalAdapterRunner(BaseCodexRunner):
         return self._command_available(settings.adapter_command)
 
     async def start_task(self, context: RunnerContext) -> RunnerHandle:
-        prompt = self._build_adapter_prompt(context)
+        prompt = await asyncio.to_thread(self._build_adapter_prompt, context)
         return await self._start_process(context, prompt)
 
     async def resume_or_continue(self, context: RunnerContext, message: str) -> RunnerHandle:
@@ -190,6 +193,7 @@ class ExternalAdapterRunner(BaseCodexRunner):
         workspace_snapshot = self._workspace_snapshot_markdown(context)
         model_note = self._model_specific_adapter_note(context.settings.model)
         editing_expected = "yes" if context.task and any(word in " ".join(filter(None, [context.task.title, context.task.goal, context.task.scope])).lower() for word in ("fix", "implement", "correct", "update", "change")) else "no"
+        remote_execution_context = self._remote_execution_context_markdown(context)
         return (
             f"{prompt}\n\n"
             "External adapter execution rules:\n"
@@ -203,8 +207,60 @@ class ExternalAdapterRunner(BaseCodexRunner):
             "Return only valid JSON matching this schema exactly:\n"
             f"{json.dumps(ADAPTER_EDIT_RESPONSE_SCHEMA, indent=2)}\n\n"
             f"{self._adapter_examples()}\n\n"
+            f"{remote_execution_context}\n\n"
             f"{workspace_snapshot}"
         )
+
+    def _remote_execution_context_markdown(self, context: RunnerContext) -> str:
+        remote_execution = dict(getattr(context.settings, "remote_execution", None) or {})
+        if not remote_execution:
+            return "Remote execution context:\n- Not using a remote execution target for this run."
+        selected_target = dict(remote_execution.get("selected_target") or {})
+        artifact_contract = dict(remote_execution.get("artifact_contract") or {})
+        connector_contract = dict(remote_execution.get("connector_contract") or {})
+        broker_contract = dict(remote_execution.get("broker_contract") or {})
+        if not selected_target:
+            blocking_reasons = list(remote_execution.get("selection", {}).get("blocking_reasons") or [])
+            blocking_summary = ", ".join(str(item) for item in blocking_reasons) if blocking_reasons else "no selected target"
+            return (
+                "Remote execution context:\n"
+                "- Remote execution policy is present, but no target is ready for this run.\n"
+                f"- Blocking reasons: {blocking_summary}"
+            )
+        target_label = str(selected_target.get("label") or selected_target.get("id") or "remote-target")
+        target_host = str(selected_target.get("host") or "unknown-host")
+        target_transport = str(selected_target.get("transport") or "ssh")
+        workspace_root = str(selected_target.get("workspace_root") or "").strip()
+        artifact_paths = list(artifact_contract.get("local_artifact_paths") or [])
+        connector_families = list(connector_contract.get("available_families") or [])
+        broker_command_families = list(broker_contract.get("target_command_families") or [])
+        broker_toolchains = list(broker_contract.get("target_toolchains") or [])
+        broker_path_prefixes = list(broker_contract.get("target_path_prefixes") or [])
+        broker_repo_roots = list(broker_contract.get("target_repo_roots") or [])
+        lines = [
+            "Remote execution context:",
+            f"- Target: {target_label} ({target_transport} -> {target_host})",
+            f"- Remote workspace root: {workspace_root or 'not declared'}",
+            f"- Artifact sync enabled: {'yes' if artifact_contract.get('sync_enabled') else 'no'}",
+            f"- Artifact paths discovered locally: {', '.join(str(item) for item in artifact_paths[:6]) if artifact_paths else 'none'}",
+            f"- Connector families usable in this lane: {', '.join(str(item) for item in connector_families[:6]) if connector_families else 'none'}",
+            f"- Broker command families: {', '.join(str(item) for item in broker_command_families[:6]) if broker_command_families else 'none declared'}",
+            f"- Broker toolchains: {', '.join(str(item) for item in broker_toolchains[:6]) if broker_toolchains else 'none declared'}",
+            f"- Allowed repo roots: {', '.join(str(item) for item in broker_repo_roots[:6]) if broker_repo_roots else 'none declared'}",
+            f"- Allowed path prefixes: {', '.join(str(item) for item in broker_path_prefixes[:6]) if broker_path_prefixes else 'none declared'}",
+            f"- Session recording required/enabled: {'yes' if broker_contract.get('require_session_recording') else 'no'}/{'yes' if broker_contract.get('session_recording_enabled') else 'no'}",
+        ]
+        artifact_blockers = list(artifact_contract.get("blocking_reasons") or [])
+        connector_blockers = list(connector_contract.get("blocking_reasons") or [])
+        broker_blockers = list(broker_contract.get("blocking_reasons") or [])
+        if artifact_blockers:
+            lines.append(f"- Artifact blockers: {', '.join(str(item) for item in artifact_blockers)}")
+        if connector_blockers:
+            lines.append(f"- Connector blockers: {', '.join(str(item) for item in connector_blockers)}")
+        if broker_blockers:
+            lines.append(f"- Broker blockers: {', '.join(str(item) for item in broker_blockers)}")
+        lines.append("- Honor the remote target contract. Do not assume extra artifact roots or connector access beyond what is listed here.")
+        return "\n".join(lines)
 
     def _workspace_snapshot_markdown(self, context: RunnerContext) -> str:
         task = context.task
@@ -271,27 +327,6 @@ class ExternalAdapterRunner(BaseCodexRunner):
             if inner is not None:
                 candidate = inner
                 repaired = repaired or repaired_inner
-        if self._is_worker_report_payload(candidate):
-            return {
-                "status": "completed" if candidate.get("status") == "done" else "failed",
-                "runner_type": self.runner_type,
-                "lane": "implementation",
-                "summary": str(candidate.get("summary") or "Adapter completed."),
-                "report": candidate,
-                "files_changed": list(candidate.get("files_changed") or []),
-                "tests_run": list(candidate.get("tests_run") or []),
-                "commands_attempted": [],
-                "evidence": [],
-                "risks": list(candidate.get("risks") or []),
-                "blockers": list(candidate.get("blockers") or []),
-                "diagnostics": [],
-                "approvals_requested": [],
-                "recovery_plan": [],
-                "edits": [],
-                "failure_classification": None,
-                "needs_approval": False,
-                "metadata_json": {},
-            }, repaired
         if isinstance(candidate, dict) and self._is_worker_report_payload(candidate.get("report")):
             edits = candidate.get("edits")
             if not isinstance(edits, list):
@@ -314,6 +349,27 @@ class ExternalAdapterRunner(BaseCodexRunner):
             normalized.setdefault("needs_approval", False)
             normalized.setdefault("metadata_json", {})
             return normalized, repaired
+        if self._is_worker_report_payload(candidate):
+            return {
+                "status": "completed" if candidate.get("status") == "done" else "failed",
+                "runner_type": self.runner_type,
+                "lane": "implementation",
+                "summary": str(candidate.get("summary") or "Adapter completed."),
+                "report": candidate,
+                "files_changed": list(candidate.get("files_changed") or []),
+                "tests_run": list(candidate.get("tests_run") or []),
+                "commands_attempted": [],
+                "evidence": [],
+                "risks": list(candidate.get("risks") or []),
+                "blockers": list(candidate.get("blockers") or []),
+                "diagnostics": [],
+                "approvals_requested": [],
+                "recovery_plan": [],
+                "edits": [],
+                "failure_classification": None,
+                "needs_approval": False,
+                "metadata_json": {},
+            }, repaired
         return None, repaired
 
     @staticmethod
@@ -369,19 +425,66 @@ class ExternalAdapterRunner(BaseCodexRunner):
                 issues.append(f"Failed to write {relative_path}: {exc}")
         return applied, issues
 
+    def _persist_runtime_manifest(
+        self,
+        state: ExternalAdapterRunState,
+        *,
+        envelope_payload: dict[str, Any] | None = None,
+        report_payload: dict[str, Any] | None = None,
+    ) -> None:
+        manifest_path = str(state.runtime_manifest_path or "").strip()
+        if not manifest_path:
+            return
+        payload = dict(state.runtime_manifest_payload or {})
+        payload.update(
+            {
+                "runner_type": self.runner_type,
+                "status": state.status,
+                "exit_code": state.exit_code,
+                "applied_edit_count": len(state.applied_edits),
+                "applied_edits": list(state.applied_edits),
+                "edit_issue_count": len(state.edit_issues),
+                "edit_issues": list(state.edit_issues),
+            }
+        )
+        if isinstance(report_payload, dict):
+            payload["report"] = {
+                "status": report_payload.get("status"),
+                "summary": report_payload.get("summary"),
+                "files_changed": list(report_payload.get("files_changed") or []),
+                "tests_run": list(report_payload.get("tests_run") or []),
+                "blockers": list(report_payload.get("blockers") or []),
+                "risks": list(report_payload.get("risks") or []),
+            }
+        if isinstance(envelope_payload, dict):
+            payload["result_envelope"] = {
+                "status": envelope_payload.get("status"),
+                "summary": envelope_payload.get("summary"),
+                "lane": envelope_payload.get("lane"),
+                "failure_classification": envelope_payload.get("failure_classification"),
+                "needs_approval": bool(envelope_payload.get("needs_approval")),
+                "evidence_count": len(list(envelope_payload.get("evidence") or [])),
+                "commands_attempted": list(envelope_payload.get("commands_attempted") or []),
+                "diagnostics": list(envelope_payload.get("diagnostics") or []),
+            }
+        target = Path(manifest_path)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
     async def _start_process(self, context: RunnerContext, prompt: str) -> RunnerHandle:
         if not await self.handshake(context.settings):
             raise RuntimeError("The external adapter command is not configured or is not available on PATH.")
         command = context.settings.adapter_command or ""
         args = [command, *(context.settings.adapter_args or [])]
         run_id = f"adapter-{uuid.uuid4().hex}"
+        initial_usage = build_prompt_usage_estimate(prompt)
         logs_path = RUNTIME_LOGS_ROOT / f"{run_id}.log"
         stdout_path = RUNTIME_LOGS_ROOT / f"{run_id}.stdout.log"
         stderr_path = RUNTIME_LOGS_ROOT / f"{run_id}.stderr.log"
         event_log_path = RUNTIME_LOGS_ROOT / f"{run_id}.events.jsonl"
         self.ensure_log_parent(logs_path)
         effective_label = default_label(context.settings.provider)
-        workdir = context.agent.workspace_path or context.project.workspace_path
+        workdir = self.effective_workspace_path(context)
         state = ExternalAdapterRunState(
             logs_path=str(logs_path),
             stdout_path=str(stdout_path),
@@ -440,6 +543,7 @@ class ExternalAdapterRunner(BaseCodexRunner):
             stdout_path=str(stdout_path),
             stderr_path=str(stderr_path),
             event_log_path=str(event_log_path),
+            initial_usage=initial_usage,
         )
 
     async def _consume_process(self, run_id: str, args: list[str]) -> None:
@@ -483,6 +587,11 @@ class ExternalAdapterRunner(BaseCodexRunner):
             state.status = "done" if state.exit_code == 0 else "error"
             if report_payload and report_payload.get("status") in {"blocked", "needs_review", "error"}:
                 state.status = str(report_payload.get("status"))
+            self._persist_runtime_manifest(
+                state,
+                envelope_payload=envelope_payload,
+                report_payload=report_payload,
+            )
             state.events.append(
                 {
                     "type": "item.completed",
